@@ -773,13 +773,17 @@ export class CambiumStore extends DurableObject {
             return col;
           });
 
+          const hasUserVersion = change.fields.some((f: any) => f.name === "version");
+          const kernelCols = [
+            ...(hasUserVersion ? [] : ["version INTEGER NOT NULL DEFAULT 0"]),
+            "created_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            "archived_at TEXT",
+          ];
           this.db.exec(`CREATE TABLE "${change.object_name}" (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ${fieldDefs.join(",\n            ")},
-            version INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            archived_at TEXT
+            ${kernelCols.join(",\n            ")}
           )`);
 
           // Register in normalized schema
