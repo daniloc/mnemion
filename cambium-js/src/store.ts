@@ -37,6 +37,40 @@ const SQLITE_TYPE_MAP: Record<string, string> = {
 
 const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at", "version"]);
 
+// === Guardrails ===
+
+const LIMITS = {
+  RECORD_BYTES: 1_048_576,    // 1 MB per record
+  QUERY_ROWS: 1_000,          // max rows a single query can return
+  BATCH_OPS: 100,             // max operations in a single batch mutate
+  NAME_MAX_LEN: 64,           // max length for object/field names
+  FIELDS_PER_OBJECT: 64,      // max fields on a single object
+};
+
+const NAME_RE = /^[a-z][a-z0-9_-]*$/;  // lowercase, starts with letter, allows hyphens/underscores/digits
+
+function validateName(kind: string, name: string): string | null {
+  if (!name || name.length > LIMITS.NAME_MAX_LEN) {
+    return `${kind} name must be 1–${LIMITS.NAME_MAX_LEN} characters, got ${name?.length ?? 0}`;
+  }
+  if (!NAME_RE.test(name)) {
+    return `${kind} name must be lowercase, start with a letter, and contain only a-z, 0-9, hyphens, underscores. Got: "${name}"`;
+  }
+  return null;
+}
+
+function estimateRecordBytes(data: Record<string, unknown>): number {
+  let bytes = 0;
+  for (const v of Object.values(data)) {
+    if (typeof v === "string") bytes += v.length * 2;  // rough UTF-16 estimate
+    else if (typeof v === "number") bytes += 8;
+    else if (typeof v === "boolean") bytes += 4;
+    else if (v === null || v === undefined) bytes += 0;
+    else bytes += JSON.stringify(v).length * 2;
+  }
+  return bytes;
+}
+
 // === System docs seed content ===
 
 const SYSTEM_DOCS_SEED: { slug: string; title: string; content: string }[] = [
@@ -542,11 +576,17 @@ export class CambiumStore extends DurableObject {
       case "create_object": {
         if (!change.object_name)
           return this.errorJson("object_name is required for create_object");
+        const objNameErr = validateName("Object", change.object_name);
+        if (objNameErr) return this.errorJson(objNameErr);
         if (!change.fields?.length)
           return this.errorJson("At least one field is required for create_object");
+        if (change.fields.length > LIMITS.FIELDS_PER_OBJECT)
+          return this.errorJson(`Too many fields: ${change.fields.length} exceeds limit of ${LIMITS.FIELDS_PER_OBJECT}`);
         if (this.objectExists(change.object_name))
           return this.errorJson(`Object "${change.object_name}" already exists`);
         for (const f of change.fields) {
+          const fieldNameErr = validateName("Field", f.name);
+          if (fieldNameErr) return this.errorJson(fieldNameErr);
           if (!SQLITE_TYPE_MAP[f.type])
             return this.errorJson(`Unknown field type: ${f.type}`);
           if (KERNEL_COLUMNS.has(f.name))
@@ -585,7 +625,12 @@ export class CambiumStore extends DurableObject {
         if (!obj)
           return this.errorJson(`Object "${change.object_name}" does not exist`);
 
+        if (obj.fields.length + change.fields.length > LIMITS.FIELDS_PER_OBJECT)
+          return this.errorJson(`Adding ${change.fields.length} fields would exceed the limit of ${LIMITS.FIELDS_PER_OBJECT} fields per object`);
+
         for (const f of change.fields) {
+          const fieldNameErr = validateName("Field", f.name);
+          if (fieldNameErr) return this.errorJson(fieldNameErr);
           if (KERNEL_COLUMNS.has(f.name))
             return this.errorJson(`Field "${f.name}" is a kernel-provided column and cannot be defined by the user`);
           if (obj.fields.some((existing: IndexFieldEntry) => existing.name === f.name))
@@ -932,7 +977,8 @@ export class CambiumStore extends DurableObject {
       sql += ` ORDER BY "${col}" ${desc ? "DESC" : "ASC"}`;
     }
 
-    sql += ` LIMIT ${limit || 100}`;
+    const clampedLimit = Math.min(limit || 100, LIMITS.QUERY_ROWS);
+    sql += ` LIMIT ${clampedLimit}`;
 
     try {
       const rows = this.db.exec(sql, ...bindings).toArray();
@@ -948,6 +994,10 @@ export class CambiumStore extends DurableObject {
 
   async batchMutate(operationsJson: string): Promise<string> {
     const operations = JSON.parse(operationsJson) as { object: string; operation: string; data: any }[];
+
+    if (operations.length > LIMITS.BATCH_OPS) {
+      return this.errorJson(`Batch too large: ${operations.length} operations exceeds limit of ${LIMITS.BATCH_OPS}`);
+    }
 
     // Validate all operations before starting transaction
     for (const op of operations) {
@@ -980,6 +1030,14 @@ export class CambiumStore extends DurableObject {
     // Protect default_content on _system_docs
     if (objectName === "_system_docs" && "default_content" in data) {
       return { error: true, message: "default_content is immutable. It preserves the original seed for recovery." };
+    }
+
+    // Record size guard
+    if (operation === "create" || operation === "update") {
+      const size = estimateRecordBytes(data);
+      if (size > LIMITS.RECORD_BYTES) {
+        return { error: true, message: `Record too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
+      }
     }
 
     try {
@@ -1116,7 +1174,8 @@ export class CambiumStore extends DurableObject {
 
   // === Cross-object search ===
 
-  async search(term: string, objectsJson: string, limit: number): Promise<string> {
+  async search(term: string, objectsJson: string, limit_: number): Promise<string> {
+    const limit = Math.min(limit_ || 20, LIMITS.QUERY_ROWS);
     const targetObjects = objectsJson
       ? JSON.parse(objectsJson) as string[]
       : (this.db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[]).map((r: any) => r.name);
