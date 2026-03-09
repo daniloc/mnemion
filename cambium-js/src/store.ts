@@ -72,6 +72,17 @@ export class CambiumStore extends DurableObject {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
 
+    // Marketplace tokens (kernel table — always exists)
+    this.db.exec(`CREATE TABLE IF NOT EXISTS "_marketplace_tokens" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "name" TEXT NOT NULL,
+      "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
+      "scope" TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT
+    )`);
+
     const rows = this.db.exec("SELECT data FROM _index WHERE id = 1").toArray();
     if (rows.length === 0) {
       const emptyIndex: CambiumIndex = {
@@ -86,6 +97,24 @@ export class CambiumStore extends DurableObject {
         "INSERT INTO _index (id, data) VALUES (1, ?)",
         JSON.stringify(emptyIndex)
       );
+    }
+
+    // Ensure _marketplace_tokens is registered in the index
+    const index = this.getCurrentIndex();
+    if (!index.objects.some((o) => o.name === "_marketplace_tokens")) {
+      index.objects.push({
+        name: "_marketplace_tokens",
+        description: "Scoped access tokens for private marketplace delivery. Token auto-generated on create.",
+        fields: [
+          { name: "name", type: "text", required: true },
+          { name: "token", type: "text", required: false },
+          { name: "scope", type: "text", required: false },
+        ],
+        record_count: 0,
+      });
+      index.version += 1;
+      index.updated_at = new Date().toISOString();
+      this.db.exec("UPDATE _index SET data = ? WHERE id = 1", JSON.stringify(index));
     }
   }
 
@@ -561,6 +590,71 @@ export class CambiumStore extends DurableObject {
       results: results.slice(0, limit),
       count: Math.min(results.length, limit),
     }, null, 2);
+  }
+
+  // === Marketplace ===
+
+  async getMarketplaceDataForToken(token: string): Promise<string> {
+    try {
+      const rows = this.db.exec(
+        `SELECT * FROM "_marketplace_tokens" WHERE token = ? AND archived_at IS NULL`,
+        token
+      ).toArray() as any[];
+      if (rows.length === 0) {
+        return JSON.stringify({ error: true, message: "Invalid token" });
+      }
+      const scope = rows[0].scope ? JSON.parse(rows[0].scope) as string[] : null;
+      return this.getMarketplaceDataScoped(scope);
+    } catch {
+      return JSON.stringify({ error: true, message: "Token validation failed" });
+    }
+  }
+
+  async getMarketplaceDataPublic(): Promise<string> {
+    return this.getMarketplaceDataScoped(null, true);
+  }
+
+  private getMarketplaceDataScoped(pluginNames: string[] | null, publicOnly: boolean = false): string {
+    const index = this.getCurrentIndex();
+    const hasPlugins = index.objects.some((o) => o.name === "_plugins");
+    const hasSkills = index.objects.some((o) => o.name === "_skills");
+
+    if (!hasPlugins || !hasSkills) {
+      return JSON.stringify({ plugins: [] });
+    }
+
+    try {
+      let pluginSql = `SELECT * FROM "_plugins" WHERE archived_at IS NULL`;
+      const bindings: any[] = [];
+      if (publicOnly) pluginSql += ` AND visibility = 'public'`;
+      if (pluginNames) {
+        pluginSql += ` AND name IN (${pluginNames.map(() => "?").join(", ")})`;
+        bindings.push(...pluginNames);
+      }
+      const plugins = this.db.exec(pluginSql, ...bindings).toArray() as any[];
+
+      const result = [];
+      for (const plugin of plugins) {
+        let skillSql = `SELECT * FROM "_skills" WHERE plugin_id = ? AND archived_at IS NULL`;
+        const skillBindings: any[] = [plugin.id];
+        if (publicOnly) skillSql += ` AND visibility = 'public'`;
+        const skills = this.db.exec(skillSql, ...skillBindings).toArray();
+
+        // For public: skip plugin if any skill is private (partial exposure)
+        if (publicOnly) {
+          const total = this.db.exec(
+            `SELECT COUNT(*) as count FROM "_skills" WHERE plugin_id = ? AND archived_at IS NULL`,
+            plugin.id
+          ).one() as { count: number };
+          if (total.count !== skills.length) continue;
+        }
+
+        result.push({ ...plugin, skills });
+      }
+      return JSON.stringify({ plugins: result });
+    } catch {
+      return JSON.stringify({ plugins: [] });
+    }
   }
 
   // === Helpers ===
