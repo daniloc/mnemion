@@ -35,7 +35,9 @@ const SQLITE_TYPE_MAP: Record<string, string> = {
   datetime: "TEXT",
 };
 
-const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at", "version"]);
+// version is intentionally excluded — it may be a user field (e.g. semver on _plugins).
+// Kernel version handling is conditional per-table via hasKernelVersion().
+const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]);
 
 // === Guardrails ===
 
@@ -1133,14 +1135,16 @@ export class CambiumStore extends DurableObject {
         );
       }
 
-      // Try to bump version (user tables have it, kernel tables may not)
-      try {
-        this.db.exec(
-          `UPDATE "${upload.target_object}" SET version = version + 1 WHERE id = ?`,
-          upload.target_id
-        );
-      } catch {
-        // No version column — fine
+      // Bump kernel version if applicable (not for user version fields like semver)
+      if (this.hasKernelVersion(upload.target_object)) {
+        try {
+          this.db.exec(
+            `UPDATE "${upload.target_object}" SET version = version + 1 WHERE id = ?`,
+            upload.target_id
+          );
+        } catch {
+          // No version column — fine
+        }
       }
     } catch (err: any) {
       return this.errorJson(`Upload write failed: ${err.message}`);
@@ -1247,38 +1251,45 @@ export class CambiumStore extends DurableObject {
 
         case "update": {
           if (!data.id) return { error: true, message: "id is required for update" };
-          const fields = Object.keys(data).filter((k) => k !== "id" && !["created_at", "archived_at", "version"].includes(k));
+          const kernelVersion = this.hasKernelVersion(objectName);
+
+          // For kernel version tables: strip version from SET (it auto-increments).
+          // For user version tables: include version in SET like any other field.
+          const stripCols = ["id", "created_at", "archived_at"];
+          if (kernelVersion) stripCols.push("version");
+          const fields = Object.keys(data).filter((k) => !stripCols.includes(k));
           if (fields.length === 0) return { error: true, message: "No fields to update" };
 
           const sets = fields.map((f) => `"${f}" = ?`).join(", ");
           const values = fields.map((f) => data[f]);
 
-          let where = `id = ? AND archived_at IS NULL`;
-          values.push(data.id);
-          if (data.version != null) {
-            where += ` AND version = ?`;
-            values.push(data.version);
-          }
+          if (kernelVersion) {
+            // Kernel version: auto-increment + optional optimistic lock
+            let where = `id = ? AND archived_at IS NULL`;
+            values.push(data.id);
+            if (data.version != null) {
+              where += ` AND version = ?`;
+              values.push(data.version);
+            }
 
-          try {
             this.db.exec(
               `UPDATE "${objectName}" SET ${sets}, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
               ...values
             );
-          } catch {
-            const valuesNoVersion = fields.map((f) => data[f]);
-            valuesNoVersion.push(data.id);
+
+            if (data.version != null) {
+              const changes = this.db.exec("SELECT changes() as c").one() as { c: number };
+              if (changes.c === 0) {
+                return { error: true, message: `Version conflict: record ${data.id} in "${objectName}" has been modified. Re-read and retry.` };
+              }
+            }
+          } else {
+            // No kernel version: simple update, version is a user field included in SET
+            values.push(data.id);
             this.db.exec(
               `UPDATE "${objectName}" SET ${sets}, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
-              ...valuesNoVersion
+              ...values
             );
-          }
-
-          if (data.version != null) {
-            const changes = this.db.exec("SELECT changes() as c").one() as { c: number };
-            if (changes.c === 0) {
-              return { error: true, message: `Version conflict: record ${data.id} in "${objectName}" has been modified. Re-read and retry.` };
-            }
           }
 
           const row = this.db.exec(
@@ -1592,6 +1603,16 @@ export class CambiumStore extends DurableObject {
     return this.db.exec(
       "SELECT 1 FROM _objects WHERE name = ?", name
     ).toArray().length > 0;
+  }
+
+  /** True if the table's `version` column is the kernel auto-increment, not a user field. */
+  private hasKernelVersion(objectName: string): boolean {
+    // If _fields has a user-defined 'version' field for this object,
+    // the column is user-managed (e.g. semver text). Otherwise it's kernel.
+    return this.db.exec(
+      "SELECT 1 FROM _fields WHERE object_name = ? AND name = 'version'",
+      objectName
+    ).toArray().length === 0;
   }
 
   private errorJson(message: string): string {
