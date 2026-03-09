@@ -89,6 +89,8 @@ Read anything by \`cambium://\` URI. The URI scheme is the API.
 - \`cambium://history\` — recent schema changes (supports \`?limit=N\`)
 - \`cambium://_system/{slug}\` — system documentation (you're reading one now)
 - \`cambium://_system/\` — list all system docs
+- \`cambium://mutations\` — audit log of all data mutations (supports \`?limit=N\`)
+- \`cambium://mutations/{object}\` — audit log filtered to one object
 
 ## query
 Filtered, sorted, paginated reads from a single object.
@@ -96,6 +98,7 @@ Filtered, sorted, paginated reads from a single object.
 - \`fields\`: comma-separated projection (default: all)
 - \`sort\`: field name, prefix \`-\` for descending (e.g. \`-updated_at\`)
 - \`count_only\`: return count without records — use this before large queries
+- Max 1,000 rows per query (limit is silently clamped).
 
 ## search
 Cross-object full-text search across all text fields. Use when you don't know which object holds what you need.
@@ -103,23 +106,46 @@ Cross-object full-text search across all text fields. Use when you don't know wh
 ## mutate
 Create, update, or archive records. One tool for all writes.
 - \`create\`: provide field values, kernel columns (id, timestamps) are auto-set
-- \`update\`: provide \`id\` + fields to change
+- \`update\`: provide \`id\` + fields to change. Include \`version\` for optimistic locking (prevents lost updates when multiple surfaces write concurrently).
 - \`archive\`: provide \`id\` only — soft-deletes, never destroys data
+- \`batch\`: pass an array of {object, operation, data} for atomic all-or-nothing execution (max 100 ops)
+
+Records are limited to ~1 MB each.
 
 ## propose_change / apply_change
 Two-step schema evolution. Propose validates and previews. Apply commits.
-- \`create_object\`: new object with fields
+- \`create_object\`: new object with fields (max 64 fields per object)
 - \`add_field\`: add fields to an existing object
 - \`add_convention\`: add a convention to the index
+- Fields support \`references\` for foreign keys to other objects.
+- \`apply_change\` also supports \`revert_history_id\` for point-in-time rollback via Cloudflare PITR (30-day window). This is destructive — restores all data, not just schema.
+
+Object names: lowercase, start with letter, a-z/0-9/hyphens/underscores, max 64 chars. Field names: same rules.
 
 Schema changes are permanent and logged in \`cambium://history\`. Propose first, review the preview, then apply.
+
+## Large content uploads
+
+When content is too large for MCP tool parameters (e.g. research results, file contents), use the upload token flow:
+
+1. Mint a token: \`mutate({ object: "_upload_tokens", operation: "create", data: { target_object, target_id, target_field, mode } })\`
+2. POST content: \`curl -X POST https://<host>/upload/<token> -d @file.txt\`
+
+Properties:
+- \`mode\`: \`replace\` (default) overwrites the field, \`append\` concatenates to existing content
+- Token expires after 15 minutes and is single-use
+- Target object, record, and field are validated at mint time; field must be \`text\` type
+- The token IS the auth — no other credentials needed (capability URL pattern)
+- Same 1 MB record limit applies
 
 ## When to use what
 - Know exactly what you want → \`resolve\` with a URI
 - Need filtered/sorted data → \`query\`
 - Exploring, don't know where something is → \`search\`
 - Writing data → \`mutate\`
+- Writing large text content → upload token flow (mint via \`mutate\`, POST via HTTP)
 - Changing structure → \`propose_change\` then \`apply_change\`
+- Reviewing data history → \`resolve\` with \`cambium://mutations\`
 `,
   },
   {
@@ -242,7 +268,8 @@ Records can be \`public\` or \`private\`. This controls marketplace distribution
 
 ## Kernel objects
 Objects prefixed with \`_\` are system objects managed by the kernel:
-- \`_marketplace_tokens\` — scoped access tokens
+- \`_marketplace_tokens\` — scoped access tokens for marketplace
+- \`_upload_tokens\` — temporary capability tokens for large content uploads
 - \`_plugins\`, \`_skills\` — marketplace content (created on demand)
 - \`_system_docs\` — these documents
 
@@ -436,15 +463,26 @@ export class CambiumStore extends DurableObject {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
 
-    // Seed system docs if empty
-    const docCount = this.db.exec(
-      `SELECT COUNT(*) as count FROM "_system_docs"`
-    ).one() as { count: number };
-    if (docCount.count === 0) {
-      for (const doc of SYSTEM_DOCS_SEED) {
+    // Seed system docs (insert new, update default_content on existing)
+    for (const doc of SYSTEM_DOCS_SEED) {
+      const existing = this.db.exec(
+        `SELECT id, default_content FROM "_system_docs" WHERE slug = ?`, doc.slug
+      ).toArray() as any[];
+      if (existing.length === 0) {
         this.db.exec(
           `INSERT INTO "_system_docs" (slug, title, content, default_content) VALUES (?, ?, ?, ?)`,
           doc.slug, doc.title, doc.content, doc.content
+        );
+      } else if (existing[0].default_content !== doc.content) {
+        // Source changed — update default_content (and content if it was still on the old default)
+        const wasDefault = existing[0].default_content === (this.db.exec(
+          `SELECT content FROM "_system_docs" WHERE id = ?`, existing[0].id
+        ).one() as any)?.content;
+        this.db.exec(
+          `UPDATE "_system_docs" SET default_content = ?, title = ?${wasDefault ? ', content = ?' : ''}, updated_at = datetime('now') WHERE id = ?`,
+          ...(wasDefault
+            ? [doc.content, doc.title, doc.content, existing[0].id]
+            : [doc.content, doc.title, existing[0].id])
         );
       }
     }
@@ -498,7 +536,36 @@ export class CambiumStore extends DurableObject {
       this.ensureAuditTriggers(obj.name);
     }
 
+    // === Upload tokens ===
+
+    this.db.exec(`CREATE TABLE IF NOT EXISTS "_upload_tokens" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
+      "target_object" TEXT NOT NULL,
+      "target_id" INTEGER NOT NULL,
+      "target_field" TEXT NOT NULL,
+      "mode" TEXT NOT NULL DEFAULT 'replace',
+      "expires_at" TEXT NOT NULL,
+      "consumed_at" TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT
+    )`);
+
     // === Register kernel tables in normalized schema ===
+
+    this.registerKernelObject("_upload_tokens",
+      "Temporary capability tokens for large content uploads via HTTP POST. Token and expiry auto-generated on create. Single-use.",
+      [
+        { name: "token", type: "text", required: false },
+        { name: "target_object", type: "text", required: true },
+        { name: "target_id", type: "integer", required: true },
+        { name: "target_field", type: "text", required: true },
+        { name: "mode", type: "text", required: false },
+        { name: "expires_at", type: "datetime", required: false },
+        { name: "consumed_at", type: "datetime", required: false },
+      ]
+    );
 
     this.registerKernelObject("_marketplace_tokens",
       "Scoped access tokens for private marketplace delivery. Token auto-generated on create.",
@@ -1023,6 +1090,83 @@ export class CambiumStore extends DurableObject {
     return JSON.stringify({ batch: true, results, count: results.length }, null, 2);
   }
 
+  async consumeUpload(token: string, content: string): Promise<string> {
+    // Look up the token
+    const rows = this.db.exec(
+      `SELECT * FROM "_upload_tokens" WHERE token = ? AND archived_at IS NULL`,
+      token
+    ).toArray() as any[];
+
+    if (rows.length === 0) {
+      return this.errorJson("Invalid or expired upload token");
+    }
+
+    const upload = rows[0];
+
+    // Check expiry
+    if (new Date(upload.expires_at) < new Date()) {
+      return this.errorJson("Upload token has expired");
+    }
+
+    // Check single-use
+    if (upload.consumed_at) {
+      return this.errorJson("Upload token has already been used");
+    }
+
+    // Check content size
+    const contentBytes = new TextEncoder().encode(content).length;
+    if (contentBytes > LIMITS.RECORD_BYTES) {
+      return this.errorJson(`Content too large: ${Math.round(contentBytes / 1024)}KB exceeds the 1MB limit`);
+    }
+
+    // Write content to target
+    try {
+      if (upload.mode === "append") {
+        this.db.exec(
+          `UPDATE "${upload.target_object}" SET "${upload.target_field}" = COALESCE("${upload.target_field}", '') || ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+          content, upload.target_id
+        );
+      } else {
+        this.db.exec(
+          `UPDATE "${upload.target_object}" SET "${upload.target_field}" = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+          content, upload.target_id
+        );
+      }
+
+      // Try to bump version (user tables have it, kernel tables may not)
+      try {
+        this.db.exec(
+          `UPDATE "${upload.target_object}" SET version = version + 1 WHERE id = ?`,
+          upload.target_id
+        );
+      } catch {
+        // No version column — fine
+      }
+    } catch (err: any) {
+      return this.errorJson(`Upload write failed: ${err.message}`);
+    }
+
+    // Mark token consumed
+    this.db.exec(
+      `UPDATE "_upload_tokens" SET consumed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      upload.id
+    );
+
+    // Return the updated record
+    const record = this.db.exec(
+      `SELECT * FROM "${upload.target_object}" WHERE id = ?`,
+      upload.target_id
+    ).one();
+
+    return JSON.stringify({
+      uploaded: true,
+      bytes: contentBytes,
+      target: { object: upload.target_object, id: upload.target_id, field: upload.target_field },
+      mode: upload.mode,
+      record,
+    }, null, 2);
+  }
+
   private executeMutate(objectName: string, operation: string, data: any): any {
     if (!this.objectExists(objectName))
       return { error: true, message: `Object "${objectName}" does not exist` };
@@ -1032,12 +1176,53 @@ export class CambiumStore extends DurableObject {
       return { error: true, message: "default_content is immutable. It preserves the original seed for recovery." };
     }
 
-    // Record size guard
+    // Record size guard (skip for upload tokens — they're small metadata)
     if (operation === "create" || operation === "update") {
       const size = estimateRecordBytes(data);
       if (size > LIMITS.RECORD_BYTES) {
         return { error: true, message: `Record too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
       }
+    }
+
+    // Upload token create: validate target, set expiry
+    if (objectName === "_upload_tokens" && operation === "create") {
+      if (!data.target_object || data.target_id == null || !data.target_field) {
+        return { error: true, message: "target_object, target_id, and target_field are required" };
+      }
+      if (!this.objectExists(data.target_object)) {
+        return { error: true, message: `Target object "${data.target_object}" does not exist` };
+      }
+      // Verify the target record exists
+      try {
+        const row = this.db.exec(
+          `SELECT id FROM "${data.target_object}" WHERE id = ? AND archived_at IS NULL`,
+          data.target_id
+        ).toArray();
+        if (row.length === 0) {
+          return { error: true, message: `Target record ${data.target_id} not found in "${data.target_object}"` };
+        }
+      } catch {
+        return { error: true, message: `Could not verify target record` };
+      }
+      // Verify the target field exists
+      const fieldRows = this.db.exec(
+        "SELECT type FROM _fields WHERE object_name = ? AND name = ?",
+        data.target_object, data.target_field
+      ).toArray() as any[];
+      if (fieldRows.length === 0) {
+        return { error: true, message: `Field "${data.target_field}" does not exist on "${data.target_object}"` };
+      }
+      if (fieldRows[0].type !== "text") {
+        return { error: true, message: `Upload target field must be text type, "${data.target_field}" is ${fieldRows[0].type}` };
+      }
+      // Auto-set expiry (15 minutes) and mode
+      data.expires_at = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      data.mode = data.mode || "replace";
+      if (!["replace", "append"].includes(data.mode)) {
+        return { error: true, message: `Invalid mode "${data.mode}". Use "replace" or "append".` };
+      }
+      // Strip token if caller tried to set it — it's auto-generated
+      delete data.token;
     }
 
     try {

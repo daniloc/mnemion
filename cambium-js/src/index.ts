@@ -247,6 +247,18 @@ const defaultHandler = {
       return Response.json(JSON.parse(result));
     }
 
+    // Upload endpoint: POST /upload/{token} — capability-URL, no other auth needed
+    const uploadMatch = url.pathname.match(/^\/upload\/([a-fA-F0-9]+)$/);
+    if (uploadMatch && request.method === "POST") {
+      const token = uploadMatch[1];
+      const storeId = env.CAMBIUM_STORE.idFromName("user:owner");
+      const store = env.CAMBIUM_STORE.get(storeId) as DurableObjectStub<CambiumStore>;
+      const content = await request.text();
+      const result = await store.consumeUpload(token, content);
+      const parsed = JSON.parse(result);
+      return Response.json(parsed, { status: parsed.error ? 400 : 200 });
+    }
+
     // Marketplace git endpoints: /marketplace[/public]/{info/refs,git-upload-pack}
     if (url.pathname.startsWith("/marketplace")) {
       const isPublic = url.pathname.startsWith("/marketplace/public");
