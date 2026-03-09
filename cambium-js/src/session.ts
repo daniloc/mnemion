@@ -356,13 +356,18 @@ Records limited to ~1 MB each.`,
       async ({ object, operation, data }) => {
         // Batch mode
         if (operation === "batch") {
-          if (!Array.isArray(data)) {
+          // Accept both native arrays and JSON-stringified arrays (Claude.ai sends strings)
+          let batchData = data;
+          if (typeof batchData === "string") {
+            try { batchData = JSON.parse(batchData); } catch { /* fall through to validation */ }
+          }
+          if (!Array.isArray(batchData)) {
             return {
               isError: true as const,
               content: [{ type: "text" as const, text: "For batch operations, data must be an array of {object, operation, data} items." }],
             };
           }
-          const result = await store.batchMutate(JSON.stringify(data));
+          const result = await store.batchMutate(JSON.stringify(batchData));
           const parsed = JSON.parse(result);
           if (parsed.error) {
             return {
