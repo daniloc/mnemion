@@ -351,7 +351,14 @@ Records limited to ~1 MB each.`,
       {
         object: z.string().optional().describe("Object name (for single operation; ignored for batch)"),
         operation: z.enum(["create", "update", "archive", "batch"]).describe("create, update, archive, or batch. For batch: data is an array of {object, operation, data} items."),
-        data: z.unknown().describe("For single ops: {field: value, ...}. For batch: [{object, operation, data}, ...]. For update: include version for optimistic locking."),
+        data: z.union([
+          z.record(z.string(), z.unknown()).describe("For single ops: {field: value, ...}. For update: include version for optimistic locking."),
+          z.array(z.object({
+            object: z.string(),
+            operation: z.enum(["create", "update", "archive"]),
+            data: z.record(z.string(), z.unknown()),
+          })).describe("For batch: array of {object, operation, data} items."),
+        ]),
       },
       async ({ object, operation, data }) => {
         // Batch mode
@@ -380,8 +387,12 @@ Records limited to ~1 MB each.`,
           };
         }
 
-        // Single mode — validate required params
-        if (!object || !operation || !data || typeof data !== "object" || Array.isArray(data)) {
+        // Single mode — parse stringified data if needed (Claude.ai sends strings)
+        let singleData = data;
+        if (typeof singleData === "string") {
+          try { singleData = JSON.parse(singleData); } catch { /* fall through */ }
+        }
+        if (!object || !operation || !singleData || typeof singleData !== "object" || Array.isArray(singleData)) {
           return {
             isError: true as const,
             content: [{ type: "text" as const, text: "For single operations, pass object, operation (create|update|archive), and data (object). For batch, pass operation 'batch' with data as array." }],
@@ -390,7 +401,7 @@ Records limited to ~1 MB each.`,
 
         // Confirmation gate for system docs
         if (object === "_system_docs" && (operation === "update" || operation === "create")) {
-          const confirmKey = `_system_docs_confirmed:${JSON.stringify(data)}`;
+          const confirmKey = `_system_docs_confirmed:${JSON.stringify(singleData)}`;
           const alreadyConfirmed = this.confirmed.has(confirmKey);
 
           if (!alreadyConfirmed) {
@@ -403,7 +414,7 @@ Records limited to ~1 MB each.`,
                   message: "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
                   object,
                   operation,
-                  data,
+                  data: singleData,
                 }, null, 2),
               }],
             };
@@ -411,7 +422,7 @@ Records limited to ~1 MB each.`,
           this.confirmed.delete(confirmKey);
         }
 
-        const result = await store.mutate(object, operation, JSON.stringify(data));
+        const result = await store.mutate(object, operation, JSON.stringify(singleData));
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {
