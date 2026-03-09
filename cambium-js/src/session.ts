@@ -17,10 +17,20 @@ interface AuthProps {
 // === CambiumSession: MCP protocol handler, proxies data to CambiumStore ===
 
 export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
-  server = new McpServer({
-    name: "cambium",
-    version: "0.3.0",
-  });
+  server = new McpServer(
+    { name: "cambium", version: "0.4.0" },
+    {
+      instructions: `Cambium is persistent shared memory. Read cambium://_system/tools before your first action for full capability reference.
+
+Key capabilities agents commonly miss:
+- mutate accepts a batch parameter — an array of {object, operation, data} for atomic all-or-nothing execution (max 100 ops). Use it to combine multiple writes into one call.
+- Update operations support optimistic locking via the version field. Include version from a prior read to prevent lost writes across concurrent surfaces.
+- Fields support foreign key references to other objects. Use the references parameter in propose_change.
+- cambium://mutations is an audit log for diagnostics. Use it instead of querying records to verify data integrity.
+- For large content that exceeds MCP parameter limits, mint an upload token via mutate on _upload_tokens, then POST content to /upload/{token} via HTTP.
+- apply_change supports revert_history_id for point-in-time rollback via Cloudflare PITR (30-day window).`,
+    },
+  );
 
   private confirmed = new Set<string>();
 
@@ -330,28 +340,29 @@ For revert: pass revert_history_id (from cambium://history). Restores ALL data (
       "mutate",
       `Create, update, or archive records. One tool for all writes.
 
-Single operation: pass object + operation + data.
-Batch operation: pass batch array instead — atomic, all-or-nothing, max 100 ops. Use batch to combine multiple creates/updates/archives into one call.
+Single: pass object + operation (create|update|archive) + data.
+Batch: pass operation "batch" + data as array of [{object, operation, data}, ...] — atomic all-or-nothing, max 100 ops. Combine multiple writes into one call.
 
-Update supports optimistic locking: include the version field from a prior read to detect conflicts when multiple surfaces write concurrently.
+Update supports optimistic locking: include the version field from a prior read to detect conflicts across concurrent surfaces.
 
-Large content upload: to write content too large for MCP parameters, create an _upload_tokens record with {target_object, target_id, target_field, mode}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP.
+Large content: to write content too large for MCP parameters, create an _upload_tokens record with {target_object, target_id, target_field, mode}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP.
 
-Records are limited to ~1 MB each.`,
+Records limited to ~1 MB each.`,
       {
-        object: z.string().optional().describe("Object name (for single operation)"),
-        operation: z.enum(["create", "update", "archive"]).optional().describe("create, update, or archive (for single operation)"),
-        data: z.record(z.string(), z.unknown()).optional().describe("Record data (for single operation). For update: include version field for optimistic locking."),
-        batch: z.array(z.object({
-          object: z.string(),
-          operation: z.enum(["create", "update", "archive"]),
-          data: z.record(z.string(), z.unknown()),
-        })).optional().describe("Array of operations to execute atomically. All succeed or all fail."),
+        object: z.string().optional().describe("Object name (for single operation; ignored for batch)"),
+        operation: z.enum(["create", "update", "archive", "batch"]).describe("create, update, archive, or batch. For batch: data is an array of {object, operation, data} items."),
+        data: z.unknown().describe("For single ops: {field: value, ...}. For batch: [{object, operation, data}, ...]. For update: include version for optimistic locking."),
       },
-      async ({ object, operation, data, batch }) => {
+      async ({ object, operation, data }) => {
         // Batch mode
-        if (batch) {
-          const result = await store.batchMutate(JSON.stringify(batch));
+        if (operation === "batch") {
+          if (!Array.isArray(data)) {
+            return {
+              isError: true as const,
+              content: [{ type: "text" as const, text: "For batch operations, data must be an array of {object, operation, data} items." }],
+            };
+          }
+          const result = await store.batchMutate(JSON.stringify(data));
           const parsed = JSON.parse(result);
           if (parsed.error) {
             return {
@@ -365,10 +376,10 @@ Records are limited to ~1 MB each.`,
         }
 
         // Single mode — validate required params
-        if (!object || !operation || !data) {
+        if (!object || !operation || !data || typeof data !== "object" || Array.isArray(data)) {
           return {
             isError: true as const,
-            content: [{ type: "text" as const, text: "For single operations, object, operation, and data are required. For batch, pass batch array." }],
+            content: [{ type: "text" as const, text: "For single operations, pass object, operation (create|update|archive), and data (object). For batch, pass operation 'batch' with data as array." }],
           };
         }
 
