@@ -114,7 +114,7 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
     // resolve — the universal reader. One tool, the URI is the API.
     this.server.tool(
       "resolve",
-      "Read anything by its cambium:// address. The URI scheme is the API.\n\nValid URIs:\n- cambium://index — master index (orientation)\n- cambium://schema/{object} — field definitions for an object\n- cambium://records/{object}/{id} — a single record\n- cambium://history — recent schema changes\n- cambium://_system/ — list system docs\n- cambium://_system/{slug} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)\n- cambium://_system/{slug}/default — read original seed version",
+      "Read anything by its cambium:// address. The URI scheme is the API.\n\nValid URIs:\n- cambium://index — master index (orientation)\n- cambium://schema/{object} — field definitions for an object\n- cambium://records/{object}/{id} — a single record\n- cambium://history — recent schema changes\n- cambium://_system/ — list system docs\n- cambium://_system/{slug} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)\n- cambium://_system/{slug}/default — read original seed version\n- cambium://mutations — recent mutation audit log (supports ?limit=N)\n- cambium://mutations/{object} — mutations for a specific object",
       {
         uri: z.string().describe("A cambium:// URI to resolve"),
       },
@@ -147,6 +147,10 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
             type: z.enum(["text", "number", "integer", "boolean", "datetime"]),
             required: z.boolean().default(false),
             default_value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+            references: z.object({
+              object: z.string().describe("Referenced object name"),
+              field: z.string().default("id").describe("Referenced field (default: id)"),
+            }).optional().describe("Foreign key reference to another object"),
           })).optional().describe("Fields to create (for create_object or add_field)"),
           convention: z.string().optional().describe("Convention text (for add_convention)"),
         }),
@@ -168,11 +172,51 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
 
     this.server.tool(
       "apply_change",
-      "Commit a previously proposed change. Updates SQLite schema and index atomically.",
+      "Commit a previously proposed change, or revert a past change via PITR. For apply: pass change_id. For revert: pass revert_history_id (from cambium://history). Revert restores ALL data to the state before that change — this is destructive.",
       {
-        change_id: z.string().describe("The change_id returned by propose_change"),
+        change_id: z.string().optional().describe("The change_id returned by propose_change"),
+        revert_history_id: z.number().optional().describe("Schema history ID to revert to (from cambium://history). Restores entire DO state via PITR."),
       },
-      async ({ change_id }) => {
+      async ({ change_id, revert_history_id }) => {
+        // Revert mode
+        if (revert_history_id != null) {
+          const confirmKey = `revert:${revert_history_id}`;
+          if (!this.confirmed.has(confirmKey)) {
+            this.confirmed.add(confirmKey);
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  confirmation_required: true,
+                  message: "PITR revert restores ALL data (not just schema) to the state before this change. This is destructive and cannot be undone. Call apply_change again with the same revert_history_id to proceed.",
+                  revert_history_id,
+                }, null, 2),
+              }],
+            };
+          }
+          this.confirmed.delete(confirmKey);
+
+          const result = await store.revertChange(revert_history_id);
+          const parsed = JSON.parse(result);
+          if (parsed.error) {
+            return {
+              isError: true as const,
+              content: [{ type: "text" as const, text: parsed.message }],
+            };
+          }
+          return {
+            content: [{ type: "text" as const, text: result }],
+          };
+        }
+
+        // Apply mode
+        if (!change_id) {
+          return {
+            isError: true as const,
+            content: [{ type: "text" as const, text: "Either change_id or revert_history_id is required" }],
+          };
+        }
+
         const result = await store.applyChange(change_id);
         const parsed = JSON.parse(result);
         if (parsed.error) {
@@ -187,7 +231,6 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
         try {
           await this.server.server.sendResourceUpdated({ uri: "cambium://index" });
           await this.server.server.sendResourceUpdated({ uri: "cambium://history" });
-          // Notify per-object schema if applicable
           if (parsed.index?.objects) {
             for (const obj of parsed.index.objects) {
               await this.server.server.sendResourceUpdated({ uri: `cambium://schema/${obj.name}` });
@@ -265,13 +308,41 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
 
     this.server.tool(
       "mutate",
-      "Create, update, or archive a record. One tool for all writes.",
+      "Create, update, or archive records. For single operations, pass object+operation+data. For atomic batch operations (all-or-nothing), pass batch array instead. Update supports optimistic locking: include version from a prior read to detect conflicts.",
       {
-        object: z.string().describe("Object name"),
-        operation: z.enum(["create", "update", "archive"]).describe("create, update, or archive"),
-        data: z.record(z.string(), z.unknown()).describe("Record data. For create: field values. For update: id + fields to change. For archive: id only."),
+        object: z.string().optional().describe("Object name (for single operation)"),
+        operation: z.enum(["create", "update", "archive"]).optional().describe("create, update, or archive (for single operation)"),
+        data: z.record(z.string(), z.unknown()).optional().describe("Record data (for single operation). For update: include version field for optimistic locking."),
+        batch: z.array(z.object({
+          object: z.string(),
+          operation: z.enum(["create", "update", "archive"]),
+          data: z.record(z.string(), z.unknown()),
+        })).optional().describe("Array of operations to execute atomically. All succeed or all fail."),
       },
-      async ({ object, operation, data }) => {
+      async ({ object, operation, data, batch }) => {
+        // Batch mode
+        if (batch) {
+          const result = await store.batchMutate(JSON.stringify(batch));
+          const parsed = JSON.parse(result);
+          if (parsed.error) {
+            return {
+              isError: true as const,
+              content: [{ type: "text" as const, text: parsed.message }],
+            };
+          }
+          return {
+            content: [{ type: "text" as const, text: result }],
+          };
+        }
+
+        // Single mode — validate required params
+        if (!object || !operation || !data) {
+          return {
+            isError: true as const,
+            content: [{ type: "text" as const, text: "For single operations, object, operation, and data are required. For batch, pass batch array." }],
+          };
+        }
+
         // Confirmation gate for system docs
         if (object === "_system_docs" && (operation === "update" || operation === "create")) {
           const confirmKey = `_system_docs_confirmed:${JSON.stringify(data)}`;

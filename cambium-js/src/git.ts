@@ -328,6 +328,29 @@ export function buildMarketplaceFiles(
   return files;
 }
 
+// === Repo cache ===
+
+let cachedContentHash: string | null = null;
+let cachedRepo: { objects: GitObject[]; headSha: string } | null = null;
+let cachedFiles: FileTree | null = null;
+
+function getCachedRepo(files: FileTree): { objects: GitObject[]; headSha: string } {
+  // Hash the file tree content to detect changes
+  const contentHash = createHash("sha256")
+    .update(JSON.stringify(files))
+    .digest("hex");
+
+  if (contentHash === cachedContentHash && cachedRepo) {
+    return cachedRepo;
+  }
+
+  // Cache miss — recompute
+  cachedRepo = synthesizeRepo(files);
+  cachedContentHash = contentHash;
+  cachedFiles = files;
+  return cachedRepo;
+}
+
 // === Main entry point ===
 
 export async function handleMarketplaceGit(
@@ -343,12 +366,12 @@ export async function handleMarketplaceGit(
     if (url.searchParams.get("service") !== "git-upload-pack") {
       return new Response("Unsupported service", { status: 403 });
     }
-    const { headSha } = synthesizeRepo(files);
+    const { headSha } = getCachedRepo(files);
     return handleInfoRefs(headSha);
   }
 
   if (request.method === "POST" && path.endsWith("/git-upload-pack")) {
-    const { objects, headSha } = synthesizeRepo(files);
+    const { objects, headSha } = getCachedRepo(files);
     return handleUploadPack(request, objects, headSha);
   }
 

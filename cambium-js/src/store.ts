@@ -22,6 +22,7 @@ export interface IndexFieldEntry {
   type: string;
   required: boolean;
   default?: string | number | boolean | null;
+  references?: string | null;
 }
 
 // === Constants ===
@@ -34,7 +35,7 @@ const SQLITE_TYPE_MAP: Record<string, string> = {
   datetime: "TEXT",
 };
 
-const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]);
+const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at", "version"]);
 
 // === System docs seed content ===
 
@@ -284,10 +285,86 @@ export class CambiumStore extends DurableObject {
   }
 
   private ensureTables() {
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _index (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      data TEXT NOT NULL
+    // === Normalized schema tables (replacing _index JSON blob) ===
+
+    this.db.exec(`CREATE TABLE IF NOT EXISTS _objects (
+      name TEXT PRIMARY KEY,
+      description TEXT NOT NULL DEFAULT ''
     )`);
+
+    this.db.exec(`CREATE TABLE IF NOT EXISTS _fields (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      object_name TEXT NOT NULL REFERENCES _objects(name),
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      required INTEGER NOT NULL DEFAULT 0,
+      default_value TEXT,
+      references_object TEXT,
+      UNIQUE(object_name, name)
+    )`);
+
+    this.db.exec(`CREATE TABLE IF NOT EXISTS _conventions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+
+    this.db.exec(`CREATE TABLE IF NOT EXISTS _meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      version INTEGER NOT NULL DEFAULT 0,
+      guidance TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+
+    // === Migrate from _index JSON blob if present ===
+
+    const hasOldIndex = this.db.exec(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='_index'"
+    ).toArray().length > 0;
+
+    if (hasOldIndex) {
+      const rows = this.db.exec("SELECT data FROM _index WHERE id = 1").toArray();
+      if (rows.length > 0) {
+        const index = JSON.parse((rows[0] as any).data) as CambiumIndex;
+
+        this.db.exec(
+          "INSERT OR IGNORE INTO _meta (id, version, guidance, updated_at) VALUES (1, ?, ?, ?)",
+          index.version, index.guidance, index.updated_at
+        );
+
+        for (const obj of index.objects) {
+          this.db.exec(
+            "INSERT OR IGNORE INTO _objects (name, description) VALUES (?, ?)",
+            obj.name, obj.description
+          );
+          for (const f of obj.fields) {
+            this.db.exec(
+              "INSERT OR IGNORE INTO _fields (object_name, name, type, required, default_value) VALUES (?, ?, ?, ?, ?)",
+              obj.name, f.name, f.type, f.required ? 1 : 0,
+              f.default != null ? JSON.stringify(f.default) : null
+            );
+          }
+        }
+
+        for (const c of index.conventions) {
+          this.db.exec("INSERT INTO _conventions (text) VALUES (?)", c);
+        }
+      }
+
+      this.db.exec("DROP TABLE _index");
+    }
+
+    // === Ensure meta row exists (fresh install) ===
+
+    const metaRows = this.db.exec("SELECT id FROM _meta WHERE id = 1").toArray();
+    if (metaRows.length === 0) {
+      this.db.exec(
+        "INSERT INTO _meta (id, version, guidance) VALUES (1, 0, ?)",
+        "This is a new Cambium instance. No objects exist yet. Create what the work demands."
+      );
+    }
+
+    // === Other kernel tables ===
 
     this.db.exec(`CREATE TABLE IF NOT EXISTS _schema_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -305,7 +382,6 @@ export class CambiumStore extends DurableObject {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
 
-    // Marketplace tokens (kernel table — always exists)
     this.db.exec(`CREATE TABLE IF NOT EXISTS "_marketplace_tokens" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "name" TEXT NOT NULL,
@@ -316,23 +392,6 @@ export class CambiumStore extends DurableObject {
       archived_at TEXT
     )`);
 
-    const rows = this.db.exec("SELECT data FROM _index WHERE id = 1").toArray();
-    if (rows.length === 0) {
-      const emptyIndex: CambiumIndex = {
-        version: 0,
-        updated_at: new Date().toISOString(),
-        objects: [],
-        conventions: [],
-        guidance:
-          "This is a new Cambium instance. No objects exist yet. Create what the work demands.",
-      };
-      this.db.exec(
-        "INSERT INTO _index (id, data) VALUES (1, ?)",
-        JSON.stringify(emptyIndex)
-      );
-    }
-
-    // System docs (kernel table — always exists)
     this.db.exec(`CREATE TABLE IF NOT EXISTS "_system_docs" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "slug" TEXT NOT NULL UNIQUE,
@@ -356,51 +415,100 @@ export class CambiumStore extends DurableObject {
       }
     }
 
-    // Ensure _marketplace_tokens is registered in the index
-    const index = this.getCurrentIndex();
-    if (!index.objects.some((o) => o.name === "_marketplace_tokens")) {
-      index.objects.push({
-        name: "_marketplace_tokens",
-        description: "Scoped access tokens for private marketplace delivery. Token auto-generated on create.",
-        fields: [
-          { name: "name", type: "text", required: true },
-          { name: "token", type: "text", required: false },
-          { name: "scope", type: "text", required: false },
-        ],
-        record_count: 0,
-      });
-      index.version += 1;
-      index.updated_at = new Date().toISOString();
-      this.db.exec("UPDATE _index SET data = ? WHERE id = 1", JSON.stringify(index));
+    // === Migrate: add version column to existing user tables ===
+
+    const userObjects = this.db.exec(
+      "SELECT name FROM _objects WHERE name NOT LIKE '\\_%' ESCAPE '\\'"
+    ).toArray() as any[];
+    for (const obj of userObjects) {
+      try {
+        this.db.exec(`ALTER TABLE "${obj.name}" ADD COLUMN version INTEGER NOT NULL DEFAULT 0`);
+      } catch {
+        // Column already exists
+      }
     }
 
-    // Ensure _system_docs is registered in the index
-    if (!index.objects.some((o) => o.name === "_system_docs")) {
-      index.objects.push({
-        name: "_system_docs",
-        description: "System documentation for agent orientation. Editable but requires confirmation. Set content to null to restore defaults.",
-        fields: [
-          { name: "slug", type: "text", required: true },
-          { name: "title", type: "text", required: true },
-          { name: "content", type: "text", required: false },
-          { name: "default_content", type: "text", required: true },
-        ],
-        record_count: 0,
-      });
-      index.version += 1;
-      index.updated_at = new Date().toISOString();
-      this.db.exec("UPDATE _index SET data = ? WHERE id = 1", JSON.stringify(index));
+    // === Migrate: add bookmark column to _schema_history ===
+
+    try {
+      this.db.exec(`ALTER TABLE _schema_history ADD COLUMN bookmark TEXT`);
+    } catch {
+      // Column already exists
+    }
+
+    // === Migrate: add references_object column to _fields ===
+
+    try {
+      this.db.exec(`ALTER TABLE _fields ADD COLUMN references_object TEXT`);
+    } catch {
+      // Column already exists
+    }
+
+    // === Mutation audit log ===
+
+    this.db.exec(`CREATE TABLE IF NOT EXISTS _mutation_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      table_name TEXT NOT NULL,
+      record_id INTEGER,
+      operation TEXT NOT NULL,
+      old_data TEXT,
+      new_data TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+
+    // Create audit triggers for all registered user objects
+    const allObjects = this.db.exec(
+      "SELECT name FROM _objects"
+    ).toArray() as any[];
+    for (const obj of allObjects) {
+      this.ensureAuditTriggers(obj.name);
+    }
+
+    // === Register kernel tables in normalized schema ===
+
+    this.registerKernelObject("_marketplace_tokens",
+      "Scoped access tokens for private marketplace delivery. Token auto-generated on create.",
+      [
+        { name: "name", type: "text", required: true },
+        { name: "token", type: "text", required: false },
+        { name: "scope", type: "text", required: false },
+      ]
+    );
+
+    this.registerKernelObject("_system_docs",
+      "System documentation for agent orientation. Editable but requires confirmation. Set content to null to restore defaults.",
+      [
+        { name: "slug", type: "text", required: true },
+        { name: "title", type: "text", required: true },
+        { name: "content", type: "text", required: false },
+        { name: "default_content", type: "text", required: true },
+      ]
+    );
+  }
+
+  private registerKernelObject(
+    name: string,
+    description: string,
+    fields: { name: string; type: string; required: boolean }[]
+  ) {
+    this.db.exec(
+      "INSERT OR IGNORE INTO _objects (name, description) VALUES (?, ?)",
+      name, description
+    );
+    for (const f of fields) {
+      this.db.exec(
+        "INSERT OR IGNORE INTO _fields (object_name, name, type, required) VALUES (?, ?, ?, ?)",
+        name, f.name, f.type, f.required ? 1 : 0
+      );
     }
   }
 
   // === RPC methods (called from CambiumSession) ===
 
   async getIndex(): Promise<string> {
-    const row = this.db.exec(
-      "SELECT data FROM _index WHERE id = 1"
-    ).one() as { data: string };
-    const index: CambiumIndex = JSON.parse(row.data);
+    const index = this.getCurrentIndex();
 
+    // Enrich with live record counts
     for (const obj of index.objects) {
       try {
         const r = this.db.exec(
@@ -408,7 +516,6 @@ export class CambiumStore extends DurableObject {
         ).one() as { count: number };
         obj.record_count = r.count;
       } catch {
-        // Table may lack archived_at (kernel tables like _system_docs) — count all rows
         try {
           const r = this.db.exec(
             `SELECT COUNT(*) as count FROM "${obj.name}"`
@@ -420,13 +527,10 @@ export class CambiumStore extends DurableObject {
       }
     }
 
-    // Attach system docs pointer
-    const enriched = {
+    return JSON.stringify({
       ...index,
       system_docs: "cambium://_system/",
-    };
-
-    return JSON.stringify(enriched, null, 2);
+    }, null, 2);
   }
 
   async proposeChange(description: string, changeJson: string): Promise<string> {
@@ -440,24 +544,30 @@ export class CambiumStore extends DurableObject {
           return this.errorJson("object_name is required for create_object");
         if (!change.fields?.length)
           return this.errorJson("At least one field is required for create_object");
-        if (currentIndex.objects.some((o: IndexObjectEntry) => o.name === change.object_name))
+        if (this.objectExists(change.object_name))
           return this.errorJson(`Object "${change.object_name}" already exists`);
         for (const f of change.fields) {
           if (!SQLITE_TYPE_MAP[f.type])
             return this.errorJson(`Unknown field type: ${f.type}`);
           if (KERNEL_COLUMNS.has(f.name))
             return this.errorJson(`Field "${f.name}" is a kernel-provided column and cannot be defined by the user`);
+          if (f.references && !this.objectExists(f.references.object))
+            return this.errorJson(`Referenced object "${f.references.object}" does not exist`);
         }
 
         preview.objects.push({
           name: change.object_name,
           description: change.object_description || "",
-          fields: change.fields.map((f: any) => ({
-            name: f.name,
-            type: f.type,
-            required: f.required ?? false,
-            default: f.default_value ?? null,
-          })),
+          fields: change.fields.map((f: any) => {
+            const field: IndexFieldEntry = {
+              name: f.name,
+              type: f.type,
+              required: f.required ?? false,
+              default: f.default_value ?? null,
+            };
+            if (f.references) field.references = f.references.object;
+            return field;
+          }),
           record_count: 0,
         });
         break;
@@ -468,20 +578,28 @@ export class CambiumStore extends DurableObject {
           return this.errorJson("object_name is required for add_field");
         if (!change.fields?.length)
           return this.errorJson("At least one field is required for add_field");
+        if (!this.objectExists(change.object_name))
+          return this.errorJson(`Object "${change.object_name}" does not exist`);
+
         const obj = preview.objects.find((o: IndexObjectEntry) => o.name === change.object_name);
         if (!obj)
           return this.errorJson(`Object "${change.object_name}" does not exist`);
+
         for (const f of change.fields) {
           if (KERNEL_COLUMNS.has(f.name))
             return this.errorJson(`Field "${f.name}" is a kernel-provided column and cannot be defined by the user`);
           if (obj.fields.some((existing: IndexFieldEntry) => existing.name === f.name))
             return this.errorJson(`Field "${f.name}" already exists on "${change.object_name}"`);
-          obj.fields.push({
+          if (f.references && !this.objectExists(f.references.object))
+            return this.errorJson(`Referenced object "${f.references.object}" does not exist`);
+          const field: IndexFieldEntry = {
             name: f.name,
             type: f.type,
             required: f.required ?? false,
             default: f.default_value ?? null,
-          });
+          };
+          if (f.references) field.references = f.references.object;
+          obj.fields.push(field);
         }
         break;
       }
@@ -522,7 +640,6 @@ export class CambiumStore extends DurableObject {
 
     const pending = rows[0];
     const change = JSON.parse(pending.change_spec);
-    const previewIndex = JSON.parse(pending.preview_index) as CambiumIndex;
 
     try {
       switch (change.type) {
@@ -536,16 +653,37 @@ export class CambiumStore extends DurableObject {
                   ? ` DEFAULT '${f.default_value}'`
                   : ` DEFAULT ${f.default_value}`;
             }
+            if (f.references) {
+              col += ` REFERENCES "${f.references.object}"("${f.references.field || 'id'}")`;
+            }
             return col;
           });
 
           this.db.exec(`CREATE TABLE "${change.object_name}" (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ${fieldDefs.join(",\n            ")},
+            version INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             archived_at TEXT
           )`);
+
+          // Register in normalized schema
+          this.db.exec(
+            "INSERT INTO _objects (name, description) VALUES (?, ?)",
+            change.object_name, change.object_description || ""
+          );
+          for (const f of change.fields) {
+            this.db.exec(
+              "INSERT INTO _fields (object_name, name, type, required, default_value, references_object) VALUES (?, ?, ?, ?, ?, ?)",
+              change.object_name, f.name, f.type, f.required ? 1 : 0,
+              f.default_value != null ? JSON.stringify(f.default_value) : null,
+              f.references?.object ?? null
+            );
+          }
+
+          // Create audit triggers for the new table
+          this.ensureAuditTriggers(change.object_name);
           break;
         }
 
@@ -558,59 +696,139 @@ export class CambiumStore extends DurableObject {
                   ? ` DEFAULT '${f.default_value}'`
                   : ` DEFAULT ${f.default_value}`;
             }
+            if (f.references) {
+              ddl += ` REFERENCES "${f.references.object}"("${f.references.field || 'id'}")`;
+            }
             this.db.exec(ddl);
           }
+
+          // Register fields in normalized schema
+          for (const f of change.fields) {
+            this.db.exec(
+              "INSERT INTO _fields (object_name, name, type, required, default_value, references_object) VALUES (?, ?, ?, ?, ?, ?)",
+              change.object_name, f.name, f.type, f.required ? 1 : 0,
+              f.default_value != null ? JSON.stringify(f.default_value) : null,
+              f.references?.object ?? null
+            );
+          }
+
+          // Recreate audit triggers (columns changed)
+          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.object_name}_insert"`);
+          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.object_name}_update"`);
+          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.object_name}_delete"`);
+          this.ensureAuditTriggers(change.object_name);
           break;
         }
 
-        case "add_convention":
+        case "add_convention": {
+          this.db.exec("INSERT INTO _conventions (text) VALUES (?)", change.convention);
           break;
+        }
       }
 
-      previewIndex.updated_at = new Date().toISOString();
-      previewIndex.version += 1;
-
-      // Update guidance if it still has the empty-instance text
-      if (previewIndex.guidance.includes("No objects exist yet") && previewIndex.objects.length > 0) {
-        previewIndex.guidance = "Cambium is active. Read cambium://index for orientation, then query and mutate to work with data.";
-      }
-
+      // Update meta
       this.db.exec(
-        "UPDATE _index SET data = ? WHERE id = 1",
-        JSON.stringify(previewIndex)
+        "UPDATE _meta SET version = version + 1, updated_at = datetime('now')"
       );
 
+      // Update guidance if still has empty-instance text
+      const meta = this.db.exec("SELECT guidance FROM _meta WHERE id = 1").one() as { guidance: string };
+      if (meta.guidance.includes("No objects exist yet")) {
+        const objCount = this.db.exec("SELECT COUNT(*) as count FROM _objects").one() as { count: number };
+        if (objCount.count > 0) {
+          this.db.exec(
+            "UPDATE _meta SET guidance = ?",
+            "Cambium is active. Read cambium://index for orientation, then query and mutate to work with data."
+          );
+        }
+      }
+
+      // Log to history with PITR bookmark for rollback
+      let bookmark: string | null = null;
+      try {
+        bookmark = await this.ctx.storage.getCurrentBookmark();
+      } catch {
+        // PITR not available (local dev)
+      }
       this.db.exec(
-        "INSERT INTO _schema_history (description, change_type, change_detail) VALUES (?, ?, ?)",
+        "INSERT INTO _schema_history (description, change_type, change_detail, bookmark) VALUES (?, ?, ?, ?)",
         pending.description,
         change.type,
-        pending.change_spec
+        pending.change_spec,
+        bookmark
       );
 
       this.db.exec("DELETE FROM _pending_changes WHERE id = ?", changeId);
 
+      // Synthesize current index for response
+      const currentIndex = this.getCurrentIndex();
+
       return JSON.stringify({
         applied: true,
         description: pending.description,
-        index: previewIndex,
+        index: currentIndex,
       }, null, 2);
     } catch (err: any) {
       return this.errorJson(`Failed to apply change: ${err.message}`);
     }
   }
 
+  // === Schema rollback via PITR ===
+
+  async revertChange(historyId: number): Promise<string> {
+    const rows = this.db.exec(
+      "SELECT * FROM _schema_history WHERE id = ?", historyId
+    ).toArray() as any[];
+
+    if (rows.length === 0)
+      return this.errorJson(`No schema history entry with id: ${historyId}`);
+
+    const entry = rows[0];
+    if (!entry.bookmark)
+      return this.errorJson("No PITR bookmark stored for this change. Rollback unavailable (change may predate PITR support or was made in local dev).");
+
+    try {
+      this.ctx.storage.onNextSessionRestoreBookmark(entry.bookmark);
+      this.ctx.abort();
+      return JSON.stringify({
+        reverted: true,
+        description: entry.description,
+        message: "PITR restore initiated. The Durable Object will restart at the state before this change. WARNING: This restores ALL data, not just schema.",
+      }, null, 2);
+    } catch (err: any) {
+      return this.errorJson(`Rollback failed: ${err.message}`);
+    }
+  }
+
   // === Resource RPC methods ===
 
   async getSchema(objectName: string): Promise<string> {
-    const index = this.getCurrentIndex();
-    const obj = index.objects.find((o) => o.name === objectName);
-    if (!obj) return this.errorJson(`Object "${objectName}" does not exist`);
+    if (!this.objectExists(objectName))
+      return this.errorJson(`Object "${objectName}" does not exist`);
+
+    const objRow = this.db.exec(
+      "SELECT name, description FROM _objects WHERE name = ?", objectName
+    ).one() as { name: string; description: string };
+
+    const fields = this.db.exec(
+      "SELECT name, type, required, default_value, references_object FROM _fields WHERE object_name = ? ORDER BY id",
+      objectName
+    ).toArray() as any[];
 
     return JSON.stringify({
-      object: obj.name,
-      description: obj.description,
-      fields: obj.fields,
-      kernel_columns: ["id", "created_at", "updated_at", "archived_at"],
+      object: objRow.name,
+      description: objRow.description,
+      fields: fields.map((f: any) => {
+        const field: any = {
+          name: f.name,
+          type: f.type,
+          required: !!f.required,
+          default: f.default_value != null ? JSON.parse(f.default_value) : null,
+        };
+        if (f.references_object) field.references = f.references_object;
+        return field;
+      }),
+      kernel_columns: ["id", "version", "created_at", "updated_at", "archived_at"],
     }, null, 2);
   }
 
@@ -623,9 +841,8 @@ export class CambiumStore extends DurableObject {
   }
 
   async getRecord(objectName: string, recordId: number): Promise<string> {
-    const index = this.getCurrentIndex();
-    const obj = index.objects.find((o) => o.name === objectName);
-    if (!obj) return this.errorJson(`Object "${objectName}" does not exist`);
+    if (!this.objectExists(objectName))
+      return this.errorJson(`Object "${objectName}" does not exist`);
 
     try {
       const rows = this.db.exec(
@@ -640,16 +857,15 @@ export class CambiumStore extends DurableObject {
   }
 
   async listObjects(): Promise<string[]> {
-    const index = this.getCurrentIndex();
-    return index.objects.map((o) => o.name);
+    const rows = this.db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[];
+    return rows.map((r: any) => r.name);
   }
 
   // === Data operations ===
 
   async query(objectName: string, filterJson: string, fields: string, sortField: string, limit: number, countOnly: boolean): Promise<string> {
-    const index = this.getCurrentIndex();
-    const obj = index.objects.find((o) => o.name === objectName);
-    if (!obj) return this.errorJson(`Object "${objectName}" does not exist`);
+    if (!this.objectExists(objectName))
+      return this.errorJson(`Object "${objectName}" does not exist`);
 
     // Count-only mode: return count without records
     if (countOnly) {
@@ -727,15 +943,43 @@ export class CambiumStore extends DurableObject {
   }
 
   async mutate(objectName: string, operation: string, dataJson: string): Promise<string> {
-    const index = this.getCurrentIndex();
-    const obj = index.objects.find((o) => o.name === objectName);
-    if (!obj) return this.errorJson(`Object "${objectName}" does not exist`);
+    return JSON.stringify(this.executeMutate(objectName, operation, JSON.parse(dataJson)), null, 2);
+  }
 
-    const data = JSON.parse(dataJson);
+  async batchMutate(operationsJson: string): Promise<string> {
+    const operations = JSON.parse(operationsJson) as { object: string; operation: string; data: any }[];
+
+    // Validate all operations before starting transaction
+    for (const op of operations) {
+      if (!this.objectExists(op.object)) {
+        return this.errorJson(`Object "${op.object}" does not exist`);
+      }
+      if (op.object === "_system_docs" && "default_content" in op.data) {
+        return this.errorJson("default_content is immutable. It preserves the original seed for recovery.");
+      }
+    }
+
+    const results: any[] = [];
+    this.ctx.storage.transactionSync(() => {
+      for (const op of operations) {
+        const result = this.executeMutate(op.object, op.operation, op.data);
+        if (result.error) {
+          throw new Error(result.message);
+        }
+        results.push(result);
+      }
+    });
+
+    return JSON.stringify({ batch: true, results, count: results.length }, null, 2);
+  }
+
+  private executeMutate(objectName: string, operation: string, data: any): any {
+    if (!this.objectExists(objectName))
+      return { error: true, message: `Object "${objectName}" does not exist` };
 
     // Protect default_content on _system_docs
     if (objectName === "_system_docs" && "default_content" in data) {
-      return this.errorJson("default_content is immutable. It preserves the original seed for recovery.");
+      return { error: true, message: "default_content is immutable. It preserves the original seed for recovery." };
     }
 
     try {
@@ -751,119 +995,142 @@ export class CambiumStore extends DurableObject {
             ...values
           );
 
-          // Get the inserted row
           const row = this.db.exec(
             `SELECT * FROM "${objectName}" WHERE id = last_insert_rowid()`
           ).one();
 
-          return JSON.stringify({ operation: "create", object: objectName, record: row }, null, 2);
+          return { operation: "create", object: objectName, record: row };
         }
 
         case "update": {
-          if (!data.id) return this.errorJson("id is required for update");
-          const fields = Object.keys(data).filter((k) => k !== "id" && !["created_at", "archived_at"].includes(k));
-          if (fields.length === 0) return this.errorJson("No fields to update");
+          if (!data.id) return { error: true, message: "id is required for update" };
+          const fields = Object.keys(data).filter((k) => k !== "id" && !["created_at", "archived_at", "version"].includes(k));
+          if (fields.length === 0) return { error: true, message: "No fields to update" };
 
           const sets = fields.map((f) => `"${f}" = ?`).join(", ");
           const values = fields.map((f) => data[f]);
-          values.push(data.id);
 
-          this.db.exec(
-            `UPDATE "${objectName}" SET ${sets}, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
-            ...values
-          );
+          let where = `id = ? AND archived_at IS NULL`;
+          values.push(data.id);
+          if (data.version != null) {
+            where += ` AND version = ?`;
+            values.push(data.version);
+          }
+
+          try {
+            this.db.exec(
+              `UPDATE "${objectName}" SET ${sets}, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
+              ...values
+            );
+          } catch {
+            const valuesNoVersion = fields.map((f) => data[f]);
+            valuesNoVersion.push(data.id);
+            this.db.exec(
+              `UPDATE "${objectName}" SET ${sets}, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+              ...valuesNoVersion
+            );
+          }
+
+          if (data.version != null) {
+            const changes = this.db.exec("SELECT changes() as c").one() as { c: number };
+            if (changes.c === 0) {
+              return { error: true, message: `Version conflict: record ${data.id} in "${objectName}" has been modified. Re-read and retry.` };
+            }
+          }
 
           const row = this.db.exec(
             `SELECT * FROM "${objectName}" WHERE id = ?`,
             data.id
           ).one();
 
-          return JSON.stringify({ operation: "update", object: objectName, record: row }, null, 2);
+          return { operation: "update", object: objectName, record: row };
         }
 
         case "archive": {
-          if (!data.id) return this.errorJson("id is required for archive");
+          if (!data.id) return { error: true, message: "id is required for archive" };
           this.db.exec(
             `UPDATE "${objectName}" SET archived_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
             data.id
           );
 
-          return JSON.stringify({ operation: "archive", object: objectName, id: data.id }, null, 2);
+          return { operation: "archive", object: objectName, id: data.id };
         }
 
         default:
-          return this.errorJson(`Unknown operation: ${operation}. Use create, update, or archive.`);
+          return { error: true, message: `Unknown operation: ${operation}. Use create, update, or archive.` };
       }
     } catch (err: any) {
-      return this.errorJson(`Mutate failed: ${err.message}`);
+      return { error: true, message: `Mutate failed: ${err.message}` };
     }
   }
 
   // === URI resolution ===
 
   async resolve(uri: string): Promise<string> {
-    // Parse cambium:// URIs
     const match = uri.match(/^cambium:\/\/(.+)$/);
     if (!match) return this.errorJson(`Invalid URI scheme. Expected cambium:// URI, got: ${uri}`);
 
     const path = match[1];
 
-    // cambium://index
     if (path === "index") {
       return this.getIndex();
     }
 
-    // cambium://history or cambium://history?limit=N
     if (path === "history" || path.startsWith("history?")) {
       const params = new URLSearchParams(path.split("?")[1] || "");
       const limit = Number(params.get("limit")) || 20;
       return this.getHistory(limit);
     }
 
-    // cambium://schema/{object_name}
     const schemaMatch = path.match(/^schema\/(.+)$/);
     if (schemaMatch) {
       return this.getSchema(schemaMatch[1]);
     }
 
-    // cambium://records/{object}/{id}
     const recordMatch = path.match(/^records\/([^/]+)\/(.+)$/);
     if (recordMatch) {
       return this.getRecord(recordMatch[1], Number(recordMatch[2]));
     }
 
-    // cambium://_system/ — list all system docs
     if (path === "_system/" || path === "_system") {
       return this.getSystemDocList();
     }
 
-    // cambium://_system/{slug} or cambium://_system/{slug}/default
     const sysMatch = path.match(/^_system\/([^/]+?)(\/default)?$/);
     if (sysMatch) {
       return this.getSystemDoc(sysMatch[1], !!sysMatch[2]);
     }
 
-    return this.errorJson(`Unknown URI: ${uri}. Valid patterns: cambium://index, cambium://schema/{object}, cambium://records/{object}/{id}, cambium://history, cambium://_system/{slug}`);
+    // cambium://mutations or cambium://mutations/{object}?limit=N
+    if (path === "mutations" || path.startsWith("mutations")) {
+      const parts = path.split("?");
+      const pathPart = parts[0];
+      const params = new URLSearchParams(parts[1] || "");
+      const limit = Number(params.get("limit")) || 50;
+      const tableName = pathPart === "mutations" ? null : pathPart.replace("mutations/", "");
+      return this.getMutationLog(tableName, limit);
+    }
+
+    return this.errorJson(`Unknown URI: ${uri}. Valid patterns: cambium://index, cambium://schema/{object}, cambium://records/{object}/{id}, cambium://history, cambium://_system/{slug}, cambium://mutations[/{object}]`);
   }
 
   // === Cross-object search ===
 
   async search(term: string, objectsJson: string, limit: number): Promise<string> {
-    const index = this.getCurrentIndex();
     const targetObjects = objectsJson
       ? JSON.parse(objectsJson) as string[]
-      : index.objects.map((o) => o.name);
+      : (this.db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[]).map((r: any) => r.name);
 
     const results: { object: string; record: any; matched_fields: string[] }[] = [];
 
     for (const objName of targetObjects) {
-      const obj = index.objects.find((o) => o.name === objName);
-      if (!obj) continue;
+      if (!this.objectExists(objName)) continue;
 
-      // Search all text-type fields
-      const textFields = obj.fields
-        .filter((f) => f.type === "text")
-        .map((f) => f.name);
+      // Get text fields from normalized schema
+      const textFields = (this.db.exec(
+        "SELECT name FROM _fields WHERE object_name = ? AND type = 'text' ORDER BY id",
+        objName
+      ).toArray() as any[]).map((r: any) => r.name as string);
       if (textFields.length === 0) continue;
 
       const conditions = textFields.map((f) => `"${f}" LIKE ?`).join(" OR ");
@@ -895,6 +1162,22 @@ export class CambiumStore extends DurableObject {
       results: results.slice(0, limit),
       count: Math.min(results.length, limit),
     }, null, 2);
+  }
+
+  // === Mutation log ===
+
+  private getMutationLog(tableName: string | null, limit: number): string {
+    let sql = "SELECT * FROM _mutation_log";
+    const bindings: any[] = [];
+    if (tableName) {
+      sql += " WHERE table_name = ?";
+      bindings.push(tableName);
+    }
+    sql += " ORDER BY id DESC LIMIT ?";
+    bindings.push(limit);
+
+    const rows = this.db.exec(sql, ...bindings).toArray();
+    return JSON.stringify({ mutations: rows, count: rows.length }, null, 2);
   }
 
   // === System docs ===
@@ -952,9 +1235,8 @@ export class CambiumStore extends DurableObject {
   }
 
   private getMarketplaceDataScoped(pluginNames: string[] | null, publicOnly: boolean = false): string {
-    const index = this.getCurrentIndex();
-    const hasPlugins = index.objects.some((o) => o.name === "_plugins");
-    const hasSkills = index.objects.some((o) => o.name === "_skills");
+    const hasPlugins = this.objectExists("_plugins");
+    const hasSkills = this.objectExists("_skills");
 
     if (!hasPlugins || !hasSkills) {
       return JSON.stringify({ plugins: [] });
@@ -977,7 +1259,6 @@ export class CambiumStore extends DurableObject {
         if (publicOnly) skillSql += ` AND visibility = 'public'`;
         const skills = this.db.exec(skillSql, ...skillBindings).toArray();
 
-        // For public: skip plugin if any skill is private (partial exposure)
         if (publicOnly) {
           const total = this.db.exec(
             `SELECT COUNT(*) as count FROM "_skills" WHERE plugin_id = ? AND archived_at IS NULL`,
@@ -997,10 +1278,76 @@ export class CambiumStore extends DurableObject {
   // === Helpers ===
 
   private getCurrentIndex(): CambiumIndex {
-    const row = this.db.exec(
-      "SELECT data FROM _index WHERE id = 1"
-    ).one() as { data: string };
-    return JSON.parse(row.data);
+    const meta = this.db.exec("SELECT * FROM _meta WHERE id = 1").one() as any;
+    const objects = this.db.exec("SELECT name, description FROM _objects ORDER BY name").toArray() as any[];
+    const allFields = this.db.exec("SELECT * FROM _fields ORDER BY object_name, id").toArray() as any[];
+    const conventions = this.db.exec("SELECT text FROM _conventions ORDER BY id").toArray() as any[];
+
+    // Group fields by object
+    const fieldsByObject = new Map<string, IndexFieldEntry[]>();
+    for (const f of allFields) {
+      if (!fieldsByObject.has(f.object_name)) fieldsByObject.set(f.object_name, []);
+      const field: IndexFieldEntry = {
+        name: f.name,
+        type: f.type,
+        required: !!f.required,
+        default: f.default_value != null ? JSON.parse(f.default_value) : null,
+      };
+      if (f.references_object) field.references = f.references_object;
+      fieldsByObject.get(f.object_name)!.push(field);
+    }
+
+    return {
+      version: meta.version,
+      updated_at: meta.updated_at,
+      objects: objects.map((o: any) => ({
+        name: o.name,
+        description: o.description,
+        fields: fieldsByObject.get(o.name) || [],
+        record_count: 0,
+      })),
+      conventions: conventions.map((c: any) => c.text),
+      guidance: meta.guidance,
+    };
+  }
+
+  private ensureAuditTriggers(tableName: string) {
+    // Get columns for this table from sqlite_master (works for any table)
+    let columns: string[];
+    try {
+      const info = this.db.exec(`PRAGMA table_info("${tableName}")`).toArray() as any[];
+      columns = info.map((c: any) => c.name as string);
+    } catch {
+      return; // Table doesn't exist yet
+    }
+    if (columns.length === 0) return;
+
+    const newJson = columns.map((c) => `'${c}', NEW."${c}"`).join(", ");
+    const oldJson = columns.map((c) => `'${c}', OLD."${c}"`).join(", ");
+
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_insert"
+      AFTER INSERT ON "${tableName}" BEGIN
+        INSERT INTO _mutation_log (table_name, record_id, operation, new_data)
+        VALUES ('${tableName}', NEW.id, 'INSERT', json_object(${newJson}));
+      END`);
+
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_update"
+      AFTER UPDATE ON "${tableName}" BEGIN
+        INSERT INTO _mutation_log (table_name, record_id, operation, old_data, new_data)
+        VALUES ('${tableName}', NEW.id, 'UPDATE', json_object(${oldJson}), json_object(${newJson}));
+      END`);
+
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_delete"
+      AFTER DELETE ON "${tableName}" BEGIN
+        INSERT INTO _mutation_log (table_name, record_id, operation, old_data)
+        VALUES ('${tableName}', OLD.id, 'DELETE', json_object(${oldJson}));
+      END`);
+  }
+
+  private objectExists(name: string): boolean {
+    return this.db.exec(
+      "SELECT 1 FROM _objects WHERE name = ?", name
+    ).toArray().length > 0;
   }
 
   private errorJson(message: string): string {
