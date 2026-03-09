@@ -36,6 +36,239 @@ const SQLITE_TYPE_MAP: Record<string, string> = {
 
 const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]);
 
+// === System docs seed content ===
+
+const SYSTEM_DOCS_SEED: { slug: string; title: string; content: string }[] = [
+  {
+    slug: "tools",
+    title: "Tool Strategy",
+    content: `# Tool Strategy
+
+Cambium has six tools. They never grow — new capabilities come from schema and records, not new tools.
+
+## resolve
+Read anything by \`cambium://\` URI. The URI scheme is the API.
+- \`cambium://index\` — master index. Read this first.
+- \`cambium://schema/{object}\` — field definitions for an object
+- \`cambium://records/{object}/{id}\` — a single record
+- \`cambium://history\` — recent schema changes (supports \`?limit=N\`)
+- \`cambium://_system/{slug}\` — system documentation (you're reading one now)
+- \`cambium://_system/\` — list all system docs
+
+## query
+Filtered, sorted, paginated reads from a single object.
+- \`filter\`: array of expressions like \`status=active\`, \`priority>3\`, \`title~keyword\`
+- \`fields\`: comma-separated projection (default: all)
+- \`sort\`: field name, prefix \`-\` for descending (e.g. \`-updated_at\`)
+- \`count_only\`: return count without records — use this before large queries
+
+## search
+Cross-object full-text search across all text fields. Use when you don't know which object holds what you need.
+
+## mutate
+Create, update, or archive records. One tool for all writes.
+- \`create\`: provide field values, kernel columns (id, timestamps) are auto-set
+- \`update\`: provide \`id\` + fields to change
+- \`archive\`: provide \`id\` only — soft-deletes, never destroys data
+
+## propose_change / apply_change
+Two-step schema evolution. Propose validates and previews. Apply commits.
+- \`create_object\`: new object with fields
+- \`add_field\`: add fields to an existing object
+- \`add_convention\`: add a convention to the index
+
+Schema changes are permanent and logged in \`cambium://history\`. Propose first, review the preview, then apply.
+
+## When to use what
+- Know exactly what you want → \`resolve\` with a URI
+- Need filtered/sorted data → \`query\`
+- Exploring, don't know where something is → \`search\`
+- Writing data → \`mutate\`
+- Changing structure → \`propose_change\` then \`apply_change\`
+`,
+  },
+  {
+    slug: "schema-evolution",
+    title: "Schema Evolution",
+    content: `# Schema Evolution
+
+Objects are created through \`propose_change\` / \`apply_change\`. This is a two-step process: propose validates and returns a preview; apply commits the change to SQLite and the index.
+
+## Naming conventions
+- Object names: kebab-case (e.g. \`research-threads\`, \`daily-notes\`)
+- Field names: snake_case (e.g. \`due_date\`, \`source_url\`)
+- Objects starting with \`_\` are kernel/system objects (e.g. \`_plugins\`, \`_skills\`, \`_system_docs\`)
+
+## Field types
+\`text\`, \`number\`, \`integer\`, \`boolean\`, \`datetime\`
+
+## Kernel columns (auto-provided, never define these)
+\`id\`, \`created_at\`, \`updated_at\`, \`archived_at\`
+
+Every object gets these automatically. Do not include them in \`propose_change\` field lists.
+
+## When to create a new object vs. add fields
+- New object: the data represents a distinct concept with its own lifecycle
+- Add field: the data extends an existing concept (e.g. adding \`priority\` to \`tasks\`)
+
+## When to evolve schema
+- When the work demands a new shape. Don't pre-create objects speculatively.
+- When existing fields can't represent what's needed. Add fields rather than overloading existing ones.
+- When the human says "track X" or "I need to remember Y" — that's a schema evolution signal.
+
+## Archiving vs. deletion
+Cambium never deletes. \`archive\` sets \`archived_at\`, excluding the record from queries. The data persists for history and recovery.
+`,
+  },
+  {
+    slug: "skills",
+    title: "Skills & Marketplace",
+    content: `# Skills & Marketplace Distribution
+
+Cambium can serve itself as a Claude Code plugin marketplace. Skills are records authored through \`mutate\`, served as a synthesized git repo on every request.
+
+## Schema objects
+
+Two objects support the skill system. Create them via \`propose_change\` / \`apply_change\` when first needed:
+
+### \`_plugins\`
+Each record is a plugin — a named package of skills and configuration.
+- \`name\` (text, required) — kebab-case identifier
+- \`description\` (text, required)
+- \`version\` (text, required) — semver, bump on skill changes
+- \`visibility\` (text, required) — "public" or "private"
+- \`author\` (text) — optional
+- \`claude_md\` (text) — CLAUDE.md content injected when plugin is active
+- \`settings_json\` (text) — settings.json content
+- \`mcp_json\` (text) — .mcp.json for MCP server definitions
+
+### \`_skills\`
+Each record is a skill within a plugin.
+- \`plugin_id\` (integer, required) — references \`_plugins.id\`
+- \`name\` (text, required) — kebab-case
+- \`description\` (text) — triggers and purpose
+- \`argument_hint\` (text) — e.g. "[topic or question]"
+- \`skill_md\` (text, required) — full SKILL.md body after frontmatter
+- \`visibility\` (text, required) — "public" or "private"
+
+## Creating a skill workflow
+1. Ensure \`_plugins\` and \`_skills\` objects exist (one-time setup)
+2. \`mutate(_plugins, create, {...})\` — create the plugin
+3. \`mutate(_skills, create, {...})\` — create skills within it
+4. Human installs: \`/plugin marketplace add <url>\`
+
+## Marketplace endpoints
+- \`/marketplace/\` — private, token-authenticated, serves all visibility levels
+- \`/marketplace/public/\` — unauthenticated, serves only public plugins/skills
+
+## Scoped tokens
+Create via \`mutate(_marketplace_tokens, create, {name, scope})\`.
+- \`scope\`: JSON array of plugin names (null = all plugins)
+- \`token\`: auto-generated, returned in response
+- Install URL: \`https://cambium:<token>@<host>/marketplace.git\`
+
+## Visibility rules
+- Private skills: only on authenticated marketplace
+- Public plugins: appear on public marketplace ONLY if ALL skills are public
+- Default to \`private\`. Only mark \`public\` when explicitly sharing.
+
+## Updating skills
+Mutate the skill record. Bump the plugin version. Claude Code detects the version change on next startup.
+Note: Users may need to restart Claude Code for skill changes to take effect.
+`,
+  },
+  {
+    slug: "conventions",
+    title: "Conventions",
+    content: `# Conventions
+
+## URI scheme
+All Cambium data is addressable via \`cambium://\` URIs:
+- \`cambium://index\` — the master index
+- \`cambium://schema/{object}\` — object field definitions
+- \`cambium://records/{object}/{id}\` — individual record
+- \`cambium://history\` — schema change log
+- \`cambium://_system/{slug}\` — system documentation
+
+## The index
+The index is the single source of truth for what exists. Read it first in any new session. It contains:
+- All objects with descriptions and field lists
+- Active record counts
+- Conventions established for this instance
+- Guidance text
+
+## Visibility model
+Records can be \`public\` or \`private\`. This controls marketplace distribution:
+- Private: only accessible via authenticated marketplace
+- Public: accessible to anyone via public marketplace
+
+## Archiving
+\`archive\` is the only destructive operation, and it's soft — sets \`archived_at\` timestamp. Archived records are excluded from queries but never deleted. Recovery is always possible.
+
+## Kernel objects
+Objects prefixed with \`_\` are system objects managed by the kernel:
+- \`_marketplace_tokens\` — scoped access tokens
+- \`_plugins\`, \`_skills\` — marketplace content (created on demand)
+- \`_system_docs\` — these documents
+
+Kernel objects follow the same query/mutate interface as user objects.
+
+## System docs
+System docs (like this one) are editable via \`mutate\`. Each has a \`default_content\` field preserving the original seed. To restore a doc, set \`content\` to null — resolve will fall back to \`default_content\`.
+
+Edits to \`_system_docs\` require confirmation because they affect all future agent sessions.
+`,
+  },
+  {
+    slug: "index-guide",
+    title: "Reading the Index",
+    content: `# Reading the Index
+
+\`cambium://index\` is your starting point every session. Here's how to interpret it.
+
+## Structure
+\`\`\`json
+{
+  "version": 5,
+  "updated_at": "2025-...",
+  "objects": [...],
+  "conventions": [...],
+  "guidance": "..."
+}
+\`\`\`
+
+## Objects array
+Each entry describes an object:
+- \`name\`: the object identifier (used in queries and URIs)
+- \`description\`: what this object holds and why
+- \`fields\`: array of {name, type, required, default} — the object's schema
+- \`record_count\`: current active (non-archived) records
+
+Use \`record_count\` to gauge activity. Zero-count objects may be unused or newly created.
+
+## Conventions
+Text entries the human or agent has established:
+- Naming patterns
+- Workflow rules
+- Domain-specific guidance
+
+Conventions are added via \`propose_change\` with type \`add_convention\`.
+
+## Guidance
+Free-text orientation. On a fresh instance: "No objects exist yet." After schema creation: "Cambium is active."
+
+The guidance evolves as the instance grows. It's a one-liner for fast orientation.
+
+## What to do after reading the index
+1. Scan objects and record counts for orientation
+2. If you need details on an object's fields, resolve \`cambium://schema/{name}\`
+3. Query objects with recent activity (\`sort=-updated_at\`, \`limit=5\`)
+4. Check conventions for any rules to follow
+`,
+  },
+];
+
+
 // === CambiumStore: per-user data storage ===
 
 export class CambiumStore extends DurableObject {
@@ -99,6 +332,30 @@ export class CambiumStore extends DurableObject {
       );
     }
 
+    // System docs (kernel table — always exists)
+    this.db.exec(`CREATE TABLE IF NOT EXISTS "_system_docs" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "slug" TEXT NOT NULL UNIQUE,
+      "title" TEXT NOT NULL,
+      "content" TEXT,
+      "default_content" TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+
+    // Seed system docs if empty
+    const docCount = this.db.exec(
+      `SELECT COUNT(*) as count FROM "_system_docs"`
+    ).one() as { count: number };
+    if (docCount.count === 0) {
+      for (const doc of SYSTEM_DOCS_SEED) {
+        this.db.exec(
+          `INSERT INTO "_system_docs" (slug, title, content, default_content) VALUES (?, ?, ?, ?)`,
+          doc.slug, doc.title, doc.content, doc.content
+        );
+      }
+    }
+
     // Ensure _marketplace_tokens is registered in the index
     const index = this.getCurrentIndex();
     if (!index.objects.some((o) => o.name === "_marketplace_tokens")) {
@@ -109,6 +366,24 @@ export class CambiumStore extends DurableObject {
           { name: "name", type: "text", required: true },
           { name: "token", type: "text", required: false },
           { name: "scope", type: "text", required: false },
+        ],
+        record_count: 0,
+      });
+      index.version += 1;
+      index.updated_at = new Date().toISOString();
+      this.db.exec("UPDATE _index SET data = ? WHERE id = 1", JSON.stringify(index));
+    }
+
+    // Ensure _system_docs is registered in the index
+    if (!index.objects.some((o) => o.name === "_system_docs")) {
+      index.objects.push({
+        name: "_system_docs",
+        description: "System documentation for agent orientation. Editable but requires confirmation. Set content to null to restore defaults.",
+        fields: [
+          { name: "slug", type: "text", required: true },
+          { name: "title", type: "text", required: true },
+          { name: "content", type: "text", required: false },
+          { name: "default_content", type: "text", required: true },
         ],
         record_count: 0,
       });
@@ -133,11 +408,25 @@ export class CambiumStore extends DurableObject {
         ).one() as { count: number };
         obj.record_count = r.count;
       } catch {
-        obj.record_count = 0;
+        // Table may lack archived_at (kernel tables like _system_docs) — count all rows
+        try {
+          const r = this.db.exec(
+            `SELECT COUNT(*) as count FROM "${obj.name}"`
+          ).one() as { count: number };
+          obj.record_count = r.count;
+        } catch {
+          obj.record_count = 0;
+        }
       }
     }
 
-    return JSON.stringify(index, null, 2);
+    // Attach system docs pointer
+    const enriched = {
+      ...index,
+      system_docs: "cambium://_system/",
+    };
+
+    return JSON.stringify(enriched, null, 2);
   }
 
   async proposeChange(description: string, changeJson: string): Promise<string> {
@@ -444,6 +733,11 @@ export class CambiumStore extends DurableObject {
 
     const data = JSON.parse(dataJson);
 
+    // Protect default_content on _system_docs
+    if (objectName === "_system_docs" && "default_content" in data) {
+      return this.errorJson("default_content is immutable. It preserves the original seed for recovery.");
+    }
+
     try {
       switch (operation) {
         case "create": {
@@ -538,7 +832,18 @@ export class CambiumStore extends DurableObject {
       return this.getRecord(recordMatch[1], Number(recordMatch[2]));
     }
 
-    return this.errorJson(`Unknown URI: ${uri}. Valid patterns: cambium://index, cambium://schema/{object}, cambium://records/{object}/{id}, cambium://history`);
+    // cambium://_system/ — list all system docs
+    if (path === "_system/" || path === "_system") {
+      return this.getSystemDocList();
+    }
+
+    // cambium://_system/{slug} or cambium://_system/{slug}/default
+    const sysMatch = path.match(/^_system\/([^/]+?)(\/default)?$/);
+    if (sysMatch) {
+      return this.getSystemDoc(sysMatch[1], !!sysMatch[2]);
+    }
+
+    return this.errorJson(`Unknown URI: ${uri}. Valid patterns: cambium://index, cambium://schema/{object}, cambium://records/{object}/{id}, cambium://history, cambium://_system/{slug}`);
   }
 
   // === Cross-object search ===
@@ -589,6 +894,38 @@ export class CambiumStore extends DurableObject {
       term,
       results: results.slice(0, limit),
       count: Math.min(results.length, limit),
+    }, null, 2);
+  }
+
+  // === System docs ===
+
+  private getSystemDocList(): string {
+    const rows = this.db.exec(
+      `SELECT slug, title FROM "_system_docs" ORDER BY slug`
+    ).toArray() as { slug: string; title: string }[];
+    return JSON.stringify({
+      docs: rows.map((r) => ({
+        slug: r.slug,
+        title: r.title,
+        uri: `cambium://_system/${r.slug}`,
+      })),
+    }, null, 2);
+  }
+
+  private getSystemDoc(slug: string, returnDefault: boolean): string {
+    const rows = this.db.exec(
+      `SELECT * FROM "_system_docs" WHERE slug = ?`,
+      slug
+    ).toArray() as any[];
+    if (rows.length === 0) return this.errorJson(`No system doc with slug: ${slug}`);
+    const doc = rows[0];
+    const content = returnDefault ? doc.default_content : (doc.content ?? doc.default_content);
+    return JSON.stringify({
+      slug: doc.slug,
+      title: doc.title,
+      content,
+      is_default: doc.content === null || doc.content === doc.default_content,
+      uri: `cambium://_system/${doc.slug}`,
     }, null, 2);
   }
 

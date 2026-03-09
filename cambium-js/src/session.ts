@@ -19,8 +19,10 @@ interface AuthProps {
 export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
   server = new McpServer({
     name: "cambium",
-    version: "0.2.0",
+    version: "0.3.0",
   });
+
+  private confirmed = new Set<string>();
 
   private getStore(): DurableObjectStub<CambiumStore> {
     const userId = this.props?.userId ?? "anonymous";
@@ -112,7 +114,7 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
     // resolve — the universal reader. One tool, the URI is the API.
     this.server.tool(
       "resolve",
-      "Read anything by its cambium:// address. The URI scheme is the API.\n\nValid URIs:\n- cambium://index — master index (orientation)\n- cambium://schema/{object} — field definitions for an object\n- cambium://records/{object}/{id} — a single record\n- cambium://history — recent schema changes",
+      "Read anything by its cambium:// address. The URI scheme is the API.\n\nValid URIs:\n- cambium://index — master index (orientation)\n- cambium://schema/{object} — field definitions for an object\n- cambium://records/{object}/{id} — a single record\n- cambium://history — recent schema changes\n- cambium://_system/ — list system docs\n- cambium://_system/{slug} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)\n- cambium://_system/{slug}/default — read original seed version",
       {
         uri: z.string().describe("A cambium:// URI to resolve"),
       },
@@ -270,6 +272,29 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
         data: z.record(z.string(), z.unknown()).describe("Record data. For create: field values. For update: id + fields to change. For archive: id only."),
       },
       async ({ object, operation, data }) => {
+        // Confirmation gate for system docs
+        if (object === "_system_docs" && (operation === "update" || operation === "create")) {
+          const confirmKey = `_system_docs_confirmed:${JSON.stringify(data)}`;
+          const alreadyConfirmed = this.confirmed.has(confirmKey);
+
+          if (!alreadyConfirmed) {
+            this.confirmed.add(confirmKey);
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  confirmation_required: true,
+                  message: "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
+                  object,
+                  operation,
+                  data,
+                }, null, 2),
+              }],
+            };
+          }
+          this.confirmed.delete(confirmKey);
+        }
+
         const result = await store.mutate(object, operation, JSON.stringify(data));
         const parsed = JSON.parse(result);
         if (parsed.error) {
