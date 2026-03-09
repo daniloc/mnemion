@@ -7,44 +7,78 @@ Persistent, evolving shared memory between a human and their AI agents. MCP serv
 ```
 project-docs/active/   Design documents (the "why" and "what")
 cambium-js/            Cloudflare Worker — MCP server (the "how")
+  src/index.ts         Entry point: OAuthProvider wrapper + shared secret auth
+  src/session.ts       CambiumSession: McpAgent, MCP protocol handler (per-session DO)
+  src/store.ts         CambiumStore: per-user data storage (per-user DO, SQLite)
 ```
 
 Future peer: iOS app (Swift).
 
 ## Current state
 
-Vertical slice validated. The server boots, handles MCP sessions, and supports schema evolution (propose/apply loop). Three of eight tools are implemented.
+Deployed to `https://cambium.daniloc.workers.dev/mcp`. Cross-surface data sharing proven (Claude Code + Claude.ai reading/writing the same store).
 
-### What's built
-- `cambium-js/src/index.ts` — single-file McpAgent with `get_index`, `propose_change`, `apply_change`
-- Durable Object with SQLite: `_index`, `_schema_history`, `_pending_changes` tables
-- Authless MCP via Streamable HTTP on `/mcp`
+### Architecture
 
-### What's not built
-- Data tools: `get_schema`, `query`, `mutate`, `search`, `get_history`
-- REST API (`/api/*` via Hono) for the iOS app
-- OAuth 2.1 via `workers-oauth-provider`
-- Cambium I/O (schema-defined routes)
-- Has not been deployed to Cloudflare yet
+Two Durable Objects:
+- **CambiumSession** (`McpAgent`) — one per MCP session, handles protocol, proxies to store via RPC
+- **CambiumStore** — one per user, holds all SQLite data. Keyed by `user:{userId}` (currently always `"owner"`)
+
+### Auth
+
+Shared secret behind OAuth 2.1. The `workers-oauth-provider` package wraps the worker and handles the OAuth flow (DCR, tokens). The identity provider is a single password stored as a Cloudflare Workers secret (`CAMBIUM_SECRET`). No secret configured = dev mode (auto-approves).
+
+### Resources (stable, cacheable, subscribable)
+
+- `cambium://index` — master index
+- `cambium://schema/{object_name}` — per-object field definitions
+- `cambium://history` — schema evolution history (supports `?limit=N`)
+- `cambium://records/{object}/{id}` — individual record by URI
+
+### Tools (6 total)
+
+- `resolve` — read anything by `cambium://` URI (escape hatch for platforms without resource support)
+- `query` — filtered, sorted, paginated reads (supports `count_only` mode)
+- `search` — cross-object full-text search across text fields
+- `mutate` — create, update, or archive records
+- `propose_change` — propose schema evolution (preview, no commit)
+- `apply_change` — commit proposed change (fires resource update notifications)
+
+### Internal tables
+
+- `_index` — curated JSON document describing what exists (single row)
+- `_schema_history` — log of all schema changes
+- `_pending_changes` — proposed but uncommitted changes
 
 ## Tech stack
 
 - **Runtime**: Cloudflare Workers + Durable Objects (SQLite storage)
 - **MCP**: `agents` npm package (`McpAgent` class), `@modelcontextprotocol/sdk`
+- **Auth**: `@cloudflare/workers-oauth-provider` (OAuth 2.1 + PKCE + DCR)
 - **Validation**: Zod for tool parameter schemas
+- **Storage**: KV for OAuth tokens, DO SQLite for all user data
 
 ## Key conventions
 
 - The `agents` package bundles its own `@modelcontextprotocol/sdk`. Pin the top-level dep to match (currently 1.26.0) to avoid type conflicts.
-- McpAgent's base class has a `sql` tagged template property. Use `db` as the name for the raw `ctx.storage.sql` accessor.
+- McpAgent's base class has a `sql` tagged template property. Use `db` as the name for the raw `ctx.storage.sql` accessor in CambiumStore.
 - The DO binding must be named `MCP_OBJECT` — the `McpAgent.serve()` method expects this.
 - `wrangler.toml` requires `compatibility_flags = ["nodejs_compat"]` for the agents package.
+- Kernel columns (`id`, `created_at`, `updated_at`, `archived_at`) are auto-provided on every user table. They cannot be defined via `propose_change`.
+- Structure is resources, operations are tools. If it describes what the organism is, it's a resource. If it changes what the organism is or retrieves dynamic content, it's a tool.
 
 ## Development
 
 ```bash
 cd cambium-js
 npm install
-npm run dev          # local server on :8787
-./test-vertical-slice.sh  # end-to-end smoke test
+npm run dev          # local server on :8787 (dev mode, no secret needed)
+```
+
+## Deploy
+
+```bash
+cd cambium-js
+npx wrangler deploy
+npx wrangler secret put CAMBIUM_SECRET   # set your password (one-time)
 ```

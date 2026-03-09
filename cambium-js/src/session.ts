@@ -1,0 +1,287 @@
+import { McpAgent } from "agents/mcp";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import type { CambiumStore } from "./store";
+
+// === Types ===
+
+interface Env {
+  CAMBIUM_STORE: DurableObjectNamespace<CambiumStore>;
+}
+
+interface AuthProps {
+  userId: string;
+  [key: string]: unknown;
+}
+
+// === CambiumSession: MCP protocol handler, proxies data to CambiumStore ===
+
+export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
+  server = new McpServer({
+    name: "cambium",
+    version: "0.2.0",
+  });
+
+  private getStore(): DurableObjectStub<CambiumStore> {
+    const userId = this.props?.userId ?? "anonymous";
+    const id = this.env.CAMBIUM_STORE.idFromName(`user:${userId}`);
+    return this.env.CAMBIUM_STORE.get(id);
+  }
+
+  async init() {
+    const store = this.getStore();
+
+    // === Resources (stable, cacheable, subscribable) ===
+
+    // cambium://index — the master index
+    this.server.resource(
+      "index",
+      "cambium://index",
+      { description: "Master index. Complete orientation to what exists and what matters.", mimeType: "application/json" },
+      async (uri) => {
+        const result = await store.getIndex();
+        return {
+          contents: [{ uri: uri.href, text: result, mimeType: "application/json" }],
+        };
+      }
+    );
+
+    // cambium://schema/{object_name} — full field definitions per object
+    this.server.resource(
+      "schema",
+      new ResourceTemplate("cambium://schema/{object_name}", {
+        list: async () => {
+          const names = await store.listObjects();
+          return {
+            resources: names.map((name) => ({
+              uri: `cambium://schema/${name}`,
+              name: `${name} schema`,
+              description: `Field definitions for ${name}`,
+              mimeType: "application/json",
+            })),
+          };
+        },
+      }),
+      { description: "Full field definitions for an object", mimeType: "application/json" },
+      async (uri, { object_name }) => {
+        const result = await store.getSchema(object_name as string);
+        const parsed = JSON.parse(result);
+        if (parsed.error) {
+          throw new Error(parsed.message);
+        }
+        return {
+          contents: [{ uri: uri.href, text: result, mimeType: "application/json" }],
+        };
+      }
+    );
+
+    // cambium://history — recent schema history
+    this.server.resource(
+      "history",
+      "cambium://history",
+      { description: "Recent schema evolution history", mimeType: "application/json" },
+      async (uri) => {
+        const result = await store.getHistory(20);
+        return {
+          contents: [{ uri: uri.href, text: result, mimeType: "application/json" }],
+        };
+      }
+    );
+
+    // cambium://records/{object}/{id} — individual record by URI
+    this.server.resource(
+      "record",
+      new ResourceTemplate("cambium://records/{object}/{id}", {
+        list: undefined, // Records are too numerous to enumerate
+      }),
+      { description: "Individual record by object and ID", mimeType: "application/json" },
+      async (uri, { object, id }) => {
+        const result = await store.getRecord(object as string, Number(id));
+        const parsed = JSON.parse(result);
+        if (parsed.error) {
+          throw new Error(parsed.message);
+        }
+        return {
+          contents: [{ uri: uri.href, text: result, mimeType: "application/json" }],
+        };
+      }
+    );
+
+    // === Tools ===
+
+    // resolve — the universal reader. One tool, the URI is the API.
+    this.server.tool(
+      "resolve",
+      "Read anything by its cambium:// address. The URI scheme is the API.\n\nValid URIs:\n- cambium://index — master index (orientation)\n- cambium://schema/{object} — field definitions for an object\n- cambium://records/{object}/{id} — a single record\n- cambium://history — recent schema changes",
+      {
+        uri: z.string().describe("A cambium:// URI to resolve"),
+      },
+      async ({ uri }) => {
+        const result = await store.resolve(uri);
+        const parsed = JSON.parse(result);
+        if (parsed.error) {
+          return {
+            isError: true as const,
+            content: [{ type: "text" as const, text: parsed.message }],
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: result }],
+        };
+      }
+    );
+
+    this.server.tool(
+      "propose_change",
+      "Propose a structural change. Validates and returns a preview of the index after the change. Does not commit.",
+      {
+        description: z.string().describe("Natural language description of the change"),
+        change: z.object({
+          type: z.enum(["create_object", "add_field", "add_convention"]).describe("Type of structural change"),
+          object_name: z.string().optional().describe("Target object name (for create_object and add_field)"),
+          object_description: z.string().optional().describe("Purpose of the object (for create_object)"),
+          fields: z.array(z.object({
+            name: z.string(),
+            type: z.enum(["text", "number", "integer", "boolean", "datetime"]),
+            required: z.boolean().default(false),
+            default_value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+          })).optional().describe("Fields to create (for create_object or add_field)"),
+          convention: z.string().optional().describe("Convention text (for add_convention)"),
+        }),
+      },
+      async ({ description, change }) => {
+        const result = await store.proposeChange(description, JSON.stringify(change));
+        const parsed = JSON.parse(result);
+        if (parsed.error) {
+          return {
+            isError: true as const,
+            content: [{ type: "text" as const, text: parsed.message }],
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: result }],
+        };
+      }
+    );
+
+    this.server.tool(
+      "apply_change",
+      "Commit a previously proposed change. Updates SQLite schema and index atomically.",
+      {
+        change_id: z.string().describe("The change_id returned by propose_change"),
+      },
+      async ({ change_id }) => {
+        const result = await store.applyChange(change_id);
+        const parsed = JSON.parse(result);
+        if (parsed.error) {
+          return {
+            isError: true as const,
+            content: [{ type: "text" as const, text: parsed.message }],
+          };
+        }
+
+        // Notify clients that structural resources have changed
+        this.server.sendResourceListChanged();
+        try {
+          await this.server.server.sendResourceUpdated({ uri: "cambium://index" });
+          await this.server.server.sendResourceUpdated({ uri: "cambium://history" });
+          // Notify per-object schema if applicable
+          if (parsed.index?.objects) {
+            for (const obj of parsed.index.objects) {
+              await this.server.server.sendResourceUpdated({ uri: `cambium://schema/${obj.name}` });
+            }
+          }
+        } catch {
+          // Client may not support subscriptions — notifications are best-effort
+        }
+
+        return {
+          content: [{ type: "text" as const, text: result }],
+        };
+      }
+    );
+
+    this.server.tool(
+      "query",
+      "Read records from an object. Supports filtering, field projection, sorting, limits. Use count_only for efficient counts without returning records.",
+      {
+        object: z.string().describe("Object name to query"),
+        filter: z.array(z.string()).optional().describe("Filter expressions: field=value, field>value, field~text (contains)"),
+        fields: z.string().optional().describe("Comma-separated field names to return (default: all)"),
+        sort: z.string().optional().describe("Field to sort by. Prefix with - for descending (e.g. -created_at)"),
+        limit: z.number().optional().describe("Max records to return (default: 100)"),
+        count_only: z.boolean().optional().describe("If true, return only the count matching the filters, not the records"),
+      },
+      async ({ object, filter, fields, sort, limit, count_only }) => {
+        const result = await store.query(
+          object,
+          filter ? JSON.stringify(filter) : "",
+          fields ?? "",
+          sort ?? "",
+          limit ?? 100,
+          count_only ?? false
+        );
+        const parsed = JSON.parse(result);
+        if (parsed.error) {
+          return {
+            isError: true as const,
+            content: [{ type: "text" as const, text: parsed.message }],
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: result }],
+        };
+      }
+    );
+
+    this.server.tool(
+      "search",
+      "Cross-object full-text search. Searches all text fields across all objects (or specified objects) for a term. Returns matching records with matched field names.",
+      {
+        term: z.string().describe("Search term to find across all text fields"),
+        objects: z.array(z.string()).optional().describe("Limit search to these object names (default: all objects)"),
+        limit: z.number().optional().describe("Max total results (default: 20)"),
+      },
+      async ({ term, objects, limit }) => {
+        const result = await store.search(
+          term,
+          objects ? JSON.stringify(objects) : "",
+          limit ?? 20
+        );
+        const parsed = JSON.parse(result);
+        if (parsed.error) {
+          return {
+            isError: true as const,
+            content: [{ type: "text" as const, text: parsed.message }],
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: result }],
+        };
+      }
+    );
+
+    this.server.tool(
+      "mutate",
+      "Create, update, or archive a record. One tool for all writes.",
+      {
+        object: z.string().describe("Object name"),
+        operation: z.enum(["create", "update", "archive"]).describe("create, update, or archive"),
+        data: z.record(z.string(), z.unknown()).describe("Record data. For create: field values. For update: id + fields to change. For archive: id only."),
+      },
+      async ({ object, operation, data }) => {
+        const result = await store.mutate(object, operation, JSON.stringify(data));
+        const parsed = JSON.parse(result);
+        if (parsed.error) {
+          return {
+            isError: true as const,
+            content: [{ type: "text" as const, text: parsed.message }],
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: result }],
+        };
+      }
+    );
+  }
+}

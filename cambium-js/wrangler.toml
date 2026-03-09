@@ -3,10 +3,27 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+# KV namespace for OAuth tokens
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "REPLACE_ME"
+
+# Session DO (McpAgent, one per MCP session)
 [[durable_objects.bindings]]
 name = "MCP_OBJECT"
-class_name = "CambiumServer"
+class_name = "CambiumSession"
 
+# Store DO (per-user data storage)
+[[durable_objects.bindings]]
+name = "CAMBIUM_STORE"
+class_name = "CambiumStore"
+
+# Migration: rename old class, add new ones
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CambiumServer"]
+
+[[migrations]]
+tag = "v2"
+renamed_classes = [{from = "CambiumServer", to = "CambiumSession"}]
+new_sqlite_classes = ["CambiumStore"]

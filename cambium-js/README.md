@@ -1,21 +1,10 @@
 # Cambium Server
 
-MCP server on Cloudflare Workers providing persistent, evolving shared memory between a human and their AI agents. See `project-docs/active/cambium-server.md` for the full design.
-
-## Current state
-
-Vertical slice: 3 of 8 MCP tools implemented.
-
-- `get_index()` — read the master index (orientation)
-- `propose_change()` — propose a structural change, get a preview
-- `apply_change()` — commit a proposed change (creates SQLite tables, updates index)
-
-No auth. No data tools (`query`, `mutate`, `search`) yet. No REST API.
+MCP server on Cloudflare Workers providing persistent, evolving shared memory between a human and their AI agents.
 
 ## Setup
 
 ```bash
-cd cambium-js
 npm install
 ```
 
@@ -25,7 +14,16 @@ npm install
 npm run dev
 ```
 
-The MCP endpoint is at `http://localhost:8787/mcp`.
+Dev mode: no password needed. MCP endpoint at `http://localhost:8787/mcp`.
+
+## Deploy
+
+```bash
+npx wrangler deploy
+npx wrangler secret put CAMBIUM_SECRET   # set your password (one-time)
+```
+
+MCP endpoint at `https://<your-worker>.workers.dev/mcp`.
 
 ## Test
 
@@ -35,12 +33,18 @@ With the dev server running:
 ./test-vertical-slice.sh
 ```
 
-This initializes an MCP session, reads the empty index, proposes a `tasks` object, applies it, and reads the index again to confirm the organism grew.
+## Tools
 
-## Deploy
+- `resolve(uri)` — read anything by `cambium://` address
+- `query(object, ...)` — filtered, sorted reads with `count_only` mode
+- `search(term)` — cross-object full-text search
+- `mutate(object, operation, data)` — create, update, or archive records
+- `propose_change(description, change)` — propose schema evolution
+- `apply_change(change_id)` — commit a proposed change
 
-```bash
-npm run deploy
-```
+## Resources
 
-Requires Cloudflare account auth via `wrangler login`.
+- `cambium://index` — master index
+- `cambium://schema/{object}` — field definitions per object
+- `cambium://history` — schema evolution history
+- `cambium://records/{object}/{id}` — individual record

@@ -2,7 +2,6 @@
 set -euo pipefail
 
 BASE="http://localhost:8787/mcp"
-HEADERS='-H "Content-Type: application/json" -H "Accept: application/json, text/event-stream"'
 
 echo "=== 1. Initialize MCP session ==="
 INIT=$(curl -si -X POST "$BASE" \
@@ -30,7 +29,7 @@ curl -s -X POST "$BASE" \
   -H "mcp-session-id: $SESSION_ID" \
   -d '{"jsonrpc": "2.0", "method": "notifications/initialized"}' > /dev/null
 
-echo "=== 2. get_index (empty) ==="
+echo "=== 2. resolve cambium://index (empty) ==="
 curl -s -X POST "$BASE" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -39,7 +38,7 @@ curl -s -X POST "$BASE" \
     "jsonrpc": "2.0",
     "id": 2,
     "method": "tools/call",
-    "params": { "name": "get_index", "arguments": {} }
+    "params": { "name": "resolve", "arguments": { "uri": "cambium://index" } }
   }' | grep "^data:" | sed 's/^data: //'
 echo ""
 echo ""
@@ -94,7 +93,7 @@ curl -s -X POST "$BASE" \
 echo ""
 echo ""
 
-echo "=== 5. get_index (after evolution) ==="
+echo "=== 5. mutate (create a task) ==="
 curl -s -X POST "$BASE" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -103,7 +102,45 @@ curl -s -X POST "$BASE" \
     "jsonrpc": "2.0",
     "id": 5,
     "method": "tools/call",
-    "params": { "name": "get_index", "arguments": {} }
+    "params": {
+      "name": "mutate",
+      "arguments": {
+        "object": "tasks",
+        "operation": "create",
+        "data": { "title": "Test the vertical slice", "status": "active" }
+      }
+    }
+  }' | grep "^data:" | sed 's/^data: //'
+echo ""
+echo ""
+
+echo "=== 6. query (read tasks) ==="
+curl -s -X POST "$BASE" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "tools/call",
+    "params": {
+      "name": "query",
+      "arguments": { "object": "tasks" }
+    }
+  }' | grep "^data:" | sed 's/^data: //'
+echo ""
+echo ""
+
+echo "=== 7. resolve cambium://index (after evolution) ==="
+curl -s -X POST "$BASE" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "tools/call",
+    "params": { "name": "resolve", "arguments": { "uri": "cambium://index" } }
   }' | grep "^data:" | sed 's/^data: //'
 echo ""
 echo ""

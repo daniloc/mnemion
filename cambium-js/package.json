@@ -8,6 +8,7 @@
     "types": "wrangler types"
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "agents": "^0.7.5",
     "zod": "^4.3.6"
