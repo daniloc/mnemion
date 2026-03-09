@@ -114,7 +114,20 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
     // resolve — the universal reader. One tool, the URI is the API.
     this.server.tool(
       "resolve",
-      "Read anything by its cambium:// address. The URI scheme is the API.\n\nValid URIs:\n- cambium://index — master index (orientation)\n- cambium://schema/{object} — field definitions for an object\n- cambium://records/{object}/{id} — a single record\n- cambium://history — recent schema changes\n- cambium://_system/ — list system docs\n- cambium://_system/{slug} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)\n- cambium://_system/{slug}/default — read original seed version\n- cambium://mutations — recent mutation audit log (supports ?limit=N)\n- cambium://mutations/{object} — mutations for a specific object",
+      `Read anything by its cambium:// address. The URI scheme is the API.
+
+IMPORTANT: Start every session by reading cambium://_system/tools for full capability reference.
+
+Valid URIs:
+- cambium://index — master index (orientation, what objects exist)
+- cambium://schema/{object} — field definitions for an object
+- cambium://records/{object}/{id} — a single record
+- cambium://history — schema change log (supports ?limit=N)
+- cambium://_system/ — list all system docs
+- cambium://_system/{slug} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)
+- cambium://_system/{slug}/default — read original seed version
+- cambium://mutations — mutation audit log (supports ?limit=N). Use for diagnostics and integrity checks.
+- cambium://mutations/{object} — mutations filtered to one object`,
       {
         uri: z.string().describe("A cambium:// URI to resolve"),
       },
@@ -135,7 +148,11 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
 
     this.server.tool(
       "propose_change",
-      "Propose a structural change. Validates and returns a preview of the index after the change. Does not commit.",
+      `Propose a structural change. Validates and returns a preview of the index after the change. Does not commit.
+
+Supports: create_object (with fields), add_field (to existing object), add_convention.
+Fields can declare foreign key references to other objects via the references parameter.
+Object/field names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 fields per object.`,
       {
         description: z.string().describe("Natural language description of the change"),
         change: z.object({
@@ -172,7 +189,10 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
 
     this.server.tool(
       "apply_change",
-      "Commit a previously proposed change, or revert a past change via PITR. For apply: pass change_id. For revert: pass revert_history_id (from cambium://history). Revert restores ALL data to the state before that change — this is destructive.",
+      `Commit a previously proposed change, or revert to a past state via Cloudflare PITR (30-day window).
+
+For apply: pass change_id from propose_change.
+For revert: pass revert_history_id (from cambium://history). Restores ALL data (not just schema) to the state before that change — destructive, requires confirmation.`,
       {
         change_id: z.string().optional().describe("The change_id returned by propose_change"),
         revert_history_id: z.number().optional().describe("Schema history ID to revert to (from cambium://history). Restores entire DO state via PITR."),
@@ -248,7 +268,7 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
 
     this.server.tool(
       "query",
-      "Read records from an object. Supports filtering, field projection, sorting, limits. Use count_only for efficient counts without returning records.",
+      "Read records from an object. Supports filtering, field projection, sorting, limits (max 1,000 rows). Use count_only for efficient counts without fetching records.",
       {
         object: z.string().describe("Object name to query"),
         filter: z.array(z.string()).optional().describe("Filter expressions: field=value, field>value, field~text (contains)"),
@@ -308,7 +328,16 @@ export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
 
     this.server.tool(
       "mutate",
-      "Create, update, or archive records. For single operations, pass object+operation+data. For atomic batch operations (all-or-nothing), pass batch array instead. Update supports optimistic locking: include version from a prior read to detect conflicts.",
+      `Create, update, or archive records. One tool for all writes.
+
+Single operation: pass object + operation + data.
+Batch operation: pass batch array instead — atomic, all-or-nothing, max 100 ops. Use batch to combine multiple creates/updates/archives into one call.
+
+Update supports optimistic locking: include the version field from a prior read to detect conflicts when multiple surfaces write concurrently.
+
+Large content upload: to write content too large for MCP parameters, create an _upload_tokens record with {target_object, target_id, target_field, mode}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP.
+
+Records are limited to ~1 MB each.`,
       {
         object: z.string().optional().describe("Object name (for single operation)"),
         operation: z.enum(["create", "update", "archive"]).optional().describe("create, update, or archive (for single operation)"),

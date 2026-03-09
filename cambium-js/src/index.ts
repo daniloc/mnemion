@@ -1,7 +1,7 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { CambiumSession } from "./session";
 import { CambiumStore } from "./store";
-import { handleMarketplaceGit, type MarketplacePlugin, type MarketplaceSkill } from "./git";
+import { handleMarketplaceGit, type MarketplacePlugin } from "./git";
 
 // Re-export DO classes for wrangler
 export { CambiumSession, CambiumStore };
