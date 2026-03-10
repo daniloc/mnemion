@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build:pages": "vite build && vite build --ssr src/pages/entry-server.ts",
+    "preview": "vite dev --config vite.preview.ts",
     "dev": "npm run build:pages && wrangler dev",
     "deploy": "npm run build:pages && wrangler deploy",
     "types": "wrangler types",

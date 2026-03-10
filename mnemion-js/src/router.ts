@@ -21,6 +21,7 @@ export enum Auth {
   DEV = "dev",
   CONFIGURED = "configured",
   SECRET = "secret",
+  SESSION = "session",
 }
 
 export interface RouteContext {
@@ -52,6 +53,43 @@ export function extractBasicPassword(request: Request): string | null {
   } catch {
     return null;
   }
+}
+
+// === Session cookies ===
+
+const SESSION_COOKIE = "__session";
+const SESSION_MAX_AGE = 86400; // 24 hours
+
+async function hmacSign(secret: string, data: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function createSessionCookie(secret: string, host: string): Promise<string> {
+  const ts = Math.floor(Date.now() / 1000).toString();
+  const sig = await hmacSign(secret, `session:${ts}`);
+  const secure = !host.includes("localhost");
+  return `${SESSION_COOKIE}=${ts}.${sig}; HttpOnly; ${secure ? "Secure; " : ""}SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}`;
+}
+
+async function validateSession(request: Request, secret: string): Promise<boolean> {
+  const cookie = request.headers.get("Cookie");
+  if (!cookie) return false;
+  const match = cookie.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
+  if (!match) return false;
+  const token = match[1];
+  const dot = token.indexOf(".");
+  if (dot === -1) return false;
+  const ts = token.substring(0, dot);
+  const sig = token.substring(dot + 1);
+  const age = Math.floor(Date.now() / 1000) - parseInt(ts);
+  if (isNaN(age) || age < 0 || age > SESSION_MAX_AGE) return false;
+  const expected = await hmacSign(secret, `session:${ts}`);
+  return sig === expected;
 }
 
 // === Router ===
@@ -105,6 +143,15 @@ export function createRouter(routes: Route[]) {
           return new Response("Master password required", {
             status: 401,
             headers: { "WWW-Authenticate": `Basic realm="${PRODUCT_NAME}"` },
+          });
+        }
+      }
+      if (auth === Auth.SESSION) {
+        if (env.MNEMION_SECRET && !(await validateSession(request, env.MNEMION_SECRET))) {
+          const returnTo = encodeURIComponent(url.pathname + url.search);
+          return new Response(null, {
+            status: 302,
+            headers: { Location: `/login?return=${returnTo}` },
           });
         }
       }

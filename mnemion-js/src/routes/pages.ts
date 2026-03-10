@@ -22,3 +22,12 @@ export const schemaPage: RouteHandler = async (ctx) => {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 };
+
+export const queryEntries: RouteHandler = async (ctx) => {
+  const result = await ctx.store.query(
+    ctx.params.pattern, "", "", "-updated_at", 100, false
+  );
+  return new Response(result, {
+    headers: { "Content-Type": "application/json" },
+  });
+};

@@ -4,13 +4,13 @@ import { StoreDO } from "./store";
 import { Method, Auth, createRouter, type Route, type Env } from "./router";
 
 // Auth
-import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete } from "./routes/auth";
+import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify } from "./routes/auth";
 // I/O
 import { serveOutput, receiveInput, upload } from "./routes/io";
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/marketplace";
 // Pages
-import { schemaPage } from "./routes/pages";
+import { schemaPage, queryEntries } from "./routes/pages";
 
 // Re-export DO classes for wrangler
 export { SessionDO, StoreDO };
@@ -27,13 +27,20 @@ const routes: Route[] = [
   { method: Method.POST, pattern: "/auth/passkey/begin",   handler: passkeyBegin },
   { method: Method.POST, pattern: "/auth/passkey/complete", handler: passkeyComplete },
 
+  // Session login (for browser pages)
+  { method: Method.GET,  pattern: "/login",                auth: Auth.CONFIGURED, handler: loginPage },
+  { method: Method.POST, pattern: "/login/begin",          auth: Auth.CONFIGURED, handler: loginBegin },
+  { method: Method.POST, pattern: "/login/complete",       auth: Auth.CONFIGURED, handler: loginComplete },
+  { method: Method.POST, pattern: "/login/verify",         auth: Auth.CONFIGURED, handler: loginVerify },
+
   // HTTP I/O
   { method: Method.GET,  pattern: "/o/:path",              handler: serveOutput },
   { method: Method.POST, pattern: "/i/:path",              handler: receiveInput },
   { method: Method.POST, pattern: "/upload/:token",        where: { token: /^[a-fA-F0-9]+$/ }, handler: upload },
 
   // Pages
-  { method: Method.GET,  pattern: "/schema",               handler: schemaPage },
+  { method: Method.GET,  pattern: "/schema",               auth: Auth.SESSION, handler: schemaPage },
+  { method: Method.GET,  pattern: "/api/query/:pattern",   auth: Auth.SESSION, handler: queryEntries },
 
   // Marketplace
   { method: Method.ANY,  pattern: "/dev/seed-marketplace", auth: Auth.DEV, handler: seedMarketplace },

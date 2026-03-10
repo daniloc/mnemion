@@ -1,4 +1,5 @@
 import type { RouteHandler } from "../router";
+import { createSessionCookie } from "../router";
 import { PRODUCT_NAME } from "../constants";
 
 // Passkey module loaded lazily to avoid tslib issues in test environments
@@ -217,4 +218,180 @@ export const passkeyComplete: RouteHandler = async (ctx) => {
   } catch (err: any) {
     return Response.json({ error: err.message }, { status: 401 });
   }
+};
+
+// === Session login (for browser pages, not OAuth) ===
+
+function sessionLoginPage(returnTo: string, hasPasskey: boolean): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${PRODUCT_NAME}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 400px; margin: 80px auto; padding: 0 20px; }
+    h1 { font-size: 1.4em; }
+    button { display: block; width: 100%; padding: 12px; margin: 8px 0; font-size: 1em;
+      border: 1px solid #111; border-radius: 6px; cursor: pointer; background: #111; color: #fff; }
+    button:hover { background: #333; }
+    button:disabled { background: #999; border-color: #999; cursor: default; }
+    input { display: block; width: 100%; padding: 10px; margin: 8px 0; font-size: 1em;
+      border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+    .divider { text-align: center; color: #999; margin: 16px 0; font-size: 0.9em; }
+    #secret-form { display: ${hasPasskey ? "none" : "block"}; }
+    #toggle { background: none; color: #555; border: none; text-decoration: underline;
+      cursor: pointer; font-size: 0.9em; padding: 4px; width: auto; display: ${hasPasskey ? "inline" : "none"}; }
+    #passkey-btn { display: ${hasPasskey ? "block" : "none"}; }
+    #passkey-divider { display: ${hasPasskey ? "block" : "none"}; }
+    #error { color: #c00; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>${PRODUCT_NAME}</h1>
+  <button id="passkey-btn">Sign in with passkey</button>
+  <div id="passkey-divider" class="divider">or</div>
+  <button id="toggle">Use master secret instead</button>
+  <form id="secret-form">
+    <input type="password" id="secret" placeholder="Master secret or one-time code" autofocus />
+    <button type="submit">Sign in</button>
+  </form>
+  <div id="error"></div>
+  <script type="module">
+    import { startAuthentication } from 'https://esm.sh/@simplewebauthn/browser@13';
+
+    const returnTo = ${JSON.stringify(returnTo)};
+    const errorEl = document.getElementById('error');
+    const passkeyBtn = document.getElementById('passkey-btn');
+
+    passkeyBtn.addEventListener('click', async () => {
+      passkeyBtn.disabled = true;
+      errorEl.textContent = '';
+      try {
+        const beginRes = await fetch('/login/begin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (!beginRes.ok) throw new Error('Failed to start authentication');
+        const options = await beginRes.json();
+
+        const assertion = await startAuthentication({ optionsJSON: options });
+
+        const completeRes = await fetch('/login/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assertion, returnTo }),
+        });
+        const result = await completeRes.json();
+        if (result.redirectTo) {
+          window.location.href = result.redirectTo;
+        } else {
+          throw new Error(result.error || 'Authentication failed');
+        }
+      } catch (err) {
+        errorEl.textContent = err.message || 'Passkey authentication failed';
+        passkeyBtn.disabled = false;
+      }
+    });
+
+    document.getElementById('toggle').addEventListener('click', () => {
+      document.getElementById('secret-form').style.display = 'block';
+      document.getElementById('toggle').style.display = 'none';
+    });
+
+    document.getElementById('secret-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const secret = document.getElementById('secret').value;
+      const res = await fetch('/login/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secret, returnTo }),
+      });
+      const result = await res.json();
+      if (result.redirectTo) {
+        window.location.href = result.redirectTo;
+      } else {
+        errorEl.textContent = result.error || 'Authentication failed';
+      }
+    });
+  </script>
+</body>
+</html>`;
+}
+
+export const loginPage: RouteHandler = async (ctx) => {
+  const returnTo = ctx.url.searchParams.get("return") || "/";
+  const hasPasskey = await ctx.store.hasPasskey();
+  return new Response(sessionLoginPage(returnTo, hasPasskey), {
+    headers: { "Content-Type": "text/html" },
+  });
+};
+
+export const loginBegin: RouteHandler = async (ctx) => {
+  const storedPasskey = await ctx.store.getPasskey();
+  if (!storedPasskey) {
+    return Response.json({ error: "No passkey registered" }, { status: 404 });
+  }
+
+  const { options, challenge } = await (await passkey()).beginAuthentication(ctx.request, storedPasskey);
+  await ctx.env.OAUTH_KV.put("passkey_challenge:session", challenge, { expirationTtl: 300 });
+  return Response.json(options);
+};
+
+export const loginComplete: RouteHandler = async (ctx) => {
+  const { assertion, returnTo } = (await ctx.request.json()) as { assertion: any; returnTo: string };
+
+  const challenge = await ctx.env.OAUTH_KV.get("passkey_challenge:session");
+  if (!challenge) {
+    return Response.json({ error: "Challenge expired" }, { status: 400 });
+  }
+  await ctx.env.OAUTH_KV.delete("passkey_challenge:session");
+
+  const storedPasskey = await ctx.store.getPasskey();
+  if (!storedPasskey) {
+    return Response.json({ error: "No passkey registered" }, { status: 404 });
+  }
+
+  try {
+    const { verified, newCounter } = await (await passkey()).completeAuthentication(ctx.request, assertion, challenge, storedPasskey);
+    if (!verified) {
+      return Response.json({ error: "Passkey verification failed" }, { status: 401 });
+    }
+    await ctx.store.updatePasskeyCounter(newCounter);
+
+    const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host);
+    const safePath = returnTo.startsWith("/") ? returnTo : "/";
+    return new Response(JSON.stringify({ redirectTo: safePath }), {
+      headers: {
+        "Content-Type": "application/json",
+        "Set-Cookie": cookie,
+      },
+    });
+  } catch (err: any) {
+    return Response.json({ error: err.message }, { status: 401 });
+  }
+};
+
+export const loginVerify: RouteHandler = async (ctx) => {
+  const { secret, returnTo } = (await ctx.request.json()) as { secret: string; returnTo: string };
+
+  let authenticated = false;
+  if (ctx.env.MNEMION_SECRET && secret === ctx.env.MNEMION_SECRET) {
+    authenticated = true;
+  } else {
+    authenticated = await ctx.store.consumeAuthCode(secret);
+  }
+
+  if (!authenticated) {
+    return Response.json({ error: "Invalid secret or code" }, { status: 401 });
+  }
+
+  const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host);
+  const safePath = returnTo.startsWith("/") ? returnTo : "/";
+  return new Response(JSON.stringify({ redirectTo: safePath }), {
+    headers: {
+      "Content-Type": "application/json",
+      "Set-Cookie": cookie,
+    },
+  });
 };
