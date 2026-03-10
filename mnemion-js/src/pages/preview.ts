@@ -13,11 +13,13 @@ const props = {
       name: 'research-threads',
       description: 'Long-running research topics with sources and evolving notes',
       entry_count: 12,
+      latest_activity: '2026-03-10T14:30:00Z',
       facets: [
         { name: 'title', type: 'text', required: true },
         { name: 'status', type: 'text', required: true, default: 'active' },
         { name: 'summary', type: 'text', required: false },
         { name: 'source_url', type: 'text', required: false },
+        { name: 'source', type: 'text', required: false, links: 'bookmarks' },
         { name: 'priority', type: 'integer', required: false, default: 0 },
       ],
     },
@@ -25,17 +27,20 @@ const props = {
       name: 'daily-notes',
       description: 'Freeform daily journal entries',
       entry_count: 47,
+      latest_activity: '2026-03-10T22:00:00Z',
       facets: [
         { name: 'title', type: 'text', required: true },
         { name: 'body', type: 'text', required: true },
         { name: 'mood', type: 'text', required: false },
         { name: 'tags', type: 'text', required: false },
+        { name: 'thread', type: 'text', required: false, links: 'research-threads' },
       ],
     },
     {
       name: 'bookmarks',
       description: 'Saved links with tags and annotations',
       entry_count: 203,
+      latest_activity: '2026-03-09T16:00:00Z',
       facets: [
         { name: 'url', type: 'text', required: true },
         { name: 'title', type: 'text', required: true },
@@ -48,6 +53,7 @@ const props = {
       name: 'axioms',
       description: 'Core principles and beliefs that guide decision-making',
       entry_count: 8,
+      latest_activity: '2026-03-10T18:05:00Z',
       facets: [
         { name: 'text', type: 'text', required: true },
         { name: 'category', type: 'text', required: false },
@@ -57,6 +63,7 @@ const props = {
       name: '_system_docs',
       description: 'Agent orientation documentation',
       entry_count: 7,
+      latest_activity: '2026-03-08T10:00:00Z',
       facets: [
         { name: 'slug', type: 'text', required: true },
         { name: 'title', type: 'text', required: true },
@@ -68,6 +75,7 @@ const props = {
       name: '_auth_codes',
       description: 'One-time bearer tokens for remote agents',
       entry_count: 3,
+      latest_activity: '2026-03-06T12:00:00Z',
       facets: [
         { name: 'token', type: 'text', required: true },
         { name: 'label', type: 'text', required: false },
@@ -78,6 +86,7 @@ const props = {
       name: '_inputs',
       description: 'Ingress endpoint definitions',
       entry_count: 1,
+      latest_activity: '2026-03-04T09:00:00Z',
       facets: [
         { name: 'path', type: 'text', required: true },
         { name: 'target_pattern', type: 'text', required: true },
@@ -90,6 +99,7 @@ const props = {
       name: '_outputs',
       description: 'Egress endpoint definitions',
       entry_count: 0,
+      latest_activity: null,
       facets: [
         { name: 'path', type: 'text', required: true },
         { name: 'content', type: 'text', required: true },
@@ -103,13 +113,16 @@ const props = {
 // Mock the API endpoint for entry fetching
 const mockEntries: Record<string, any[]> = {
   'research-threads': [
-    { id: 1, title: 'Svelte 5 SSR in Workers', status: 'active', summary: 'Exploring how to render Svelte components server-side inside Cloudflare Workers without SvelteKit', source_url: 'https://svelte.dev/docs', priority: 2, created_at: '2026-03-08T10:00:00Z', updated_at: '2026-03-10T14:30:00Z', archived_at: null },
-    { id: 2, title: 'WebAuthn passkey UX', status: 'active', summary: 'Studying passkey registration and authentication flows across platforms', source_url: null, priority: 1, created_at: '2026-03-07T09:00:00Z', updated_at: '2026-03-09T18:00:00Z', archived_at: null },
-    { id: 3, title: 'Durable Object SQLite patterns', status: 'complete', summary: 'Best practices for schema management in DO SQLite — migrations, versioning, partial indexes', source_url: 'https://developers.cloudflare.com/durable-objects/', priority: 0, created_at: '2026-03-01T08:00:00Z', updated_at: '2026-03-05T12:00:00Z', archived_at: null },
+    { id: 1, title: 'Svelte 5 SSR in Workers', status: 'active', summary: 'Exploring how to render Svelte components server-side inside Cloudflare Workers without SvelteKit', source_url: 'https://svelte.dev/docs', source: 5, priority: 2, created_at: '2026-03-08T10:00:00Z', updated_at: '2026-03-10T14:30:00Z', archived_at: null },
+    { id: 2, title: 'WebAuthn passkey UX', status: 'active', summary: 'Studying passkey registration and authentication flows across platforms', source_url: null, source: 12, priority: 1, created_at: '2026-03-07T09:00:00Z', updated_at: '2026-03-09T18:00:00Z', archived_at: null },
+    { id: 3, title: 'Durable Object SQLite patterns', status: 'complete', summary: 'Best practices for schema management in DO SQLite — migrations, versioning, partial indexes', source_url: 'https://developers.cloudflare.com/durable-objects/', source: 5, priority: 0, created_at: '2026-03-01T08:00:00Z', updated_at: '2026-03-05T12:00:00Z', archived_at: null },
   ],
   'daily-notes': [
-    { id: 1, title: 'March 10 — router refactor', body: 'Extracted the flat if/else chain into a declarative dispatch table. Much cleaner. The route table reads like a spec now.\n\nAlso added Svelte SSR — the schema viewer is live.', mood: 'productive', tags: 'mnemion, architecture', created_at: '2026-03-10T08:00:00Z', updated_at: '2026-03-10T22:00:00Z', archived_at: null },
-    { id: 2, title: 'March 9 — nomenclature', body: 'Renamed everything from database terms to biological vocabulary. Pattern, entry, facet, link. It feels right.', mood: 'satisfied', tags: 'mnemion, naming', created_at: '2026-03-09T08:00:00Z', updated_at: '2026-03-09T20:00:00Z', archived_at: null },
+    { id: 1, title: 'March 10 — router refactor', body: 'Extracted the flat if/else chain into a declarative dispatch table. Much cleaner. The route table reads like a spec now.\n\nAlso added Svelte SSR — the schema viewer is live.', mood: 'productive', tags: 'mnemion, architecture', thread: 1, created_at: '2026-03-10T08:00:00Z', updated_at: '2026-03-10T22:00:00Z', archived_at: null },
+    { id: 2, title: 'March 9 — nomenclature', body: 'Renamed everything from database terms to biological vocabulary. Pattern, entry, facet, link. It feels right.', mood: 'satisfied', tags: 'mnemion, naming', thread: null, created_at: '2026-03-09T08:00:00Z', updated_at: '2026-03-09T20:00:00Z', archived_at: null },
+    { id: 3, title: 'March 8 — passkey debugging', body: 'Spent the morning on WebAuthn. The lazy import trick for @simplewebauthn/server solved the tslib issue.', mood: 'focused', tags: 'mnemion, auth', thread: 2, created_at: '2026-03-08T08:00:00Z', updated_at: '2026-03-08T19:00:00Z', archived_at: null },
+    { id: 4, title: 'March 7 — DO SQLite', body: 'Partial unique indexes are the way. Archive an entry and the path is freed for reuse. Elegant.', mood: 'satisfied', tags: 'mnemion, storage', thread: 3, created_at: '2026-03-07T08:00:00Z', updated_at: '2026-03-07T21:00:00Z', archived_at: null },
+    { id: 5, title: 'March 6 — Svelte research', body: 'SSR without SvelteKit is possible but underdocumented. Two-build pipeline: server .mjs + client .txt.', mood: 'curious', tags: 'mnemion, frontend', thread: 1, created_at: '2026-03-06T08:00:00Z', updated_at: '2026-03-06T20:00:00Z', archived_at: null },
   ],
   'axioms': [
     { id: 7, text: 'Code should scan like a schematic — declarative tables over procedural chains', category: 'engineering', created_at: '2026-03-10T18:00:00Z', updated_at: '2026-03-10T18:00:00Z', archived_at: null },

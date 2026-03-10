@@ -1,6 +1,8 @@
 <script lang="ts">
   import { browser } from './env.js';
   import { onMount } from 'svelte';
+  import HiveMap from './HiveMap.svelte';
+  import LinkMap from './LinkMap.svelte';
 
   interface Facet {
     name: string;
@@ -15,6 +17,7 @@
     description: string;
     facets: Facet[];
     entry_count: number;
+    latest_activity?: string | null;
   }
 
   interface Props {
@@ -30,6 +33,7 @@
   let entries: Record<string, unknown>[] = $state([]);
   let loadingEntries = $state(false);
   let selectedEntry: Record<string, unknown> | null = $state(null);
+  let landingView: 'patterns' | 'links' = $state('patterns');
 
   let visible = $derived(
     patterns.filter(p =>
@@ -104,6 +108,13 @@
     if (selected) pushHash(selected.name);
   }
 
+  function showMap() {
+    selected = null;
+    entries = [];
+    selectedEntry = null;
+    pushHash();
+  }
+
   function parseHash(): { patternName?: string; entryId?: string } {
     if (!browser) return {};
     const hash = location.hash.slice(1);
@@ -132,7 +143,7 @@
 
 <div class="hive">
   <header>
-    <h1>hive</h1>
+    <button class="hive-title" onclick={showMap}><h1>hive</h1></button>
     <p class="guidance">{guidance}</p>
   </header>
 
@@ -263,8 +274,16 @@
           </div>
         </div>
       {:else}
-        <div class="empty">
-          <p>select a pattern</p>
+        <div class="hive-landing">
+          <div class="landing-toggle">
+            <button class:active={landingView === 'patterns'} onclick={() => { landingView = 'patterns'; }}>patterns</button>
+            <button class:active={landingView === 'links'} onclick={() => { landingView = 'links'; }}>links</button>
+          </div>
+          {#if landingView === 'links'}
+            <LinkMap {patterns} onselect={(pn, eid) => { const p = patterns.find(x => x.name === pn); if (p) selectPattern(p, eid); }} />
+          {:else}
+            <HiveMap {patterns} onselect={(p) => selectPattern(p)} />
+          {/if}
         </div>
       {/if}
     </main>
@@ -293,6 +312,13 @@
     border-bottom: 1px solid #1a1a22;
   }
 
+  .hive-title {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+  }
+
   h1 {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.85rem;
@@ -300,7 +326,9 @@
     letter-spacing: 0.15em;
     text-transform: uppercase;
     color: #e8c872;
+    transition: opacity 0.15s;
   }
+  .hive-title:hover h1 { opacity: 0.7; }
 
   .guidance {
     margin-top: 0.4rem;
@@ -396,16 +424,37 @@
     max-height: calc(100vh - 90px);
   }
 
-  .empty, .detail-empty {
+  .hive-landing {
+    height: calc(100vh - 90px);
+    width: 100%;
     display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
+    flex-direction: column;
   }
-  .empty p, .detail-empty p {
+
+  .landing-toggle {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid #1a1a22;
+    flex-shrink: 0;
+  }
+
+  .landing-toggle button {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 0.85rem;
-    color: #2a2a38;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.6rem 1.2rem;
+    border: none;
+    background: none;
+    color: #4a4a58;
+    cursor: pointer;
+    transition: color 0.1s;
+  }
+  .landing-toggle button:hover { color: #c8c8d0; }
+  .landing-toggle button.active {
+    color: #e8c872;
+    box-shadow: inset 0 -2px 0 #e8c872;
   }
 
   /* Split view */
