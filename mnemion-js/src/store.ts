@@ -16,24 +16,24 @@ import httpIoRaw from "./system-docs/http-io.md";
 export interface StoreIndex {
   version: number;
   updated_at: string;
-  objects: IndexObjectEntry[];
+  patterns: IndexPatternEntry[];
   conventions: string[];
   guidance: string;
 }
 
-export interface IndexObjectEntry {
+export interface IndexPatternEntry {
   name: string;
   description: string;
-  fields: IndexFieldEntry[];
-  record_count: number;
+  facets: IndexFacetEntry[];
+  entry_count: number;
 }
 
-export interface IndexFieldEntry {
+export interface IndexFacetEntry {
   name: string;
   type: string;
   required: boolean;
   default?: string | number | boolean | null;
-  references?: string | null;
+  links?: string | null;
 }
 
 // === Constants ===
@@ -53,11 +53,11 @@ const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]
 // === Guardrails ===
 
 const LIMITS = {
-  RECORD_BYTES: 1_048_576,    // 1 MB per record
+  ENTRY_BYTES: 1_048_576,     // 1 MB per entry
   QUERY_ROWS: 1_000,          // max rows a single query can return
   BATCH_OPS: 100,             // max operations in a single batch mutate
-  NAME_MAX_LEN: 64,           // max length for object/field names
-  FIELDS_PER_OBJECT: 64,      // max fields on a single object
+  NAME_MAX_LEN: 64,           // max length for pattern/facet names
+  FACETS_PER_PATTERN: 64,    // max facets on a single pattern
 };
 
 const NAME_RE = /^[a-z][a-z0-9_-]*$/;  // lowercase, starts with letter, allows hyphens/underscores/digits
@@ -271,9 +271,9 @@ export class StoreDO extends DurableObject {
     this.db.exec(`CREATE TABLE IF NOT EXISTS "_inputs" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "path" TEXT NOT NULL,
-      "target_object" TEXT NOT NULL,
-      "body_field" TEXT,
-      "field_mapping" TEXT,
+      "target_pattern" TEXT NOT NULL,
+      "body_facet" TEXT,
+      "facet_mapping" TEXT,
       "visibility" TEXT NOT NULL DEFAULT 'public',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -356,10 +356,10 @@ export class StoreDO extends DurableObject {
         // Auto-index exists → old column-level UNIQUE, needs rebuild
         const cols = table === "_outputs"
           ? `id, "path", "content", "mime_type", "visibility", created_at, updated_at, archived_at`
-          : `id, "path", "target_object", "body_field", "field_mapping", "visibility", created_at, updated_at, archived_at`;
+          : `id, "path", "target_pattern", "body_facet", "facet_mapping", "visibility", created_at, updated_at, archived_at`;
         const newCols = table === "_outputs"
           ? `id INTEGER PRIMARY KEY AUTOINCREMENT, "path" TEXT NOT NULL, "content" TEXT NOT NULL, "mime_type" TEXT NOT NULL DEFAULT 'text/plain', "visibility" TEXT NOT NULL DEFAULT 'public', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), archived_at TEXT, version INTEGER NOT NULL DEFAULT 0`
-          : `id INTEGER PRIMARY KEY AUTOINCREMENT, "path" TEXT NOT NULL, "target_object" TEXT NOT NULL, "body_field" TEXT, "field_mapping" TEXT, "visibility" TEXT NOT NULL DEFAULT 'public', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), archived_at TEXT, version INTEGER NOT NULL DEFAULT 0`;
+          : `id INTEGER PRIMARY KEY AUTOINCREMENT, "path" TEXT NOT NULL, "target_pattern" TEXT NOT NULL, "body_facet" TEXT, "facet_mapping" TEXT, "visibility" TEXT NOT NULL DEFAULT 'public', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), archived_at TEXT, version INTEGER NOT NULL DEFAULT 0`;
         // Also copy version if it exists (may have been added by ALTER TABLE)
         let selectCols = cols;
         try {
@@ -373,6 +373,17 @@ export class StoreDO extends DurableObject {
       }
       this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "${table}_path_active" ON "${table}" ("path") WHERE archived_at IS NULL`);
     }
+
+    // === Migrate: rename columns to new vocabulary ===
+
+    // _inputs: target_object → target_pattern, field_mapping → facet_mapping, body_field → body_facet
+    try { this.db.exec(`ALTER TABLE "_inputs" RENAME COLUMN "target_object" TO "target_pattern"`); } catch { /* already renamed */ }
+    try { this.db.exec(`ALTER TABLE "_inputs" RENAME COLUMN "field_mapping" TO "facet_mapping"`); } catch { /* already renamed */ }
+    try { this.db.exec(`ALTER TABLE "_inputs" RENAME COLUMN "body_field" TO "body_facet"`); } catch { /* already renamed */ }
+
+    // _upload_tokens: target_object → target_pattern, target_field → target_facet
+    try { this.db.exec(`ALTER TABLE "_upload_tokens" RENAME COLUMN "target_object" TO "target_pattern"`); } catch { /* already renamed */ }
+    try { this.db.exec(`ALTER TABLE "_upload_tokens" RENAME COLUMN "target_field" TO "target_facet"`); } catch { /* already renamed */ }
 
     // === Mutation audit log ===
 
@@ -412,9 +423,9 @@ export class StoreDO extends DurableObject {
     this.db.exec(`CREATE TABLE IF NOT EXISTS "_upload_tokens" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
-      "target_object" TEXT NOT NULL,
+      "target_pattern" TEXT NOT NULL,
       "target_id" INTEGER NOT NULL,
-      "target_field" TEXT NOT NULL,
+      "target_facet" TEXT NOT NULL,
       "mode" TEXT NOT NULL DEFAULT 'replace',
       "expires_at" TEXT NOT NULL,
       "consumed_at" TEXT,
@@ -439,9 +450,9 @@ export class StoreDO extends DurableObject {
       "Temporary capability tokens for large content uploads via HTTP POST. Token and expiry auto-generated on create. Single-use.",
       [
         { name: "token", type: "text", required: false },
-        { name: "target_object", type: "text", required: true },
+        { name: "target_pattern", type: "text", required: true },
         { name: "target_id", type: "integer", required: true },
-        { name: "target_field", type: "text", required: true },
+        { name: "target_facet", type: "text", required: true },
         { name: "mode", type: "text", required: false },
         { name: "expires_at", type: "datetime", required: false },
         { name: "consumed_at", type: "datetime", required: false },
@@ -458,7 +469,7 @@ export class StoreDO extends DurableObject {
     );
 
     this.registerKernelObject("_outputs",
-      "HTTP egress endpoints. Each record serves content at GET /o/{path}. Public by default.",
+      "HTTP egress endpoints. Each entry serves content at GET /o/{path}. Public by default.",
       [
         { name: "path", type: "text", required: true },
         { name: "content", type: "text", required: true },
@@ -468,12 +479,12 @@ export class StoreDO extends DurableObject {
     );
 
     this.registerKernelObject("_inputs",
-      "HTTP ingress endpoints. Each record accepts POST /i/{path} and creates records in target_object. Supports field_mapping DSL for JSON body transformation.",
+      "HTTP ingress endpoints. Each entry accepts POST /i/{path} and creates entries in target_pattern. Supports facet_mapping DSL for JSON body transformation.",
       [
         { name: "path", type: "text", required: true },
-        { name: "target_object", type: "text", required: true },
-        { name: "body_field", type: "text", required: false },
-        { name: "field_mapping", type: "text", required: false },
+        { name: "target_pattern", type: "text", required: true },
+        { name: "body_facet", type: "text", required: false },
+        { name: "facet_mapping", type: "text", required: false },
         { name: "visibility", type: "text", required: false },
       ]
     );
@@ -511,21 +522,21 @@ export class StoreDO extends DurableObject {
   async getIndex(): Promise<string> {
     const index = this.getCurrentIndex();
 
-    // Enrich with live record counts
-    for (const obj of index.objects) {
+    // Enrich with live entry counts
+    for (const pat of index.patterns) {
       try {
         const r = this.db.exec(
-          `SELECT COUNT(*) as count FROM "${obj.name}" WHERE archived_at IS NULL`
+          `SELECT COUNT(*) as count FROM "${pat.name}" WHERE archived_at IS NULL`
         ).one() as { count: number };
-        obj.record_count = r.count;
+        pat.entry_count = r.count;
       } catch {
         try {
           const r = this.db.exec(
-            `SELECT COUNT(*) as count FROM "${obj.name}"`
+            `SELECT COUNT(*) as count FROM "${pat.name}"`
           ).one() as { count: number };
-          obj.record_count = r.count;
+          pat.entry_count = r.count;
         } catch {
-          obj.record_count = 0;
+          pat.entry_count = 0;
         }
       }
     }
@@ -542,78 +553,78 @@ export class StoreDO extends DurableObject {
     const preview = structuredClone(currentIndex);
 
     switch (change.type) {
-      case "create_object": {
-        if (!change.object_name)
-          return this.errorJson("object_name is required for create_object");
-        const objNameErr = validateName("Object", change.object_name);
-        if (objNameErr) return this.errorJson(objNameErr);
-        if (!change.fields?.length)
-          return this.errorJson("At least one field is required for create_object");
-        if (change.fields.length > LIMITS.FIELDS_PER_OBJECT)
-          return this.errorJson(`Too many fields: ${change.fields.length} exceeds limit of ${LIMITS.FIELDS_PER_OBJECT}`);
-        if (this.objectExists(change.object_name))
-          return this.errorJson(`Object "${change.object_name}" already exists`);
-        for (const f of change.fields) {
-          const fieldNameErr = validateName("Field", f.name);
-          if (fieldNameErr) return this.errorJson(fieldNameErr);
-          if (!SQLITE_TYPE_MAP[f.type])
-            return this.errorJson(`Unknown field type: ${f.type}`);
-          if (KERNEL_COLUMNS.has(f.name))
-            return this.errorJson(`Field "${f.name}" is a kernel-provided column and cannot be defined by the user`);
-          if (f.references && !this.objectExists(f.references.object))
-            return this.errorJson(`Referenced object "${f.references.object}" does not exist`);
+      case "create_pattern": {
+        if (!change.pattern_name)
+          return this.errorJson("pattern_name is required for create_pattern");
+        const nameErr = validateName("Pattern", change.pattern_name);
+        if (nameErr) return this.errorJson(nameErr);
+        if (!change.facets?.length)
+          return this.errorJson("At least one facet is required for create_pattern");
+        if (change.facets.length > LIMITS.FACETS_PER_PATTERN)
+          return this.errorJson(`Too many facets: ${change.facets.length} exceeds limit of ${LIMITS.FACETS_PER_PATTERN}`);
+        if (this.patternExists(change.pattern_name))
+          return this.errorJson(`Pattern "${change.pattern_name}" already exists`);
+        for (const a of change.facets) {
+          const facetNameErr = validateName("Facet", a.name);
+          if (facetNameErr) return this.errorJson(facetNameErr);
+          if (!SQLITE_TYPE_MAP[a.type])
+            return this.errorJson(`Unknown facet type: ${a.type}`);
+          if (KERNEL_COLUMNS.has(a.name))
+            return this.errorJson(`Facet "${a.name}" is a kernel-provided column and cannot be defined by the user`);
+          if (a.links && !this.patternExists(a.links.pattern))
+            return this.errorJson(`Linked pattern "${a.links.pattern}" does not exist`);
         }
 
-        preview.objects.push({
-          name: change.object_name,
-          description: change.object_description || "",
-          fields: change.fields.map((f: any) => {
-            const field: IndexFieldEntry = {
-              name: f.name,
-              type: f.type,
-              required: f.required ?? false,
-              default: f.default_value ?? null,
+        preview.patterns.push({
+          name: change.pattern_name,
+          description: change.pattern_description || "",
+          facets: change.facets.map((a: any) => {
+            const facet: IndexFacetEntry = {
+              name: a.name,
+              type: a.type,
+              required: a.required ?? false,
+              default: a.default_value ?? null,
             };
-            if (f.references) field.references = f.references.object;
-            return field;
+            if (a.links) facet.links = a.links.pattern;
+            return facet;
           }),
-          record_count: 0,
+          entry_count: 0,
         });
         break;
       }
 
-      case "add_field": {
-        if (!change.object_name)
-          return this.errorJson("object_name is required for add_field");
-        if (!change.fields?.length)
-          return this.errorJson("At least one field is required for add_field");
-        if (!this.objectExists(change.object_name))
-          return this.errorJson(`Object "${change.object_name}" does not exist`);
+      case "add_facet": {
+        if (!change.pattern_name)
+          return this.errorJson("pattern_name is required for add_facet");
+        if (!change.facets?.length)
+          return this.errorJson("At least one facet is required for add_facet");
+        if (!this.patternExists(change.pattern_name))
+          return this.errorJson(`Pattern "${change.pattern_name}" does not exist`);
 
-        const obj = preview.objects.find((o: IndexObjectEntry) => o.name === change.object_name);
-        if (!obj)
-          return this.errorJson(`Object "${change.object_name}" does not exist`);
+        const pat = preview.patterns.find((p: IndexPatternEntry) => p.name === change.pattern_name);
+        if (!pat)
+          return this.errorJson(`Pattern "${change.pattern_name}" does not exist`);
 
-        if (obj.fields.length + change.fields.length > LIMITS.FIELDS_PER_OBJECT)
-          return this.errorJson(`Adding ${change.fields.length} fields would exceed the limit of ${LIMITS.FIELDS_PER_OBJECT} fields per object`);
+        if (pat.facets.length + change.facets.length > LIMITS.FACETS_PER_PATTERN)
+          return this.errorJson(`Adding ${change.facets.length} facets would exceed the limit of ${LIMITS.FACETS_PER_PATTERN} facets per pattern`);
 
-        for (const f of change.fields) {
-          const fieldNameErr = validateName("Field", f.name);
-          if (fieldNameErr) return this.errorJson(fieldNameErr);
-          if (KERNEL_COLUMNS.has(f.name))
-            return this.errorJson(`Field "${f.name}" is a kernel-provided column and cannot be defined by the user`);
-          if (obj.fields.some((existing: IndexFieldEntry) => existing.name === f.name))
-            return this.errorJson(`Field "${f.name}" already exists on "${change.object_name}"`);
-          if (f.references && !this.objectExists(f.references.object))
-            return this.errorJson(`Referenced object "${f.references.object}" does not exist`);
-          const field: IndexFieldEntry = {
-            name: f.name,
-            type: f.type,
-            required: f.required ?? false,
-            default: f.default_value ?? null,
+        for (const a of change.facets) {
+          const facetNameErr = validateName("Facet", a.name);
+          if (facetNameErr) return this.errorJson(facetNameErr);
+          if (KERNEL_COLUMNS.has(a.name))
+            return this.errorJson(`Facet "${a.name}" is a kernel-provided column and cannot be defined by the user`);
+          if (pat.facets.some((existing: IndexFacetEntry) => existing.name === a.name))
+            return this.errorJson(`Facet "${a.name}" already exists on "${change.pattern_name}"`);
+          if (a.links && !this.patternExists(a.links.pattern))
+            return this.errorJson(`Linked pattern "${a.links.pattern}" does not exist`);
+          const facet: IndexFacetEntry = {
+            name: a.name,
+            type: a.type,
+            required: a.required ?? false,
+            default: a.default_value ?? null,
           };
-          if (f.references) field.references = f.references.object;
-          obj.fields.push(field);
+          if (a.links) facet.links = a.links.pattern;
+          pat.facets.push(facet);
         }
         break;
       }
@@ -657,84 +668,84 @@ export class StoreDO extends DurableObject {
 
     try {
       switch (change.type) {
-        case "create_object": {
-          const fieldDefs = change.fields.map((f: any) => {
-            let col = `"${f.name}" ${SQLITE_TYPE_MAP[f.type]}`;
-            if (f.required) col += " NOT NULL";
-            if (f.default_value != null) {
+        case "create_pattern": {
+          const colDefs = change.facets.map((a: any) => {
+            let col = `"${a.name}" ${SQLITE_TYPE_MAP[a.type]}`;
+            if (a.required) col += " NOT NULL";
+            if (a.default_value != null) {
               col +=
-                typeof f.default_value === "string"
-                  ? ` DEFAULT '${f.default_value}'`
-                  : ` DEFAULT ${f.default_value}`;
+                typeof a.default_value === "string"
+                  ? ` DEFAULT '${a.default_value}'`
+                  : ` DEFAULT ${a.default_value}`;
             }
-            if (f.references) {
-              col += ` REFERENCES "${f.references.object}"("${f.references.field || 'id'}")`;
+            if (a.links) {
+              col += ` REFERENCES "${a.links.pattern}"("${a.links.facet || 'id'}")`;
             }
             return col;
           });
 
-          const hasUserVersion = change.fields.some((f: any) => f.name === "version");
+          const hasUserVersion = change.facets.some((a: any) => a.name === "version");
           const kernelCols = [
             ...(hasUserVersion ? [] : ["version INTEGER NOT NULL DEFAULT 0"]),
             "created_at TEXT NOT NULL DEFAULT (datetime('now'))",
             "updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
             "archived_at TEXT",
           ];
-          this.db.exec(`CREATE TABLE "${change.object_name}" (
+          this.db.exec(`CREATE TABLE "${change.pattern_name}" (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ${fieldDefs.join(",\n            ")},
+            ${colDefs.join(",\n            ")},
             ${kernelCols.join(",\n            ")}
           )`);
 
           // Register in normalized schema
           this.db.exec(
             "INSERT INTO _objects (name, description) VALUES (?, ?)",
-            change.object_name, change.object_description || ""
+            change.pattern_name, change.pattern_description || ""
           );
-          for (const f of change.fields) {
+          for (const a of change.facets) {
             this.db.exec(
               "INSERT INTO _fields (object_name, name, type, required, default_value, references_object) VALUES (?, ?, ?, ?, ?, ?)",
-              change.object_name, f.name, f.type, f.required ? 1 : 0,
-              f.default_value != null ? JSON.stringify(f.default_value) : null,
-              f.references?.object ?? null
+              change.pattern_name, a.name, a.type, a.required ? 1 : 0,
+              a.default_value != null ? JSON.stringify(a.default_value) : null,
+              a.links?.pattern ?? null
             );
           }
 
           // Create audit triggers for the new table
-          this.ensureAuditTriggers(change.object_name);
+          this.ensureAuditTriggers(change.pattern_name);
           break;
         }
 
-        case "add_field": {
-          for (const f of change.fields) {
-            let ddl = `ALTER TABLE "${change.object_name}" ADD COLUMN "${f.name}" ${SQLITE_TYPE_MAP[f.type]}`;
-            if (f.default_value != null) {
+        case "add_facet": {
+          for (const a of change.facets) {
+            let ddl = `ALTER TABLE "${change.pattern_name}" ADD COLUMN "${a.name}" ${SQLITE_TYPE_MAP[a.type]}`;
+            if (a.default_value != null) {
               ddl +=
-                typeof f.default_value === "string"
-                  ? ` DEFAULT '${f.default_value}'`
-                  : ` DEFAULT ${f.default_value}`;
+                typeof a.default_value === "string"
+                  ? ` DEFAULT '${a.default_value}'`
+                  : ` DEFAULT ${a.default_value}`;
             }
-            if (f.references) {
-              ddl += ` REFERENCES "${f.references.object}"("${f.references.field || 'id'}")`;
+            if (a.links) {
+              ddl += ` REFERENCES "${a.links.pattern}"("${a.links.facet || 'id'}")`;
             }
             this.db.exec(ddl);
           }
 
-          // Register fields in normalized schema
-          for (const f of change.fields) {
+          // Register facets in normalized schema
+          for (const a of change.facets) {
             this.db.exec(
               "INSERT INTO _fields (object_name, name, type, required, default_value, references_object) VALUES (?, ?, ?, ?, ?, ?)",
-              change.object_name, f.name, f.type, f.required ? 1 : 0,
-              f.default_value != null ? JSON.stringify(f.default_value) : null,
-              f.references?.object ?? null
+              change.pattern_name, a.name, a.type, a.required ? 1 : 0,
+              a.default_value != null ? JSON.stringify(a.default_value) : null,
+              a.links?.pattern ?? null
             );
           }
 
           // Recreate audit triggers (columns changed)
-          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.object_name}_insert"`);
-          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.object_name}_update"`);
-          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.object_name}_delete"`);
-          this.ensureAuditTriggers(change.object_name);
+          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_insert"`);
+          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_update"`);
+          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_delete"`);
+          this.ensureAuditTriggers(change.pattern_name);
           break;
         }
 
@@ -820,31 +831,31 @@ export class StoreDO extends DurableObject {
 
   // === Resource RPC methods ===
 
-  async getSchema(objectName: string): Promise<string> {
-    if (!this.objectExists(objectName))
-      return this.errorJson(`Object "${objectName}" does not exist`);
+  async getSchema(patternName: string): Promise<string> {
+    if (!this.patternExists(patternName))
+      return this.errorJson(`Pattern "${patternName}" does not exist`);
 
     const objRow = this.db.exec(
-      "SELECT name, description FROM _objects WHERE name = ?", objectName
+      "SELECT name, description FROM _objects WHERE name = ?", patternName
     ).one() as { name: string; description: string };
 
     const fields = this.db.exec(
       "SELECT name, type, required, default_value, references_object FROM _fields WHERE object_name = ? ORDER BY id",
-      objectName
+      patternName
     ).toArray() as any[];
 
     return JSON.stringify({
-      object: objRow.name,
+      pattern: objRow.name,
       description: objRow.description,
-      fields: fields.map((f: any) => {
-        const field: any = {
+      facets: fields.map((f: any) => {
+        const facet: any = {
           name: f.name,
           type: f.type,
           required: !!f.required,
           default: f.default_value != null ? JSON.parse(f.default_value) : null,
         };
-        if (f.references_object) field.references = f.references_object;
-        return field;
+        if (f.references_object) facet.links = f.references_object;
+        return facet;
       }),
       kernel_columns: ["id", "version", "created_at", "updated_at", "archived_at"],
     }, null, 2);
@@ -858,36 +869,36 @@ export class StoreDO extends DurableObject {
     return JSON.stringify({ history: rows, count: rows.length }, null, 2);
   }
 
-  async getRecord(objectName: string, recordId: number): Promise<string> {
-    if (!this.objectExists(objectName))
-      return this.errorJson(`Object "${objectName}" does not exist`);
+  async getEntry(patternName: string, entryId: number): Promise<string> {
+    if (!this.patternExists(patternName))
+      return this.errorJson(`Pattern "${patternName}" does not exist`);
 
     try {
       const rows = this.db.exec(
-        `SELECT * FROM "${objectName}" WHERE id = ?`,
-        recordId
+        `SELECT * FROM "${patternName}" WHERE id = ?`,
+        entryId
       ).toArray();
-      if (rows.length === 0) return this.errorJson(`Record ${recordId} not found in "${objectName}"`);
-      return JSON.stringify({ object: objectName, record: rows[0] }, null, 2);
+      if (rows.length === 0) return this.errorJson(`Entry ${entryId} not found in "${patternName}"`);
+      return JSON.stringify({ pattern: patternName, entry: rows[0] }, null, 2);
     } catch (err: any) {
-      return this.errorJson(`Failed to read record: ${err.message}`);
+      return this.errorJson(`Failed to read entry: ${err.message}`);
     }
   }
 
-  async listObjects(): Promise<string[]> {
+  async listPatterns(): Promise<string[]> {
     const rows = this.db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[];
     return rows.map((r: any) => r.name);
   }
 
   // === Data operations ===
 
-  async query(objectName: string, filterJson: string, fields: string, sortField: string, limit: number, countOnly: boolean): Promise<string> {
-    if (!this.objectExists(objectName))
-      return this.errorJson(`Object "${objectName}" does not exist`);
+  async query(patternName: string, filterJson: string, facets: string, sortField: string, limit: number, countOnly: boolean): Promise<string> {
+    if (!this.patternExists(patternName))
+      return this.errorJson(`Pattern "${patternName}" does not exist`);
 
-    // Count-only mode: return count without records
+    // Count-only mode: return count without entries
     if (countOnly) {
-      let countSql = `SELECT COUNT(*) as count FROM "${objectName}" WHERE archived_at IS NULL`;
+      let countSql = `SELECT COUNT(*) as count FROM "${patternName}" WHERE archived_at IS NULL`;
       const countBindings: (string | number)[] = [];
       if (filterJson) {
         const filters: string[] = JSON.parse(filterJson);
@@ -906,7 +917,7 @@ export class StoreDO extends DurableObject {
       }
       try {
         const r = this.db.exec(countSql, ...countBindings).one() as { count: number };
-        return JSON.stringify({ object: objectName, count: r.count }, null, 2);
+        return JSON.stringify({ pattern: patternName, count: r.count }, null, 2);
       } catch (err: any) {
         return this.errorJson(`Query failed: ${err.message}`);
       }
@@ -915,8 +926,8 @@ export class StoreDO extends DurableObject {
     let sql = `SELECT`;
 
     // Projection
-    if (fields) {
-      const requested = fields.split(",").map((f) => f.trim());
+    if (facets) {
+      const requested = facets.split(",").map((f) => f.trim());
       // Always include id
       if (!requested.includes("id")) requested.unshift("id");
       sql += ` ${requested.map((f) => `"${f}"`).join(", ")}`;
@@ -924,9 +935,9 @@ export class StoreDO extends DurableObject {
       sql += ` *`;
     }
 
-    sql += ` FROM "${objectName}" WHERE archived_at IS NULL`;
+    sql += ` FROM "${patternName}" WHERE archived_at IS NULL`;
 
-    // Filters: field=value, field>value, field<value, field~text
+    // Filters: facet=value, facet>value, facet<value, facet~text
     const bindings: (string | number)[] = [];
     if (filterJson) {
       const filters: string[] = JSON.parse(filterJson);
@@ -955,18 +966,18 @@ export class StoreDO extends DurableObject {
 
     try {
       const rows = this.db.exec(sql, ...bindings).toArray();
-      return JSON.stringify({ object: objectName, records: rows, count: rows.length }, null, 2);
+      return JSON.stringify({ pattern: patternName, entries: rows, count: rows.length }, null, 2);
     } catch (err: any) {
       return this.errorJson(`Query failed: ${err.message}`);
     }
   }
 
-  async mutate(objectName: string, operation: string, dataJson: string): Promise<string> {
-    return JSON.stringify(this.executeMutate(objectName, operation, JSON.parse(dataJson)), null, 2);
+  async mutate(patternName: string, operation: string, dataJson: string): Promise<string> {
+    return JSON.stringify(this.executeMutate(patternName, operation, JSON.parse(dataJson)), null, 2);
   }
 
   async batchMutate(operationsJson: string): Promise<string> {
-    const operations = JSON.parse(operationsJson) as { object: string; operation: string; data: any }[];
+    const operations = JSON.parse(operationsJson) as { pattern: string; operation: string; data: any }[];
 
     if (operations.length > LIMITS.BATCH_OPS) {
       return this.errorJson(`Batch too large: ${operations.length} operations exceeds limit of ${LIMITS.BATCH_OPS}`);
@@ -974,10 +985,10 @@ export class StoreDO extends DurableObject {
 
     // Validate all operations before starting transaction
     for (const op of operations) {
-      if (!this.objectExists(op.object)) {
-        return this.errorJson(`Object "${op.object}" does not exist`);
+      if (!this.patternExists(op.pattern)) {
+        return this.errorJson(`Pattern "${op.pattern}" does not exist`);
       }
-      if (op.object === "_system_docs" && "default_content" in op.data) {
+      if (op.pattern === "_system_docs" && "default_content" in op.data) {
         return this.errorJson("default_content is immutable. It preserves the original seed for recovery.");
       }
     }
@@ -985,7 +996,7 @@ export class StoreDO extends DurableObject {
     const results: any[] = [];
     this.ctx.storage.transactionSync(() => {
       for (const op of operations) {
-        const result = this.executeMutate(op.object, op.operation, op.data);
+        const result = this.executeMutate(op.pattern, op.operation, op.data);
         if (result.error) {
           throw new Error(result.message);
         }
@@ -1021,7 +1032,7 @@ export class StoreDO extends DurableObject {
 
     // Check content size
     const contentBytes = new TextEncoder().encode(content).length;
-    if (contentBytes > LIMITS.RECORD_BYTES) {
+    if (contentBytes > LIMITS.ENTRY_BYTES) {
       return this.errorJson(`Content too large: ${Math.round(contentBytes / 1024)}KB exceeds the 1MB limit`);
     }
 
@@ -1029,21 +1040,21 @@ export class StoreDO extends DurableObject {
     try {
       if (upload.mode === "append") {
         this.db.exec(
-          `UPDATE "${upload.target_object}" SET "${upload.target_field}" = COALESCE("${upload.target_field}", '') || ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+          `UPDATE "${upload.target_pattern}" SET "${upload.target_facet}" = COALESCE("${upload.target_facet}", '') || ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
           content, upload.target_id
         );
       } else {
         this.db.exec(
-          `UPDATE "${upload.target_object}" SET "${upload.target_field}" = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+          `UPDATE "${upload.target_pattern}" SET "${upload.target_facet}" = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
           content, upload.target_id
         );
       }
 
       // Bump kernel version if applicable (not for user version fields like semver)
-      if (this.hasKernelVersion(upload.target_object)) {
+      if (this.hasKernelVersion(upload.target_pattern)) {
         try {
           this.db.exec(
-            `UPDATE "${upload.target_object}" SET version = version + 1 WHERE id = ?`,
+            `UPDATE "${upload.target_pattern}" SET version = version + 1 WHERE id = ?`,
             upload.target_id
           );
         } catch {
@@ -1062,104 +1073,104 @@ export class StoreDO extends DurableObject {
 
     // Return the updated record
     const record = this.db.exec(
-      `SELECT * FROM "${upload.target_object}" WHERE id = ?`,
+      `SELECT * FROM "${upload.target_pattern}" WHERE id = ?`,
       upload.target_id
     ).one();
 
     return JSON.stringify({
       uploaded: true,
       bytes: contentBytes,
-      target: { object: upload.target_object, id: upload.target_id, field: upload.target_field },
+      target: { pattern: upload.target_pattern, id: upload.target_id, facet: upload.target_facet },
       mode: upload.mode,
-      record,
+      entry: record,
     }, null, 2);
   }
 
-  private executeMutate(objectName: string, operation: string, data: any): any {
-    if (!this.objectExists(objectName))
-      return { error: true, message: `Object "${objectName}" does not exist` };
+  private executeMutate(patternName: string, operation: string, data: any): any {
+    if (!this.patternExists(patternName))
+      return { error: true, message: `Pattern "${patternName}" does not exist` };
 
     // Protect default_content on _system_docs
-    if (objectName === "_system_docs" && "default_content" in data) {
+    if (patternName === "_system_docs" && "default_content" in data) {
       return { error: true, message: "default_content is immutable. It preserves the original seed for recovery." };
     }
 
     // Auth code create: auto-set expiry (default 1 hour, accepts ttl_minutes)
-    if (objectName === "_auth_codes" && operation === "create") {
+    if (patternName === "_auth_codes" && operation === "create") {
       const ttlMinutes = typeof data.ttl_minutes === "number" ? data.ttl_minutes : 60;
       data.expires_at = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
       delete data.ttl_minutes; // not a stored field
     }
 
     // Outputs create: validate required fields, set defaults
-    if (objectName === "_outputs" && operation === "create") {
+    if (patternName === "_outputs" && operation === "create") {
       if (!data.path) return { error: true, message: "path is required for _outputs" };
       data.mime_type = data.mime_type || "text/plain";
       data.visibility = data.visibility || "public";
     }
 
-    // Inputs create: validate target_object exists, validate field_mapping JSON
-    if (objectName === "_inputs" && operation === "create") {
+    // Inputs create: validate target_pattern exists, validate facet_mapping JSON
+    if (patternName === "_inputs" && operation === "create") {
       if (!data.path) return { error: true, message: "path is required for _inputs" };
-      if (!data.target_object) return { error: true, message: "target_object is required for _inputs" };
-      if (!this.objectExists(data.target_object)) {
-        return { error: true, message: `Target object "${data.target_object}" does not exist` };
+      if (!data.target_pattern) return { error: true, message: "target_pattern is required for _inputs" };
+      if (!this.patternExists(data.target_pattern)) {
+        return { error: true, message: `Target pattern "${data.target_pattern}" does not exist` };
       }
-      if (data.field_mapping && typeof data.field_mapping === "string") {
-        try { JSON.parse(data.field_mapping); } catch {
-          return { error: true, message: "field_mapping must be valid JSON" };
+      if (data.facet_mapping && typeof data.facet_mapping === "string") {
+        try { JSON.parse(data.facet_mapping); } catch {
+          return { error: true, message: "facet_mapping must be valid JSON" };
         }
       }
-      if (data.body_field) {
-        const fieldExists = this.db.exec(
+      if (data.body_facet) {
+        const facetExists = this.db.exec(
           "SELECT 1 FROM _fields WHERE object_name = ? AND name = ?",
-          data.target_object, data.body_field
+          data.target_pattern, data.body_facet
         ).toArray().length > 0;
-        if (!fieldExists) {
-          return { error: true, message: `Field "${data.body_field}" does not exist on "${data.target_object}"` };
+        if (!facetExists) {
+          return { error: true, message: `Facet "${data.body_facet}" does not exist on "${data.target_pattern}"` };
         }
       }
       data.visibility = data.visibility || "public";
     }
 
-    // Record size guard (skip for upload tokens — they're small metadata)
+    // Entry size guard (skip for upload tokens — they're small metadata)
     if (operation === "create" || operation === "update") {
       const size = estimateRecordBytes(data);
-      if (size > LIMITS.RECORD_BYTES) {
-        return { error: true, message: `Record too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
+      if (size > LIMITS.ENTRY_BYTES) {
+        return { error: true, message: `Entry too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
       }
     }
 
     // Upload token create: validate target, set expiry
-    if (objectName === "_upload_tokens" && operation === "create") {
-      if (!data.target_object || data.target_id == null || !data.target_field) {
-        return { error: true, message: "target_object, target_id, and target_field are required" };
+    if (patternName === "_upload_tokens" && operation === "create") {
+      if (!data.target_pattern || data.target_id == null || !data.target_facet) {
+        return { error: true, message: "target_pattern, target_id, and target_facet are required" };
       }
-      if (!this.objectExists(data.target_object)) {
-        return { error: true, message: `Target object "${data.target_object}" does not exist` };
+      if (!this.patternExists(data.target_pattern)) {
+        return { error: true, message: `Target pattern "${data.target_pattern}" does not exist` };
       }
-      // Verify the target record exists
+      // Verify the target entry exists
       try {
         const row = this.db.exec(
-          `SELECT id FROM "${data.target_object}" WHERE id = ? AND archived_at IS NULL`,
+          `SELECT id FROM "${data.target_pattern}" WHERE id = ? AND archived_at IS NULL`,
           data.target_id
         ).toArray();
         if (row.length === 0) {
-          return { error: true, message: `Target record ${data.target_id} not found in "${data.target_object}"` };
+          return { error: true, message: `Target entry ${data.target_id} not found in "${data.target_pattern}"` };
         }
       } catch {
-        return { error: true, message: `Could not verify target record` };
+        return { error: true, message: `Could not verify target entry` };
       }
-      // Verify the target field exists
-      const fieldRows = this.db.exec(
+      // Verify the target facet exists
+      const facetRows = this.db.exec(
         "SELECT type FROM _fields WHERE object_name = ? AND name = ?",
-        data.target_object, data.target_field
+        data.target_pattern, data.target_facet
       ).toArray() as any[];
-      if (fieldRows.length === 0) {
-        return { error: true, message: `Field "${data.target_field}" does not exist on "${data.target_object}"` };
+      if (facetRows.length === 0) {
+        return { error: true, message: `Facet "${data.target_facet}" does not exist on "${data.target_pattern}"` };
       }
-      if (fieldRows[0].type !== "text") {
-        return { error: true, message: `Upload target field must be text type, "${data.target_field}" is ${fieldRows[0].type}` };
+      if (facetRows[0].type !== "text") {
+        return { error: true, message: `Upload target facet must be text type, "${data.target_facet}" is ${facetRows[0].type}` };
       }
       // Auto-set expiry (15 minutes) and mode
       data.expires_at = new Date(Date.now() + 15 * 60 * 1000).toISOString();
@@ -1180,27 +1191,27 @@ export class StoreDO extends DurableObject {
           const values = fields.map((f) => data[f]);
 
           this.db.exec(
-            `INSERT INTO "${objectName}" (${cols}) VALUES (${placeholders})`,
+            `INSERT INTO "${patternName}" (${cols}) VALUES (${placeholders})`,
             ...values
           );
 
           const row = this.db.exec(
-            `SELECT * FROM "${objectName}" WHERE id = last_insert_rowid()`
+            `SELECT * FROM "${patternName}" WHERE id = last_insert_rowid()`
           ).one();
 
-          return { operation: "create", object: objectName, record: row };
+          return { operation: "create", pattern: patternName, entry: row };
         }
 
         case "update": {
           if (!data.id) return { error: true, message: "id is required for update" };
-          const kernelVersion = this.hasKernelVersion(objectName);
+          const kernelVersion = this.hasKernelVersion(patternName);
 
           // For kernel version tables: strip version from SET (it auto-increments).
           // For user version tables: include version in SET like any other field.
           const stripCols = ["id", "created_at", "archived_at"];
           if (kernelVersion) stripCols.push("version");
           const fields = Object.keys(data).filter((k) => !stripCols.includes(k));
-          if (fields.length === 0) return { error: true, message: "No fields to update" };
+          if (fields.length === 0) return { error: true, message: "No facets to update" };
 
           const sets = fields.map((f) => `"${f}" = ?`).join(", ");
           const values = fields.map((f) => data[f]);
@@ -1215,41 +1226,41 @@ export class StoreDO extends DurableObject {
             }
 
             this.db.exec(
-              `UPDATE "${objectName}" SET ${sets}, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
+              `UPDATE "${patternName}" SET ${sets}, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
               ...values
             );
 
             if (data.version != null) {
               const changes = this.db.exec("SELECT changes() as c").one() as { c: number };
               if (changes.c === 0) {
-                return { error: true, message: `Version conflict: record ${data.id} in "${objectName}" has been modified. Re-read and retry.` };
+                return { error: true, message: `Version conflict: entry ${data.id} in "${patternName}" has been modified. Re-read and retry.` };
               }
             }
           } else {
             // No kernel version: simple update, version is a user field included in SET
             values.push(data.id);
             this.db.exec(
-              `UPDATE "${objectName}" SET ${sets}, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+              `UPDATE "${patternName}" SET ${sets}, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
               ...values
             );
           }
 
           const row = this.db.exec(
-            `SELECT * FROM "${objectName}" WHERE id = ?`,
+            `SELECT * FROM "${patternName}" WHERE id = ?`,
             data.id
           ).one();
 
-          return { operation: "update", object: objectName, record: row };
+          return { operation: "update", pattern: patternName, entry: row };
         }
 
         case "archive": {
           if (!data.id) return { error: true, message: "id is required for archive" };
           this.db.exec(
-            `UPDATE "${objectName}" SET archived_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+            `UPDATE "${patternName}" SET archived_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
             data.id
           );
 
-          return { operation: "archive", object: objectName, id: data.id };
+          return { operation: "archive", pattern: patternName, id: data.id };
         }
 
         default:
@@ -1283,9 +1294,9 @@ export class StoreDO extends DurableObject {
       return this.getSchema(schemaMatch[1]);
     }
 
-    const recordMatch = path.match(/^records\/([^/]+)\/(.+)$/);
-    if (recordMatch) {
-      return this.getRecord(recordMatch[1], Number(recordMatch[2]));
+    const entryMatch = path.match(/^entry\/([^/]+)\/(.+)$/);
+    if (entryMatch) {
+      return this.getEntry(entryMatch[1], Number(entryMatch[2]));
     }
 
     if (path === "_system/" || path === "_system") {
@@ -1297,17 +1308,17 @@ export class StoreDO extends DurableObject {
       return this.getSystemDoc(sysMatch[1], !!sysMatch[2]);
     }
 
-    // mutations or mutations/{object}?limit=N
-    if (path === "mutations" || path.startsWith("mutations")) {
+    // mutation or mutation/{pattern}?limit=N
+    if (path === "mutation" || path.startsWith("mutation")) {
       const parts = path.split("?");
       const pathPart = parts[0];
       const params = new URLSearchParams(parts[1] || "");
       const limit = Number(params.get("limit")) || 50;
-      const tableName = pathPart === "mutations" ? null : pathPart.replace("mutations/", "");
+      const tableName = pathPart === "mutation" ? null : pathPart.replace("mutation/", "");
       return this.getMutationLog(tableName, limit);
     }
 
-    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{object}")}, ${uri("records/{object}/{id}")}, ${uri("history")}, ${uri("_system/{slug}")}, ${uri("mutations[/{object}]")}`);
+    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
   }
 
   // === Cross-object search ===
@@ -1318,10 +1329,10 @@ export class StoreDO extends DurableObject {
       ? JSON.parse(objectsJson) as string[]
       : (this.db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[]).map((r: any) => r.name);
 
-    const results: { object: string; record: any; matched_fields: string[] }[] = [];
+    const results: { pattern: string; entry: any; matched_facets: string[] }[] = [];
 
     for (const objName of targetObjects) {
-      if (!this.objectExists(objName)) continue;
+      if (!this.patternExists(objName)) continue;
 
       // Get text fields from normalized schema
       const textFields = (this.db.exec(
@@ -1345,7 +1356,7 @@ export class StoreDO extends DurableObject {
             const val = (row as any)[f];
             return typeof val === "string" && val.toLowerCase().includes(term.toLowerCase());
           });
-          results.push({ object: objName, record: row, matched_fields: matched });
+          results.push({ pattern: objName, entry: row, matched_facets: matched });
         }
       } catch {
         // Skip objects that error (e.g., table doesn't exist yet)
@@ -1432,8 +1443,8 @@ export class StoreDO extends DurableObject {
   }
 
   private getMarketplaceDataScoped(pluginNames: string[] | null, publicOnly: boolean = false): string {
-    const hasPlugins = this.objectExists("_plugins");
-    const hasSkills = this.objectExists("_skills");
+    const hasPlugins = this.patternExists("_plugins");
+    const hasSkills = this.patternExists("_skills");
 
     if (!hasPlugins || !hasSkills) {
       return JSON.stringify({ plugins: [] });
@@ -1480,28 +1491,28 @@ export class StoreDO extends DurableObject {
     const allFields = this.db.exec("SELECT * FROM _fields ORDER BY object_name, id").toArray() as any[];
     const conventions = this.db.exec("SELECT text FROM _conventions ORDER BY id").toArray() as any[];
 
-    // Group fields by object
-    const fieldsByObject = new Map<string, IndexFieldEntry[]>();
+    // Group facets by pattern
+    const facetsByPattern = new Map<string, IndexFacetEntry[]>();
     for (const f of allFields) {
-      if (!fieldsByObject.has(f.object_name)) fieldsByObject.set(f.object_name, []);
-      const field: IndexFieldEntry = {
+      if (!facetsByPattern.has(f.object_name)) facetsByPattern.set(f.object_name, []);
+      const facet: IndexFacetEntry = {
         name: f.name,
         type: f.type,
         required: !!f.required,
         default: f.default_value != null ? JSON.parse(f.default_value) : null,
       };
-      if (f.references_object) field.references = f.references_object;
-      fieldsByObject.get(f.object_name)!.push(field);
+      if (f.references_object) facet.links = f.references_object;
+      facetsByPattern.get(f.object_name)!.push(facet);
     }
 
     return {
       version: meta.version,
       updated_at: meta.updated_at,
-      objects: objects.map((o: any) => ({
+      patterns: objects.map((o: any) => ({
         name: o.name,
         description: o.description,
-        fields: fieldsByObject.get(o.name) || [],
-        record_count: 0,
+        facets: facetsByPattern.get(o.name) || [],
+        entry_count: 0,
       })),
       conventions: conventions.map((c: any) => c.text),
       guidance: meta.guidance,
@@ -1541,19 +1552,19 @@ export class StoreDO extends DurableObject {
       END`);
   }
 
-  private objectExists(name: string): boolean {
+  private patternExists(name: string): boolean {
     return this.db.exec(
       "SELECT 1 FROM _objects WHERE name = ?", name
     ).toArray().length > 0;
   }
 
   /** True if the table's `version` column is the kernel auto-increment, not a user field. */
-  private hasKernelVersion(objectName: string): boolean {
+  private hasKernelVersion(patternName: string): boolean {
     // If _fields has a user-defined 'version' field for this object,
     // the column is user-managed (e.g. semver text). Otherwise it's kernel.
     return this.db.exec(
       "SELECT 1 FROM _fields WHERE object_name = ? AND name = 'version'",
-      objectName
+      patternName
     ).toArray().length === 0;
   }
 
@@ -1653,8 +1664,8 @@ export class StoreDO extends DurableObject {
     const input = rows[0];
     let data: Record<string, unknown>;
 
-    if (input.field_mapping) {
-      const mapping = JSON.parse(input.field_mapping) as Record<string, string>;
+    if (input.facet_mapping) {
+      const mapping = JSON.parse(input.facet_mapping) as Record<string, string>;
       let parsedBody: unknown = null;
       try { parsedBody = JSON.parse(body); } catch { /* not JSON */ }
 
@@ -1664,13 +1675,13 @@ export class StoreDO extends DurableObject {
         headers: JSON.parse(headersJson),
         query: JSON.parse(queryJson),
       });
-    } else if (input.body_field) {
-      data = { [input.body_field]: body };
+    } else if (input.body_facet) {
+      data = { [input.body_facet]: body };
     } else {
       data = { body };
     }
 
-    const result = this.executeMutate(input.target_object, "create", data);
+    const result = this.executeMutate(input.target_pattern, "create", data);
     return JSON.stringify(result, null, 2);
   }
 

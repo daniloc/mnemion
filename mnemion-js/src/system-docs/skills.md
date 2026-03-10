@@ -4,14 +4,14 @@ title: "Skills & Marketplace"
 ---
 # Skills & Marketplace Distribution
 
-{{PRODUCT_NAME}} can serve itself as a Claude Code plugin marketplace. Skills are records authored through `mutate`, served as a synthesized git repo on every request.
+{{PRODUCT_NAME}} can serve itself as a Claude Code plugin marketplace. Skills are entries authored through `mutate`, served as a synthesized git repo on every request.
 
-## Schema objects
+## Supporting patterns
 
-Two objects support the skill system. Create them via `propose_change` / `apply_change` when first needed:
+Two patterns support the skill system. Create them via `propose_change` / `apply_change` when first needed:
 
 ### `_plugins`
-Each record is a plugin — a named package of skills and configuration.
+Each entry is a plugin — a named package of skills and configuration.
 - `name` (text, required) — kebab-case identifier
 - `description` (text, required)
 - `version` (text, required) — semver, bump on skill changes
@@ -22,8 +22,8 @@ Each record is a plugin — a named package of skills and configuration.
 - `mcp_json` (text) — .mcp.json for MCP server definitions
 
 ### `_skills`
-Each record is a skill within a plugin.
-- `plugin_id` (integer, required) — references `_plugins.id`
+Each entry is a skill within a plugin.
+- `plugin_id` (integer, required) — links to `_plugins.id`
 - `name` (text, required) — kebab-case
 - `description` (text) — triggers and purpose
 - `argument_hint` (text) — e.g. "[topic or question]"
@@ -31,9 +31,9 @@ Each record is a skill within a plugin.
 - `visibility` (text, required) — "public" or "private"
 
 ## Creating a skill workflow
-1. Ensure `_plugins` and `_skills` objects exist (one-time setup)
-2. `mutate(_plugins, create, {...})` — create the plugin
-3. `mutate(_skills, create, {...})` — create skills within it
+1. Ensure `_plugins` and `_skills` patterns exist (one-time setup)
+2. `mutate(_plugins, create, {...})` — create the plugin entry
+3. `mutate(_skills, create, {...})` — create skill entries within it
 4. Human installs: `/plugin marketplace add <url>`
 
 ## Marketplace endpoints
@@ -52,5 +52,5 @@ Create via `mutate(_marketplace_tokens, create, {name, scope})`.
 - Default to `private`. Only mark `public` when explicitly sharing.
 
 ## Updating skills
-Mutate the skill record. Bump the plugin version. Claude Code detects the version change on next startup.
+Mutate the skill entry. Bump the plugin version. Claude Code detects the version change on next startup.
 Note: Users may need to restart Claude Code for skill changes to take effect.

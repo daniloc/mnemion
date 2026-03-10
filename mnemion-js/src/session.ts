@@ -19,15 +19,15 @@ interface AuthProps {
 
 export class SessionDO extends McpAgent<Env, unknown, AuthProps> {
   server = new McpServer(
-    { name: URI_SCHEME, version: "0.4.0" },
+    { name: URI_SCHEME, version: "0.5.0" },
     {
       instructions: `${PRODUCT_NAME} is persistent shared memory. Read ${uri("_system/tools")} before your first action for full capability reference.
 
 Key capabilities agents commonly miss:
-- mutate accepts a batch parameter — an array of {object, operation, data} for atomic all-or-nothing execution (max 100 ops). Use it to combine multiple writes into one call.
-- Update operations support optimistic locking via the version field. Include version from a prior read to prevent lost writes across concurrent surfaces.
-- Fields support foreign key references to other objects. Use the references parameter in propose_change.
-- ${uri("mutations")} is an audit log for diagnostics. Use it instead of querying records to verify data integrity.
+- mutate accepts a batch parameter — an array of {pattern, operation, data} for atomic all-or-nothing execution (max 100 ops). Use it to combine multiple writes into one call.
+- Update operations support optimistic locking via the version field. Include version from a prior read to prevent lost updates when multiple surfaces write concurrently.
+- Facets support foreign key links to other patterns. Use the links parameter in propose_change.
+- ${uri("mutation")} is an audit log for diagnostics. Use it instead of querying entries to verify data integrity.
 - For large content that exceeds MCP parameter limits, mint an upload token via mutate on _upload_tokens, then POST content to /upload/{token} via HTTP.
 - apply_change supports revert_history_id for point-in-time rollback via Cloudflare PITR (30-day window).`,
     },
@@ -60,22 +60,22 @@ Key capabilities agents commonly miss:
 
     this.server.resource(
       "schema",
-      new ResourceTemplate(uri("schema/{object_name}"), {
+      new ResourceTemplate(uri("schema/{pattern_name}"), {
         list: async () => {
-          const names = await store.listObjects();
+          const names = await store.listPatterns();
           return {
             resources: names.map((name) => ({
               uri: uri(`schema/${name}`),
               name: `${name} schema`,
-              description: `Field definitions for ${name}`,
+              description: `Facet definitions for ${name}`,
               mimeType: "application/json",
             })),
           };
         },
       }),
-      { description: "Full field definitions for an object", mimeType: "application/json" },
-      async (u, { object_name }) => {
-        const result = await store.getSchema(object_name as string);
+      { description: "Facet definitions for a pattern", mimeType: "application/json" },
+      async (u, { pattern_name }) => {
+        const result = await store.getSchema(pattern_name as string);
         const parsed = JSON.parse(result);
         if (parsed.error) {
           throw new Error(parsed.message);
@@ -99,13 +99,13 @@ Key capabilities agents commonly miss:
     );
 
     this.server.resource(
-      "record",
-      new ResourceTemplate(uri("records/{object}/{id}"), {
-        list: undefined, // Records are too numerous to enumerate
+      "entry",
+      new ResourceTemplate(uri("entry/{pattern}/{id}"), {
+        list: undefined, // Entries are too numerous to enumerate
       }),
-      { description: "Individual record by object and ID", mimeType: "application/json" },
-      async (u, { object, id }) => {
-        const result = await store.getRecord(object as string, Number(id));
+      { description: "Individual entry by pattern and ID", mimeType: "application/json" },
+      async (u, { pattern, id }) => {
+        const result = await store.getEntry(pattern as string, Number(id));
         const parsed = JSON.parse(result);
         if (parsed.error) {
           throw new Error(parsed.message);
@@ -126,15 +126,15 @@ Key capabilities agents commonly miss:
 IMPORTANT: Start every session by reading ${uri("_system/tools")} for full capability reference.
 
 Valid URIs:
-- ${uri("index")} — master index (orientation, what objects exist)
-- ${uri("schema/{object}")} — field definitions for an object
-- ${uri("records/{object}/{id}")} — a single record
+- ${uri("index")} — master index (orientation, what patterns exist)
+- ${uri("schema/{pattern}")} — facet definitions for a pattern
+- ${uri("entry/{pattern}/{id}")} — a single entry
 - ${uri("history")} — schema change log (supports ?limit=N)
 - ${uri("_system/")} — list all system docs
 - ${uri("_system/{slug}")} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)
 - ${uri("_system/{slug}/default")} — read original seed version
-- ${uri("mutations")} — mutation audit log (supports ?limit=N). Use for diagnostics and integrity checks.
-- ${uri("mutations/{object}")} — mutations filtered to one object`,
+- ${uri("mutation")} — mutation audit log (supports ?limit=N). Use for diagnostics and integrity checks.
+- ${uri("mutation/{pattern}")} — mutations filtered to one pattern`,
       {
         uri: z.string().describe(`A ${URI_SCHEME}:// URI to resolve`),
       },
@@ -157,25 +157,25 @@ Valid URIs:
       "propose_change",
       `Propose a structural change. Validates and returns a preview of the index after the change. Does not commit.
 
-Supports: create_object (with fields), add_field (to existing object), add_convention.
-Fields can declare foreign key references to other objects via the references parameter.
-Object/field names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 fields per object.`,
+Supports: create_pattern (with facets), add_facet (to existing pattern), add_convention.
+Facets can declare foreign key links to other patterns via the links parameter.
+Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 facets per pattern.`,
       {
         description: z.string().describe("Natural language description of the change"),
         change: z.object({
-          type: z.enum(["create_object", "add_field", "add_convention"]).describe("Type of structural change"),
-          object_name: z.string().optional().describe("Target object name (for create_object and add_field)"),
-          object_description: z.string().optional().describe("Purpose of the object (for create_object)"),
-          fields: z.array(z.object({
+          type: z.enum(["create_pattern", "add_facet", "add_convention"]).describe("Type of structural change"),
+          pattern_name: z.string().optional().describe("Target pattern name (for create_pattern and add_facet)"),
+          pattern_description: z.string().optional().describe("Purpose of the pattern (for create_pattern)"),
+          facets: z.array(z.object({
             name: z.string(),
             type: z.enum(["text", "number", "integer", "boolean", "datetime"]),
             required: z.boolean().default(false),
             default_value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
-            references: z.object({
-              object: z.string().describe("Referenced object name"),
-              field: z.string().default("id").describe("Referenced field (default: id)"),
-            }).optional().describe("Foreign key reference to another object"),
-          })).optional().describe("Fields to create (for create_object or add_field)"),
+            links: z.object({
+              pattern: z.string().describe("Linked pattern name"),
+              facet: z.string().default("id").describe("Linked facet (default: id)"),
+            }).optional().describe("Foreign key link to another pattern"),
+          })).optional().describe("Facets to create (for create_pattern or add_facet)"),
           convention: z.string().optional().describe("Convention text (for add_convention)"),
         }),
       },
@@ -258,9 +258,9 @@ For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (
         try {
           await this.server.server.sendResourceUpdated({ uri: uri("index") });
           await this.server.server.sendResourceUpdated({ uri: uri("history") });
-          if (parsed.index?.objects) {
-            for (const obj of parsed.index.objects) {
-              await this.server.server.sendResourceUpdated({ uri: uri(`schema/${obj.name}`) });
+          if (parsed.index?.patterns) {
+            for (const pat of parsed.index.patterns) {
+              await this.server.server.sendResourceUpdated({ uri: uri(`schema/${pat.name}`) });
             }
           }
         } catch {
@@ -275,20 +275,20 @@ For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (
 
     this.server.tool(
       "query",
-      "Read records from an object. Supports filtering, field projection, sorting, limits (max 1,000 rows). Use count_only for efficient counts without fetching records.",
+      "Read entries from a pattern. Supports filtering, facet projection, sorting, limits (max 1,000 rows). Use count_only for efficient counts without fetching entries.",
       {
-        object: z.string().describe("Object name to query"),
-        filter: z.array(z.string()).optional().describe("Filter expressions: field=value, field>value, field~text (contains)"),
-        fields: z.string().optional().describe("Comma-separated field names to return (default: all)"),
-        sort: z.string().optional().describe("Field to sort by. Prefix with - for descending (e.g. -created_at)"),
-        limit: z.number().optional().describe("Max records to return (default: 100)"),
-        count_only: z.boolean().optional().describe("If true, return only the count matching the filters, not the records"),
+        pattern: z.string().describe("Pattern name to query"),
+        filter: z.array(z.string()).optional().describe("Filter expressions: facet=value, facet>value, facet~text (contains)"),
+        facets: z.string().optional().describe("Comma-separated facet names to return (default: all)"),
+        sort: z.string().optional().describe("Facet to sort by. Prefix with - for descending (e.g. -created_at)"),
+        limit: z.number().optional().describe("Max entries to return (default: 100)"),
+        count_only: z.boolean().optional().describe("If true, return only the count matching the filters, not the entries"),
       },
-      async ({ object, filter, fields, sort, limit, count_only }) => {
+      async ({ pattern, filter, facets, sort, limit, count_only }) => {
         const result = await store.query(
-          object,
+          pattern,
           filter ? JSON.stringify(filter) : "",
-          fields ?? "",
+          facets ?? "",
           sort ?? "",
           limit ?? 100,
           count_only ?? false
@@ -308,16 +308,16 @@ For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (
 
     this.server.tool(
       "search",
-      "Cross-object full-text search. Searches all text fields across all objects (or specified objects) for a term. Returns matching records with matched field names.",
+      "Cross-pattern full-text search. Searches all text facets across all patterns (or specified patterns) for a term. Returns matching entries with matched facet names.",
       {
-        term: z.string().describe("Search term to find across all text fields"),
-        objects: z.array(z.string()).optional().describe("Limit search to these object names (default: all objects)"),
+        term: z.string().describe("Search term to find across all text facets"),
+        patterns: z.array(z.string()).optional().describe("Limit search to these pattern names (default: all patterns)"),
         limit: z.number().optional().describe("Max total results (default: 20)"),
       },
-      async ({ term, objects, limit }) => {
+      async ({ term, patterns, limit }) => {
         const result = await store.search(
           term,
-          objects ? JSON.stringify(objects) : "",
+          patterns ? JSON.stringify(patterns) : "",
           limit ?? 20
         );
         const parsed = JSON.parse(result);
@@ -335,29 +335,29 @@ For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (
 
     this.server.tool(
       "mutate",
-      `Create, update, or archive records. One tool for all writes.
+      `Create, update, or archive entries. One tool for all writes.
 
-Single: pass object + operation (create|update|archive) + data.
-Batch: pass operation "batch" + data as array of [{object, operation, data}, ...] — atomic all-or-nothing, max 100 ops. Combine multiple writes into one call.
+Single: pass pattern + operation (create|update|archive) + data.
+Batch: pass operation "batch" + data as array of [{pattern, operation, data}, ...] — atomic all-or-nothing, max 100 ops. Combine multiple writes into one call.
 
 Update supports optimistic locking: include the version field from a prior read to detect conflicts across concurrent surfaces.
 
-Large content: to write content too large for MCP parameters, create an _upload_tokens record with {target_object, target_id, target_field, mode}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP.
+Large content: to write content too large for MCP parameters, create an _upload_tokens entry with {target_pattern, target_id, target_facet, mode}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP.
 
-Records limited to ~1 MB each.`,
+Entries limited to ~1 MB each.`,
       {
-        object: z.string().optional().describe("Object name (for single operation; ignored for batch)"),
-        operation: z.enum(["create", "update", "archive", "batch"]).describe("create, update, archive, or batch. For batch: data is an array of {object, operation, data} items."),
+        pattern: z.string().optional().describe("Pattern name (for single operation; ignored for batch)"),
+        operation: z.enum(["create", "update", "archive", "batch"]).describe("create, update, archive, or batch. For batch: data is an array of {pattern, operation, data} items."),
         data: z.union([
-          z.record(z.string(), z.unknown()).describe("For single ops: {field: value, ...}. For update: include version for optimistic locking."),
+          z.record(z.string(), z.unknown()).describe("For single ops: {facet: value, ...}. For update: include version for optimistic locking."),
           z.array(z.object({
-            object: z.string(),
+            pattern: z.string(),
             operation: z.enum(["create", "update", "archive"]),
             data: z.record(z.string(), z.unknown()),
-          })).describe("For batch: array of {object, operation, data} items."),
+          })).describe("For batch: array of {pattern, operation, data} items."),
         ]),
       },
-      async ({ object, operation, data }) => {
+      async ({ pattern, operation, data }) => {
         // Batch mode
         if (operation === "batch") {
           // Accept both native arrays and JSON-stringified arrays (Claude.ai sends strings)
@@ -368,7 +368,7 @@ Records limited to ~1 MB each.`,
           if (!Array.isArray(batchData)) {
             return {
               isError: true as const,
-              content: [{ type: "text" as const, text: "For batch operations, data must be an array of {object, operation, data} items." }],
+              content: [{ type: "text" as const, text: "For batch operations, data must be an array of {pattern, operation, data} items." }],
             };
           }
           const result = await store.batchMutate(JSON.stringify(batchData));
@@ -389,15 +389,15 @@ Records limited to ~1 MB each.`,
         if (typeof singleData === "string") {
           try { singleData = JSON.parse(singleData); } catch { /* fall through */ }
         }
-        if (!object || !operation || !singleData || typeof singleData !== "object" || Array.isArray(singleData)) {
+        if (!pattern || !operation || !singleData || typeof singleData !== "object" || Array.isArray(singleData)) {
           return {
             isError: true as const,
-            content: [{ type: "text" as const, text: "For single operations, pass object, operation (create|update|archive), and data (object). For batch, pass operation 'batch' with data as array." }],
+            content: [{ type: "text" as const, text: "For single operations, pass pattern, operation (create|update|archive), and data (object). For batch, pass operation 'batch' with data as array." }],
           };
         }
 
         // Confirmation gate for system docs
-        if (object === "_system_docs" && (operation === "update" || operation === "create")) {
+        if (pattern === "_system_docs" && (operation === "update" || operation === "create")) {
           const confirmKey = `_system_docs_confirmed:${JSON.stringify(singleData)}`;
           const alreadyConfirmed = this.confirmed.has(confirmKey);
 
@@ -409,7 +409,7 @@ Records limited to ~1 MB each.`,
                 text: JSON.stringify({
                   confirmation_required: true,
                   message: "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
-                  object,
+                  pattern,
                   operation,
                   data: singleData,
                 }, null, 2),
@@ -419,7 +419,7 @@ Records limited to ~1 MB each.`,
           this.confirmed.delete(confirmKey);
         }
 
-        const result = await store.mutate(object, operation, JSON.stringify(singleData));
+        const result = await store.mutate(pattern, operation, JSON.stringify(singleData));
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {

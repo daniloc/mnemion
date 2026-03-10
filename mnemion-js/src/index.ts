@@ -300,11 +300,11 @@ const defaultHandler = {
       const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
 
       // Create _plugins schema
-      let result = await store.proposeChange("Create _plugins object", JSON.stringify({
-        type: "create_object",
-        object_name: "_plugins",
-        object_description: "Plugin packages for the marketplace",
-        fields: [
+      let result = await store.proposeChange("Create _plugins pattern", JSON.stringify({
+        type: "create_pattern",
+        pattern_name: "_plugins",
+        pattern_description: "Plugin packages for the marketplace",
+        facets: [
           { name: "name", type: "text", required: true },
           { name: "description", type: "text", required: true },
           { name: "version", type: "text", required: true },
@@ -321,11 +321,11 @@ const defaultHandler = {
       }
 
       // Create _skills schema
-      result = await store.proposeChange("Create _skills object", JSON.stringify({
-        type: "create_object",
-        object_name: "_skills",
-        object_description: "Skills within plugins",
-        fields: [
+      result = await store.proposeChange("Create _skills pattern", JSON.stringify({
+        type: "create_pattern",
+        pattern_name: "_skills",
+        pattern_description: "Skills within plugins",
+        facets: [
           { name: "plugin_id", type: "integer", required: true },
           { name: "name", type: "text", required: true },
           { name: "description", type: "text" },
@@ -350,7 +350,7 @@ const defaultHandler = {
 
       // Create a test skill
       await store.mutate("_skills", "create", JSON.stringify({
-        plugin_id: plugin.record.id,
+        plugin_id: plugin.entry.id,
         name: "hello-world",
         description: "A test skill that greets the user",
         argument_hint: "[name]",
@@ -383,11 +383,11 @@ const defaultHandler = {
         }));
         const parsed = JSON.parse(result);
         if (parsed.error) return Response.json(parsed, { status: 500 });
-        const token = parsed.record.token;
+        const token = parsed.entry.token;
         return Response.json({
           token,
-          name: parsed.record.name,
-          scope: parsed.record.scope ? JSON.parse(parsed.record.scope) : null,
+          name: parsed.entry.name,
+          scope: parsed.entry.scope ? JSON.parse(parsed.entry.scope) : null,
           install: `https://${URI_SCHEME}:${token}@${url.host}/marketplace.git`,
         });
       }

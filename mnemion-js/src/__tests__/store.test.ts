@@ -7,20 +7,20 @@ function getStore(): DurableObjectStub<StoreDO> {
   return env.MNEMION_STORE.get(id);
 }
 
-// Helper: create an object via propose + apply
-async function createObject(
+// Helper: create a pattern via propose + apply
+async function createPattern(
   store: DurableObjectStub<StoreDO>,
   name: string,
-  fields: { name: string; type: string; required?: boolean; references?: { object: string; field?: string } }[],
+  facets: { name: string; type: string; required?: boolean; links?: { pattern: string; facet?: string } }[],
   description?: string
 ) {
   const result = await store.proposeChange(
     `Create ${name}`,
     JSON.stringify({
-      type: "create_object",
-      object_name: name,
-      object_description: description || `Test object: ${name}`,
-      fields,
+      type: "create_pattern",
+      pattern_name: name,
+      pattern_description: description || `Test pattern: ${name}`,
+      facets,
     })
   );
   const parsed = JSON.parse(result);
@@ -29,9 +29,9 @@ async function createObject(
   return JSON.parse(applied);
 }
 
-// Helper: create a record
-async function createRecord(store: DurableObjectStub<StoreDO>, object: string, data: Record<string, unknown>) {
-  const result = await store.mutate(object, "create", JSON.stringify(data));
+// Helper: create an entry
+async function createEntry(store: DurableObjectStub<StoreDO>, pattern: string, data: Record<string, unknown>) {
+  const result = await store.mutate(pattern, "create", JSON.stringify(data));
   return JSON.parse(result);
 }
 
@@ -43,15 +43,15 @@ describe("Index", () => {
     const result = JSON.parse(await store.getIndex());
     expect(result.version).toBeTypeOf("number");
     expect(result.guidance).toBeTypeOf("string");
-    expect(result.objects).toBeInstanceOf(Array);
+    expect(result.patterns).toBeInstanceOf(Array);
     expect(result.conventions).toBeInstanceOf(Array);
     expect(result.system_docs).toBe("mnemion://_system/");
   });
 
-  it("includes kernel objects in the index", async () => {
+  it("includes kernel patterns in the index", async () => {
     const store = getStore();
     const result = JSON.parse(await store.getIndex());
-    const names = result.objects.map((o: any) => o.name);
+    const names = result.patterns.map((p: any) => p.name);
     expect(names).toContain("_marketplace_tokens");
     expect(names).toContain("_system_docs");
     expect(names).toContain("_upload_tokens");
@@ -61,9 +61,9 @@ describe("Index", () => {
 // === Schema Evolution ===
 
 describe("Schema Evolution", () => {
-  it("creates an object with propose + apply", async () => {
+  it("creates a pattern with propose + apply", async () => {
     const store = getStore();
-    const result = await createObject(store, "tasks", [
+    const result = await createPattern(store, "tasks", [
       { name: "title", type: "text", required: true },
       { name: "status", type: "text" },
       { name: "priority", type: "integer" },
@@ -71,46 +71,46 @@ describe("Schema Evolution", () => {
     expect(result.applied).toBe(true);
 
     const index = JSON.parse(await store.getIndex());
-    const task = index.objects.find((o: any) => o.name === "tasks");
+    const task = index.patterns.find((p: any) => p.name === "tasks");
     expect(task).toBeDefined();
-    expect(task.fields).toHaveLength(3);
+    expect(task.facets).toHaveLength(3);
   });
 
-  it("rejects duplicate object names", async () => {
+  it("rejects duplicate pattern names", async () => {
     const store = getStore();
-    await createObject(store, "items", [{ name: "label", type: "text" }]);
+    await createPattern(store, "items", [{ name: "label", type: "text" }]);
     const result = await store.proposeChange(
       "Duplicate",
-      JSON.stringify({ type: "create_object", object_name: "items", fields: [{ name: "x", type: "text" }] })
+      JSON.stringify({ type: "create_pattern", pattern_name: "items", facets: [{ name: "x", type: "text" }] })
     );
     expect(JSON.parse(result).error).toBe(true);
   });
 
-  it("adds fields to existing object", async () => {
+  it("adds facets to existing pattern", async () => {
     const store = getStore();
-    await createObject(store, "notes", [{ name: "body", type: "text", required: true }]);
+    await createPattern(store, "notes", [{ name: "body", type: "text", required: true }]);
 
     const propose = await store.proposeChange(
       "Add tag",
-      JSON.stringify({ type: "add_field", object_name: "notes", fields: [{ name: "tag", type: "text" }] })
+      JSON.stringify({ type: "add_facet", pattern_name: "notes", facets: [{ name: "tag", type: "text" }] })
     );
     const parsed = JSON.parse(propose);
     expect(parsed.change_id).toBeDefined();
     await store.applyChange(parsed.change_id);
 
     const schema = JSON.parse(await store.getSchema("notes"));
-    const fieldNames = schema.fields.map((f: any) => f.name);
-    expect(fieldNames).toContain("tag");
+    const facetNames = schema.facets.map((f: any) => f.name);
+    expect(facetNames).toContain("tag");
   });
 
-  it("rejects kernel column names as fields", async () => {
+  it("rejects kernel column names as facets", async () => {
     const store = getStore();
     const result = await store.proposeChange(
-      "Bad field",
+      "Bad facet",
       JSON.stringify({
-        type: "create_object",
-        object_name: "bad-obj",
-        fields: [{ name: "id", type: "integer" }],
+        type: "create_pattern",
+        pattern_name: "bad-pat",
+        facets: [{ name: "id", type: "integer" }],
       })
     );
     expect(JSON.parse(result).error).toBe(true);
@@ -120,36 +120,36 @@ describe("Schema Evolution", () => {
     const store = getStore();
     const propose = await store.proposeChange(
       "Add convention",
-      JSON.stringify({ type: "add_convention", convention: "Always use kebab-case for object names" })
+      JSON.stringify({ type: "add_convention", convention: "Always use kebab-case for pattern names" })
     );
     const parsed = JSON.parse(propose);
     await store.applyChange(parsed.change_id);
 
     const index = JSON.parse(await store.getIndex());
-    expect(index.conventions).toContain("Always use kebab-case for object names");
+    expect(index.conventions).toContain("Always use kebab-case for pattern names");
   });
 
-  it("supports foreign key references", async () => {
+  it("supports foreign key links", async () => {
     const store = getStore();
-    await createObject(store, "projects", [{ name: "name", type: "text", required: true }]);
-    await createObject(store, "milestones", [
+    await createPattern(store, "projects", [{ name: "name", type: "text", required: true }]);
+    await createPattern(store, "milestones", [
       { name: "title", type: "text", required: true },
-      { name: "project_id", type: "integer", required: true, references: { object: "projects" } },
+      { name: "project_id", type: "integer", required: true, links: { pattern: "projects" } },
     ]);
 
     const schema = JSON.parse(await store.getSchema("milestones"));
-    const projectField = schema.fields.find((f: any) => f.name === "project_id");
-    expect(projectField.references).toBe("projects");
+    const projectFacet = schema.facets.find((f: any) => f.name === "project_id");
+    expect(projectFacet.links).toBe("projects");
   });
 
-  it("rejects references to non-existent objects", async () => {
+  it("rejects links to non-existent patterns", async () => {
     const store = getStore();
     const result = await store.proposeChange(
-      "Bad ref",
+      "Bad link",
       JSON.stringify({
-        type: "create_object",
-        object_name: "orphans",
-        fields: [{ name: "parent_id", type: "integer", references: { object: "nonexistent" } }],
+        type: "create_pattern",
+        pattern_name: "orphans",
+        facets: [{ name: "parent_id", type: "integer", links: { pattern: "nonexistent" } }],
       })
     );
     expect(JSON.parse(result).error).toBe(true);
@@ -157,22 +157,22 @@ describe("Schema Evolution", () => {
 
   it("records schema history", async () => {
     const store = getStore();
-    await createObject(store, "logs", [{ name: "message", type: "text" }]);
+    await createPattern(store, "logs", [{ name: "message", type: "text" }]);
 
     const history = JSON.parse(await store.getHistory(10));
     expect(history.history.length).toBeGreaterThan(0);
-    expect(history.history[0].change_type).toBe("create_object");
+    expect(history.history[0].change_type).toBe("create_pattern");
   });
 });
 
 // === Name Validation ===
 
 describe("Name Validation", () => {
-  it("rejects uppercase object names", async () => {
+  it("rejects uppercase pattern names", async () => {
     const store = getStore();
     const result = await store.proposeChange(
       "Bad name",
-      JSON.stringify({ type: "create_object", object_name: "BadName", fields: [{ name: "x", type: "text" }] })
+      JSON.stringify({ type: "create_pattern", pattern_name: "BadName", facets: [{ name: "x", type: "text" }] })
     );
     expect(JSON.parse(result).error).toBe(true);
   });
@@ -181,7 +181,7 @@ describe("Name Validation", () => {
     const store = getStore();
     const result = await store.proposeChange(
       "Bad name",
-      JSON.stringify({ type: "create_object", object_name: "123abc", fields: [{ name: "x", type: "text" }] })
+      JSON.stringify({ type: "create_pattern", pattern_name: "123abc", facets: [{ name: "x", type: "text" }] })
     );
     expect(JSON.parse(result).error).toBe(true);
   });
@@ -190,7 +190,7 @@ describe("Name Validation", () => {
     const store = getStore();
     const result = await store.proposeChange(
       "Bad name",
-      JSON.stringify({ type: "create_object", object_name: "my object", fields: [{ name: "x", type: "text" }] })
+      JSON.stringify({ type: "create_pattern", pattern_name: "my pattern", facets: [{ name: "x", type: "text" }] })
     );
     expect(JSON.parse(result).error).toBe(true);
   });
@@ -200,9 +200,9 @@ describe("Name Validation", () => {
     const result = await store.proposeChange(
       "Good name",
       JSON.stringify({
-        type: "create_object",
-        object_name: "my-cool-object",
-        fields: [{ name: "some_field", type: "text" }],
+        type: "create_pattern",
+        pattern_name: "my-cool-pattern",
+        facets: [{ name: "some_facet", type: "text" }],
       })
     );
     expect(JSON.parse(result).change_id).toBeDefined();
@@ -213,37 +213,37 @@ describe("Name Validation", () => {
     const longName = "a".repeat(65);
     const result = await store.proposeChange(
       "Long name",
-      JSON.stringify({ type: "create_object", object_name: longName, fields: [{ name: "x", type: "text" }] })
+      JSON.stringify({ type: "create_pattern", pattern_name: longName, facets: [{ name: "x", type: "text" }] })
     );
     expect(JSON.parse(result).error).toBe(true);
   });
 
-  it("rejects uppercase field names", async () => {
+  it("rejects uppercase facet names", async () => {
     const store = getStore();
     const result = await store.proposeChange(
-      "Bad field",
+      "Bad facet",
       JSON.stringify({
-        type: "create_object",
-        object_name: "valid-obj",
-        fields: [{ name: "BadField", type: "text" }],
+        type: "create_pattern",
+        pattern_name: "valid-pat",
+        facets: [{ name: "BadFacet", type: "text" }],
       })
     );
     expect(JSON.parse(result).error).toBe(true);
   });
 });
 
-// === Field Limits ===
+// === Facet Limits ===
 
-describe("Field Limits", () => {
-  it("rejects objects with more than 64 fields", async () => {
+describe("Facet Limits", () => {
+  it("rejects patterns with more than 64 facets", async () => {
     const store = getStore();
-    const fields = Array.from({ length: 65 }, (_, i) => ({
-      name: `field_${i}`,
+    const facets = Array.from({ length: 65 }, (_, i) => ({
+      name: `facet_${i}`,
       type: "text",
     }));
     const result = await store.proposeChange(
-      "Too many fields",
-      JSON.stringify({ type: "create_object", object_name: "wide-table", fields })
+      "Too many facets",
+      JSON.stringify({ type: "create_pattern", pattern_name: "wide-table", facets })
     );
     expect(JSON.parse(result).error).toBe(true);
     expect(JSON.parse(result).message).toContain("64");
@@ -253,24 +253,24 @@ describe("Field Limits", () => {
 // === CRUD Operations ===
 
 describe("Mutate - Create", () => {
-  it("creates a record and returns it with kernel columns", async () => {
+  it("creates an entry and returns it with kernel columns", async () => {
     const store = getStore();
-    await createObject(store, "people", [
+    await createPattern(store, "people", [
       { name: "name", type: "text", required: true },
       { name: "age", type: "integer" },
     ]);
 
-    const result = await createRecord(store, "people", { name: "Alice", age: 30 });
-    expect(result.record.id).toBeTypeOf("number");
-    expect(result.record.name).toBe("Alice");
-    expect(result.record.age).toBe(30);
-    expect(result.record.created_at).toBeDefined();
-    expect(result.record.updated_at).toBeDefined();
-    expect(result.record.archived_at).toBeNull();
-    expect(result.record.version).toBe(0);
+    const result = await createEntry(store, "people", { name: "Alice", age: 30 });
+    expect(result.entry.id).toBeTypeOf("number");
+    expect(result.entry.name).toBe("Alice");
+    expect(result.entry.age).toBe(30);
+    expect(result.entry.created_at).toBeDefined();
+    expect(result.entry.updated_at).toBeDefined();
+    expect(result.entry.archived_at).toBeNull();
+    expect(result.entry.version).toBe(0);
   });
 
-  it("rejects creates on non-existent objects", async () => {
+  it("rejects creates on non-existent patterns", async () => {
     const store = getStore();
     const result = JSON.parse(await store.mutate("nonexistent", "create", JSON.stringify({ x: 1 })));
     expect(result.error).toBe(true);
@@ -278,33 +278,33 @@ describe("Mutate - Create", () => {
 });
 
 describe("Mutate - Update", () => {
-  it("updates a record and increments version", async () => {
+  it("updates an entry and increments version", async () => {
     const store = getStore();
-    await createObject(store, "widgets", [{ name: "color", type: "text" }]);
-    const created = await createRecord(store, "widgets", { color: "red" });
+    await createPattern(store, "widgets", [{ name: "color", type: "text" }]);
+    const created = await createEntry(store, "widgets", { color: "red" });
 
     const result = JSON.parse(
-      await store.mutate("widgets", "update", JSON.stringify({ id: created.record.id, color: "blue" }))
+      await store.mutate("widgets", "update", JSON.stringify({ id: created.entry.id, color: "blue" }))
     );
-    expect(result.record.color).toBe("blue");
-    expect(result.record.version).toBe(1);
+    expect(result.entry.color).toBe("blue");
+    expect(result.entry.version).toBe(1);
   });
 
   it("supports optimistic locking via version", async () => {
     const store = getStore();
-    await createObject(store, "docs", [{ name: "content", type: "text" }]);
-    const created = await createRecord(store, "docs", { content: "v1" });
+    await createPattern(store, "docs", [{ name: "content", type: "text" }]);
+    const created = await createEntry(store, "docs", { content: "v1" });
 
     // Update with correct version
     const ok = JSON.parse(
-      await store.mutate("docs", "update", JSON.stringify({ id: created.record.id, content: "v2", version: 0 }))
+      await store.mutate("docs", "update", JSON.stringify({ id: created.entry.id, content: "v2", version: 0 }))
     );
-    expect(ok.record.content).toBe("v2");
-    expect(ok.record.version).toBe(1);
+    expect(ok.entry.content).toBe("v2");
+    expect(ok.entry.version).toBe(1);
 
     // Update with stale version
     const conflict = JSON.parse(
-      await store.mutate("docs", "update", JSON.stringify({ id: created.record.id, content: "v3", version: 0 }))
+      await store.mutate("docs", "update", JSON.stringify({ id: created.entry.id, content: "v3", version: 0 }))
     );
     expect(conflict.error).toBe(true);
     expect(conflict.message).toContain("Version conflict");
@@ -312,98 +312,95 @@ describe("Mutate - Update", () => {
 
   it("allows update without version (last-write-wins)", async () => {
     const store = getStore();
-    await createObject(store, "memos", [{ name: "text", type: "text" }]);
-    const created = await createRecord(store, "memos", { text: "original" });
+    await createPattern(store, "memos", [{ name: "text", type: "text" }]);
+    const created = await createEntry(store, "memos", { text: "original" });
 
     const result = JSON.parse(
-      await store.mutate("memos", "update", JSON.stringify({ id: created.record.id, text: "changed" }))
+      await store.mutate("memos", "update", JSON.stringify({ id: created.entry.id, text: "changed" }))
     );
-    expect(result.record.text).toBe("changed");
+    expect(result.entry.text).toBe("changed");
   });
 
   it("requires id for update", async () => {
     const store = getStore();
-    await createObject(store, "things", [{ name: "val", type: "text" }]);
+    await createPattern(store, "things", [{ name: "val", type: "text" }]);
     const result = JSON.parse(await store.mutate("things", "update", JSON.stringify({ val: "x" })));
     expect(result.error).toBe(true);
   });
 });
 
 describe("Mutate - Archive", () => {
-  it("soft-deletes a record", async () => {
+  it("soft-deletes an entry", async () => {
     const store = getStore();
-    await createObject(store, "entries", [{ name: "title", type: "text" }]);
-    const created = await createRecord(store, "entries", { title: "delete me" });
+    await createPattern(store, "items", [{ name: "title", type: "text" }]);
+    const created = await createEntry(store, "items", { title: "delete me" });
 
-    await store.mutate("entries", "archive", JSON.stringify({ id: created.record.id }));
+    await store.mutate("items", "archive", JSON.stringify({ id: created.entry.id }));
 
     // Should not appear in queries
-    const query = JSON.parse(await store.query("entries", "", "", "", 100, false));
-    expect(query.records).toHaveLength(0);
+    const query = JSON.parse(await store.query("items", "", "", "", 100, false));
+    expect(query.entries).toHaveLength(0);
   });
 });
 
 // === User Version Field (e.g. semver on _plugins) ===
 
 describe("User Version Field", () => {
-  it("allows creating records with a user-defined version field", async () => {
+  it("allows creating entries with a user-defined version field", async () => {
     const store = getStore();
-    await createObject(store, "packages", [
+    await createPattern(store, "packages", [
       { name: "name", type: "text", required: true },
       { name: "pkg_version", type: "text", required: true },
     ]);
 
-    const result = await createRecord(store, "packages", { name: "my-pkg", pkg_version: "1.0.0" });
+    const result = await createEntry(store, "packages", { name: "my-pkg", pkg_version: "1.0.0" });
     expect(result.error).toBeUndefined();
-    expect(result.record.pkg_version).toBe("1.0.0");
+    expect(result.entry.pkg_version).toBe("1.0.0");
     // Should also have a kernel version column
-    expect(result.record.version).toBe(0);
+    expect(result.entry.version).toBe(0);
   });
 
   it("handles tables where user version field shadows kernel version", async () => {
     const store = getStore();
-    // Create an object with 'version' as a user field (like _plugins)
-    await createObject(store, "versioned-pkgs", [
+    await createPattern(store, "versioned-pkgs", [
       { name: "name", type: "text", required: true },
       { name: "version", type: "text", required: true },
     ]);
 
-    // The migration tries ALTER TABLE ADD COLUMN version INTEGER but it already
-    // exists as TEXT, so it silently fails. The user version field should work.
-    const result = await createRecord(store, "versioned-pkgs", { name: "pkg", version: "1.0.0" });
+    const result = await createEntry(store, "versioned-pkgs", { name: "pkg", version: "1.0.0" });
     expect(result.error).toBeUndefined();
-    expect(result.record.version).toBe("1.0.0");
+    expect(result.entry.version).toBe("1.0.0");
   });
 
   it("allows updating a user-defined version field", async () => {
     const store = getStore();
-    await createObject(store, "libs", [
+    await createPattern(store, "libs", [
       { name: "name", type: "text", required: true },
       { name: "version", type: "text", required: true },
     ]);
-    const created = await createRecord(store, "libs", { name: "my-lib", version: "1.0.0" });
+    const created = await createEntry(store, "libs", { name: "my-lib", version: "1.0.0" });
     expect(created.error).toBeUndefined();
 
     const result = JSON.parse(
-      await store.mutate("libs", "update", JSON.stringify({ id: created.record.id, version: "2.0.0" }))
+      await store.mutate("libs", "update", JSON.stringify({ id: created.entry.id, version: "2.0.0" }))
     );
-    expect(result.record.version).toBe("2.0.0");
+    expect(result.entry.version).toBe("2.0.0");
   });
 
   it("does not auto-increment user version fields", async () => {
     const store = getStore();
-    await createObject(store, "modules", [
+    await createPattern(store, "modules", [
       { name: "name", type: "text", required: true },
       { name: "version", type: "text", required: true },
     ]);
-    const created = await createRecord(store, "modules", { name: "mod", version: "0.1.0" });
+    const created = await createEntry(store, "modules", { name: "mod", version: "0.1.0" });
     expect(created.error).toBeUndefined();
 
     const result = JSON.parse(
-      await store.mutate("modules", "update", JSON.stringify({ id: created.record.id, name: "mod-renamed" }))
+      await store.mutate("modules", "update", JSON.stringify({ id: created.entry.id, name: "mod-renamed" }))
     );
     // version should stay as the original string, not become an integer
-    expect(result.record.version).toBe("0.1.0");
+    expect(result.entry.version).toBe("0.1.0");
   });
 });
 
@@ -412,7 +409,7 @@ describe("User Version Field", () => {
 describe("Batch Mutate", () => {
   it("executes multiple operations atomically", async () => {
     const store = getStore();
-    await createObject(store, "counters", [
+    await createPattern(store, "counters", [
       { name: "name", type: "text", required: true },
       { name: "value", type: "integer" },
     ]);
@@ -420,9 +417,9 @@ describe("Batch Mutate", () => {
     const result = JSON.parse(
       await store.batchMutate(
         JSON.stringify([
-          { object: "counters", operation: "create", data: { name: "a", value: 1 } },
-          { object: "counters", operation: "create", data: { name: "b", value: 2 } },
-          { object: "counters", operation: "create", data: { name: "c", value: 3 } },
+          { pattern: "counters", operation: "create", data: { name: "a", value: 1 } },
+          { pattern: "counters", operation: "create", data: { name: "b", value: 2 } },
+          { pattern: "counters", operation: "create", data: { name: "c", value: 3 } },
         ])
       )
     );
@@ -432,30 +429,30 @@ describe("Batch Mutate", () => {
 
   it("rolls back all operations on failure", async () => {
     const store = getStore();
-    await createObject(store, "atoms", [{ name: "val", type: "text", required: true }]);
+    await createPattern(store, "atoms", [{ name: "val", type: "text", required: true }]);
 
     try {
       await store.batchMutate(
         JSON.stringify([
-          { object: "atoms", operation: "create", data: { val: "good" } },
-          { object: "nonexistent", operation: "create", data: { val: "bad" } },
+          { pattern: "atoms", operation: "create", data: { val: "good" } },
+          { pattern: "nonexistent", operation: "create", data: { val: "bad" } },
         ])
       );
     } catch {
       // Expected to throw
     }
 
-    // First record should not exist due to rollback
+    // First entry should not exist due to rollback
     const query = JSON.parse(await store.query("atoms", "", "", "", 100, false));
-    expect(query.records).toHaveLength(0);
+    expect(query.entries).toHaveLength(0);
   });
 
   it("rejects batches over 100 operations", async () => {
     const store = getStore();
-    await createObject(store, "bulk", [{ name: "x", type: "text" }]);
+    await createPattern(store, "bulk", [{ name: "x", type: "text" }]);
 
     const ops = Array.from({ length: 101 }, (_, i) => ({
-      object: "bulk",
+      pattern: "bulk",
       operation: "create",
       data: { x: `item-${i}` },
     }));
@@ -466,12 +463,12 @@ describe("Batch Mutate", () => {
   });
 });
 
-// === Record Size Limit ===
+// === Entry Size Limit ===
 
-describe("Record Size Limit", () => {
-  it("rejects records exceeding 1MB", async () => {
+describe("Entry Size Limit", () => {
+  it("rejects entries exceeding 1MB", async () => {
     const store = getStore();
-    await createObject(store, "blobs", [{ name: "content", type: "text" }]);
+    await createPattern(store, "blobs", [{ name: "content", type: "text" }]);
 
     const bigContent = "x".repeat(600_000); // ~1.2MB in UTF-16 estimate
     const result = JSON.parse(
@@ -485,122 +482,122 @@ describe("Record Size Limit", () => {
 // === Query ===
 
 describe("Query", () => {
-  it("returns records with filtering", async () => {
+  it("returns entries with filtering", async () => {
     const store = getStore();
-    await createObject(store, "products", [
+    await createPattern(store, "products", [
       { name: "name", type: "text", required: true },
       { name: "price", type: "number" },
       { name: "category", type: "text" },
     ]);
-    await createRecord(store, "products", { name: "Widget", price: 10, category: "tools" });
-    await createRecord(store, "products", { name: "Gadget", price: 50, category: "electronics" });
-    await createRecord(store, "products", { name: "Wrench", price: 15, category: "tools" });
+    await createEntry(store, "products", { name: "Widget", price: 10, category: "tools" });
+    await createEntry(store, "products", { name: "Gadget", price: 50, category: "electronics" });
+    await createEntry(store, "products", { name: "Wrench", price: 15, category: "tools" });
 
     const result = JSON.parse(
       await store.query("products", JSON.stringify(["category=tools"]), "", "", 100, false)
     );
-    expect(result.records).toHaveLength(2);
+    expect(result.entries).toHaveLength(2);
   });
 
-  it("supports field projection", async () => {
+  it("supports facet projection", async () => {
     const store = getStore();
-    await createObject(store, "contacts", [
+    await createPattern(store, "contacts", [
       { name: "name", type: "text", required: true },
       { name: "email", type: "text" },
     ]);
-    await createRecord(store, "contacts", { name: "Bob", email: "bob@test.com" });
+    await createEntry(store, "contacts", { name: "Bob", email: "bob@test.com" });
 
     const result = JSON.parse(await store.query("contacts", "", "name", "", 100, false));
-    expect(result.records[0].name).toBe("Bob");
-    expect(result.records[0].email).toBeUndefined();
+    expect(result.entries[0].name).toBe("Bob");
+    expect(result.entries[0].email).toBeUndefined();
     // id is always included
-    expect(result.records[0].id).toBeDefined();
+    expect(result.entries[0].id).toBeDefined();
   });
 
   it("supports sorting", async () => {
     const store = getStore();
-    await createObject(store, "scores", [
+    await createPattern(store, "scores", [
       { name: "player", type: "text" },
       { name: "points", type: "integer" },
     ]);
-    await createRecord(store, "scores", { player: "Alice", points: 100 });
-    await createRecord(store, "scores", { player: "Bob", points: 50 });
-    await createRecord(store, "scores", { player: "Carol", points: 200 });
+    await createEntry(store, "scores", { player: "Alice", points: 100 });
+    await createEntry(store, "scores", { player: "Bob", points: 50 });
+    await createEntry(store, "scores", { player: "Carol", points: 200 });
 
     const result = JSON.parse(await store.query("scores", "", "", "-points", 100, false));
-    expect(result.records[0].player).toBe("Carol");
-    expect(result.records[2].player).toBe("Bob");
+    expect(result.entries[0].player).toBe("Carol");
+    expect(result.entries[2].player).toBe("Bob");
   });
 
   it("supports count_only mode", async () => {
     const store = getStore();
-    await createObject(store, "rows", [{ name: "val", type: "integer" }]);
-    await createRecord(store, "rows", { val: 1 });
-    await createRecord(store, "rows", { val: 2 });
+    await createPattern(store, "rows", [{ name: "val", type: "integer" }]);
+    await createEntry(store, "rows", { val: 1 });
+    await createEntry(store, "rows", { val: 2 });
 
     const result = JSON.parse(await store.query("rows", "", "", "", 100, true));
     expect(result.count).toBe(2);
-    expect(result.records).toBeUndefined();
+    expect(result.entries).toBeUndefined();
   });
 
   it("clamps limit to 1000", async () => {
     const store = getStore();
-    await createObject(store, "capped", [{ name: "x", type: "text" }]);
+    await createPattern(store, "capped", [{ name: "x", type: "text" }]);
 
     // Just verify it doesn't error with a high limit
     const result = JSON.parse(await store.query("capped", "", "", "", 9999, false));
-    expect(result.records).toBeInstanceOf(Array);
+    expect(result.entries).toBeInstanceOf(Array);
   });
 
-  it("excludes archived records", async () => {
+  it("excludes archived entries", async () => {
     const store = getStore();
-    await createObject(store, "mixed", [{ name: "label", type: "text" }]);
-    const r1 = await createRecord(store, "mixed", { label: "keep" });
-    const r2 = await createRecord(store, "mixed", { label: "remove" });
-    await store.mutate("mixed", "archive", JSON.stringify({ id: r2.record.id }));
+    await createPattern(store, "mixed", [{ name: "label", type: "text" }]);
+    const r1 = await createEntry(store, "mixed", { label: "keep" });
+    const r2 = await createEntry(store, "mixed", { label: "remove" });
+    await store.mutate("mixed", "archive", JSON.stringify({ id: r2.entry.id }));
 
     const result = JSON.parse(await store.query("mixed", "", "", "", 100, false));
-    expect(result.records).toHaveLength(1);
-    expect(result.records[0].label).toBe("keep");
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].label).toBe("keep");
   });
 
   it("supports contains filter (~)", async () => {
     const store = getStore();
-    await createObject(store, "articles", [{ name: "title", type: "text" }]);
-    await createRecord(store, "articles", { title: "Introduction to TypeScript" });
-    await createRecord(store, "articles", { title: "Python for beginners" });
+    await createPattern(store, "articles", [{ name: "title", type: "text" }]);
+    await createEntry(store, "articles", { title: "Introduction to TypeScript" });
+    await createEntry(store, "articles", { title: "Python for beginners" });
 
     const result = JSON.parse(
       await store.query("articles", JSON.stringify(["title~TypeScript"]), "", "", 100, false)
     );
-    expect(result.records).toHaveLength(1);
+    expect(result.entries).toHaveLength(1);
   });
 });
 
 // === Search ===
 
 describe("Search", () => {
-  it("finds records across objects", async () => {
+  it("finds entries across patterns", async () => {
     const store = getStore();
-    await createObject(store, "books", [{ name: "title", type: "text" }]);
-    await createObject(store, "movies", [{ name: "title", type: "text" }]);
-    await createRecord(store, "books", { title: "The Great Gatsby" });
-    await createRecord(store, "movies", { title: "The Great Escape" });
+    await createPattern(store, "books", [{ name: "title", type: "text" }]);
+    await createPattern(store, "movies", [{ name: "title", type: "text" }]);
+    await createEntry(store, "books", { title: "The Great Gatsby" });
+    await createEntry(store, "movies", { title: "The Great Escape" });
 
     const result = JSON.parse(await store.search("Great", "", 20));
     expect(result.results.length).toBe(2);
   });
 
-  it("limits search to specified objects", async () => {
+  it("limits search to specified patterns", async () => {
     const store = getStore();
-    await createObject(store, "alpha", [{ name: "text", type: "text" }]);
-    await createObject(store, "beta", [{ name: "text", type: "text" }]);
-    await createRecord(store, "alpha", { text: "needle" });
-    await createRecord(store, "beta", { text: "needle" });
+    await createPattern(store, "alpha", [{ name: "text", type: "text" }]);
+    await createPattern(store, "beta", [{ name: "text", type: "text" }]);
+    await createEntry(store, "alpha", { text: "needle" });
+    await createEntry(store, "beta", { text: "needle" });
 
     const result = JSON.parse(await store.search("needle", JSON.stringify(["alpha"]), 20));
     expect(result.results.length).toBe(1);
-    expect(result.results[0].object).toBe("alpha");
+    expect(result.results[0].pattern).toBe("alpha");
   });
 });
 
@@ -610,7 +607,7 @@ describe("Resolve", () => {
   it("resolves mnemion://index", async () => {
     const store = getStore();
     const result = JSON.parse(await store.resolve("mnemion://index"));
-    expect(result.objects).toBeInstanceOf(Array);
+    expect(result.patterns).toBeInstanceOf(Array);
   });
 
   it("resolves mnemion://history", async () => {
@@ -619,20 +616,20 @@ describe("Resolve", () => {
     expect(result.history).toBeInstanceOf(Array);
   });
 
-  it("resolves mnemion://schema/{object}", async () => {
+  it("resolves mnemion://schema/{pattern}", async () => {
     const store = getStore();
-    await createObject(store, "resolvable", [{ name: "x", type: "text" }]);
+    await createPattern(store, "resolvable", [{ name: "x", type: "text" }]);
     const result = JSON.parse(await store.resolve("mnemion://schema/resolvable"));
-    expect(result.object).toBe("resolvable");
-    expect(result.fields).toBeInstanceOf(Array);
+    expect(result.pattern).toBe("resolvable");
+    expect(result.facets).toBeInstanceOf(Array);
   });
 
-  it("resolves mnemion://records/{object}/{id}", async () => {
+  it("resolves mnemion://entry/{pattern}/{id}", async () => {
     const store = getStore();
-    await createObject(store, "lookups", [{ name: "val", type: "text" }]);
-    const created = await createRecord(store, "lookups", { val: "found" });
-    const result = JSON.parse(await store.resolve(`mnemion://records/lookups/${created.record.id}`));
-    expect(result.record.val).toBe("found");
+    await createPattern(store, "lookups", [{ name: "val", type: "text" }]);
+    const created = await createEntry(store, "lookups", { val: "found" });
+    const result = JSON.parse(await store.resolve(`mnemion://entry/lookups/${created.entry.id}`));
+    expect(result.entry.val).toBe("found");
   });
 
   it("resolves mnemion://_system/", async () => {
@@ -649,9 +646,9 @@ describe("Resolve", () => {
     expect(result.content).toContain("mutate");
   });
 
-  it("resolves mnemion://mutations", async () => {
+  it("resolves mnemion://mutation", async () => {
     const store = getStore();
-    const result = JSON.parse(await store.resolve("mnemion://mutations"));
+    const result = JSON.parse(await store.resolve("mnemion://mutation"));
     expect(result.mutations).toBeInstanceOf(Array);
   });
 
@@ -687,12 +684,9 @@ describe("System Docs", () => {
     const doc = JSON.parse(await store.resolve("mnemion://_system/tools"));
     expect(doc.is_default).toBe(true);
 
-    // Update via mutate using id=1 (first seeded doc is 'tools' with id=1)
-    // Use getSystemDoc to get the slug, then update by finding the right id
     const updated = JSON.parse(
       await store.mutate("_system_docs", "update", JSON.stringify({ id: 1, content: null }))
     );
-    // If id=1 isn't tools, just skip this test gracefully
     if (updated.error) return;
 
     const restored = JSON.parse(await store.resolve("mnemion://_system/tools"));
@@ -722,45 +716,45 @@ describe("System Docs", () => {
 describe("Upload Tokens", () => {
   it("mints a token with auto-generated fields", async () => {
     const store = getStore();
-    await createObject(store, "uploads-target", [{ name: "content", type: "text" }]);
-    const record = await createRecord(store, "uploads-target", { content: "original" });
+    await createPattern(store, "uploads-target", [{ name: "content", type: "text" }]);
+    const entry = await createEntry(store, "uploads-target", { content: "original" });
 
     const result = JSON.parse(
       await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_object: "uploads-target",
-        target_id: record.record.id,
-        target_field: "content",
+        target_pattern: "uploads-target",
+        target_id: entry.entry.id,
+        target_facet: "content",
       }))
     );
-    expect(result.record.token).toBeDefined();
-    expect(result.record.token.length).toBe(32); // hex(randomblob(16))
-    expect(result.record.expires_at).toBeDefined();
-    expect(result.record.mode).toBe("replace");
-    expect(result.record.consumed_at).toBeNull();
+    expect(result.entry.token).toBeDefined();
+    expect(result.entry.token.length).toBe(32); // hex(randomblob(16))
+    expect(result.entry.expires_at).toBeDefined();
+    expect(result.entry.mode).toBe("replace");
+    expect(result.entry.consumed_at).toBeNull();
   });
 
-  it("rejects tokens targeting non-existent objects", async () => {
+  it("rejects tokens targeting non-existent patterns", async () => {
     const store = getStore();
     const result = JSON.parse(
       await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_object: "ghost",
+        target_pattern: "ghost",
         target_id: 1,
-        target_field: "content",
+        target_facet: "content",
       }))
     );
     expect(result.error).toBe(true);
   });
 
-  it("rejects tokens targeting non-text fields", async () => {
+  it("rejects tokens targeting non-text facets", async () => {
     const store = getStore();
-    await createObject(store, "nums", [{ name: "count", type: "integer" }]);
-    await createRecord(store, "nums", { count: 0 });
+    await createPattern(store, "nums", [{ name: "count", type: "integer" }]);
+    await createEntry(store, "nums", { count: 0 });
 
     const result = JSON.parse(
       await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_object: "nums",
+        target_pattern: "nums",
         target_id: 1,
-        target_field: "count",
+        target_facet: "count",
       }))
     );
     expect(result.error).toBe(true);
@@ -769,75 +763,75 @@ describe("Upload Tokens", () => {
 
   it("consumes upload and writes content (replace mode)", async () => {
     const store = getStore();
-    await createObject(store, "upload-replace", [{ name: "body", type: "text" }]);
-    const record = await createRecord(store, "upload-replace", { body: "old" });
+    await createPattern(store, "upload-replace", [{ name: "body", type: "text" }]);
+    const entry = await createEntry(store, "upload-replace", { body: "old" });
 
     const token = JSON.parse(
       await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_object: "upload-replace",
-        target_id: record.record.id,
-        target_field: "body",
+        target_pattern: "upload-replace",
+        target_id: entry.entry.id,
+        target_facet: "body",
       }))
     );
 
-    const result = JSON.parse(await store.consumeUpload(token.record.token, "new content"));
+    const result = JSON.parse(await store.consumeUpload(token.entry.token, "new content"));
     expect(result.uploaded).toBe(true);
-    expect(result.record.body).toBe("new content");
+    expect(result.entry.body).toBe("new content");
   });
 
   it("consumes upload and appends content (append mode)", async () => {
     const store = getStore();
-    await createObject(store, "upload-append", [{ name: "log", type: "text" }]);
-    const record = await createRecord(store, "upload-append", { log: "line1\n" });
+    await createPattern(store, "upload-append", [{ name: "log", type: "text" }]);
+    const entry = await createEntry(store, "upload-append", { log: "line1\n" });
 
     const token = JSON.parse(
       await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_object: "upload-append",
-        target_id: record.record.id,
-        target_field: "log",
+        target_pattern: "upload-append",
+        target_id: entry.entry.id,
+        target_facet: "log",
         mode: "append",
       }))
     );
 
-    const result = JSON.parse(await store.consumeUpload(token.record.token, "line2\n"));
+    const result = JSON.parse(await store.consumeUpload(token.entry.token, "line2\n"));
     expect(result.uploaded).toBe(true);
-    expect(result.record.log).toBe("line1\nline2\n");
+    expect(result.entry.log).toBe("line1\nline2\n");
   });
 
   it("rejects already-consumed tokens", async () => {
     const store = getStore();
-    await createObject(store, "upload-once", [{ name: "data", type: "text" }]);
-    const record = await createRecord(store, "upload-once", { data: "" });
+    await createPattern(store, "upload-once", [{ name: "data", type: "text" }]);
+    const entry = await createEntry(store, "upload-once", { data: "" });
 
     const token = JSON.parse(
       await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_object: "upload-once",
-        target_id: record.record.id,
-        target_field: "data",
+        target_pattern: "upload-once",
+        target_id: entry.entry.id,
+        target_facet: "data",
       }))
     );
 
-    await store.consumeUpload(token.record.token, "first");
-    const second = JSON.parse(await store.consumeUpload(token.record.token, "second"));
+    await store.consumeUpload(token.entry.token, "first");
+    const second = JSON.parse(await store.consumeUpload(token.entry.token, "second"));
     expect(second.error).toBe(true);
     expect(second.message).toContain("already been used");
   });
 
   it("rejects content exceeding 1MB", async () => {
     const store = getStore();
-    await createObject(store, "upload-big", [{ name: "data", type: "text" }]);
-    const record = await createRecord(store, "upload-big", { data: "" });
+    await createPattern(store, "upload-big", [{ name: "data", type: "text" }]);
+    const entry = await createEntry(store, "upload-big", { data: "" });
 
     const token = JSON.parse(
       await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_object: "upload-big",
-        target_id: record.record.id,
-        target_field: "data",
+        target_pattern: "upload-big",
+        target_id: entry.entry.id,
+        target_facet: "data",
       }))
     );
 
     const big = "x".repeat(1_100_000);
-    const result = JSON.parse(await store.consumeUpload(token.record.token, big));
+    const result = JSON.parse(await store.consumeUpload(token.entry.token, big));
     expect(result.error).toBe(true);
     expect(result.message).toContain("1MB");
   });
@@ -854,10 +848,10 @@ describe("Upload Tokens", () => {
 describe("Mutation Audit Log", () => {
   it("logs create operations", async () => {
     const store = getStore();
-    await createObject(store, "audited", [{ name: "val", type: "text" }]);
-    await createRecord(store, "audited", { val: "tracked" });
+    await createPattern(store, "audited", [{ name: "val", type: "text" }]);
+    await createEntry(store, "audited", { val: "tracked" });
 
-    const log = JSON.parse(await store.resolve("mnemion://mutations/audited"));
+    const log = JSON.parse(await store.resolve("mnemion://mutation/audited"));
     expect(log.mutations.length).toBeGreaterThan(0);
     const insert = log.mutations.find((m: any) => m.operation === "INSERT");
     expect(insert).toBeDefined();

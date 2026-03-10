@@ -11,7 +11,10 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/session.ts       SessionDO: McpAgent, MCP protocol handler (per-session DO)
   src/store.ts         StoreDO: per-user data storage (per-user DO, SQLite)
   src/passkey.ts       WebAuthn passkey registration + authentication
+  src/transform.ts     Transform DSL evaluator for ingress field mapping
   src/constants.ts     Product identity (PRODUCT_NAME, URI_SCHEME, uri() helper)
+  src/system-docs/     Markdown files with {{placeholder}} syntax, loaded at runtime
+  src/text.d.ts        Type declaration for .md text imports
   scripts/setup.sh     First-run setup: generates secret, deploys, opens passkey registration
 ```
 
@@ -35,27 +38,39 @@ Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the wo
 - **Passkey** (WebAuthn): Optional convenience layer for browser-based OAuth. Registered via one-time setup URL. Stored in StoreDO `_passkeys` table (single credential, replaced on re-registration). If registered, `/authorize` shows passkey-first UI with secret fallback.
 - **No secret configured** = dev mode (auto-approves).
 
+### Vocabulary
+
+Mnemion uses biological vocabulary: **hive** (the whole store), **pattern** (organizing structure; in code: "object"), **entry** (instance within a pattern; in code: "record"), **facet** (dimension of an entry; in code: "field"), **link** (connection between entries; in code: "reference"). Tool parameters and URIs use code terms. Docs and UI use biological terms.
+
 ### Resources (stable, cacheable, subscribable)
 
 - `mnemion://index` — master index
-- `mnemion://schema/{object_name}` — per-object field definitions
+- `mnemion://schema/{object_name}` — facet definitions for a pattern
 - `mnemion://history` — schema evolution history (supports `?limit=N`)
-- `mnemion://records/{object}/{id}` — individual record by URI
+- `mnemion://records/{object}/{id}` — individual entry by URI
 
 ### Tools (6 total)
 
 - `resolve` — read anything by `mnemion://` URI (escape hatch for platforms without resource support)
 - `query` — filtered, sorted, paginated reads (supports `count_only` mode)
-- `search` — cross-object full-text search across text fields
-- `mutate` — create, update, or archive records
+- `search` — cross-pattern full-text search across text facets
+- `mutate` — create, update, or archive entries
 - `propose_change` — propose schema evolution (preview, no commit)
 - `apply_change` — commit proposed change (fires resource update notifications)
 
+### HTTP I/O
+
+Agent-defined HTTP endpoints, configured as entries:
+- **Egress** (`_outputs`): `GET /o/{path}` — serve content at arbitrary paths with configurable MIME type and visibility
+- **Ingress** (`_inputs`): `POST /i/{path}` — accept inbound data, create entries in target patterns with optional transform DSL
+
 ### Internal tables
 
-- `_index` — curated JSON document describing what exists (single row)
 - `_schema_history` — log of all schema changes
 - `_pending_changes` — proposed but uncommitted changes
+- `_outputs` / `_inputs` — HTTP I/O endpoint definitions
+- `_auth_codes` — one-time bearer tokens for remote agents
+- `_system_docs` — agent orientation docs (seeded from `src/system-docs/*.md`)
 
 ## Tech stack
 
@@ -71,10 +86,20 @@ Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the wo
 - McpAgent's base class has a `sql` tagged template property. Use `db` as the name for the raw `ctx.storage.sql` accessor in StoreDO.
 - The DO binding must be named `MCP_OBJECT` — the `McpAgent.serve()` method expects this.
 - `wrangler.toml` requires `compatibility_flags = ["nodejs_compat"]` for the agents package.
-- Kernel columns (`id`, `created_at`, `updated_at`, `archived_at`) are auto-provided on every user table. They cannot be defined via `propose_change`.
+- Kernel columns (`id`, `created_at`, `updated_at`, `archived_at`) are auto-provided on every pattern. They cannot be defined via `propose_change`.
 - Structure is resources, operations are tools. If it describes what the organism is, it's a resource. If it changes what the organism is or retrieves dynamic content, it's a tool.
 - Product name and URI scheme are defined in `src/constants.ts`. Import `PRODUCT_NAME`, `URI_SCHEME`, `uri()` from there — never hardcode `"mnemion://"` in source.
 - `@simplewebauthn/server` is lazy-imported in index.ts to avoid `tslib` resolution issues in the vitest/workerd test environment.
+- System docs live in `src/system-docs/*.md` with YAML frontmatter (`slug`, `title`). Placeholders (`{{PRODUCT_NAME}}`, `{{uri:path}}`) are resolved at runtime by `resolveDocPlaceholders()` in store.ts.
+- `wrangler.toml` has a `[[rules]]` entry to import `.md` files as text modules.
+
+## Next milestone: frontend architecture
+
+The current `index.ts` is a flat `if/else` route handler (~570 lines). The decision has been made to:
+- **Keep the worker as the server** — no SvelteKit. The routing, auth, and data layers stay hand-built.
+- **Use Svelte as a component framework** for rendering pages (schema viewer, data browser, etc.)
+- **Refactor the router** into a proper dispatch table instead of the flat `if/else` chain.
+- The OAuthProvider wrapping stays — it intercepts `/mcp`, `/token`, `/register`. Everything else passes to the app's handler, which will now include Svelte-rendered pages.
 
 ## Development
 
