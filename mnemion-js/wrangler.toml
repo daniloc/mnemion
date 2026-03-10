@@ -1,4 +1,4 @@
-name = "cambium"
+name = "mnemion"
 main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
@@ -11,12 +11,12 @@ id = "REPLACE_ME"
 # Session DO (McpAgent, one per MCP session)
 [[durable_objects.bindings]]
 name = "MCP_OBJECT"
-class_name = "CambiumSession"
+class_name = "SessionDO"
 
 # Store DO (per-user data storage)
 [[durable_objects.bindings]]
-name = "CAMBIUM_STORE"
-class_name = "CambiumStore"
+name = "MNEMION_STORE"
+class_name = "StoreDO"
 
 # Migration: rename old class, add new ones
 [[migrations]]
@@ -27,3 +27,7 @@ new_sqlite_classes = ["CambiumServer"]
 tag = "v2"
 renamed_classes = [{from = "CambiumServer", to = "CambiumSession"}]
 new_sqlite_classes = ["CambiumStore"]
+
+[[migrations]]
+tag = "v3"
+renamed_classes = [{from = "CambiumSession", to = "SessionDO"}, {from = "CambiumStore", to = "StoreDO"}]

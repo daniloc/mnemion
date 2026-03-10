@@ -1,4 +1,4 @@
-# Cambium
+# Mnemion
 
 Persistent, evolving shared memory between a human and their AI agents. MCP server on Cloudflare Workers.
 
@@ -6,38 +6,38 @@ Persistent, evolving shared memory between a human and their AI agents. MCP serv
 
 ```
 project-docs/active/   Design documents (the "why" and "what")
-cambium-js/            Cloudflare Worker — MCP server (the "how")
+mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/index.ts         Entry point: OAuthProvider wrapper + shared secret auth
-  src/session.ts       CambiumSession: McpAgent, MCP protocol handler (per-session DO)
-  src/store.ts         CambiumStore: per-user data storage (per-user DO, SQLite)
+  src/session.ts       SessionDO: McpAgent, MCP protocol handler (per-session DO)
+  src/store.ts         StoreDO: per-user data storage (per-user DO, SQLite)
 ```
 
 Future peer: iOS app (Swift).
 
 ## Current state
 
-Deployed to `https://cambium.daniloc.workers.dev/mcp`. Cross-surface data sharing proven (Claude Code + Claude.ai reading/writing the same store).
+Deployed to `https://your-worker.workers.dev/mcp`. Cross-surface data sharing proven (Claude Code + Claude.ai reading/writing the same store).
 
 ### Architecture
 
 Two Durable Objects:
-- **CambiumSession** (`McpAgent`) — one per MCP session, handles protocol, proxies to store via RPC
-- **CambiumStore** — one per user, holds all SQLite data. Keyed by `user:{userId}` (currently always `"owner"`)
+- **SessionDO** (`McpAgent`) — one per MCP session, handles protocol, proxies to store via RPC
+- **StoreDO** — one per user, holds all SQLite data. Keyed by `user:{userId}` (currently always `"owner"`)
 
 ### Auth
 
-Shared secret behind OAuth 2.1. The `workers-oauth-provider` package wraps the worker and handles the OAuth flow (DCR, tokens). The identity provider is a single password stored as a Cloudflare Workers secret (`CAMBIUM_SECRET`). No secret configured = dev mode (auto-approves).
+Shared secret behind OAuth 2.1. The `workers-oauth-provider` package wraps the worker and handles the OAuth flow (DCR, tokens). The identity provider is a single password stored as a Cloudflare Workers secret (`MNEMION_SECRET`). No secret configured = dev mode (auto-approves).
 
 ### Resources (stable, cacheable, subscribable)
 
-- `cambium://index` — master index
-- `cambium://schema/{object_name}` — per-object field definitions
-- `cambium://history` — schema evolution history (supports `?limit=N`)
-- `cambium://records/{object}/{id}` — individual record by URI
+- `mnemion://index` — master index
+- `mnemion://schema/{object_name}` — per-object field definitions
+- `mnemion://history` — schema evolution history (supports `?limit=N`)
+- `mnemion://records/{object}/{id}` — individual record by URI
 
 ### Tools (6 total)
 
-- `resolve` — read anything by `cambium://` URI (escape hatch for platforms without resource support)
+- `resolve` — read anything by `mnemion://` URI (escape hatch for platforms without resource support)
 - `query` — filtered, sorted, paginated reads (supports `count_only` mode)
 - `search` — cross-object full-text search across text fields
 - `mutate` — create, update, or archive records
@@ -61,7 +61,7 @@ Shared secret behind OAuth 2.1. The `workers-oauth-provider` package wraps the w
 ## Key conventions
 
 - The `agents` package bundles its own `@modelcontextprotocol/sdk`. Pin the top-level dep to match (currently 1.26.0) to avoid type conflicts.
-- McpAgent's base class has a `sql` tagged template property. Use `db` as the name for the raw `ctx.storage.sql` accessor in CambiumStore.
+- McpAgent's base class has a `sql` tagged template property. Use `db` as the name for the raw `ctx.storage.sql` accessor in StoreDO.
 - The DO binding must be named `MCP_OBJECT` — the `McpAgent.serve()` method expects this.
 - `wrangler.toml` requires `compatibility_flags = ["nodejs_compat"]` for the agents package.
 - Kernel columns (`id`, `created_at`, `updated_at`, `archived_at`) are auto-provided on every user table. They cannot be defined via `propose_change`.
@@ -70,7 +70,7 @@ Shared secret behind OAuth 2.1. The `workers-oauth-provider` package wraps the w
 ## Development
 
 ```bash
-cd cambium-js
+cd mnemion-js
 npm install
 npm run dev          # local server on :8787 (dev mode, no secret needed)
 ```
@@ -78,7 +78,7 @@ npm run dev          # local server on :8787 (dev mode, no secret needed)
 ## Deploy
 
 ```bash
-cd cambium-js
+cd mnemion-js
 npx wrangler deploy
-npx wrangler secret put CAMBIUM_SECRET   # set your password (one-time)
+npx wrangler secret put MNEMION_SECRET   # set your password (one-time)
 ```

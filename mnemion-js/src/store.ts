@@ -1,8 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
+import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
 
 // === Types ===
 
-export interface CambiumIndex {
+export interface StoreIndex {
   version: number;
   updated_at: string;
   objects: IndexObjectEntry[];
@@ -81,18 +82,18 @@ const SYSTEM_DOCS_SEED: { slug: string; title: string; content: string }[] = [
     title: "Tool Strategy",
     content: `# Tool Strategy
 
-Cambium has six tools. They never grow — new capabilities come from schema and records, not new tools.
+${PRODUCT_NAME} has six tools. They never grow — new capabilities come from schema and records, not new tools.
 
 ## resolve
-Read anything by \`cambium://\` URI. The URI scheme is the API.
-- \`cambium://index\` — master index. Read this first.
-- \`cambium://schema/{object}\` — field definitions for an object
-- \`cambium://records/{object}/{id}\` — a single record
-- \`cambium://history\` — recent schema changes (supports \`?limit=N\`)
-- \`cambium://_system/{slug}\` — system documentation (you're reading one now)
-- \`cambium://_system/\` — list all system docs
-- \`cambium://mutations\` — audit log of all data mutations (supports \`?limit=N\`)
-- \`cambium://mutations/{object}\` — audit log filtered to one object
+Read anything by \`${URI_PREFIX}\` URI. The URI scheme is the API.
+- \`${uri("index")}\` — master index. Read this first.
+- \`${uri("schema/{object}")}\` — field definitions for an object
+- \`${uri("records/{object}/{id}")}\` — a single record
+- \`${uri("history")}\` — recent schema changes (supports \`?limit=N\`)
+- \`${uri("_system/{slug}")}\` — system documentation (you're reading one now)
+- \`${uri("_system/")}\` — list all system docs
+- \`${uri("mutations")}\` — audit log of all data mutations (supports \`?limit=N\`)
+- \`${uri("mutations/{object}")}\` — audit log filtered to one object
 
 ## query
 Filtered, sorted, paginated reads from a single object.
@@ -124,7 +125,7 @@ Two-step schema evolution. Propose validates and previews. Apply commits.
 
 Object names: lowercase, start with letter, a-z/0-9/hyphens/underscores, max 64 chars. Field names: same rules.
 
-Schema changes are permanent and logged in \`cambium://history\`. Propose first, review the preview, then apply.
+Schema changes are permanent and logged in \`${uri("history")}\`. Propose first, review the preview, then apply.
 
 ## Large content uploads
 
@@ -147,7 +148,7 @@ Properties:
 - Writing data → \`mutate\`
 - Writing large text content → upload token flow (mint via \`mutate\`, POST via HTTP)
 - Changing structure → \`propose_change\` then \`apply_change\`
-- Reviewing data history → \`resolve\` with \`cambium://mutations\`
+- Reviewing data history → \`resolve\` with \`${uri("mutations")}\`
 `,
   },
   {
@@ -180,7 +181,7 @@ Every object gets these automatically. Do not include them in \`propose_change\`
 - When the human says "track X" or "I need to remember Y" — that's a schema evolution signal.
 
 ## Archiving vs. deletion
-Cambium never deletes. \`archive\` sets \`archived_at\`, excluding the record from queries. The data persists for history and recovery.
+${PRODUCT_NAME} never deletes. \`archive\` sets \`archived_at\`, excluding the record from queries. The data persists for history and recovery.
 `,
   },
   {
@@ -188,7 +189,7 @@ Cambium never deletes. \`archive\` sets \`archived_at\`, excluding the record fr
     title: "Skills & Marketplace",
     content: `# Skills & Marketplace Distribution
 
-Cambium can serve itself as a Claude Code plugin marketplace. Skills are records authored through \`mutate\`, served as a synthesized git repo on every request.
+${PRODUCT_NAME} can serve itself as a Claude Code plugin marketplace. Skills are records authored through \`mutate\`, served as a synthesized git repo on every request.
 
 ## Schema objects
 
@@ -228,7 +229,7 @@ Each record is a skill within a plugin.
 Create via \`mutate(_marketplace_tokens, create, {name, scope})\`.
 - \`scope\`: JSON array of plugin names (null = all plugins)
 - \`token\`: auto-generated, returned in response
-- Install URL: \`https://cambium:<token>@<host>/marketplace.git\`
+- Install URL: \`https://${URI_SCHEME}:<token>@<host>/marketplace.git\`
 
 ## Visibility rules
 - Private skills: only on authenticated marketplace
@@ -246,12 +247,12 @@ Note: Users may need to restart Claude Code for skill changes to take effect.
     content: `# Conventions
 
 ## URI scheme
-All Cambium data is addressable via \`cambium://\` URIs:
-- \`cambium://index\` — the master index
-- \`cambium://schema/{object}\` — object field definitions
-- \`cambium://records/{object}/{id}\` — individual record
-- \`cambium://history\` — schema change log
-- \`cambium://_system/{slug}\` — system documentation
+All ${PRODUCT_NAME} data is addressable via \`${URI_PREFIX}\` URIs:
+- \`${uri("index")}\` — the master index
+- \`${uri("schema/{object}")}\` — object field definitions
+- \`${uri("records/{object}/{id}")}\` — individual record
+- \`${uri("history")}\` — schema change log
+- \`${uri("_system/{slug}")}\` — system documentation
 
 ## The index
 The index is the single source of truth for what exists. Read it first in any new session. It contains:
@@ -288,7 +289,7 @@ Edits to \`_system_docs\` require confirmation because they affect all future ag
     title: "Reading the Index",
     content: `# Reading the Index
 
-\`cambium://index\` is your starting point every session. Here's how to interpret it.
+\`${uri("index")}\` is your starting point every session. Here's how to interpret it.
 
 ## Structure
 \`\`\`json
@@ -319,13 +320,13 @@ Text entries the human or agent has established:
 Conventions are added via \`propose_change\` with type \`add_convention\`.
 
 ## Guidance
-Free-text orientation. On a fresh instance: "No objects exist yet." After schema creation: "Cambium is active."
+Free-text orientation. On a fresh instance: "No objects exist yet." After schema creation: "${PRODUCT_NAME} is active."
 
 The guidance evolves as the instance grows. It's a one-liner for fast orientation.
 
 ## What to do after reading the index
 1. Scan objects and record counts for orientation
-2. If you need details on an object's fields, resolve \`cambium://schema/{name}\`
+2. If you need details on an object's fields, resolve \`${uri("schema/{name}")}\`
 3. Query objects with recent activity (\`sort=-updated_at\`, \`limit=5\`)
 4. Check conventions for any rules to follow
 `,
@@ -333,9 +334,9 @@ The guidance evolves as the instance grows. It's a one-liner for fast orientatio
 ];
 
 
-// === CambiumStore: per-user data storage ===
+// === MnemionStore: per-user data storage ===
 
-export class CambiumStore extends DurableObject {
+export class StoreDO extends DurableObject {
   private get db() {
     return this.ctx.storage.sql;
   }
@@ -388,7 +389,7 @@ export class CambiumStore extends DurableObject {
     if (hasOldIndex) {
       const rows = this.db.exec("SELECT data FROM _index WHERE id = 1").toArray();
       if (rows.length > 0) {
-        const index = JSON.parse((rows[0] as any).data) as CambiumIndex;
+        const index = JSON.parse((rows[0] as any).data) as MnemionIndex;
 
         this.db.exec(
           "INSERT OR IGNORE INTO _meta (id, version, guidance, updated_at) VALUES (1, ?, ?, ?)",
@@ -423,7 +424,7 @@ export class CambiumStore extends DurableObject {
     if (metaRows.length === 0) {
       this.db.exec(
         "INSERT INTO _meta (id, version, guidance) VALUES (1, 0, ?)",
-        "This is a new Cambium instance. No objects exist yet. Create what the work demands."
+        `This is a new ${PRODUCT_NAME} instance. No objects exist yet. Create what the work demands.`
       );
     }
 
@@ -606,7 +607,7 @@ export class CambiumStore extends DurableObject {
     }
   }
 
-  // === RPC methods (called from CambiumSession) ===
+  // === RPC methods (called from MnemionSession) ===
 
   async getIndex(): Promise<string> {
     const index = this.getCurrentIndex();
@@ -632,7 +633,7 @@ export class CambiumStore extends DurableObject {
 
     return JSON.stringify({
       ...index,
-      system_docs: "cambium://_system/",
+      system_docs: uri("_system/"),
     }, null, 2);
   }
 
@@ -856,7 +857,7 @@ export class CambiumStore extends DurableObject {
         if (objCount.count > 0) {
           this.db.exec(
             "UPDATE _meta SET guidance = ?",
-            "Cambium is active. Read cambium://index for orientation, then query and mutate to work with data."
+            `${PRODUCT_NAME} is active. Read ${uri("index")} for orientation, then query and mutate to work with data.`
           );
         }
       }
@@ -1324,9 +1325,9 @@ export class CambiumStore extends DurableObject {
 
   // === URI resolution ===
 
-  async resolve(uri: string): Promise<string> {
-    const match = uri.match(/^cambium:\/\/(.+)$/);
-    if (!match) return this.errorJson(`Invalid URI scheme. Expected cambium:// URI, got: ${uri}`);
+  async resolve(input: string): Promise<string> {
+    const match = input.match(new RegExp(`^${URI_SCHEME}://(.+)$`));
+    if (!match) return this.errorJson(`Invalid URI scheme. Expected ${URI_PREFIX} URI, got: ${input}`);
 
     const path = match[1];
 
@@ -1359,7 +1360,7 @@ export class CambiumStore extends DurableObject {
       return this.getSystemDoc(sysMatch[1], !!sysMatch[2]);
     }
 
-    // cambium://mutations or cambium://mutations/{object}?limit=N
+    // mutations or mutations/{object}?limit=N
     if (path === "mutations" || path.startsWith("mutations")) {
       const parts = path.split("?");
       const pathPart = parts[0];
@@ -1369,7 +1370,7 @@ export class CambiumStore extends DurableObject {
       return this.getMutationLog(tableName, limit);
     }
 
-    return this.errorJson(`Unknown URI: ${uri}. Valid patterns: cambium://index, cambium://schema/{object}, cambium://records/{object}/{id}, cambium://history, cambium://_system/{slug}, cambium://mutations[/{object}]`);
+    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{object}")}, ${uri("records/{object}/{id}")}, ${uri("history")}, ${uri("_system/{slug}")}, ${uri("mutations[/{object}]")}`);
   }
 
   // === Cross-object search ===
@@ -1449,7 +1450,7 @@ export class CambiumStore extends DurableObject {
       docs: rows.map((r) => ({
         slug: r.slug,
         title: r.title,
-        uri: `cambium://_system/${r.slug}`,
+        uri: uri(`_system/${r.slug}`),
       })),
     }, null, 2);
   }
@@ -1467,7 +1468,7 @@ export class CambiumStore extends DurableObject {
       title: doc.title,
       content,
       is_default: doc.content === null || doc.content === doc.default_content,
-      uri: `cambium://_system/${doc.slug}`,
+      uri: uri(`_system/${doc.slug}`),
     }, null, 2);
   }
 
@@ -1536,7 +1537,7 @@ export class CambiumStore extends DurableObject {
 
   // === Helpers ===
 
-  private getCurrentIndex(): CambiumIndex {
+  private getCurrentIndex(): MnemionIndex {
     const meta = this.db.exec("SELECT * FROM _meta WHERE id = 1").one() as any;
     const objects = this.db.exec("SELECT name, description FROM _objects ORDER BY name").toArray() as any[];
     const allFields = this.db.exec("SELECT * FROM _fields ORDER BY object_name, id").toArray() as any[];

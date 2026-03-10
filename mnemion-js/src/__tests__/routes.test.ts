@@ -58,7 +58,7 @@ describe("Public Marketplace", () => {
 });
 
 describe("Dev Mode", () => {
-  // These tests run without CAMBIUM_SECRET, so dev mode is active
+  // These tests run without MNEMION_SECRET, so dev mode is active
 
   it("serves private marketplace without auth in dev mode", async () => {
     const res = await SELF.fetch(

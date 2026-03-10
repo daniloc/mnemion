@@ -1,15 +1,15 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
-import type { CambiumStore } from "../store";
+import type { StoreDO } from "../store";
 
-function getStore(): DurableObjectStub<CambiumStore> {
-  const id = env.CAMBIUM_STORE.idFromName("user:test");
-  return env.CAMBIUM_STORE.get(id);
+function getStore(): DurableObjectStub<StoreDO> {
+  const id = env.MNEMION_STORE.idFromName("user:test");
+  return env.MNEMION_STORE.get(id);
 }
 
 // Helper: create an object via propose + apply
 async function createObject(
-  store: DurableObjectStub<CambiumStore>,
+  store: DurableObjectStub<StoreDO>,
   name: string,
   fields: { name: string; type: string; required?: boolean; references?: { object: string; field?: string } }[],
   description?: string
@@ -30,7 +30,7 @@ async function createObject(
 }
 
 // Helper: create a record
-async function createRecord(store: DurableObjectStub<CambiumStore>, object: string, data: Record<string, unknown>) {
+async function createRecord(store: DurableObjectStub<StoreDO>, object: string, data: Record<string, unknown>) {
   const result = await store.mutate(object, "create", JSON.stringify(data));
   return JSON.parse(result);
 }
@@ -45,7 +45,7 @@ describe("Index", () => {
     expect(result.guidance).toBeTypeOf("string");
     expect(result.objects).toBeInstanceOf(Array);
     expect(result.conventions).toBeInstanceOf(Array);
-    expect(result.system_docs).toBe("cambium://_system/");
+    expect(result.system_docs).toBe("mnemion://_system/");
   });
 
   it("includes kernel objects in the index", async () => {
@@ -607,51 +607,51 @@ describe("Search", () => {
 // === URI Resolution ===
 
 describe("Resolve", () => {
-  it("resolves cambium://index", async () => {
+  it("resolves mnemion://index", async () => {
     const store = getStore();
-    const result = JSON.parse(await store.resolve("cambium://index"));
+    const result = JSON.parse(await store.resolve("mnemion://index"));
     expect(result.objects).toBeInstanceOf(Array);
   });
 
-  it("resolves cambium://history", async () => {
+  it("resolves mnemion://history", async () => {
     const store = getStore();
-    const result = JSON.parse(await store.resolve("cambium://history"));
+    const result = JSON.parse(await store.resolve("mnemion://history"));
     expect(result.history).toBeInstanceOf(Array);
   });
 
-  it("resolves cambium://schema/{object}", async () => {
+  it("resolves mnemion://schema/{object}", async () => {
     const store = getStore();
     await createObject(store, "resolvable", [{ name: "x", type: "text" }]);
-    const result = JSON.parse(await store.resolve("cambium://schema/resolvable"));
+    const result = JSON.parse(await store.resolve("mnemion://schema/resolvable"));
     expect(result.object).toBe("resolvable");
     expect(result.fields).toBeInstanceOf(Array);
   });
 
-  it("resolves cambium://records/{object}/{id}", async () => {
+  it("resolves mnemion://records/{object}/{id}", async () => {
     const store = getStore();
     await createObject(store, "lookups", [{ name: "val", type: "text" }]);
     const created = await createRecord(store, "lookups", { val: "found" });
-    const result = JSON.parse(await store.resolve(`cambium://records/lookups/${created.record.id}`));
+    const result = JSON.parse(await store.resolve(`mnemion://records/lookups/${created.record.id}`));
     expect(result.record.val).toBe("found");
   });
 
-  it("resolves cambium://_system/", async () => {
+  it("resolves mnemion://_system/", async () => {
     const store = getStore();
-    const result = JSON.parse(await store.resolve("cambium://_system/"));
+    const result = JSON.parse(await store.resolve("mnemion://_system/"));
     expect(result.docs).toBeInstanceOf(Array);
     expect(result.docs.length).toBeGreaterThan(0);
   });
 
-  it("resolves cambium://_system/{slug}", async () => {
+  it("resolves mnemion://_system/{slug}", async () => {
     const store = getStore();
-    const result = JSON.parse(await store.resolve("cambium://_system/tools"));
+    const result = JSON.parse(await store.resolve("mnemion://_system/tools"));
     expect(result.slug).toBe("tools");
     expect(result.content).toContain("mutate");
   });
 
-  it("resolves cambium://mutations", async () => {
+  it("resolves mnemion://mutations", async () => {
     const store = getStore();
-    const result = JSON.parse(await store.resolve("cambium://mutations"));
+    const result = JSON.parse(await store.resolve("mnemion://mutations"));
     expect(result.mutations).toBeInstanceOf(Array);
   });
 
@@ -663,7 +663,7 @@ describe("Resolve", () => {
 
   it("rejects unknown paths", async () => {
     const store = getStore();
-    const result = JSON.parse(await store.resolve("cambium://nonexistent/path"));
+    const result = JSON.parse(await store.resolve("mnemion://nonexistent/path"));
     expect(result.error).toBe(true);
   });
 });
@@ -673,7 +673,7 @@ describe("Resolve", () => {
 describe("System Docs", () => {
   it("seeds system docs on fresh store", async () => {
     const store = getStore();
-    const result = JSON.parse(await store.resolve("cambium://_system/"));
+    const result = JSON.parse(await store.resolve("mnemion://_system/"));
     const slugs = result.docs.map((d: any) => d.slug);
     expect(slugs).toContain("tools");
     expect(slugs).toContain("schema-evolution");
@@ -684,7 +684,7 @@ describe("System Docs", () => {
 
   it("returns default content when content is null", async () => {
     const store = getStore();
-    const doc = JSON.parse(await store.resolve("cambium://_system/tools"));
+    const doc = JSON.parse(await store.resolve("mnemion://_system/tools"));
     expect(doc.is_default).toBe(true);
 
     // Update via mutate using id=1 (first seeded doc is 'tools' with id=1)
@@ -695,7 +695,7 @@ describe("System Docs", () => {
     // If id=1 isn't tools, just skip this test gracefully
     if (updated.error) return;
 
-    const restored = JSON.parse(await store.resolve("cambium://_system/tools"));
+    const restored = JSON.parse(await store.resolve("mnemion://_system/tools"));
     expect(restored.content).toContain("mutate");
     expect(restored.is_default).toBe(true);
   });
@@ -711,7 +711,7 @@ describe("System Docs", () => {
 
   it("resolves /default variant for original seed", async () => {
     const store = getStore();
-    const result = JSON.parse(await store.resolve("cambium://_system/tools/default"));
+    const result = JSON.parse(await store.resolve("mnemion://_system/tools/default"));
     expect(result.content).toContain("mutate");
     expect(result.is_default).toBe(true);
   });
@@ -857,7 +857,7 @@ describe("Mutation Audit Log", () => {
     await createObject(store, "audited", [{ name: "val", type: "text" }]);
     await createRecord(store, "audited", { val: "tracked" });
 
-    const log = JSON.parse(await store.resolve("cambium://mutations/audited"));
+    const log = JSON.parse(await store.resolve("mnemion://mutations/audited"));
     expect(log.mutations.length).toBeGreaterThan(0);
     const insert = log.mutations.find((m: any) => m.operation === "INSERT");
     expect(insert).toBeDefined();

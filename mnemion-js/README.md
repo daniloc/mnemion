@@ -1,4 +1,4 @@
-# Cambium Server
+# Mnemion Server
 
 MCP server on Cloudflare Workers providing persistent, evolving shared memory between a human and their AI agents.
 
@@ -20,7 +20,7 @@ Dev mode: no password needed. MCP endpoint at `http://localhost:8787/mcp`.
 
 ```bash
 npx wrangler deploy
-npx wrangler secret put CAMBIUM_SECRET   # set your password (one-time)
+npx wrangler secret put MNEMION_SECRET   # set your password (one-time)
 ```
 
 MCP endpoint at `https://<your-worker>.workers.dev/mcp`.
@@ -35,7 +35,7 @@ With the dev server running:
 
 ## Tools
 
-- `resolve(uri)` — read anything by `cambium://` address
+- `resolve(uri)` — read anything by `mnemion://` address
 - `query(object, ...)` — filtered, sorted reads with `count_only` mode
 - `search(term)` — cross-object full-text search
 - `mutate(object, operation, data)` — create, update, or archive records
@@ -44,7 +44,7 @@ With the dev server running:
 
 ## Resources
 
-- `cambium://index` — master index
-- `cambium://schema/{object}` — field definitions per object
-- `cambium://history` — schema evolution history
-- `cambium://records/{object}/{id}` — individual record
+- `mnemion://index` — master index
+- `mnemion://schema/{object}` — field definitions per object
+- `mnemion://history` — schema evolution history
+- `mnemion://records/{object}/{id}` — individual record

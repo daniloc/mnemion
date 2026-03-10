@@ -6,6 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
+import { PRODUCT_NAME } from "./constants";
 
 // === Types ===
 
@@ -71,7 +72,8 @@ function createTree(entries: TreeEntry[]): GitObject {
 function createCommit(treeSha: string, message: string): GitObject {
   // Fixed timestamp for deterministic SHAs (same content = same hash)
   const ts = "1700000000 +0000";
-  const text = `tree ${treeSha}\nauthor Cambium <cambium@localhost> ${ts}\ncommitter Cambium <cambium@localhost> ${ts}\n\n${message}\n`;
+  const lc = PRODUCT_NAME.toLowerCase();
+  const text = `tree ${treeSha}\nauthor ${PRODUCT_NAME} <${lc}@localhost> ${ts}\ncommitter ${PRODUCT_NAME} <${lc}@localhost> ${ts}\n\n${message}\n`;
   const data = enc(text);
   return { type: OBJ_COMMIT, data, sha: gitHash("commit", data) };
 }
@@ -123,7 +125,7 @@ export function synthesizeRepo(files: FileTree): {
   }
 
   const rootSha = buildTree(root);
-  const commit = createCommit(rootSha, "Cambium marketplace");
+  const commit = createCommit(rootSha, `${PRODUCT_NAME} marketplace`);
   objects.push(commit);
 
   return { objects, headSha: commit.sha };
@@ -273,14 +275,14 @@ export interface MarketplaceSkill {
 
 export function buildMarketplaceFiles(
   plugins: MarketplacePlugin[],
-  ownerName: string = "Cambium"
+  ownerName: string = PRODUCT_NAME
 ): FileTree {
   const files: FileTree = {};
 
   // .claude-plugin/marketplace.json
   files[".claude-plugin/marketplace.json"] = JSON.stringify(
     {
-      name: "cambium-marketplace",
+      name: `${PRODUCT_NAME.toLowerCase()}-marketplace`,
       owner: { name: ownerName },
       plugins: plugins.map((p) => ({
         name: p.name,

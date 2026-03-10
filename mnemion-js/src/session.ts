@@ -1,12 +1,13 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { CambiumStore } from "./store";
+import type { StoreDO } from "./store";
+import { PRODUCT_NAME, URI_SCHEME, uri } from "./constants";
 
 // === Types ===
 
 interface Env {
-  CAMBIUM_STORE: DurableObjectNamespace<CambiumStore>;
+  MNEMION_STORE: DurableObjectNamespace<StoreDO>;
 }
 
 interface AuthProps {
@@ -14,19 +15,19 @@ interface AuthProps {
   [key: string]: unknown;
 }
 
-// === CambiumSession: MCP protocol handler, proxies data to CambiumStore ===
+// === SessionDO: MCP protocol handler, proxies data to StoreDO ===
 
-export class CambiumSession extends McpAgent<Env, unknown, AuthProps> {
+export class SessionDO extends McpAgent<Env, unknown, AuthProps> {
   server = new McpServer(
-    { name: "cambium", version: "0.4.0" },
+    { name: URI_SCHEME, version: "0.4.0" },
     {
-      instructions: `Cambium is persistent shared memory. Read cambium://_system/tools before your first action for full capability reference.
+      instructions: `${PRODUCT_NAME} is persistent shared memory. Read ${uri("_system/tools")} before your first action for full capability reference.
 
 Key capabilities agents commonly miss:
 - mutate accepts a batch parameter — an array of {object, operation, data} for atomic all-or-nothing execution (max 100 ops). Use it to combine multiple writes into one call.
 - Update operations support optimistic locking via the version field. Include version from a prior read to prevent lost writes across concurrent surfaces.
 - Fields support foreign key references to other objects. Use the references parameter in propose_change.
-- cambium://mutations is an audit log for diagnostics. Use it instead of querying records to verify data integrity.
+- ${uri("mutations")} is an audit log for diagnostics. Use it instead of querying records to verify data integrity.
 - For large content that exceeds MCP parameter limits, mint an upload token via mutate on _upload_tokens, then POST content to /upload/{token} via HTTP.
 - apply_change supports revert_history_id for point-in-time rollback via Cloudflare PITR (30-day window).`,
     },
@@ -34,10 +35,10 @@ Key capabilities agents commonly miss:
 
   private confirmed = new Set<string>();
 
-  private getStore(): DurableObjectStub<CambiumStore> {
+  private getStore(): DurableObjectStub<StoreDO> {
     const userId = this.props?.userId ?? "anonymous";
-    const id = this.env.CAMBIUM_STORE.idFromName(`user:${userId}`);
-    return this.env.CAMBIUM_STORE.get(id);
+    const id = this.env.MNEMION_STORE.idFromName(`user:${userId}`);
+    return this.env.MNEMION_STORE.get(id);
   }
 
   async init() {
@@ -45,28 +46,26 @@ Key capabilities agents commonly miss:
 
     // === Resources (stable, cacheable, subscribable) ===
 
-    // cambium://index — the master index
     this.server.resource(
       "index",
-      "cambium://index",
+      uri("index"),
       { description: "Master index. Complete orientation to what exists and what matters.", mimeType: "application/json" },
-      async (uri) => {
+      async (u) => {
         const result = await store.getIndex();
         return {
-          contents: [{ uri: uri.href, text: result, mimeType: "application/json" }],
+          contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
         };
       }
     );
 
-    // cambium://schema/{object_name} — full field definitions per object
     this.server.resource(
       "schema",
-      new ResourceTemplate("cambium://schema/{object_name}", {
+      new ResourceTemplate(uri("schema/{object_name}"), {
         list: async () => {
           const names = await store.listObjects();
           return {
             resources: names.map((name) => ({
-              uri: `cambium://schema/${name}`,
+              uri: uri(`schema/${name}`),
               name: `${name} schema`,
               description: `Field definitions for ${name}`,
               mimeType: "application/json",
@@ -75,46 +74,44 @@ Key capabilities agents commonly miss:
         },
       }),
       { description: "Full field definitions for an object", mimeType: "application/json" },
-      async (uri, { object_name }) => {
+      async (u, { object_name }) => {
         const result = await store.getSchema(object_name as string);
         const parsed = JSON.parse(result);
         if (parsed.error) {
           throw new Error(parsed.message);
         }
         return {
-          contents: [{ uri: uri.href, text: result, mimeType: "application/json" }],
+          contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
         };
       }
     );
 
-    // cambium://history — recent schema history
     this.server.resource(
       "history",
-      "cambium://history",
+      uri("history"),
       { description: "Recent schema evolution history", mimeType: "application/json" },
-      async (uri) => {
+      async (u) => {
         const result = await store.getHistory(20);
         return {
-          contents: [{ uri: uri.href, text: result, mimeType: "application/json" }],
+          contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
         };
       }
     );
 
-    // cambium://records/{object}/{id} — individual record by URI
     this.server.resource(
       "record",
-      new ResourceTemplate("cambium://records/{object}/{id}", {
+      new ResourceTemplate(uri("records/{object}/{id}"), {
         list: undefined, // Records are too numerous to enumerate
       }),
       { description: "Individual record by object and ID", mimeType: "application/json" },
-      async (uri, { object, id }) => {
+      async (u, { object, id }) => {
         const result = await store.getRecord(object as string, Number(id));
         const parsed = JSON.parse(result);
         if (parsed.error) {
           throw new Error(parsed.message);
         }
         return {
-          contents: [{ uri: uri.href, text: result, mimeType: "application/json" }],
+          contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
         };
       }
     );
@@ -124,25 +121,25 @@ Key capabilities agents commonly miss:
     // resolve — the universal reader. One tool, the URI is the API.
     this.server.tool(
       "resolve",
-      `Read anything by its cambium:// address. The URI scheme is the API.
+      `Read anything by its ${URI_SCHEME}:// address. The URI scheme is the API.
 
-IMPORTANT: Start every session by reading cambium://_system/tools for full capability reference.
+IMPORTANT: Start every session by reading ${uri("_system/tools")} for full capability reference.
 
 Valid URIs:
-- cambium://index — master index (orientation, what objects exist)
-- cambium://schema/{object} — field definitions for an object
-- cambium://records/{object}/{id} — a single record
-- cambium://history — schema change log (supports ?limit=N)
-- cambium://_system/ — list all system docs
-- cambium://_system/{slug} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)
-- cambium://_system/{slug}/default — read original seed version
-- cambium://mutations — mutation audit log (supports ?limit=N). Use for diagnostics and integrity checks.
-- cambium://mutations/{object} — mutations filtered to one object`,
+- ${uri("index")} — master index (orientation, what objects exist)
+- ${uri("schema/{object}")} — field definitions for an object
+- ${uri("records/{object}/{id}")} — a single record
+- ${uri("history")} — schema change log (supports ?limit=N)
+- ${uri("_system/")} — list all system docs
+- ${uri("_system/{slug}")} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)
+- ${uri("_system/{slug}/default")} — read original seed version
+- ${uri("mutations")} — mutation audit log (supports ?limit=N). Use for diagnostics and integrity checks.
+- ${uri("mutations/{object}")} — mutations filtered to one object`,
       {
-        uri: z.string().describe("A cambium:// URI to resolve"),
+        uri: z.string().describe(`A ${URI_SCHEME}:// URI to resolve`),
       },
-      async ({ uri }) => {
-        const result = await store.resolve(uri);
+      async ({ uri: resolveUri }) => {
+        const result = await store.resolve(resolveUri);
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {
@@ -202,10 +199,10 @@ Object/field names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64
       `Commit a previously proposed change, or revert to a past state via Cloudflare PITR (30-day window).
 
 For apply: pass change_id from propose_change.
-For revert: pass revert_history_id (from cambium://history). Restores ALL data (not just schema) to the state before that change — destructive, requires confirmation.`,
+For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (not just schema) to the state before that change — destructive, requires confirmation.`,
       {
         change_id: z.string().optional().describe("The change_id returned by propose_change"),
-        revert_history_id: z.number().optional().describe("Schema history ID to revert to (from cambium://history). Restores entire DO state via PITR."),
+        revert_history_id: z.number().optional().describe(`Schema history ID to revert to (from ${uri("history")}). Restores entire DO state via PITR.`),
       },
       async ({ change_id, revert_history_id }) => {
         // Revert mode
@@ -259,11 +256,11 @@ For revert: pass revert_history_id (from cambium://history). Restores ALL data (
         // Notify clients that structural resources have changed
         this.server.sendResourceListChanged();
         try {
-          await this.server.server.sendResourceUpdated({ uri: "cambium://index" });
-          await this.server.server.sendResourceUpdated({ uri: "cambium://history" });
+          await this.server.server.sendResourceUpdated({ uri: uri("index") });
+          await this.server.server.sendResourceUpdated({ uri: uri("history") });
           if (parsed.index?.objects) {
             for (const obj of parsed.index.objects) {
-              await this.server.server.sendResourceUpdated({ uri: `cambium://schema/${obj.name}` });
+              await this.server.server.sendResourceUpdated({ uri: uri(`schema/${obj.name}`) });
             }
           }
         } catch {

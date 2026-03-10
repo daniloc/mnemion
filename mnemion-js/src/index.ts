@@ -1,18 +1,19 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import { CambiumSession } from "./session";
-import { CambiumStore } from "./store";
+import { SessionDO } from "./session";
+import { StoreDO } from "./store";
 import { handleMarketplaceGit, type MarketplacePlugin } from "./git";
+import { PRODUCT_NAME, URI_SCHEME } from "./constants";
 
 // Re-export DO classes for wrangler
-export { CambiumSession, CambiumStore };
+export { SessionDO, StoreDO };
 
 // === Types ===
 
 interface Env {
   OAUTH_KV: KVNamespace;
-  CAMBIUM_STORE: DurableObjectNamespace;
+  MNEMION_STORE: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace;
-  CAMBIUM_SECRET: string;
+  MNEMION_SECRET: string;
 }
 
 // === Login page ===
@@ -23,7 +24,7 @@ function loginPage(authStateId: string): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cambium</title>
+  <title>${PRODUCT_NAME}</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 400px; margin: 80px auto; padding: 0 20px; }
     h1 { font-size: 1.4em; }
@@ -36,7 +37,7 @@ function loginPage(authStateId: string): string {
   </style>
 </head>
 <body>
-  <h1>Cambium</h1>
+  <h1>${PRODUCT_NAME}</h1>
   <form id="form">
     <input type="password" id="secret" placeholder="Password" autofocus />
     <button type="submit">Sign in</button>
@@ -90,7 +91,7 @@ const defaultHandler = {
       }
 
       // Dev mode: no secret configured, auto-approve
-      if (!env.CAMBIUM_SECRET) {
+      if (!env.MNEMION_SECRET) {
         const { redirectTo } = await (env as any).OAUTH_PROVIDER.completeAuthorization({
           request: oauthReq,
           userId: "owner",
@@ -121,7 +122,7 @@ const defaultHandler = {
         secret: string;
       };
 
-      if (secret !== env.CAMBIUM_SECRET) {
+      if (secret !== env.MNEMION_SECRET) {
         return Response.json({ error: "Wrong password" }, { status: 401 });
       }
 
@@ -145,9 +146,9 @@ const defaultHandler = {
     }
 
     // Dev-only: seed test marketplace data
-    if (url.pathname === "/dev/seed-marketplace" && !env.CAMBIUM_SECRET) {
-      const storeId = env.CAMBIUM_STORE.idFromName("user:owner");
-      const store = env.CAMBIUM_STORE.get(storeId) as DurableObjectStub<CambiumStore>;
+    if (url.pathname === "/dev/seed-marketplace" && !env.MNEMION_SECRET) {
+      const storeId = env.MNEMION_STORE.idFromName("user:owner");
+      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
 
       // Create _plugins schema
       let result = await store.proposeChange("Create _plugins object", JSON.stringify({
@@ -191,7 +192,7 @@ const defaultHandler = {
 
       // Create a test plugin
       result = await store.mutate("_plugins", "create", JSON.stringify({
-        name: "cambium-test",
+        name: `${URI_SCHEME}-test`,
         description: "Test plugin for marketplace validation",
         version: "0.1.0",
         visibility: "public",
@@ -212,17 +213,17 @@ const defaultHandler = {
     }
 
     // Marketplace token management (master password required)
-    if (url.pathname === "/marketplace/token" && env.CAMBIUM_SECRET) {
+    if (url.pathname === "/marketplace/token" && env.MNEMION_SECRET) {
       const password = extractBasicPassword(request);
-      if (password !== env.CAMBIUM_SECRET) {
+      if (password !== env.MNEMION_SECRET) {
         return new Response("Master password required", {
           status: 401,
-          headers: { "WWW-Authenticate": 'Basic realm="Cambium"' },
+          headers: { "WWW-Authenticate": `Basic realm="${PRODUCT_NAME}"` },
         });
       }
 
-      const storeId = env.CAMBIUM_STORE.idFromName("user:owner");
-      const store = env.CAMBIUM_STORE.get(storeId) as DurableObjectStub<CambiumStore>;
+      const storeId = env.MNEMION_STORE.idFromName("user:owner");
+      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
 
       if (request.method === "POST") {
         // Create a new scoped token
@@ -238,7 +239,7 @@ const defaultHandler = {
           token,
           name: parsed.record.name,
           scope: parsed.record.scope ? JSON.parse(parsed.record.scope) : null,
-          install: `https://cambium:${token}@${url.host}/marketplace.git`,
+          install: `https://${URI_SCHEME}:${token}@${url.host}/marketplace.git`,
         });
       }
 
@@ -251,8 +252,8 @@ const defaultHandler = {
     const uploadMatch = url.pathname.match(/^\/upload\/([a-fA-F0-9]+)$/);
     if (uploadMatch && request.method === "POST") {
       const token = uploadMatch[1];
-      const storeId = env.CAMBIUM_STORE.idFromName("user:owner");
-      const store = env.CAMBIUM_STORE.get(storeId) as DurableObjectStub<CambiumStore>;
+      const storeId = env.MNEMION_STORE.idFromName("user:owner");
+      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
       const content = await request.text();
       const result = await store.consumeUpload(token, content);
       const parsed = JSON.parse(result);
@@ -263,14 +264,14 @@ const defaultHandler = {
     if (url.pathname.startsWith("/marketplace")) {
       const isPublic = url.pathname.startsWith("/marketplace/public");
 
-      const storeId = env.CAMBIUM_STORE.idFromName("user:owner");
-      const store = env.CAMBIUM_STORE.get(storeId) as DurableObjectStub<CambiumStore>;
+      const storeId = env.MNEMION_STORE.idFromName("user:owner");
+      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
 
       // Get marketplace data (auth + scoping)
       let raw: string;
       if (isPublic) {
         raw = await store.getMarketplaceDataPublic();
-      } else if (!env.CAMBIUM_SECRET) {
+      } else if (!env.MNEMION_SECRET) {
         // Dev mode: serve all data without auth
         raw = await store.getMarketplaceDataPublic();
       } else {
@@ -278,7 +279,7 @@ const defaultHandler = {
         if (!password) {
           return new Response("Authentication required", {
             status: 401,
-            headers: { "WWW-Authenticate": 'Basic realm="Cambium"' },
+            headers: { "WWW-Authenticate": `Basic realm="${PRODUCT_NAME}"` },
           });
         }
         raw = await store.getMarketplaceDataForToken(password);
@@ -286,7 +287,7 @@ const defaultHandler = {
         if (check.error) {
           return new Response("Invalid token", {
             status: 401,
-            headers: { "WWW-Authenticate": 'Basic realm="Cambium"' },
+            headers: { "WWW-Authenticate": `Basic realm="${PRODUCT_NAME}"` },
           });
         }
       }
@@ -325,7 +326,7 @@ const defaultHandler = {
 
 export default new OAuthProvider({
   apiRoute: "/mcp",
-  apiHandler: CambiumSession.serve("/mcp"),
+  apiHandler: SessionDO.serve("/mcp"),
   defaultHandler,
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
