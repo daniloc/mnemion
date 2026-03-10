@@ -389,7 +389,7 @@ export class StoreDO extends DurableObject {
     if (hasOldIndex) {
       const rows = this.db.exec("SELECT data FROM _index WHERE id = 1").toArray();
       if (rows.length > 0) {
-        const index = JSON.parse((rows[0] as any).data) as MnemionIndex;
+        const index = JSON.parse((rows[0] as any).data) as StoreIndex;
 
         this.db.exec(
           "INSERT OR IGNORE INTO _meta (id, version, guidance, updated_at) VALUES (1, ?, ?, ?)",
@@ -427,6 +427,16 @@ export class StoreDO extends DurableObject {
         `This is a new ${PRODUCT_NAME} instance. No objects exist yet. Create what the work demands.`
       );
     }
+
+    // One-time rename fixup: replace stale "Cambium" references in stored data
+    this.db.exec(
+      "UPDATE _meta SET guidance = ? WHERE id = 1 AND guidance LIKE '%Cambium%'",
+      `${PRODUCT_NAME} is active. Read ${uri("index")} for orientation, then query and mutate to work with data.`
+    );
+    this.db.exec(
+      "UPDATE _objects SET description = REPLACE(description, 'Cambium', ?) WHERE description LIKE '%Cambium%'",
+      PRODUCT_NAME
+    );
 
     // === Other kernel tables ===
 
@@ -1537,7 +1547,7 @@ export class StoreDO extends DurableObject {
 
   // === Helpers ===
 
-  private getCurrentIndex(): MnemionIndex {
+  private getCurrentIndex(): StoreIndex {
     const meta = this.db.exec("SELECT * FROM _meta WHERE id = 1").one() as any;
     const objects = this.db.exec("SELECT name, description FROM _objects ORDER BY name").toArray() as any[];
     const allFields = this.db.exec("SELECT * FROM _fields ORDER BY object_name, id").toArray() as any[];
