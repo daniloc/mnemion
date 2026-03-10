@@ -123,13 +123,66 @@
     return { patternName, entryId };
   }
 
-  // Restore from URL on mount
+  // Live updates via WebSocket
+  let ws: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout>;
+
+  function connectLive() {
+    if (!browser) return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+    ws.onmessage = async (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'changed') {
+          const changed: string[] = msg.patterns;
+          // Schema change — reload the whole page to get fresh index
+          if (changed.includes('_schema')) {
+            location.reload();
+            return;
+          }
+          // Refresh index (entry counts, etc.)
+          try {
+            const res = await fetch('/api/index');
+            const idx = await res.json();
+            patterns = idx.patterns;
+            // Update selected pattern reference if still viewing one
+            if (selected) {
+              const fresh = patterns.find(p => p.name === selected!.name);
+              if (fresh) selected = fresh;
+            }
+          } catch { /* index refresh failed, not fatal */ }
+          // If we're viewing a pattern that was mutated, re-fetch entries
+          if (selected && changed.includes(selected.name)) {
+            selectPattern(selected, selectedEntry ? String(selectedEntry.id) : undefined);
+          }
+        }
+      } catch { /* ignore bad messages */ }
+    };
+
+    ws.onclose = () => {
+      ws = null;
+      reconnectTimer = setTimeout(connectLive, 3000);
+    };
+
+    ws.onerror = () => {
+      ws?.close();
+    };
+  }
+
+  // Restore from URL on mount + connect live
   onMount(() => {
     const { patternName, entryId } = parseHash();
     if (patternName) {
       const match = patterns.find(p => p.name === patternName);
       if (match) selectPattern(match, entryId);
     }
+    connectLive();
+    return () => {
+      clearTimeout(reconnectTimer);
+      ws?.close();
+    };
   });
 
   // All facets + kernel columns for detail view

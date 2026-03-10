@@ -418,11 +418,34 @@
 
   /* ── Lifecycle ── */
 
+  /* ── Live updates ── */
+
+  let liveWs: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout>;
+
+  function connectLive() {
+    if (!browser) return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    liveWs = new WebSocket(`${proto}//${location.host}/ws`);
+    liveWs.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'changed') {
+          if (animationId) cancelAnimationFrame(animationId);
+          loadAndBuild();
+        }
+      } catch { /* ignore */ }
+    };
+    liveWs.onclose = () => { liveWs = null; reconnectTimer = setTimeout(connectLive, 3000); };
+    liveWs.onerror = () => { liveWs?.close(); };
+  }
+
   onMount(() => {
     if (!browser) return;
     ctx = canvas.getContext('2d')!;
     resize();
     loadAndBuild();
+    connectLive();
 
     const ro = new ResizeObserver(() => {
       resize();
@@ -435,12 +458,18 @@
 
     return () => {
       ro.disconnect();
+      clearTimeout(reconnectTimer);
+      liveWs?.close();
       if (animationId) cancelAnimationFrame(animationId);
     };
   });
 
   onDestroy(() => {
-    if (browser && animationId) cancelAnimationFrame(animationId);
+    if (browser) {
+      clearTimeout(reconnectTimer);
+      liveWs?.close();
+      if (animationId) cancelAnimationFrame(animationId);
+    }
   });
 </script>
 

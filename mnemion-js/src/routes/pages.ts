@@ -23,6 +23,13 @@ export const schemaPage: RouteHandler = async (ctx) => {
   });
 };
 
+export const queryIndex: RouteHandler = async (ctx) => {
+  const raw = await ctx.store.getIndex();
+  return new Response(raw, {
+    headers: { "Content-Type": "application/json" },
+  });
+};
+
 export const queryEntries: RouteHandler = async (ctx) => {
   const result = await ctx.store.query(
     ctx.params.pattern, "", "", "-updated_at", 100, false
@@ -30,4 +37,12 @@ export const queryEntries: RouteHandler = async (ctx) => {
   return new Response(result, {
     headers: { "Content-Type": "application/json" },
   });
+};
+
+export const liveSocket: RouteHandler = async (ctx) => {
+  if (ctx.request.headers.get("Upgrade") !== "websocket") {
+    return new Response("Expected WebSocket", { status: 426 });
+  }
+  // WebSocket upgrades must go through fetch(), not RPC
+  return ctx.store.fetch(ctx.request);
 };

@@ -754,6 +754,8 @@ export class StoreDO extends DurableObject {
       // Synthesize current index for response
       const currentIndex = this.getCurrentIndex();
 
+      this.broadcastChange(["_schema"]);
+
       return JSON.stringify({
         applied: true,
         description: pending.description,
@@ -935,7 +937,9 @@ export class StoreDO extends DurableObject {
   }
 
   async mutate(patternName: string, operation: string, dataJson: string): Promise<string> {
-    return JSON.stringify(this.executeMutate(patternName, operation, JSON.parse(dataJson)), null, 2);
+    const result = this.executeMutate(patternName, operation, JSON.parse(dataJson));
+    if (!result.error) this.broadcastChange([patternName]);
+    return JSON.stringify(result, null, 2);
   }
 
   async batchMutate(operationsJson: string): Promise<string> {
@@ -966,6 +970,8 @@ export class StoreDO extends DurableObject {
       }
     });
 
+    const affectedPatterns = [...new Set(operations.map(op => op.pattern))];
+    this.broadcastChange(affectedPatterns);
     return JSON.stringify({ batch: true, results, count: results.length }, null, 2);
   }
 
@@ -1038,6 +1044,8 @@ export class StoreDO extends DurableObject {
       `SELECT * FROM "${upload.target_pattern}" WHERE id = ?`,
       upload.target_id
     ).one();
+
+    this.broadcastChange([upload.target_pattern]);
 
     return JSON.stringify({
       uploaded: true,
@@ -1644,7 +1652,34 @@ export class StoreDO extends DurableObject {
     }
 
     const result = this.executeMutate(input.target_pattern, "create", data);
+    if (!result.error) this.broadcastChange([input.target_pattern]);
     return JSON.stringify(result, null, 2);
+  }
+
+  // === Live updates via WebSocket (Hibernatable API) ===
+
+  async fetch(request: Request): Promise<Response> {
+    if (request.headers.get("Upgrade") === "websocket") {
+      const pair = new WebSocketPair();
+      this.ctx.acceptWebSocket(pair[1]);
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    return new Response("Not found", { status: 404 });
+  }
+
+  webSocketMessage(_ws: WebSocket, _message: string | ArrayBuffer) {
+    // Browser doesn't send meaningful messages — ignore
+  }
+
+  webSocketClose(_ws: WebSocket) {
+    // Cleanup handled automatically by runtime
+  }
+
+  private broadcastChange(patterns: string[]) {
+    const msg = JSON.stringify({ type: "changed", patterns });
+    for (const ws of this.ctx.getWebSockets()) {
+      try { ws.send(msg); } catch { /* dead socket, runtime will clean up */ }
+    }
   }
 
   private errorJson(message: string): string {
