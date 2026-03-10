@@ -31,3 +31,9 @@ new_sqlite_classes = ["CambiumStore"]
 [[migrations]]
 tag = "v3"
 renamed_classes = [{from = "CambiumSession", to = "SessionDO"}, {from = "CambiumStore", to = "StoreDO"}]
+
+# Import .md files as text modules
+[[rules]]
+type = "Text"
+globs = ["**/*.md"]
+fallthrough = true

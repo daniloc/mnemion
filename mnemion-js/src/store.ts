@@ -2,6 +2,15 @@ import { DurableObject } from "cloudflare:workers";
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { evaluateMapping } from "./transform";
 
+// System docs — imported as raw text, placeholders resolved at load time
+import toolsRaw from "./system-docs/tools.md";
+import schemaEvolutionRaw from "./system-docs/schema-evolution.md";
+import skillsRaw from "./system-docs/skills.md";
+import conventionsRaw from "./system-docs/conventions.md";
+import indexGuideRaw from "./system-docs/index-guide.md";
+import remoteAccessRaw from "./system-docs/remote-access.md";
+import httpIoRaw from "./system-docs/http-io.md";
+
 // === Types ===
 
 export interface StoreIndex {
@@ -75,426 +84,32 @@ function estimateRecordBytes(data: Record<string, unknown>): number {
   return bytes;
 }
 
-// === System docs seed content ===
+// === System docs: loaded from markdown files ===
 
-const SYSTEM_DOCS_SEED: { slug: string; title: string; content: string }[] = [
-  {
-    slug: "tools",
-    title: "Tool Strategy",
-    content: `# Tool Strategy
-
-${PRODUCT_NAME} has six tools. They never grow — new capabilities come from schema and records, not new tools.
-
-## resolve
-Read anything by \`${URI_PREFIX}\` URI. The URI scheme is the API.
-- \`${uri("index")}\` — master index. Read this first.
-- \`${uri("schema/{object}")}\` — field definitions for an object
-- \`${uri("records/{object}/{id}")}\` — a single record
-- \`${uri("history")}\` — recent schema changes (supports \`?limit=N\`)
-- \`${uri("_system/{slug}")}\` — system documentation (you're reading one now)
-- \`${uri("_system/")}\` — list all system docs
-- \`${uri("mutations")}\` — audit log of all data mutations (supports \`?limit=N\`)
-- \`${uri("mutations/{object}")}\` — audit log filtered to one object
-
-## query
-Filtered, sorted, paginated reads from a single object.
-- \`filter\`: array of expressions like \`status=active\`, \`priority>3\`, \`title~keyword\`
-- \`fields\`: comma-separated projection (default: all)
-- \`sort\`: field name, prefix \`-\` for descending (e.g. \`-updated_at\`)
-- \`count_only\`: return count without records — use this before large queries
-- Max 1,000 rows per query (limit is silently clamped).
-
-## search
-Cross-object full-text search across all text fields. Use when you don't know which object holds what you need.
-
-## mutate
-Create, update, or archive records. One tool for all writes.
-- \`create\`: provide field values, kernel columns (id, timestamps) are auto-set
-- \`update\`: provide \`id\` + fields to change. Include \`version\` for optimistic locking (prevents lost updates when multiple surfaces write concurrently).
-- \`archive\`: provide \`id\` only — soft-deletes, never destroys data
-- \`batch\`: pass an array of {object, operation, data} for atomic all-or-nothing execution (max 100 ops)
-
-Records are limited to ~1 MB each.
-
-## propose_change / apply_change
-Two-step schema evolution. Propose validates and previews. Apply commits.
-- \`create_object\`: new object with fields (max 64 fields per object)
-- \`add_field\`: add fields to an existing object
-- \`add_convention\`: add a convention to the index
-- Fields support \`references\` for foreign keys to other objects.
-- \`apply_change\` also supports \`revert_history_id\` for point-in-time rollback via Cloudflare PITR (30-day window). This is destructive — restores all data, not just schema.
-
-Object names: lowercase, start with letter, a-z/0-9/hyphens/underscores, max 64 chars. Field names: same rules.
-
-Schema changes are permanent and logged in \`${uri("history")}\`. Propose first, review the preview, then apply.
-
-## Large content uploads
-
-When content is too large for MCP tool parameters (e.g. research results, file contents), use the upload token flow:
-
-1. Mint a token: \`mutate({ object: "_upload_tokens", operation: "create", data: { target_object, target_id, target_field, mode } })\`
-2. POST content: \`curl -X POST https://<host>/upload/<token> -d @file.txt\`
-
-Properties:
-- \`mode\`: \`replace\` (default) overwrites the field, \`append\` concatenates to existing content
-- Token expires after 15 minutes and is single-use
-- Target object, record, and field are validated at mint time; field must be \`text\` type
-- The token IS the auth — no other credentials needed (capability URL pattern)
-- Same 1 MB record limit applies
-
-## HTTP I/O
-
-${PRODUCT_NAME} can expose data over plain HTTP and accept inbound data from webhooks. These are configured as records, not code. See \`${uri("_system/http-io")}\` for full details.
-
-- **Egress** (\`_outputs\`): serve content at \`GET /o/{path}\`
-- **Ingress** (\`_inputs\`): accept POST data at \`POST /i/{path}\`, create records in a target object
-
-Both are managed via \`mutate\` on the respective kernel objects.
-
-## When to use what
-- Know exactly what you want → \`resolve\` with a URI
-- Need filtered/sorted data → \`query\`
-- Exploring, don't know where something is → \`search\`
-- Writing data → \`mutate\`
-- Writing large text content → upload token flow (mint via \`mutate\`, POST via HTTP)
-- Serving content over HTTP → create \`_outputs\` records
-- Receiving webhooks/POST data → create \`_inputs\` records
-- Changing structure → \`propose_change\` then \`apply_change\`
-- Reviewing data history → \`resolve\` with \`${uri("mutations")}\`
-`,
-  },
-  {
-    slug: "schema-evolution",
-    title: "Schema Evolution",
-    content: `# Schema Evolution
-
-Objects are created through \`propose_change\` / \`apply_change\`. This is a two-step process: propose validates and returns a preview; apply commits the change to SQLite and the index.
-
-## Naming conventions
-- Object names: kebab-case (e.g. \`research-threads\`, \`daily-notes\`)
-- Field names: snake_case (e.g. \`due_date\`, \`source_url\`)
-- Objects starting with \`_\` are kernel/system objects (e.g. \`_plugins\`, \`_skills\`, \`_system_docs\`)
-
-## Field types
-\`text\`, \`number\`, \`integer\`, \`boolean\`, \`datetime\`
-
-## Kernel columns (auto-provided, never define these)
-\`id\`, \`created_at\`, \`updated_at\`, \`archived_at\`
-
-Every object gets these automatically. Do not include them in \`propose_change\` field lists.
-
-## When to create a new object vs. add fields
-- New object: the data represents a distinct concept with its own lifecycle
-- Add field: the data extends an existing concept (e.g. adding \`priority\` to \`tasks\`)
-
-## When to evolve schema
-- When the work demands a new shape. Don't pre-create objects speculatively.
-- When existing fields can't represent what's needed. Add fields rather than overloading existing ones.
-- When the human says "track X" or "I need to remember Y" — that's a schema evolution signal.
-
-## Archiving vs. deletion
-${PRODUCT_NAME} never deletes. \`archive\` sets \`archived_at\`, excluding the record from queries. The data persists for history and recovery.
-`,
-  },
-  {
-    slug: "skills",
-    title: "Skills & Marketplace",
-    content: `# Skills & Marketplace Distribution
-
-${PRODUCT_NAME} can serve itself as a Claude Code plugin marketplace. Skills are records authored through \`mutate\`, served as a synthesized git repo on every request.
-
-## Schema objects
-
-Two objects support the skill system. Create them via \`propose_change\` / \`apply_change\` when first needed:
-
-### \`_plugins\`
-Each record is a plugin — a named package of skills and configuration.
-- \`name\` (text, required) — kebab-case identifier
-- \`description\` (text, required)
-- \`version\` (text, required) — semver, bump on skill changes
-- \`visibility\` (text, required) — "public" or "private"
-- \`author\` (text) — optional
-- \`claude_md\` (text) — CLAUDE.md content injected when plugin is active
-- \`settings_json\` (text) — settings.json content
-- \`mcp_json\` (text) — .mcp.json for MCP server definitions
-
-### \`_skills\`
-Each record is a skill within a plugin.
-- \`plugin_id\` (integer, required) — references \`_plugins.id\`
-- \`name\` (text, required) — kebab-case
-- \`description\` (text) — triggers and purpose
-- \`argument_hint\` (text) — e.g. "[topic or question]"
-- \`skill_md\` (text, required) — full SKILL.md body after frontmatter
-- \`visibility\` (text, required) — "public" or "private"
-
-## Creating a skill workflow
-1. Ensure \`_plugins\` and \`_skills\` objects exist (one-time setup)
-2. \`mutate(_plugins, create, {...})\` — create the plugin
-3. \`mutate(_skills, create, {...})\` — create skills within it
-4. Human installs: \`/plugin marketplace add <url>\`
-
-## Marketplace endpoints
-- \`/marketplace/\` — private, token-authenticated, serves all visibility levels
-- \`/marketplace/public/\` — unauthenticated, serves only public plugins/skills
-
-## Scoped tokens
-Create via \`mutate(_marketplace_tokens, create, {name, scope})\`.
-- \`scope\`: JSON array of plugin names (null = all plugins)
-- \`token\`: auto-generated, returned in response
-- Install URL: \`https://${URI_SCHEME}:<token>@<host>/marketplace.git\`
-
-## Visibility rules
-- Private skills: only on authenticated marketplace
-- Public plugins: appear on public marketplace ONLY if ALL skills are public
-- Default to \`private\`. Only mark \`public\` when explicitly sharing.
-
-## Updating skills
-Mutate the skill record. Bump the plugin version. Claude Code detects the version change on next startup.
-Note: Users may need to restart Claude Code for skill changes to take effect.
-`,
-  },
-  {
-    slug: "conventions",
-    title: "Conventions",
-    content: `# Conventions
-
-## URI scheme
-All ${PRODUCT_NAME} data is addressable via \`${URI_PREFIX}\` URIs:
-- \`${uri("index")}\` — the master index
-- \`${uri("schema/{object}")}\` — object field definitions
-- \`${uri("records/{object}/{id}")}\` — individual record
-- \`${uri("history")}\` — schema change log
-- \`${uri("_system/{slug}")}\` — system documentation
-
-## The index
-The index is the single source of truth for what exists. Read it first in any new session. It contains:
-- All objects with descriptions and field lists
-- Active record counts
-- Conventions established for this instance
-- Guidance text
-
-## Visibility model
-Records can be \`public\` or \`private\`. This controls marketplace distribution:
-- Private: only accessible via authenticated marketplace
-- Public: accessible to anyone via public marketplace
-
-## Archiving
-\`archive\` is the only destructive operation, and it's soft — sets \`archived_at\` timestamp. Archived records are excluded from queries but never deleted. Recovery is always possible.
-
-## Kernel objects
-Objects prefixed with \`_\` are system objects managed by the kernel:
-- \`_outputs\` — HTTP egress endpoints (see \`${uri("_system/http-io")}\`)
-- \`_inputs\` — HTTP ingress endpoints (see \`${uri("_system/http-io")}\`)
-- \`_auth_codes\` — one-time auth codes for remote agents (see \`${uri("_system/remote-access")}\`)
-- \`_marketplace_tokens\` — scoped access tokens for marketplace
-- \`_upload_tokens\` — temporary capability tokens for large content uploads
-- \`_plugins\`, \`_skills\` — marketplace content (created on demand)
-- \`_system_docs\` — these documents
-
-Kernel objects follow the same query/mutate interface as user objects.
-
-## System docs
-System docs (like this one) are editable via \`mutate\`. Each has a \`default_content\` field preserving the original seed. To restore a doc, set \`content\` to null — resolve will fall back to \`default_content\`.
-
-Edits to \`_system_docs\` require confirmation because they affect all future agent sessions.
-`,
-  },
-  {
-    slug: "index-guide",
-    title: "Reading the Index",
-    content: `# Reading the Index
-
-\`${uri("index")}\` is your starting point every session. Here's how to interpret it.
-
-## Structure
-\`\`\`json
-{
-  "version": 5,
-  "updated_at": "2025-...",
-  "objects": [...],
-  "conventions": [...],
-  "guidance": "..."
+/** Resolve {{placeholder}} syntax in system doc markdown. */
+function resolveDocPlaceholders(raw: string): string {
+  return raw
+    .replace(/\{\{PRODUCT_NAME\}\}/g, PRODUCT_NAME)
+    .replace(/\{\{URI_SCHEME\}\}/g, URI_SCHEME)
+    .replace(/\{\{URI_PREFIX\}\}/g, URI_PREFIX)
+    .replace(/\{\{uri:(.*?)\}\}/g, (_, path) => uri(path));
 }
-\`\`\`
 
-## Objects array
-Each entry describes an object:
-- \`name\`: the object identifier (used in queries and URIs)
-- \`description\`: what this object holds and why
-- \`fields\`: array of {name, type, required, default} — the object's schema
-- \`record_count\`: current active (non-archived) records
-
-Use \`record_count\` to gauge activity. Zero-count objects may be unused or newly created.
-
-## Conventions
-Text entries the human or agent has established:
-- Naming patterns
-- Workflow rules
-- Domain-specific guidance
-
-Conventions are added via \`propose_change\` with type \`add_convention\`.
-
-## Guidance
-Free-text orientation. On a fresh instance: "No objects exist yet." After schema creation: "${PRODUCT_NAME} is active."
-
-The guidance evolves as the instance grows. It's a one-liner for fast orientation.
-
-## What to do after reading the index
-1. Scan objects and record counts for orientation
-2. If you need details on an object's fields, resolve \`${uri("schema/{name}")}\`
-3. Query objects with recent activity (\`sort=-updated_at\`, \`limit=5\`)
-4. Check conventions for any rules to follow
-`,
-  },
-  {
-    slug: "remote-access",
-    title: "Remote Access",
-    content: `# Remote Access
-
-How to connect an agent to ${PRODUCT_NAME} from a remote machine (e.g. via SSH) without browser-based OAuth.
-
-## Overview
-
-${PRODUCT_NAME} uses OAuth 2.1 for authentication. On a local machine, the MCP client opens a browser for the OAuth flow. On a remote/headless machine, that's not possible. One-time auth codes solve this.
-
-## Creating an auth code
-
-From any authenticated ${PRODUCT_NAME} session (Claude Code, Claude.ai, etc.), create a one-time code:
-
-\`\`\`
-mutate _auth_codes create { "label": "remote-server", "ttl_minutes": 480 }
-\`\`\`
-
-- \`label\`: optional, for your own bookkeeping
-- \`ttl_minutes\`: how long the code remains valid (default: 60 minutes)
-- The response includes a \`code\` field — a 32-character hex string
-
-## Connecting the remote agent
-
-On the remote machine, add this to \`.mcp.json\` (or the equivalent MCP client config):
-
-\`\`\`json
-{
-  "mcpServers": {
-    "${URI_SCHEME}": {
-      "type": "http",
-      "url": "https://YOUR_WORKER.workers.dev/mcp",
-      "headers": {
-        "Authorization": "Bearer AUTH_CODE_HERE"
-      }
-    }
-  }
+/** Parse frontmatter (slug, title) and body from a markdown string. */
+function parseDocFile(raw: string): { slug: string; title: string; content: string } {
+  const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!fmMatch) throw new Error("System doc missing frontmatter");
+  const fm = fmMatch[1];
+  const body = resolveDocPlaceholders(fmMatch[2].trimEnd());
+  const slug = fm.match(/^slug:\s*(.+)$/m)?.[1]?.trim() ?? "";
+  const title = fm.match(/^title:\s*"?([^"\n]+)"?$/m)?.[1]?.trim() ?? "";
+  return { slug, title, content: body };
 }
-\`\`\`
 
-Replace \`AUTH_CODE_HERE\` with the code from the mutate response. The agent connects immediately — no browser, no OAuth dance.
-
-## How it works
-
-The code acts as a bearer token. ${PRODUCT_NAME} validates it on each request without consuming it, so the session stays active until the code expires or is revoked. The code bypasses OAuth entirely via the \`resolveExternalToken\` hook.
-
-## Security notes
-
-- Codes are time-limited. Set \`ttl_minutes\` to the shortest duration practical for the task.
-- To revoke immediately: \`mutate _auth_codes archive { "id": CODE_RECORD_ID }\`
-- Codes are single-purpose: if you also enter one on the browser login page, it is consumed and can't be reused as a bearer token.
-- Query active codes: \`query _auth_codes { "filter": ["consumed_at="] }\` (unconsumed only)
-
-## Auth tiers
-
-1. **Passkey** — primary, for humans in a browser. Register via the setup URL.
-2. **Auth codes** — for remote/headless agents. Time-limited bearer tokens created via \`mutate\`.
-3. **Master secret** — infrastructure key. Used only for initial setup and passkey registration. Replaceable at any time via \`npm run setup\`.
-`,
-  },
-  {
-    slug: "http-io",
-    title: "HTTP I/O",
-    content: `# HTTP I/O
-
-${PRODUCT_NAME} can serve content and accept inbound data over plain HTTP. No MCP client needed — just a URL.
-
-## Egress: \`_outputs\`
-
-Create a record in \`_outputs\` to serve content at a public URL.
-
-\`\`\`
-mutate _outputs create { "path": "hello", "content": "<h1>Hello</h1>", "mime_type": "text/html" }
-\`\`\`
-
-The content is now available at \`GET /o/hello\`.
-
-### Fields
-- \`path\` (required) — URL path segment (no leading slash). Must be unique among active records.
-- \`content\` (required) — the response body
-- \`mime_type\` — Content-Type header (default: \`text/plain\`)
-- \`visibility\` — \`public\` (default) or \`private\`. Private outputs require a valid auth code as bearer token.
-
-### Updating content
-\`mutate _outputs update { "id": 1, "version": 0, "content": "new content" }\`
-
-### Freeing a path
-Archive the record. The path becomes available for a new record immediately.
-
-## Ingress: \`_inputs\`
-
-Create a record in \`_inputs\` to accept POST data and automatically create records in a target object.
-
-\`\`\`
-mutate _inputs create {
-  "path": "webhook",
-  "target_object": "events",
-  "field_mapping": "{\\"title\\": \\"data.title | truncate 100\\", \\"source\\": \\"$header.X-Source | default \\\\\\"unknown\\\\\\"\\", \\"payload\\": \\"$body\\"}"
-}
-\`\`\`
-
-Now \`POST /i/webhook\` with a JSON body creates a record in \`events\`.
-
-### Fields
-- \`path\` (required) — URL path segment. Must be unique among active records.
-- \`target_object\` (required) — which object to create records in (must exist)
-- \`field_mapping\` — JSON object mapping target fields to transform expressions (see below)
-- \`body_field\` — simple mode: store the raw POST body in this single field
-- \`visibility\` — \`public\` (default) or \`private\`
-
-Use \`field_mapping\` OR \`body_field\`, not both. If neither is set, the raw body is stored as \`body\` on the target.
-
-### Transform DSL (field_mapping)
-
-The field mapping value is a JSON object where keys are target field names and values are transform expressions.
-
-**Resolvers** (left side of pipe):
-- \`data.title\` — dot-path into the JSON body
-- \`$body\` — the raw POST body as a string
-- \`$header.X-Name\` — request header (case-insensitive)
-- \`$query.param\` — query parameter from the URL
-- \`$now\` — current ISO 8601 timestamp
-- \`"literal"\` — a quoted literal string
-
-**Transforms** (pipe-separated, applied left to right):
-- \`truncate N\` — limit to N characters
-- \`lower\` / \`upper\` — case conversion
-- \`default "value"\` — fallback if null/undefined
-- \`json\` — parse a JSON string into an object
-- \`join ", "\` — join an array with separator
-
-**Example**: \`data.tags | join ", " | truncate 200\`
-
-### Visibility and auth
-- \`public\` inputs accept POST from anyone (webhook use case)
-- \`private\` inputs require a bearer token (auth code) in the Authorization header
-
-## Path reuse
-
-Archiving an \`_outputs\` or \`_inputs\` record frees its path for reuse. Active (non-archived) paths must be unique.
-
-## Use cases
-
-- **Egress**: status pages, JSON APIs, public content, badge endpoints
-- **Ingress**: GitHub webhooks, form submissions, IoT data, inter-service messaging
-`,
-  },
-];
+const SYSTEM_DOCS_SEED = [
+  toolsRaw, schemaEvolutionRaw, skillsRaw, conventionsRaw,
+  indexGuideRaw, remoteAccessRaw, httpIoRaw,
+].map(parseDocFile);
 
 
 // === MnemionStore: per-user data storage ===
