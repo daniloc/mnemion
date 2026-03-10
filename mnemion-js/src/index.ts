@@ -3,6 +3,13 @@ import { SessionDO } from "./session";
 import { StoreDO } from "./store";
 import { handleMarketplaceGit, type MarketplacePlugin } from "./git";
 import { PRODUCT_NAME, URI_SCHEME } from "./constants";
+// Passkey module loaded lazily to avoid tslib issues in test environments
+type PasskeyModule = typeof import("./passkey");
+let _passkey: PasskeyModule | null = null;
+async function passkey(): Promise<PasskeyModule> {
+  if (!_passkey) _passkey = await import("./passkey");
+  return _passkey;
+}
 
 // Re-export DO classes for wrangler
 export { SessionDO, StoreDO };
@@ -16,9 +23,9 @@ interface Env {
   MNEMION_SECRET: string;
 }
 
-// === Login page ===
+// === Login page (secret-only fallback, used when no passkey is registered) ===
 
-function loginPage(authStateId: string): string {
+function secretOnlyLoginPage(authStateId: string): string {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -39,7 +46,7 @@ function loginPage(authStateId: string): string {
 <body>
   <h1>${PRODUCT_NAME}</h1>
   <form id="form">
-    <input type="password" id="secret" placeholder="Password" autofocus />
+    <input type="password" id="secret" placeholder="Master secret" autofocus />
     <button type="submit">Sign in</button>
   </form>
   <div id="error"></div>
@@ -102,7 +109,7 @@ const defaultHandler = {
         return new Response(null, { status: 302, headers: { Location: redirectTo } });
       }
 
-      // Store OAuth request for after password verification
+      // Store OAuth request for after verification
       const authStateId = crypto.randomUUID();
       await env.OAUTH_KV.put(
         `auth_state:${authStateId}`,
@@ -110,7 +117,17 @@ const defaultHandler = {
         { expirationTtl: 600 }
       );
 
-      return new Response(loginPage(authStateId), {
+      // Check if a passkey is registered — show passkey-first page if so
+      const storeId = env.MNEMION_STORE.idFromName("user:owner");
+      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+      const hasPasskey = await store.hasPasskey();
+
+      const pk = await passkey();
+      const html = hasPasskey
+        ? pk.passkeyLoginPage(authStateId)
+        : secretOnlyLoginPage(authStateId);
+
+      return new Response(html, {
         headers: { "Content-Type": "text/html" },
       });
     }
@@ -143,6 +160,128 @@ const defaultHandler = {
       });
 
       return Response.json({ redirectTo });
+    }
+
+    // === Passkey setup (registration) ===
+
+    // GET /setup?token=SECRET — show passkey registration page
+    if (url.pathname === "/setup" && request.method === "GET" && env.MNEMION_SECRET) {
+      const token = url.searchParams.get("token");
+      if (token !== env.MNEMION_SECRET) {
+        return new Response("Invalid or missing token", { status: 403 });
+      }
+      return new Response((await passkey()).setupPage(token), {
+        headers: { "Content-Type": "text/html" },
+      });
+    }
+
+    // POST /setup/begin — generate registration options
+    if (url.pathname === "/setup/begin" && request.method === "POST" && env.MNEMION_SECRET) {
+      const { token } = (await request.json()) as { token: string };
+      if (token !== env.MNEMION_SECRET) {
+        return Response.json({ error: "Invalid token" }, { status: 403 });
+      }
+
+      const { options, challenge } = await (await passkey()).beginRegistration(request);
+      await env.OAUTH_KV.put(
+        `passkey_challenge:registration`,
+        challenge,
+        { expirationTtl: 300 }
+      );
+      return Response.json(options);
+    }
+
+    // POST /setup/complete — verify attestation, store credential
+    if (url.pathname === "/setup/complete" && request.method === "POST" && env.MNEMION_SECRET) {
+      const { token, credential } = (await request.json()) as { token: string; credential: any };
+      if (token !== env.MNEMION_SECRET) {
+        return Response.json({ error: "Invalid token" }, { status: 403 });
+      }
+
+      const challenge = await env.OAUTH_KV.get("passkey_challenge:registration");
+      if (!challenge) {
+        return Response.json({ error: "Challenge expired" }, { status: 400 });
+      }
+      await env.OAUTH_KV.delete("passkey_challenge:registration");
+
+      try {
+        const stored = await (await passkey()).completeRegistration(request, credential, challenge);
+        const storeId = env.MNEMION_STORE.idFromName("user:owner");
+        const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+        await store.storePasskey(stored.credential_id, stored.public_key, stored.counter, stored.transports);
+        return Response.json({ ok: true });
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 400 });
+      }
+    }
+
+    // === Passkey authentication ===
+
+    // POST /auth/passkey/begin — generate authentication options
+    if (url.pathname === "/auth/passkey/begin" && request.method === "POST") {
+      const { authStateId } = (await request.json()) as { authStateId: string };
+
+      const storeId = env.MNEMION_STORE.idFromName("user:owner");
+      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+      const storedPasskey = await store.getPasskey();
+      if (!storedPasskey) {
+        return Response.json({ error: "No passkey registered" }, { status: 404 });
+      }
+
+      const { options, challenge } = await (await passkey()).beginAuthentication(request, storedPasskey);
+      await env.OAUTH_KV.put(
+        `passkey_challenge:${authStateId}`,
+        challenge,
+        { expirationTtl: 300 }
+      );
+      return Response.json(options);
+    }
+
+    // POST /auth/passkey/complete — verify assertion, complete OAuth
+    if (url.pathname === "/auth/passkey/complete" && request.method === "POST") {
+      const { authStateId, assertion } = (await request.json()) as { authStateId: string; assertion: any };
+
+      const challenge = await env.OAUTH_KV.get(`passkey_challenge:${authStateId}`);
+      if (!challenge) {
+        return Response.json({ error: "Challenge expired" }, { status: 400 });
+      }
+      await env.OAUTH_KV.delete(`passkey_challenge:${authStateId}`);
+
+      const storeId = env.MNEMION_STORE.idFromName("user:owner");
+      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+      const storedPasskey = await store.getPasskey();
+      if (!storedPasskey) {
+        return Response.json({ error: "No passkey registered" }, { status: 404 });
+      }
+
+      try {
+        const { verified, newCounter } = await (await passkey()).completeAuthentication(request, assertion, challenge, storedPasskey);
+        if (!verified) {
+          return Response.json({ error: "Passkey verification failed" }, { status: 401 });
+        }
+
+        await store.updatePasskeyCounter(newCounter);
+
+        const oauthReq = await env.OAUTH_KV.get(`auth_state:${authStateId}`, {
+          type: "json",
+        }) as any;
+        if (!oauthReq) {
+          return Response.json({ error: "Session expired" }, { status: 400 });
+        }
+        await env.OAUTH_KV.delete(`auth_state:${authStateId}`);
+
+        const { redirectTo } = await (env as any).OAUTH_PROVIDER.completeAuthorization({
+          request: oauthReq,
+          userId: "owner",
+          metadata: {},
+          scope: oauthReq.scope || [],
+          props: { userId: "owner" },
+        });
+
+        return Response.json({ redirectTo });
+      } catch (err: any) {
+        return Response.json({ error: err.message }, { status: 401 });
+      }
     }
 
     // Dev-only: seed test marketplace data

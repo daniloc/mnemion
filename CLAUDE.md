@@ -7,9 +7,12 @@ Persistent, evolving shared memory between a human and their AI agents. MCP serv
 ```
 project-docs/active/   Design documents (the "why" and "what")
 mnemion-js/            Cloudflare Worker — MCP server (the "how")
-  src/index.ts         Entry point: OAuthProvider wrapper + shared secret auth
+  src/index.ts         Entry point: OAuthProvider wrapper + route handling
   src/session.ts       SessionDO: McpAgent, MCP protocol handler (per-session DO)
   src/store.ts         StoreDO: per-user data storage (per-user DO, SQLite)
+  src/passkey.ts       WebAuthn passkey registration + authentication
+  src/constants.ts     Product identity (PRODUCT_NAME, URI_SCHEME, uri() helper)
+  scripts/setup.sh     First-run setup: generates secret, deploys, opens passkey registration
 ```
 
 Future peer: iOS app (Swift).
@@ -26,7 +29,11 @@ Two Durable Objects:
 
 ### Auth
 
-Shared secret behind OAuth 2.1. The `workers-oauth-provider` package wraps the worker and handles the OAuth flow (DCR, tokens). The identity provider is a single password stored as a Cloudflare Workers secret (`MNEMION_SECRET`). No secret configured = dev mode (auto-approves).
+Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the worker and handles the OAuth flow (DCR, tokens).
+
+- **Master secret** (`MNEMION_SECRET`): High-entropy random hex, set via `npm run setup`. Root of trust — used to bootstrap passkeys and as fallback for headless agents. The user's Cloudflare login is the true credential; the secret is ephemeral and replaceable.
+- **Passkey** (WebAuthn): Optional convenience layer for browser-based OAuth. Registered via one-time setup URL. Stored in StoreDO `_passkeys` table (single credential, replaced on re-registration). If registered, `/authorize` shows passkey-first UI with secret fallback.
+- **No secret configured** = dev mode (auto-approves).
 
 ### Resources (stable, cacheable, subscribable)
 
@@ -54,7 +61,7 @@ Shared secret behind OAuth 2.1. The `workers-oauth-provider` package wraps the w
 
 - **Runtime**: Cloudflare Workers + Durable Objects (SQLite storage)
 - **MCP**: `agents` npm package (`McpAgent` class), `@modelcontextprotocol/sdk`
-- **Auth**: `@cloudflare/workers-oauth-provider` (OAuth 2.1 + PKCE + DCR)
+- **Auth**: `@cloudflare/workers-oauth-provider` (OAuth 2.1 + PKCE + DCR), `@simplewebauthn/server` for passkeys
 - **Validation**: Zod for tool parameter schemas
 - **Storage**: KV for OAuth tokens, DO SQLite for all user data
 
@@ -66,6 +73,8 @@ Shared secret behind OAuth 2.1. The `workers-oauth-provider` package wraps the w
 - `wrangler.toml` requires `compatibility_flags = ["nodejs_compat"]` for the agents package.
 - Kernel columns (`id`, `created_at`, `updated_at`, `archived_at`) are auto-provided on every user table. They cannot be defined via `propose_change`.
 - Structure is resources, operations are tools. If it describes what the organism is, it's a resource. If it changes what the organism is or retrieves dynamic content, it's a tool.
+- Product name and URI scheme are defined in `src/constants.ts`. Import `PRODUCT_NAME`, `URI_SCHEME`, `uri()` from there — never hardcode `"mnemion://"` in source.
+- `@simplewebauthn/server` is lazy-imported in index.ts to avoid `tslib` resolution issues in the vitest/workerd test environment.
 
 ## Development
 
@@ -75,10 +84,18 @@ npm install
 npm run dev          # local server on :8787 (dev mode, no secret needed)
 ```
 
+## First-time setup
+
+```bash
+cd mnemion-js
+npm run setup    # generates secret, deploys, prints passkey registration URL
+```
+
+This generates a 256-bit random master secret, sets it via wrangler, deploys, and opens the passkey registration page. Run again anytime to rotate the secret and re-register.
+
 ## Deploy
 
 ```bash
 cd mnemion-js
-npx wrangler deploy
-npx wrangler secret put MNEMION_SECRET   # set your password (one-time)
+npm run deploy   # deploy code changes (does not rotate secret)
 ```

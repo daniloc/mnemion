@@ -466,6 +466,15 @@ export class StoreDO extends DurableObject {
       archived_at TEXT
     )`);
 
+    this.db.exec(`CREATE TABLE IF NOT EXISTS _passkeys (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      credential_id TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      transports TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+
     this.db.exec(`CREATE TABLE IF NOT EXISTS "_system_docs" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "slug" TEXT NOT NULL UNIQUE,
@@ -1628,6 +1637,36 @@ export class StoreDO extends DurableObject {
       "SELECT 1 FROM _fields WHERE object_name = ? AND name = 'version'",
       objectName
     ).toArray().length === 0;
+  }
+
+  // === Passkey storage ===
+
+  async hasPasskey(): Promise<boolean> {
+    return this.db.exec("SELECT 1 FROM _passkeys WHERE id = 1").toArray().length > 0;
+  }
+
+  async getPasskey(): Promise<{ credential_id: string; public_key: string; counter: number; transports: string } | null> {
+    const rows = this.db.exec("SELECT * FROM _passkeys WHERE id = 1").toArray() as any[];
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      credential_id: r.credential_id,
+      public_key: r.public_key,
+      counter: r.counter,
+      transports: r.transports,
+    };
+  }
+
+  async storePasskey(credentialId: string, publicKey: string, counter: number, transports: string): Promise<void> {
+    this.db.exec("DELETE FROM _passkeys");
+    this.db.exec(
+      "INSERT INTO _passkeys (id, credential_id, public_key, counter, transports) VALUES (1, ?, ?, ?, ?)",
+      credentialId, publicKey, counter, transports
+    );
+  }
+
+  async updatePasskeyCounter(counter: number): Promise<void> {
+    this.db.exec("UPDATE _passkeys SET counter = ? WHERE id = 1", counter);
   }
 
   private errorJson(message: string): string {
