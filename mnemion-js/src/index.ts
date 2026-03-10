@@ -46,7 +46,7 @@ function secretOnlyLoginPage(authStateId: string): string {
 <body>
   <h1>${PRODUCT_NAME}</h1>
   <form id="form">
-    <input type="password" id="secret" placeholder="Master secret" autofocus />
+    <input type="password" id="secret" placeholder="Master secret or one-time code" autofocus />
     <button type="submit">Sign in</button>
   </form>
   <div id="error"></div>
@@ -132,15 +132,25 @@ const defaultHandler = {
       });
     }
 
-    // POST /auth/verify — check password, complete OAuth
+    // POST /auth/verify — check master secret or one-time auth code, complete OAuth
     if (url.pathname === "/auth/verify" && request.method === "POST") {
       const { authStateId, secret } = (await request.json()) as {
         authStateId: string;
         secret: string;
       };
 
-      if (secret !== env.MNEMION_SECRET) {
-        return Response.json({ error: "Wrong password" }, { status: 401 });
+      // Try master secret first, then one-time auth code
+      let authenticated = false;
+      if (env.MNEMION_SECRET && secret === env.MNEMION_SECRET) {
+        authenticated = true;
+      } else {
+        const storeId = env.MNEMION_STORE.idFromName("user:owner");
+        const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+        authenticated = await store.consumeAuthCode(secret);
+      }
+
+      if (!authenticated) {
+        return Response.json({ error: "Invalid secret or code" }, { status: 401 });
       }
 
       const oauthReq = await env.OAUTH_KV.get(`auth_state:${authStateId}`, {
@@ -471,4 +481,17 @@ export default new OAuthProvider({
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
   scopesSupported: ["read", "write"],
+
+  // Allow one-time auth codes as bearer tokens (bypass OAuth for remote agents)
+  async resolveExternalToken({ token, env }) {
+    // Only check hex strings that look like auth codes (32 chars = 16 bytes)
+    if (!/^[a-f0-9]{32}$/.test(token)) return null;
+
+    const storeId = (env as any).MNEMION_STORE.idFromName("user:owner");
+    const store = (env as any).MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+    const valid = await store.validateAuthCode(token);
+    if (!valid) return null;
+
+    return { props: { userId: "owner" } };
+  },
 });

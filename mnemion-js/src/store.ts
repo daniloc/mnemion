@@ -331,6 +331,67 @@ The guidance evolves as the instance grows. It's a one-liner for fast orientatio
 4. Check conventions for any rules to follow
 `,
   },
+  {
+    slug: "remote-access",
+    title: "Remote Access",
+    content: `# Remote Access
+
+How to connect an agent to ${PRODUCT_NAME} from a remote machine (e.g. via SSH) without browser-based OAuth.
+
+## Overview
+
+${PRODUCT_NAME} uses OAuth 2.1 for authentication. On a local machine, the MCP client opens a browser for the OAuth flow. On a remote/headless machine, that's not possible. One-time auth codes solve this.
+
+## Creating an auth code
+
+From any authenticated ${PRODUCT_NAME} session (Claude Code, Claude.ai, etc.), create a one-time code:
+
+\`\`\`
+mutate _auth_codes create { "label": "remote-server", "ttl_minutes": 480 }
+\`\`\`
+
+- \`label\`: optional, for your own bookkeeping
+- \`ttl_minutes\`: how long the code remains valid (default: 60 minutes)
+- The response includes a \`code\` field — a 32-character hex string
+
+## Connecting the remote agent
+
+On the remote machine, add this to \`.mcp.json\` (or the equivalent MCP client config):
+
+\`\`\`json
+{
+  "mcpServers": {
+    "${URI_SCHEME}": {
+      "type": "http",
+      "url": "https://YOUR_WORKER.workers.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer AUTH_CODE_HERE"
+      }
+    }
+  }
+}
+\`\`\`
+
+Replace \`AUTH_CODE_HERE\` with the code from the mutate response. The agent connects immediately — no browser, no OAuth dance.
+
+## How it works
+
+The code acts as a bearer token. ${PRODUCT_NAME} validates it on each request without consuming it, so the session stays active until the code expires or is revoked. The code bypasses OAuth entirely via the \`resolveExternalToken\` hook.
+
+## Security notes
+
+- Codes are time-limited. Set \`ttl_minutes\` to the shortest duration practical for the task.
+- To revoke immediately: \`mutate _auth_codes archive { "id": CODE_RECORD_ID }\`
+- Codes are single-purpose: if you also enter one on the browser login page, it is consumed and can't be reused as a bearer token.
+- Query active codes: \`query _auth_codes { "filter": ["consumed_at="] }\` (unconsumed only)
+
+## Auth tiers
+
+1. **Passkey** — primary, for humans in a browser. Register via the setup URL.
+2. **Auth codes** — for remote/headless agents. Time-limited bearer tokens created via \`mutate\`.
+3. **Master secret** — infrastructure key. Used only for initial setup and passkey registration. Replaceable at any time via \`npm run setup\`.
+`,
+  },
 ];
 
 
@@ -558,6 +619,19 @@ export class StoreDO extends DurableObject {
       this.ensureAuditTriggers(obj.name);
     }
 
+    // === Auth codes (one-time, for remote agents) ===
+
+    this.db.exec(`CREATE TABLE IF NOT EXISTS "_auth_codes" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "code" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
+      "label" TEXT,
+      "expires_at" TEXT NOT NULL,
+      "consumed_at" TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT
+    )`);
+
     // === Upload tokens ===
 
     this.db.exec(`CREATE TABLE IF NOT EXISTS "_upload_tokens" (
@@ -575,6 +649,16 @@ export class StoreDO extends DurableObject {
     )`);
 
     // === Register kernel tables in normalized schema ===
+
+    this.registerKernelObject("_auth_codes",
+      "One-time auth codes for remote agents. Code and expiry auto-generated on create. Single-use — consumed when used to authenticate.",
+      [
+        { name: "code", type: "text", required: false },
+        { name: "label", type: "text", required: false },
+        { name: "expires_at", type: "datetime", required: false },
+        { name: "consumed_at", type: "datetime", required: false },
+      ]
+    );
 
     this.registerKernelObject("_upload_tokens",
       "Temporary capability tokens for large content uploads via HTTP POST. Token and expiry auto-generated on create. Single-use.",
@@ -1204,6 +1288,13 @@ export class StoreDO extends DurableObject {
       return { error: true, message: "default_content is immutable. It preserves the original seed for recovery." };
     }
 
+    // Auth code create: auto-set expiry (default 1 hour, accepts ttl_minutes)
+    if (objectName === "_auth_codes" && operation === "create") {
+      const ttlMinutes = typeof data.ttl_minutes === "number" ? data.ttl_minutes : 60;
+      data.expires_at = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+      delete data.ttl_minutes; // not a stored field
+    }
+
     // Record size guard (skip for upload tokens — they're small metadata)
     if (operation === "create" || operation === "update") {
       const size = estimateRecordBytes(data);
@@ -1667,6 +1758,34 @@ export class StoreDO extends DurableObject {
 
   async updatePasskeyCounter(counter: number): Promise<void> {
     this.db.exec("UPDATE _passkeys SET counter = ? WHERE id = 1", counter);
+  }
+
+  // === Auth codes ===
+
+  /** Check and consume a code (for browser auth — single use). */
+  async consumeAuthCode(code: string): Promise<boolean> {
+    const rows = this.db.exec(
+      `SELECT * FROM "_auth_codes" WHERE code = ? AND archived_at IS NULL AND consumed_at IS NULL`,
+      code
+    ).toArray() as any[];
+    if (rows.length === 0) return false;
+    const row = rows[0];
+    if (new Date(row.expires_at) < new Date()) return false;
+    this.db.exec(
+      `UPDATE "_auth_codes" SET consumed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      row.id
+    );
+    return true;
+  }
+
+  /** Validate a code without consuming it (for bearer token sessions). */
+  async validateAuthCode(code: string): Promise<boolean> {
+    const rows = this.db.exec(
+      `SELECT * FROM "_auth_codes" WHERE code = ? AND archived_at IS NULL AND consumed_at IS NULL`,
+      code
+    ).toArray() as any[];
+    if (rows.length === 0) return false;
+    return new Date(rows[0].expires_at) >= new Date();
   }
 
   private errorJson(message: string): string {

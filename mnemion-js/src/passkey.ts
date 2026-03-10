@@ -243,7 +243,7 @@ export function passkeyLoginPage(authStateId: string): string {
   <div class="divider">or</div>
   <button id="toggle">Use master secret instead</button>
   <form id="secret-form">
-    <input type="password" id="secret" placeholder="Master secret" />
+    <input type="password" id="secret" placeholder="Master secret or one-time code" />
     <button type="submit">Sign in</button>
   </form>
   <div id="error"></div>
