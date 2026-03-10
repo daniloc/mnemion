@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
+import { evaluateMapping } from "./transform";
 
 // === Types ===
 
@@ -536,6 +537,35 @@ export class StoreDO extends DurableObject {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
 
+    // === HTTP I/O endpoints ===
+
+    this.db.exec(`CREATE TABLE IF NOT EXISTS "_outputs" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "path" TEXT NOT NULL,
+      "content" TEXT NOT NULL,
+      "mime_type" TEXT NOT NULL DEFAULT 'text/plain',
+      "visibility" TEXT NOT NULL DEFAULT 'public',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`);
+    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "_outputs_path_active" ON "_outputs" ("path") WHERE archived_at IS NULL`);
+
+    this.db.exec(`CREATE TABLE IF NOT EXISTS "_inputs" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "path" TEXT NOT NULL,
+      "target_object" TEXT NOT NULL,
+      "body_field" TEXT,
+      "field_mapping" TEXT,
+      "visibility" TEXT NOT NULL DEFAULT 'public',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`);
+    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "_inputs_path_active" ON "_inputs" ("path") WHERE archived_at IS NULL`);
+
     this.db.exec(`CREATE TABLE IF NOT EXISTS "_system_docs" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "slug" TEXT NOT NULL UNIQUE,
@@ -597,6 +627,35 @@ export class StoreDO extends DurableObject {
       this.db.exec(`ALTER TABLE _fields ADD COLUMN references_object TEXT`);
     } catch {
       // Column already exists
+    }
+
+    // === Migrate: rebuild _outputs/_inputs to replace column-level UNIQUE with partial index ===
+
+    for (const table of ["_outputs", "_inputs"]) {
+      // Detect old schema by checking sqlite_master for the auto-index created by column-level UNIQUE
+      const autoIdx = this.db.exec(
+        `SELECT 1 FROM sqlite_master WHERE type='index' AND name LIKE 'sqlite_autoindex_${table}_%'`
+      ).toArray();
+      if (autoIdx.length > 0) {
+        // Auto-index exists → old column-level UNIQUE, needs rebuild
+        const cols = table === "_outputs"
+          ? `id, "path", "content", "mime_type", "visibility", created_at, updated_at, archived_at`
+          : `id, "path", "target_object", "body_field", "field_mapping", "visibility", created_at, updated_at, archived_at`;
+        const newCols = table === "_outputs"
+          ? `id INTEGER PRIMARY KEY AUTOINCREMENT, "path" TEXT NOT NULL, "content" TEXT NOT NULL, "mime_type" TEXT NOT NULL DEFAULT 'text/plain', "visibility" TEXT NOT NULL DEFAULT 'public', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), archived_at TEXT, version INTEGER NOT NULL DEFAULT 0`
+          : `id INTEGER PRIMARY KEY AUTOINCREMENT, "path" TEXT NOT NULL, "target_object" TEXT NOT NULL, "body_field" TEXT, "field_mapping" TEXT, "visibility" TEXT NOT NULL DEFAULT 'public', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), archived_at TEXT, version INTEGER NOT NULL DEFAULT 0`;
+        // Also copy version if it exists (may have been added by ALTER TABLE)
+        let selectCols = cols;
+        try {
+          this.db.exec(`SELECT version FROM "${table}" LIMIT 0`);
+          selectCols = cols + ", version";
+        } catch { /* version column doesn't exist yet */ }
+        this.db.exec(`CREATE TABLE "${table}_new" (${newCols})`);
+        this.db.exec(`INSERT INTO "${table}_new" (${selectCols}) SELECT ${selectCols} FROM "${table}"`);
+        this.db.exec(`DROP TABLE "${table}"`);
+        this.db.exec(`ALTER TABLE "${table}_new" RENAME TO "${table}"`);
+      }
+      this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "${table}_path_active" ON "${table}" ("path") WHERE archived_at IS NULL`);
     }
 
     // === Mutation audit log ===
@@ -679,6 +738,27 @@ export class StoreDO extends DurableObject {
         { name: "name", type: "text", required: true },
         { name: "token", type: "text", required: false },
         { name: "scope", type: "text", required: false },
+      ]
+    );
+
+    this.registerKernelObject("_outputs",
+      "HTTP egress endpoints. Each record serves content at GET /o/{path}. Public by default.",
+      [
+        { name: "path", type: "text", required: true },
+        { name: "content", type: "text", required: true },
+        { name: "mime_type", type: "text", required: false },
+        { name: "visibility", type: "text", required: false },
+      ]
+    );
+
+    this.registerKernelObject("_inputs",
+      "HTTP ingress endpoints. Each record accepts POST /i/{path} and creates records in target_object. Supports field_mapping DSL for JSON body transformation.",
+      [
+        { name: "path", type: "text", required: true },
+        { name: "target_object", type: "text", required: true },
+        { name: "body_field", type: "text", required: false },
+        { name: "field_mapping", type: "text", required: false },
+        { name: "visibility", type: "text", required: false },
       ]
     );
 
@@ -1295,6 +1375,37 @@ export class StoreDO extends DurableObject {
       delete data.ttl_minutes; // not a stored field
     }
 
+    // Outputs create: validate required fields, set defaults
+    if (objectName === "_outputs" && operation === "create") {
+      if (!data.path) return { error: true, message: "path is required for _outputs" };
+      data.mime_type = data.mime_type || "text/plain";
+      data.visibility = data.visibility || "public";
+    }
+
+    // Inputs create: validate target_object exists, validate field_mapping JSON
+    if (objectName === "_inputs" && operation === "create") {
+      if (!data.path) return { error: true, message: "path is required for _inputs" };
+      if (!data.target_object) return { error: true, message: "target_object is required for _inputs" };
+      if (!this.objectExists(data.target_object)) {
+        return { error: true, message: `Target object "${data.target_object}" does not exist` };
+      }
+      if (data.field_mapping && typeof data.field_mapping === "string") {
+        try { JSON.parse(data.field_mapping); } catch {
+          return { error: true, message: "field_mapping must be valid JSON" };
+        }
+      }
+      if (data.body_field) {
+        const fieldExists = this.db.exec(
+          "SELECT 1 FROM _fields WHERE object_name = ? AND name = ?",
+          data.target_object, data.body_field
+        ).toArray().length > 0;
+        if (!fieldExists) {
+          return { error: true, message: `Field "${data.body_field}" does not exist on "${data.target_object}"` };
+        }
+      }
+      data.visibility = data.visibility || "public";
+    }
+
     // Record size guard (skip for upload tokens — they're small metadata)
     if (operation === "create" || operation === "update") {
       const size = estimateRecordBytes(data);
@@ -1786,6 +1897,65 @@ export class StoreDO extends DurableObject {
     ).toArray() as any[];
     if (rows.length === 0) return false;
     return new Date(rows[0].expires_at) >= new Date();
+  }
+
+  // === HTTP I/O ===
+
+  async resolveOutput(path: string): Promise<string> {
+    try {
+      const rows = this.db.exec(
+        `SELECT content, mime_type, visibility, updated_at FROM "_outputs" WHERE path = ? AND archived_at IS NULL`,
+        path
+      ).toArray() as any[];
+      if (rows.length === 0) return JSON.stringify({ found: false });
+      return JSON.stringify({ found: true, ...rows[0] });
+    } catch {
+      return JSON.stringify({ found: false });
+    }
+  }
+
+  async getInputVisibility(path: string): Promise<string> {
+    try {
+      const rows = this.db.exec(
+        `SELECT visibility FROM "_inputs" WHERE path = ? AND archived_at IS NULL`,
+        path
+      ).toArray() as any[];
+      if (rows.length === 0) return JSON.stringify({ found: false });
+      return JSON.stringify({ found: true, visibility: rows[0].visibility });
+    } catch {
+      return JSON.stringify({ found: false });
+    }
+  }
+
+  async processInput(path: string, body: string, headersJson: string, queryJson: string): Promise<string> {
+    const rows = this.db.exec(
+      `SELECT * FROM "_inputs" WHERE path = ? AND archived_at IS NULL`,
+      path
+    ).toArray() as any[];
+    if (rows.length === 0) return this.errorJson("No input endpoint for this path");
+
+    const input = rows[0];
+    let data: Record<string, unknown>;
+
+    if (input.field_mapping) {
+      const mapping = JSON.parse(input.field_mapping) as Record<string, string>;
+      let parsedBody: unknown = null;
+      try { parsedBody = JSON.parse(body); } catch { /* not JSON */ }
+
+      data = evaluateMapping(mapping, {
+        body: parsedBody,
+        rawBody: body,
+        headers: JSON.parse(headersJson),
+        query: JSON.parse(queryJson),
+      });
+    } else if (input.body_field) {
+      data = { [input.body_field]: body };
+    } else {
+      data = { body };
+    }
+
+    const result = this.executeMutate(input.target_object, "create", data);
+    return JSON.stringify(result, null, 2);
   }
 
   private errorJson(message: string): string {

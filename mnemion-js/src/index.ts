@@ -409,6 +409,76 @@ const defaultHandler = {
       return Response.json(parsed, { status: parsed.error ? 400 : 200 });
     }
 
+    // === HTTP I/O endpoints ===
+
+    // Egress: GET /o/{path} — serve _outputs content
+    if (url.pathname.startsWith("/o/") && request.method === "GET") {
+      const outputPath = url.pathname.slice(3);
+      const storeId = env.MNEMION_STORE.idFromName("user:owner");
+      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+
+      const raw = await store.resolveOutput(outputPath);
+      const result = JSON.parse(raw);
+      if (!result.found) {
+        return new Response("Not found", { status: 404 });
+      }
+
+      if (result.visibility === "private" && env.MNEMION_SECRET) {
+        const authHeader = request.headers.get("Authorization");
+        const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+        if (!token || !(await store.validateAuthCode(token))) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+      }
+
+      const etag = `"${new Date(result.updated_at).getTime()}"`;
+      if (request.headers.get("If-None-Match") === etag) {
+        return new Response(null, { status: 304 });
+      }
+
+      return new Response(result.content, {
+        headers: {
+          "Content-Type": result.mime_type,
+          "ETag": etag,
+          "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
+        },
+      });
+    }
+
+    // Ingress: POST /i/{path} — create records via _inputs
+    if (url.pathname.startsWith("/i/") && request.method === "POST") {
+      const inputPath = url.pathname.slice(3);
+      const storeId = env.MNEMION_STORE.idFromName("user:owner");
+      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+
+      const visRaw = await store.getInputVisibility(inputPath);
+      const vis = JSON.parse(visRaw);
+      if (!vis.found) {
+        return new Response("Not found", { status: 404 });
+      }
+
+      if (vis.visibility === "private" && env.MNEMION_SECRET) {
+        const authHeader = request.headers.get("Authorization");
+        const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+        if (!token || !(await store.validateAuthCode(token))) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+      }
+
+      const body = await request.text();
+      const headersObj: Record<string, string> = {};
+      request.headers.forEach((v, k) => { headersObj[k] = v; });
+      const queryObj: Record<string, string> = {};
+      url.searchParams.forEach((v, k) => { queryObj[k] = v; });
+
+      const result = await store.processInput(
+        inputPath, body, JSON.stringify(headersObj), JSON.stringify(queryObj)
+      );
+      const parsed = JSON.parse(result);
+
+      return Response.json(parsed, { status: parsed.error ? 400 : 201 });
+    }
+
     // Marketplace git endpoints: /marketplace[/public]/{info/refs,git-upload-pack}
     if (url.pathname.startsWith("/marketplace")) {
       const isPublic = url.pathname.startsWith("/marketplace/public");
