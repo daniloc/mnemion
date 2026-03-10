@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "build:pages": "vite build && vite build --ssr src/pages/entry-server.ts",
+    "dev": "npm run build:pages && wrangler dev",
+    "deploy": "npm run build:pages && wrangler deploy",
     "types": "wrangler types",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -15,13 +16,16 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@simplewebauthn/server": "^13.2.3",
     "agents": "^0.7.5",
+    "svelte": "^5.53.10",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.20",
     "@cloudflare/workers-types": "^4.20260307.1",
+    "@sveltejs/vite-plugin-svelte": "^6.2.4",
     "@types/node": "^25.3.5",
     "typescript": "^5.9.3",
+    "vite": "^7.3.1",
     "vitest": "~3.2.0",
     "wrangler": "^4.71.0"
   }

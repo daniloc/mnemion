@@ -9,6 +9,8 @@ import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBeg
 import { serveOutput, receiveInput, upload } from "./routes/io";
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/marketplace";
+// Pages
+import { schemaPage } from "./routes/pages";
 
 // Re-export DO classes for wrangler
 export { SessionDO, StoreDO };
@@ -29,6 +31,9 @@ const routes: Route[] = [
   { method: Method.GET,  pattern: "/o/:path",              handler: serveOutput },
   { method: Method.POST, pattern: "/i/:path",              handler: receiveInput },
   { method: Method.POST, pattern: "/upload/:token",        where: { token: /^[a-fA-F0-9]+$/ }, handler: upload },
+
+  // Pages
+  { method: Method.GET,  pattern: "/schema",               handler: schemaPage },
 
   // Marketplace
   { method: Method.ANY,  pattern: "/dev/seed-marketplace", auth: Auth.DEV, handler: seedMarketplace },

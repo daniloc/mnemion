@@ -37,3 +37,9 @@ renamed_classes = [{from = "CambiumSession", to = "SessionDO"}, {from = "Cambium
 type = "Text"
 globs = ["**/*.md"]
 fallthrough = true
+
+# Import compiled client bundles as text (for inlining into SSR HTML)
+[[rules]]
+type = "Text"
+globs = ["**/*.client.txt"]
+fallthrough = false
