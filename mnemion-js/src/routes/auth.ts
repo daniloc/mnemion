@@ -1,0 +1,220 @@
+import type { RouteHandler } from "../router";
+import { PRODUCT_NAME } from "../constants";
+
+// Passkey module loaded lazily to avoid tslib issues in test environments
+type PasskeyModule = typeof import("../passkey");
+let _passkey: PasskeyModule | null = null;
+async function passkey(): Promise<PasskeyModule> {
+  if (!_passkey) _passkey = await import("../passkey");
+  return _passkey;
+}
+
+// === Login page (secret-only fallback, used when no passkey is registered) ===
+
+function secretOnlyLoginPage(authStateId: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${PRODUCT_NAME}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 400px; margin: 80px auto; padding: 0 20px; }
+    h1 { font-size: 1.4em; }
+    input { display: block; width: 100%; padding: 10px; margin: 8px 0; font-size: 1em;
+      border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+    button { display: block; width: 100%; padding: 12px; margin: 8px 0; font-size: 1em;
+      border: 1px solid #111; border-radius: 6px; cursor: pointer; background: #111; color: #fff; }
+    button:hover { background: #333; }
+    #error { color: #c00; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>${PRODUCT_NAME}</h1>
+  <form id="form">
+    <input type="password" id="secret" placeholder="Master secret or one-time code" autofocus />
+    <button type="submit">Sign in</button>
+  </form>
+  <div id="error"></div>
+  <script>
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const secret = document.getElementById('secret').value;
+      const res = await fetch('/auth/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authStateId: ${JSON.stringify(authStateId)}, secret })
+      });
+      const result = await res.json();
+      if (result.redirectTo) {
+        window.location.href = result.redirectTo;
+      } else {
+        document.getElementById('error').textContent = result.error || 'Authentication failed';
+      }
+    });
+  </script>
+</body>
+</html>`;
+}
+
+// === Helpers ===
+
+async function completeOAuth(env: any, oauthReq: any) {
+  return (env as any).OAUTH_PROVIDER.completeAuthorization({
+    request: oauthReq,
+    userId: "owner",
+    metadata: {},
+    scope: oauthReq.scope || [],
+    props: { userId: "owner" },
+  });
+}
+
+// === Route handlers ===
+
+export const authorize: RouteHandler = async (ctx) => {
+  const oauthReq = await (ctx.env as any).OAUTH_PROVIDER.parseAuthRequest(ctx.request);
+  if (!oauthReq) {
+    return new Response("Invalid OAuth request", { status: 400 });
+  }
+
+  // Dev mode: no secret configured, auto-approve
+  if (!ctx.env.MNEMION_SECRET) {
+    const { redirectTo } = await completeOAuth(ctx.env, oauthReq);
+    return new Response(null, { status: 302, headers: { Location: redirectTo } });
+  }
+
+  // Store OAuth request for after verification
+  const authStateId = crypto.randomUUID();
+  await ctx.env.OAUTH_KV.put(
+    `auth_state:${authStateId}`,
+    JSON.stringify(oauthReq),
+    { expirationTtl: 600 }
+  );
+
+  // Check if a passkey is registered — show passkey-first page if so
+  const hasPasskey = await ctx.store.hasPasskey();
+  const pk = await passkey();
+  const html = hasPasskey
+    ? pk.passkeyLoginPage(authStateId)
+    : secretOnlyLoginPage(authStateId);
+
+  return new Response(html, { headers: { "Content-Type": "text/html" } });
+};
+
+export const authVerify: RouteHandler = async (ctx) => {
+  const { authStateId, secret } = (await ctx.request.json()) as {
+    authStateId: string;
+    secret: string;
+  };
+
+  // Try master secret first, then one-time auth code
+  let authenticated = false;
+  if (ctx.env.MNEMION_SECRET && secret === ctx.env.MNEMION_SECRET) {
+    authenticated = true;
+  } else {
+    authenticated = await ctx.store.consumeAuthCode(secret);
+  }
+
+  if (!authenticated) {
+    return Response.json({ error: "Invalid secret or code" }, { status: 401 });
+  }
+
+  const oauthReq = await ctx.env.OAUTH_KV.get(`auth_state:${authStateId}`, { type: "json" }) as any;
+  if (!oauthReq) {
+    return Response.json({ error: "Session expired" }, { status: 400 });
+  }
+  await ctx.env.OAUTH_KV.delete(`auth_state:${authStateId}`);
+
+  const { redirectTo } = await completeOAuth(ctx.env, oauthReq);
+  return Response.json({ redirectTo });
+};
+
+export const setupPage: RouteHandler = async (ctx) => {
+  const token = ctx.url.searchParams.get("token");
+  if (token !== ctx.env.MNEMION_SECRET) {
+    return new Response("Invalid or missing token", { status: 403 });
+  }
+  return new Response((await passkey()).setupPage(token), {
+    headers: { "Content-Type": "text/html" },
+  });
+};
+
+export const setupBegin: RouteHandler = async (ctx) => {
+  const { token } = (await ctx.request.json()) as { token: string };
+  if (token !== ctx.env.MNEMION_SECRET) {
+    return Response.json({ error: "Invalid token" }, { status: 403 });
+  }
+
+  const { options, challenge } = await (await passkey()).beginRegistration(ctx.request);
+  await ctx.env.OAUTH_KV.put("passkey_challenge:registration", challenge, { expirationTtl: 300 });
+  return Response.json(options);
+};
+
+export const setupComplete: RouteHandler = async (ctx) => {
+  const { token, credential } = (await ctx.request.json()) as { token: string; credential: any };
+  if (token !== ctx.env.MNEMION_SECRET) {
+    return Response.json({ error: "Invalid token" }, { status: 403 });
+  }
+
+  const challenge = await ctx.env.OAUTH_KV.get("passkey_challenge:registration");
+  if (!challenge) {
+    return Response.json({ error: "Challenge expired" }, { status: 400 });
+  }
+  await ctx.env.OAUTH_KV.delete("passkey_challenge:registration");
+
+  try {
+    const stored = await (await passkey()).completeRegistration(ctx.request, credential, challenge);
+    await ctx.store.storePasskey(stored.credential_id, stored.public_key, stored.counter, stored.transports);
+    return Response.json({ ok: true });
+  } catch (err: any) {
+    return Response.json({ error: err.message }, { status: 400 });
+  }
+};
+
+export const passkeyBegin: RouteHandler = async (ctx) => {
+  const { authStateId } = (await ctx.request.json()) as { authStateId: string };
+
+  const storedPasskey = await ctx.store.getPasskey();
+  if (!storedPasskey) {
+    return Response.json({ error: "No passkey registered" }, { status: 404 });
+  }
+
+  const { options, challenge } = await (await passkey()).beginAuthentication(ctx.request, storedPasskey);
+  await ctx.env.OAUTH_KV.put(`passkey_challenge:${authStateId}`, challenge, { expirationTtl: 300 });
+  return Response.json(options);
+};
+
+export const passkeyComplete: RouteHandler = async (ctx) => {
+  const { authStateId, assertion } = (await ctx.request.json()) as { authStateId: string; assertion: any };
+
+  const challenge = await ctx.env.OAUTH_KV.get(`passkey_challenge:${authStateId}`);
+  if (!challenge) {
+    return Response.json({ error: "Challenge expired" }, { status: 400 });
+  }
+  await ctx.env.OAUTH_KV.delete(`passkey_challenge:${authStateId}`);
+
+  const storedPasskey = await ctx.store.getPasskey();
+  if (!storedPasskey) {
+    return Response.json({ error: "No passkey registered" }, { status: 404 });
+  }
+
+  try {
+    const { verified, newCounter } = await (await passkey()).completeAuthentication(ctx.request, assertion, challenge, storedPasskey);
+    if (!verified) {
+      return Response.json({ error: "Passkey verification failed" }, { status: 401 });
+    }
+
+    await ctx.store.updatePasskeyCounter(newCounter);
+
+    const oauthReq = await ctx.env.OAUTH_KV.get(`auth_state:${authStateId}`, { type: "json" }) as any;
+    if (!oauthReq) {
+      return Response.json({ error: "Session expired" }, { status: 400 });
+    }
+    await ctx.env.OAUTH_KV.delete(`auth_state:${authStateId}`);
+
+    const { redirectTo } = await completeOAuth(ctx.env, oauthReq);
+    return Response.json({ redirectTo });
+  } catch (err: any) {
+    return Response.json({ error: err.message }, { status: 401 });
+  }
+};

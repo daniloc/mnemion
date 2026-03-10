@@ -7,7 +7,11 @@ Persistent, evolving shared memory between a human and their AI agents. MCP serv
 ```
 project-docs/active/   Design documents (the "why" and "what")
 mnemion-js/            Cloudflare Worker — MCP server (the "how")
-  src/index.ts         Entry point: OAuthProvider wrapper + route handling
+  src/index.ts         Route table + OAuthProvider config (~60 lines)
+  src/router.ts        Declarative router: types, enums, pattern matching, dispatch
+  src/routes/auth.ts   /authorize, /auth/verify, passkey setup & authentication
+  src/routes/io.ts     /o/:path egress, /i/:path ingress, /upload/:token
+  src/routes/marketplace.ts  Dev seed, token management, git endpoints
   src/session.ts       SessionDO: McpAgent, MCP protocol handler (per-session DO)
   src/store.ts         StoreDO: per-user data storage (per-user DO, SQLite)
   src/passkey.ts       WebAuthn passkey registration + authentication
@@ -40,14 +44,14 @@ Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the wo
 
 ### Vocabulary
 
-Mnemion uses biological vocabulary: **hive** (the whole store), **pattern** (organizing structure; in code: "object"), **entry** (instance within a pattern; in code: "record"), **facet** (dimension of an entry; in code: "field"), **link** (connection between entries; in code: "reference"). Tool parameters and URIs use code terms. Docs and UI use biological terms.
+Mnemion uses biological vocabulary at every layer — API parameters, URIs, JSON response keys, and docs: **hive** (the whole store), **pattern** (organizing structure), **entry** (instance within a pattern), **facet** (dimension of an entry), **link** (connection between entries). Internal SQL tables (`_objects`, `_fields`) keep implementation names but are never exposed to agents.
 
 ### Resources (stable, cacheable, subscribable)
 
 - `mnemion://index` — master index
-- `mnemion://schema/{object_name}` — facet definitions for a pattern
+- `mnemion://schema/{pattern_name}` — facet definitions for a pattern
 - `mnemion://history` — schema evolution history (supports `?limit=N`)
-- `mnemion://records/{object}/{id}` — individual entry by URI
+- `mnemion://entry/{pattern}/{id}` — individual entry by URI
 
 ### Tools (6 total)
 
@@ -89,17 +93,32 @@ Agent-defined HTTP endpoints, configured as entries:
 - Kernel columns (`id`, `created_at`, `updated_at`, `archived_at`) are auto-provided on every pattern. They cannot be defined via `propose_change`.
 - Structure is resources, operations are tools. If it describes what the organism is, it's a resource. If it changes what the organism is or retrieves dynamic content, it's a tool.
 - Product name and URI scheme are defined in `src/constants.ts`. Import `PRODUCT_NAME`, `URI_SCHEME`, `uri()` from there — never hardcode `"mnemion://"` in source.
-- `@simplewebauthn/server` is lazy-imported in index.ts to avoid `tslib` resolution issues in the vitest/workerd test environment.
+- `@simplewebauthn/server` is lazy-imported in `routes/auth.ts` to avoid `tslib` resolution issues in the vitest/workerd test environment.
 - System docs live in `src/system-docs/*.md` with YAML frontmatter (`slug`, `title`). Placeholders (`{{PRODUCT_NAME}}`, `{{uri:path}}`) are resolved at runtime by `resolveDocPlaceholders()` in store.ts.
 - `wrangler.toml` has a `[[rules]]` entry to import `.md` files as text modules.
 
-## Next milestone: frontend architecture
+## Design principle: code as schematic
 
-The current `index.ts` is a flat `if/else` route handler (~570 lines). The decision has been made to:
+Structure code as declarative, scannable tables — not procedural chains. A reader should grasp the system's shape from the declarations alone, without tracing control flow. Enums for categories, typed records for configuration, implementation in focused single-purpose files.
+
+The route table in `index.ts` is the reference example: method, pattern, auth gate, and handler on one line per route. The full routing surface is visible in 15 lines.
+
+## Router architecture
+
+Declarative dispatch table in `src/router.ts`. Routes are matched in declaration order.
+
+- **`Method`** enum: `GET`, `POST`, `ANY`
+- **`Auth`** enum: `NONE` (default), `DEV` (no secret configured), `CONFIGURED` (secret required to exist), `SECRET` (Basic auth against master secret)
+- **`where`** constraints: regex validation on extracted params (e.g. `{ token: /^[a-fA-F0-9]+$/ }`)
+- **`RouteContext`**: `request`, `url`, `env`, `params`, `store` — passed to every handler
+
+Route handlers are grouped by domain in `src/routes/`. OAuthProvider intercepts `/mcp`, `/token`, `/register` before the dispatch table runs.
+
+## Next milestone: Svelte frontend
+
 - **Keep the worker as the server** — no SvelteKit. The routing, auth, and data layers stay hand-built.
 - **Use Svelte as a component framework** for rendering pages (schema viewer, data browser, etc.)
-- **Refactor the router** into a proper dispatch table instead of the flat `if/else` chain.
-- The OAuthProvider wrapping stays — it intercepts `/mcp`, `/token`, `/register`. Everything else passes to the app's handler, which will now include Svelte-rendered pages.
+- First page: schema viewer.
 
 ## Development
 

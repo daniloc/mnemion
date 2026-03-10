@@ -158,44 +158,6 @@ export class StoreDO extends DurableObject {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
 
-    // === Migrate from _index JSON blob if present ===
-
-    const hasOldIndex = this.db.exec(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='_index'"
-    ).toArray().length > 0;
-
-    if (hasOldIndex) {
-      const rows = this.db.exec("SELECT data FROM _index WHERE id = 1").toArray();
-      if (rows.length > 0) {
-        const index = JSON.parse((rows[0] as any).data) as StoreIndex;
-
-        this.db.exec(
-          "INSERT OR IGNORE INTO _meta (id, version, guidance, updated_at) VALUES (1, ?, ?, ?)",
-          index.version, index.guidance, index.updated_at
-        );
-
-        for (const obj of index.objects) {
-          this.db.exec(
-            "INSERT OR IGNORE INTO _objects (name, description) VALUES (?, ?)",
-            obj.name, obj.description
-          );
-          for (const f of obj.fields) {
-            this.db.exec(
-              "INSERT OR IGNORE INTO _fields (object_name, name, type, required, default_value) VALUES (?, ?, ?, ?, ?)",
-              obj.name, f.name, f.type, f.required ? 1 : 0,
-              f.default != null ? JSON.stringify(f.default) : null
-            );
-          }
-        }
-
-        for (const c of index.conventions) {
-          this.db.exec("INSERT INTO _conventions (text) VALUES (?)", c);
-        }
-      }
-
-      this.db.exec("DROP TABLE _index");
-    }
-
     // === Ensure meta row exists (fresh install) ===
 
     const metaRows = this.db.exec("SELECT id FROM _meta WHERE id = 1").toArray();
