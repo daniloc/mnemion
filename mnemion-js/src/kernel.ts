@@ -15,7 +15,7 @@ type CreateHook = (data: Record<string, unknown>, ctx: KernelContext) => HookRes
 
 // === Immutable fields — rejected on any operation ===
 
-const IMMUTABLE: Record<string, { fields: string[]; message: string }> = {
+export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = {
   _system_docs: {
     fields: ["default_content"],
     message: "default_content is immutable. It preserves the original seed for recovery.",

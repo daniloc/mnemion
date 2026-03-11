@@ -14,6 +14,7 @@
     required: boolean;
     default?: string | number | boolean | null;
     links?: string | null;
+    readonly?: boolean;
   }
 
   interface Pattern {
@@ -378,8 +379,10 @@
                 {#each detailFields as field}
                   {@const val = selectedEntry[field]}
                   {@const isKernel = KERNEL_FIELDS.includes(field)}
+                  {@const isFacetReadonly = selected.facets.some(f => f.name === field && f.readonly)}
+                  {@const isReadonly = isKernel || isFacetReadonly}
                   {@const isEditing = editingField === field}
-                  {#if isEditing && !isKernel}
+                  {#if isEditing && !isReadonly}
                     {@const ft = facetType(field)}
                     <div class="field-row">
                       <span class="field-name">{field}</span>
@@ -417,10 +420,10 @@
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                       class="field-row"
-                      class:editable={!isKernel}
-                      ondblclick={() => { if (!isKernel) startFieldEdit(field); }}
+                      class:editable={!isReadonly}
+                      ondblclick={() => { if (!isReadonly) startFieldEdit(field); }}
                     >
-                      <span class="field-name">{field}</span>
+                      <span class="field-name">{field}{#if isFacetReadonly}<span class="lock-icon" title="read-only">&#x1f512;</span>{/if}</span>
                       <span class="field-value" class:long={String(val).length > 120}>{String(val)}</span>
                     </div>
                   {/if}
@@ -811,6 +814,12 @@
     color: #6a6a78;
     min-width: 140px;
     flex-shrink: 0;
+  }
+
+  .lock-icon {
+    font-size: 0.6rem;
+    margin-left: 4px;
+    opacity: 0.5;
   }
 
   .field-value {

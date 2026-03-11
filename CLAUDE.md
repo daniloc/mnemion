@@ -10,7 +10,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/index.ts         Route table + OAuthProvider config (~60 lines)
   src/router.ts        Declarative router: types, enums, pattern matching, dispatch
   src/routes/auth.ts   /authorize, /auth/verify, passkey setup & authentication
-  src/routes/io.ts     /o/:path egress, /i/:path ingress, /upload/:token
+  src/routes/io.ts     /o/entry/:pattern/:id shared entries, /o/:path egress, /i/:path ingress, /upload/:token
   src/routes/marketplace.ts  Dev seed, token management, git endpoints
   src/session.ts       SessionDO: McpAgent, MCP protocol handler (per-session DO)
   src/store.ts         StoreDO: per-user data storage (per-user DO, SQLite)
@@ -39,7 +39,8 @@ Two Durable Objects:
 Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the worker and handles the OAuth flow (DCR, tokens).
 
 - **Master secret** (`MNEMION_SECRET`): High-entropy random hex, set via `npm run setup`. Root of trust — used to bootstrap passkeys and as fallback for headless agents. The user's Cloudflare login is the true credential; the secret is ephemeral and replaceable.
-- **Passkey** (WebAuthn): Optional convenience layer for browser-based OAuth. Registered via one-time setup URL. Stored in StoreDO `_passkeys` table (single credential, replaced on re-registration). If registered, `/authorize` shows passkey-first UI with secret fallback.
+- **Passkey** (WebAuthn): Optional convenience layer for browser-based OAuth. Registered via one-time setup URL. Stored in HiveDO `_passkeys` table (single credential, replaced on re-registration). If registered, `/authorize` shows passkey-first UI with secret fallback.
+- **Access tokens** (`_access_tokens`): Scoped bearer tokens for remote agents, uploads, marketplace, and federated access. Created via `mutate`. Scope matching is hierarchical prefix-based.
 - **No secret configured** = dev mode (auto-approves).
 
 ### Vocabulary
@@ -55,25 +56,44 @@ Mnemion uses biological vocabulary at every layer — API parameters, URIs, JSON
 
 ### Tools (6 total)
 
-- `resolve` — read anything by `mnemion://` URI (escape hatch for platforms without resource support)
+- `resolve` — read anything by `mnemion://` URI, including federated cross-hive URIs (escape hatch for platforms without resource support)
 - `query` — filtered, sorted, paginated reads (supports `count_only` mode)
 - `search` — cross-pattern full-text search across text facets
 - `mutate` — create, update, or archive entries
 - `propose_change` — propose schema evolution (preview, no commit)
 - `apply_change` — commit proposed change (fires resource update notifications)
 
-### HTTP I/O
+### HTTP I/O & Federation
 
 Agent-defined HTTP endpoints, configured as entries:
-- **Egress** (`_outputs`): `GET /o/{path}` — serve content at arbitrary paths with configurable MIME type and visibility
+- **Shared entries** (`_shared`): `GET /o/entry/{pattern}/{id}` — serve entries marked public or unlisted
+- **Egress** (`_outputs`): `GET /o/{path}` — serve agent-constructed content at arbitrary paths
 - **Ingress** (`_inputs`): `POST /i/{path}` — accept inbound data, create entries in target patterns with optional transform DSL
+
+**Federation**: `resolve` recognizes foreign URIs by a dot in the first path segment (hostname). `mnemion://other.hive.dev/entry/axioms/7` → `GET https://other.hive.dev/o/entry/axioms/7`. Private access via `?token=<auth_code>` → Bearer header. Public responses edge-cached. No federation protocol — sovereign hives, voluntary connections.
+
+### Entry sharing
+
+Entry-level visibility via the `_shared` kernel pattern. Controlled through `propose_change` with `set_sharing` type:
+- **public** — openly readable at `/o/entry/{pattern}/{id}`, edge-cached
+- **unlisted** — readable with valid access token (anyone-with-the-link)
+- **private** — not served (default; removes sharing)
+
+### Access tokens
+
+Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens`, `_marketplace_tokens`). Hierarchical scope matching via `scopeMatches()` in kernel.ts:
+- `*` — full access (OAuth, session login, all reads/writes)
+- `read` — read any shared entry or output (matches `read:entry:axioms:7`)
+- `upload` — write via `/upload/{token}` (constraints JSON: `{target_pattern, target_id, target_facet, mode}`)
+- `marketplace` — private marketplace git access (constraints JSON: `{plugins: [...]}`)
 
 ### Internal tables
 
 - `_schema_history` — log of all schema changes
 - `_pending_changes` — proposed but uncommitted changes
+- `_access_tokens` — unified scoped access tokens
+- `_shared` — entry-level sharing for HTTP access
 - `_outputs` / `_inputs` — HTTP I/O endpoint definitions
-- `_auth_codes` — one-time bearer tokens for remote agents
 - `_system_docs` — agent orientation docs (seeded from `src/system-docs/*.md`)
 
 ## Tech stack

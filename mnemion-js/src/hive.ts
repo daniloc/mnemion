@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema, ensureAuditTriggers } from "./schema";
-import { applyKernelRules, scopeMatches, type KernelContext } from "./kernel";
+import { applyKernelRules, IMMUTABLE, scopeMatches, type KernelContext } from "./kernel";
 
 // === Types ===
 
@@ -27,6 +27,7 @@ export interface IndexFacetEntry {
   required: boolean;
   default?: string | number | boolean | null;
   links?: string | null;
+  readonly?: boolean;
 }
 
 // === Constants ===
@@ -1090,6 +1091,7 @@ export class HiveDO extends DurableObject {
         default: f.default_value != null ? JSON.parse(f.default_value) : null,
       };
       if (f.references_object) facet.links = f.references_object;
+      if (IMMUTABLE[f.object_name]?.fields.includes(f.name)) facet.readonly = true;
       facetsByPattern.get(f.object_name)!.push(facet);
     }
 

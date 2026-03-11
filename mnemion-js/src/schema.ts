@@ -177,7 +177,8 @@ Scopes:
       "content" TEXT,
       "default_content" TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT
     )`,
     facets: [
       { name: "slug", type: "text", required: true },
@@ -279,13 +280,24 @@ export function initializeSchema(db: any): void {
 
   // --- v5: consolidate token tables into _access_tokens ---
 
-  for (const old of ["_auth_codes", "_upload_tokens", "_marketplace_tokens"]) {
-    try {
-      db.exec(`DROP TABLE IF EXISTS "${old}"`);
-      db.exec(`DELETE FROM _objects WHERE name = ?`, old);
-      db.exec(`DELETE FROM _fields WHERE object_name = ?`, old);
-    } catch { /* already gone */ }
+  const RETIRED_TABLES = ["_auth_codes", "_upload_tokens", "_marketplace_tokens"];
+  for (const old of RETIRED_TABLES) {
+    for (const op of ["insert", "update", "delete"]) {
+      try { db.exec(`DROP TRIGGER IF EXISTS "_audit_${old}_${op}"`); } catch {}
+    }
+    try { db.exec(`DROP TABLE IF EXISTS "${old}"`); } catch {}
   }
+  db.exec(`DELETE FROM _objects WHERE name IN ('_auth_codes', '_upload_tokens', '_marketplace_tokens')`);
+  db.exec(`DELETE FROM _fields WHERE object_name IN ('_auth_codes', '_upload_tokens', '_marketplace_tokens')`);
+
+  // --- v5b: add archived_at to _system_docs (was missing kernel column) ---
+
+  try {
+    const cols = db.exec(`PRAGMA table_info("_system_docs")`).toArray() as any[];
+    if (!cols.some((c: any) => c.name === "archived_at")) {
+      db.exec(`ALTER TABLE "_system_docs" ADD COLUMN "archived_at" TEXT`);
+    }
+  } catch {}
 
   // --- System doc seeding ---
 
