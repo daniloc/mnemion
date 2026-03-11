@@ -11,6 +11,8 @@ import { serveSharedEntry, serveOutput, receiveInput, upload } from "./routes/io
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/marketplace";
 // Pages
 import { schemaPage, queryIndex, queryEntries, mutateEntry, liveSocket } from "./routes/pages";
+// Dev
+import { seedTestData } from "./routes/dev";
 
 // Re-export DO classes for wrangler
 export { SessionDO, HiveDO };
@@ -47,6 +49,7 @@ const routes: Route[] = [
   { method: Method.GET,  pattern: "/ws",                   auth: Auth.SESSION, handler: liveSocket },
 
   // Marketplace
+  { method: Method.ANY,  pattern: "/dev/seed",              auth: Auth.DEV, handler: seedTestData },
   { method: Method.ANY,  pattern: "/dev/seed-marketplace", auth: Auth.DEV, handler: seedMarketplace },
   { method: Method.ANY,  pattern: "/marketplace/token",    auth: Auth.SECRET, handler: marketplaceToken },
   { method: Method.ANY,  pattern: "/marketplace*",         handler: marketplaceGit },
