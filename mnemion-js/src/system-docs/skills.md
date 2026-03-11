@@ -41,8 +41,8 @@ Each entry is a skill within a plugin.
 - `/marketplace/public/` — unauthenticated, serves only public plugins/skills
 
 ## Scoped tokens
-Create via `mutate(_marketplace_tokens, create, {name, scope})`.
-- `scope`: JSON array of plugin names (null = all plugins)
+Create via `mutate(_access_tokens, create, {label, scope: "marketplace", plugins: [...]})`.
+- `plugins`: array of plugin names (omit for all plugins)
 - `token`: auto-generated, returned in response
 - Install URL: `https://{{URI_SCHEME}}:<token>@<host>/marketplace.git`
 

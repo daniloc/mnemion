@@ -60,67 +60,61 @@ interface KernelTable {
 
 const KERNEL_TABLES: KernelTable[] = [
   {
-    name: "_auth_codes",
-    description: "One-time auth codes for remote agents. Code and expiry auto-generated on create. Single-use — consumed when used to authenticate.",
-    ddl: `CREATE TABLE IF NOT EXISTS "_auth_codes" (
+    name: "_access_tokens",
+    description: `Unified access tokens. Token auto-generated on create. Scope controls what the token can do — hierarchical prefix matching (e.g. "read" matches "read:entry:axioms:7"). Constraints holds scope-specific JSON (e.g. upload target). Single-use tokens are consumed on first use.
+
+Scopes:
+- * — full access (OAuth, session login, all reads/writes)
+- read — read any shared entry or output
+- read:entry:{pattern} — read shared entries in a pattern
+- read:entry:{pattern}:{id} — read a specific shared entry
+- read:output:{path} — read a specific output
+- upload — write via POST /upload/{token} (constraints: {target_pattern, target_id, target_facet, mode})
+- marketplace — private marketplace git access (constraints: {plugins: [...]})`,
+    ddl: `CREATE TABLE IF NOT EXISTS "_access_tokens" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "code" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
+      "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
       "label" TEXT,
-      "expires_at" TEXT NOT NULL,
+      "scope" TEXT NOT NULL DEFAULT '*',
+      "constraints" TEXT,
+      "expires_at" TEXT,
+      "single_use" INTEGER NOT NULL DEFAULT 0,
       "consumed_at" TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
     )`,
     facets: [
-      { name: "code", type: "text", required: false },
+      { name: "token", type: "text", required: false },
       { name: "label", type: "text", required: false },
-      { name: "expires_at", type: "datetime", required: false },
-      { name: "consumed_at", type: "datetime", required: false },
-    ],
-  },
-  {
-    name: "_upload_tokens",
-    description: "Temporary capability tokens for large content uploads via HTTP POST. Token and expiry auto-generated on create. Single-use.",
-    ddl: `CREATE TABLE IF NOT EXISTS "_upload_tokens" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
-      "target_pattern" TEXT NOT NULL,
-      "target_id" INTEGER NOT NULL,
-      "target_facet" TEXT NOT NULL,
-      "mode" TEXT NOT NULL DEFAULT 'replace',
-      "expires_at" TEXT NOT NULL,
-      "consumed_at" TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT
-    )`,
-    facets: [
-      { name: "token", type: "text", required: false },
-      { name: "target_pattern", type: "text", required: true },
-      { name: "target_id", type: "integer", required: true },
-      { name: "target_facet", type: "text", required: true },
-      { name: "mode", type: "text", required: false },
-      { name: "expires_at", type: "datetime", required: false },
-      { name: "consumed_at", type: "datetime", required: false },
-    ],
-  },
-  {
-    name: "_marketplace_tokens",
-    description: "Scoped access tokens for private marketplace delivery. Token auto-generated on create.",
-    ddl: `CREATE TABLE IF NOT EXISTS "_marketplace_tokens" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "name" TEXT NOT NULL,
-      "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
-      "scope" TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT
-    )`,
-    facets: [
-      { name: "name", type: "text", required: true },
-      { name: "token", type: "text", required: false },
       { name: "scope", type: "text", required: false },
+      { name: "constraints", type: "text", required: false },
+      { name: "expires_at", type: "datetime", required: false },
+      { name: "single_use", type: "boolean", required: false },
+      { name: "consumed_at", type: "datetime", required: false },
+    ],
+  },
+  {
+    name: "_shared",
+    description: "Entry-level sharing. Links an entry to a visibility mode for HTTP access at /o/entry/{pattern}/{id}. Public entries are openly readable; unlisted entries require a valid auth code token (anyone-with-the-link access).",
+    ddl: `CREATE TABLE IF NOT EXISTS "_shared" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "source_pattern" TEXT NOT NULL,
+      "source_id" INTEGER NOT NULL,
+      "visibility" TEXT NOT NULL DEFAULT 'public',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_shared_source_active" ON "_shared" ("source_pattern", "source_id") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "source_pattern", type: "text", required: true },
+      { name: "source_id", type: "integer", required: true },
+      { name: "visibility", type: "text", required: false },
     ],
   },
   {
@@ -281,6 +275,16 @@ export function initializeSchema(db: any): void {
     if (table.indexes) {
       for (const idx of table.indexes) db.exec(idx);
     }
+  }
+
+  // --- v5: consolidate token tables into _access_tokens ---
+
+  for (const old of ["_auth_codes", "_upload_tokens", "_marketplace_tokens"]) {
+    try {
+      db.exec(`DROP TABLE IF EXISTS "${old}"`);
+      db.exec(`DELETE FROM _objects WHERE name = ?`, old);
+      db.exec(`DELETE FROM _fields WHERE object_name = ?`, old);
+    } catch { /* already gone */ }
   }
 
   // --- System doc seeding ---

@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema, ensureAuditTriggers } from "./schema";
-import { applyKernelRules, type KernelContext } from "./kernel";
+import { applyKernelRules, scopeMatches, type KernelContext } from "./kernel";
 
 // === Types ===
 
@@ -209,6 +209,21 @@ export class HiveDO extends DurableObject {
         preview.conventions.push(change.convention);
         break;
       }
+
+      case "set_sharing": {
+        if (!change.pattern_name)
+          return this.errorJson("pattern_name is required for set_sharing");
+        if (change.entry_id == null)
+          return this.errorJson("entry_id is required for set_sharing");
+        if (!this.patternExists(change.pattern_name))
+          return this.errorJson(`Pattern "${change.pattern_name}" does not exist`);
+        if (!this.entryExists(change.pattern_name, change.entry_id))
+          return this.errorJson(`Entry ${change.entry_id} not found in "${change.pattern_name}"`);
+        const vis = change.visibility ?? "public";
+        if (!["public", "unlisted", "private"].includes(vis))
+          return this.errorJson(`Invalid visibility "${vis}". Use "public", "unlisted", or "private".`);
+        break;
+      }
     }
 
     const changeId = crypto.randomUUID();
@@ -325,6 +340,28 @@ export class HiveDO extends DurableObject {
 
         case "add_convention": {
           this.db.exec("INSERT INTO _conventions (text) VALUES (?)", change.convention);
+          break;
+        }
+
+        case "set_sharing": {
+          const vis = change.visibility ?? "public";
+          if (vis === "private") {
+            // Archive any existing sharing entry
+            this.db.exec(
+              `UPDATE "_shared" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE source_pattern = ? AND source_id = ? AND archived_at IS NULL`,
+              change.pattern_name, change.entry_id
+            );
+          } else {
+            // Upsert: archive old, insert new
+            this.db.exec(
+              `UPDATE "_shared" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE source_pattern = ? AND source_id = ? AND archived_at IS NULL`,
+              change.pattern_name, change.entry_id
+            );
+            this.db.exec(
+              `INSERT INTO "_shared" (source_pattern, source_id, visibility) VALUES (?, ?, ?)`,
+              change.pattern_name, change.entry_id, vis
+            );
+          }
           break;
         }
       }
@@ -585,27 +622,20 @@ export class HiveDO extends DurableObject {
   }
 
   async consumeUpload(token: string, content: string): Promise<string> {
-    // Look up the token
-    const rows = this.db.exec(
-      `SELECT * FROM "_upload_tokens" WHERE token = ? AND archived_at IS NULL`,
-      token
-    ).toArray() as any[];
+    // Check for consumed token first (findAccessToken excludes consumed)
+    const consumed = this.db.exec(
+      `SELECT 1 FROM "_access_tokens" WHERE token = ? AND consumed_at IS NOT NULL`, token
+    ).toArray();
+    if (consumed.length > 0) return this.errorJson("Upload token has already been used");
 
-    if (rows.length === 0) {
-      return this.errorJson("Invalid or expired upload token");
-    }
+    // Validate token with upload scope
+    const accessToken = this.findAccessToken(token);
+    if (!accessToken) return this.errorJson("Invalid or expired upload token");
+    if (!scopeMatches(accessToken.scope, "upload")) return this.errorJson("Token does not have upload scope");
 
-    const upload = rows[0];
-
-    // Check expiry
-    if (new Date(upload.expires_at) < new Date()) {
-      return this.errorJson("Upload token has expired");
-    }
-
-    // Check single-use
-    if (upload.consumed_at) {
-      return this.errorJson("Upload token has already been used");
-    }
+    // Parse upload constraints
+    const constraints = accessToken.constraints ? JSON.parse(accessToken.constraints) : null;
+    if (!constraints) return this.errorJson("Upload token missing constraints");
 
     // Check content size
     const contentBytes = new TextEncoder().encode(content).length;
@@ -615,52 +645,47 @@ export class HiveDO extends DurableObject {
 
     // Write content to target
     try {
-      if (upload.mode === "append") {
+      if (constraints.mode === "append") {
         this.db.exec(
-          `UPDATE "${upload.target_pattern}" SET "${upload.target_facet}" = COALESCE("${upload.target_facet}", '') || ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
-          content, upload.target_id
+          `UPDATE "${constraints.target_pattern}" SET "${constraints.target_facet}" = COALESCE("${constraints.target_facet}", '') || ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+          content, constraints.target_id
         );
       } else {
         this.db.exec(
-          `UPDATE "${upload.target_pattern}" SET "${upload.target_facet}" = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
-          content, upload.target_id
+          `UPDATE "${constraints.target_pattern}" SET "${constraints.target_facet}" = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+          content, constraints.target_id
         );
       }
 
-      // Bump kernel version if applicable (not for user version fields like semver)
-      if (this.hasKernelVersion(upload.target_pattern)) {
+      // Bump kernel version if applicable
+      if (this.hasKernelVersion(constraints.target_pattern)) {
         try {
           this.db.exec(
-            `UPDATE "${upload.target_pattern}" SET version = version + 1 WHERE id = ?`,
-            upload.target_id
+            `UPDATE "${constraints.target_pattern}" SET version = version + 1 WHERE id = ?`,
+            constraints.target_id
           );
-        } catch {
-          // No version column — fine
-        }
+        } catch { /* No version column — fine */ }
       }
     } catch (err: any) {
       return this.errorJson(`Upload write failed: ${err.message}`);
     }
 
     // Mark token consumed
-    this.db.exec(
-      `UPDATE "_upload_tokens" SET consumed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
-      upload.id
-    );
+    this.consumeToken(accessToken.id);
 
     // Return the updated record
     const record = this.db.exec(
-      `SELECT * FROM "${upload.target_pattern}" WHERE id = ?`,
-      upload.target_id
+      `SELECT * FROM "${constraints.target_pattern}" WHERE id = ?`,
+      constraints.target_id
     ).one();
 
-    this.broadcastChange([upload.target_pattern]);
+    this.broadcastChange([constraints.target_pattern]);
 
     return JSON.stringify({
       uploaded: true,
       bytes: contentBytes,
-      target: { pattern: upload.target_pattern, id: upload.target_id, facet: upload.target_facet },
-      mode: upload.mode,
+      target: { pattern: constraints.target_pattern, id: constraints.target_id, facet: constraints.target_facet },
+      mode: constraints.mode,
       entry: record,
     }, null, 2);
   }
@@ -674,13 +699,7 @@ export class HiveDO extends DurableObject {
         ).toArray() as any[];
         return rows.length ? { type: rows[0].type } : null;
       },
-      entryExists: (pattern, id) => {
-        try {
-          return this.db.exec(
-            `SELECT 1 FROM "${pattern}" WHERE id = ? AND archived_at IS NULL`, id
-          ).toArray().length > 0;
-        } catch { return false; }
-      },
+      entryExists: (pattern, id) => this.entryExists(pattern, id),
     };
   }
 
@@ -798,6 +817,14 @@ export class HiveDO extends DurableObject {
 
     const path = match[1];
 
+    // Foreign URI: first segment contains a dot → hostname (local paths never do)
+    const firstSlash = path.indexOf("/");
+    const firstSegment = firstSlash === -1 ? path : path.substring(0, firstSlash);
+    if (firstSegment.includes(".")) {
+      const remainingPath = firstSlash === -1 ? "" : path.substring(firstSlash + 1);
+      return this.federatedResolve(firstSegment, remainingPath);
+    }
+
     if (path === "index") {
       return this.getIndex();
     }
@@ -838,6 +865,50 @@ export class HiveDO extends DurableObject {
     }
 
     return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
+  }
+
+  // === Federated resolve: foreign hive URIs ===
+
+  private async federatedResolve(host: string, path: string): Promise<string> {
+    const [cleanPath, queryString] = path.split("?");
+    const params = new URLSearchParams(queryString || "");
+    const token = params.get("token");
+
+    if (!cleanPath) {
+      return this.errorJson(`Foreign URI ${uri(host + "/")} requires a path after the host`);
+    }
+
+    const url = `https://${host}/o/${cleanPath}`;
+
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    try {
+      const response = await fetch(url, { headers });
+
+      if (!response.ok) {
+        const status = response.status;
+        if (status === 401) return this.errorJson(`Foreign hive at ${host} requires authorization for: ${cleanPath}`);
+        if (status === 404) return this.errorJson(`Not found on foreign hive ${host}: ${cleanPath}`);
+        return this.errorJson(`Foreign hive ${host} returned ${status} for: ${cleanPath}`);
+      }
+
+      const content = await response.text();
+      const contentType = response.headers.get("Content-Type") || "text/plain";
+
+      // Parse JSON responses so they nest cleanly
+      if (contentType.includes("application/json")) {
+        try {
+          return JSON.stringify({ federated: true, host, path: cleanPath, content: JSON.parse(content) }, null, 2);
+        } catch { /* fall through to text */ }
+      }
+
+      return JSON.stringify({ federated: true, host, path: cleanPath, content_type: contentType, content }, null, 2);
+    } catch (e: any) {
+      return this.errorJson(`Failed to reach foreign hive at ${host}: ${e.message}`);
+    }
   }
 
   // === Cross-object search ===
@@ -943,15 +1014,13 @@ export class HiveDO extends DurableObject {
 
   async getMarketplaceDataForToken(token: string): Promise<string> {
     try {
-      const rows = this.db.exec(
-        `SELECT * FROM "_marketplace_tokens" WHERE token = ? AND archived_at IS NULL`,
-        token
-      ).toArray() as any[];
-      if (rows.length === 0) {
-        return JSON.stringify({ error: true, message: "Invalid token" });
-      }
-      const scope = rows[0].scope ? JSON.parse(rows[0].scope) as string[] : null;
-      return this.getMarketplaceDataScoped(scope);
+      const accessToken = this.findAccessToken(token);
+      if (!accessToken) return JSON.stringify({ error: true, message: "Invalid token" });
+      if (!scopeMatches(accessToken.scope, "marketplace"))
+        return JSON.stringify({ error: true, message: "Token does not have marketplace scope" });
+      const constraints = accessToken.constraints ? JSON.parse(accessToken.constraints) : null;
+      const pluginNames = constraints?.plugins ?? null;
+      return this.getMarketplaceDataScoped(pluginNames);
     } catch {
       return JSON.stringify({ error: true, message: "Token validation failed" });
     }
@@ -1044,6 +1113,14 @@ export class HiveDO extends DurableObject {
     ).toArray().length > 0;
   }
 
+  private entryExists(pattern: string, id: number): boolean {
+    try {
+      return this.db.exec(
+        `SELECT 1 FROM "${pattern}" WHERE id = ? AND archived_at IS NULL`, id
+      ).toArray().length > 0;
+    } catch { return false; }
+  }
+
   /** True if the table's `version` column is the kernel auto-increment, not a user field. */
   private hasKernelVersion(patternName: string): boolean {
     // If _fields has a user-defined 'version' field for this object,
@@ -1087,32 +1164,69 @@ export class HiveDO extends DurableObject {
   // === Auth codes ===
 
   /** Check and consume a code (for browser auth — single use). */
-  async consumeAuthCode(code: string): Promise<boolean> {
+  // === Access token operations ===
+
+  /** Find a valid (non-archived, non-expired, non-consumed) access token. */
+  private findAccessToken(token: string): any | null {
     const rows = this.db.exec(
-      `SELECT * FROM "_auth_codes" WHERE code = ? AND archived_at IS NULL AND consumed_at IS NULL`,
-      code
+      `SELECT * FROM "_access_tokens" WHERE token = ? AND archived_at IS NULL AND consumed_at IS NULL`,
+      token
     ).toArray() as any[];
-    if (rows.length === 0) return false;
+    if (rows.length === 0) return null;
     const row = rows[0];
-    if (new Date(row.expires_at) < new Date()) return false;
+    if (row.expires_at && new Date(row.expires_at) < new Date()) return null;
+    return row;
+  }
+
+  /** Mark a token as consumed (for single-use tokens). */
+  private consumeToken(id: number): void {
     this.db.exec(
-      `UPDATE "_auth_codes" SET consumed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
-      row.id
+      `UPDATE "_access_tokens" SET consumed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      id
     );
+  }
+
+  /** Validate a token against a required scope. Consumes single-use tokens. */
+  async validateAccessToken(token: string, requiredScope: string): Promise<boolean> {
+    const accessToken = this.findAccessToken(token);
+    if (!accessToken) return false;
+    if (!scopeMatches(accessToken.scope, requiredScope)) return false;
+    if (accessToken.single_use) this.consumeToken(accessToken.id);
     return true;
   }
 
-  /** Validate a code without consuming it (for bearer token sessions). */
+  /** Validate a token without consuming it (for reusable Bearer sessions). */
   async validateAuthCode(code: string): Promise<boolean> {
-    const rows = this.db.exec(
-      `SELECT * FROM "_auth_codes" WHERE code = ? AND archived_at IS NULL AND consumed_at IS NULL`,
-      code
-    ).toArray() as any[];
-    if (rows.length === 0) return false;
-    return new Date(rows[0].expires_at) >= new Date();
+    const accessToken = this.findAccessToken(code);
+    return accessToken !== null;
+  }
+
+  /** Validate and consume a single-use token (for browser auth). */
+  async consumeAuthCode(code: string): Promise<boolean> {
+    const accessToken = this.findAccessToken(code);
+    if (!accessToken) return false;
+    if (accessToken.single_use) this.consumeToken(accessToken.id);
+    return true;
   }
 
   // === HTTP I/O ===
+
+  async getSharedEntry(pattern: string, id: number): Promise<string> {
+    try {
+      // Single JOIN: check sharing + fetch entry in one query
+      const rows = this.db.exec(
+        `SELECT e.*, s.visibility FROM "${pattern}" e
+         JOIN "_shared" s ON s.source_pattern = ? AND s.source_id = e.id AND s.archived_at IS NULL
+         WHERE e.id = ? AND e.archived_at IS NULL`,
+        pattern, id
+      ).toArray() as any[];
+      if (rows.length === 0) return JSON.stringify({ found: false });
+      const { visibility, ...entry } = rows[0];
+      return JSON.stringify({ found: true, visibility, pattern, entry });
+    } catch {
+      return JSON.stringify({ found: false });
+    }
+  }
 
   async resolveOutput(path: string): Promise<string> {
     try {

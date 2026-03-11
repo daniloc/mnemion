@@ -45,9 +45,8 @@ Entries can be `public` or `private`. This controls marketplace distribution:
 Patterns prefixed with `_` are system patterns managed by the kernel:
 - `_outputs` — HTTP egress endpoints (see `{{uri:_system/http-io}}`)
 - `_inputs` — HTTP ingress endpoints (see `{{uri:_system/http-io}}`)
-- `_auth_codes` — one-time auth codes for remote agents (see `{{uri:_system/remote-access}}`)
-- `_marketplace_tokens` — scoped access tokens for marketplace
-- `_upload_tokens` — temporary capability tokens for large content uploads
+- `_access_tokens` — unified access tokens with scoped permissions (see `{{uri:_system/remote-access}}`)
+- `_shared` — entry-level sharing for HTTP access
 - `_plugins`, `_skills` — marketplace content (created on demand)
 - `_system_docs` — these documents
 

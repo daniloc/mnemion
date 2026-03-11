@@ -28,7 +28,7 @@ Key capabilities agents commonly miss:
 - Update operations support optimistic locking via the version field. Include version from a prior read to prevent lost updates when multiple surfaces write concurrently.
 - Facets support foreign key links to other patterns. Use the links parameter in propose_change.
 - ${uri("mutation")} is an audit log for diagnostics. Use it instead of querying entries to verify data integrity.
-- For large content that exceeds MCP parameter limits, mint an upload token via mutate on _upload_tokens, then POST content to /upload/{token} via HTTP.
+- For large content that exceeds MCP parameter limits, mint an upload token via mutate on _access_tokens with scope "upload", then POST content to /upload/{token} via HTTP.
 - apply_change supports revert_history_id for point-in-time rollback via Cloudflare PITR (30-day window).`,
     },
   );
@@ -134,9 +134,14 @@ Valid URIs:
 - ${uri("_system/{slug}")} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)
 - ${uri("_system/{slug}/default")} — read original seed version
 - ${uri("mutation")} — mutation audit log (supports ?limit=N). Use for diagnostics and integrity checks.
-- ${uri("mutation/{pattern}")} — mutations filtered to one pattern`,
+- ${uri("mutation/{pattern}")} — mutations filtered to one pattern
+
+Federation: foreign hive URIs resolve over HTTP.
+- ${URI_SCHEME}://host.example.com/path → GET https://host.example.com/o/path
+- Private access: append ?token=<auth_code> for Bearer authentication
+- Public responses are cached at the Cloudflare edge`,
       {
-        uri: z.string().describe(`A ${URI_SCHEME}:// URI to resolve`),
+        uri: z.string().describe(`A ${URI_SCHEME}:// URI — local or foreign (e.g. ${URI_SCHEME}://other.host.dev/path)`),
       },
       async ({ uri: resolveUri }) => {
         const result = await hive.resolve(resolveUri);
@@ -157,14 +162,19 @@ Valid URIs:
       "propose_change",
       `Propose a structural change. Validates and returns a preview of the index after the change. Does not commit.
 
-Supports: create_pattern (with facets), add_facet (to existing pattern), add_convention.
+Supports: create_pattern (with facets), add_facet (to existing pattern), add_convention, set_sharing (entry-level HTTP visibility).
 Facets can declare foreign key links to other patterns via the links parameter.
-Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 facets per pattern.`,
+Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 facets per pattern.
+
+set_sharing: control HTTP access to individual entries at /o/entry/{pattern}/{id}.
+- "public": openly readable, edge-cached
+- "unlisted": readable with valid auth code token (anyone-with-the-link)
+- "private": not served (removes sharing)`,
       {
         description: z.string().describe("Natural language description of the change"),
         change: z.object({
-          type: z.enum(["create_pattern", "add_facet", "add_convention"]).describe("Type of structural change"),
-          pattern_name: z.string().optional().describe("Target pattern name (for create_pattern and add_facet)"),
+          type: z.enum(["create_pattern", "add_facet", "add_convention", "set_sharing"]).describe("Type of structural change"),
+          pattern_name: z.string().optional().describe("Target pattern name"),
           pattern_description: z.string().optional().describe("Purpose of the pattern (for create_pattern)"),
           facets: z.array(z.object({
             name: z.string(),
@@ -177,6 +187,8 @@ Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 6
             }).optional().describe("Foreign key link to another pattern"),
           })).optional().describe("Facets to create (for create_pattern or add_facet)"),
           convention: z.string().optional().describe("Convention text (for add_convention)"),
+          entry_id: z.number().optional().describe("Entry ID (for set_sharing)"),
+          visibility: z.enum(["public", "unlisted", "private"]).optional().describe("Sharing visibility (for set_sharing)"),
         }),
       },
       async ({ description, change }) => {
@@ -342,7 +354,7 @@ Batch: pass operation "batch" + data as array of [{pattern, operation, data}, ..
 
 Update supports optimistic locking: include the version field from a prior read to detect conflicts across concurrent surfaces.
 
-Large content: to write content too large for MCP parameters, create an _upload_tokens entry with {target_pattern, target_id, target_facet, mode}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP.
+Large content: to write content too large for MCP parameters, create an _access_tokens entry with {scope: "upload", constraints: {target_pattern, target_id, target_facet, mode}}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP.
 
 Entries limited to ~1 MB each.`,
       {

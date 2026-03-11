@@ -72,14 +72,17 @@ const props = {
       ],
     },
     {
-      name: '_auth_codes',
-      description: 'One-time bearer tokens for remote agents',
+      name: '_access_tokens',
+      description: 'Unified access tokens with scoped permissions',
       entry_count: 3,
       latest_activity: '2026-03-06T12:00:00Z',
       facets: [
-        { name: 'token', type: 'text', required: true },
+        { name: 'token', type: 'text', required: false },
         { name: 'label', type: 'text', required: false },
         { name: 'scope', type: 'text', required: false },
+        { name: 'constraints', type: 'text', required: false },
+        { name: 'expires_at', type: 'datetime', required: false },
+        { name: 'single_use', type: 'boolean', required: false },
       ],
     },
     {

@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, fetchMock } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import type { HiveDO } from "../hive";
 
@@ -52,9 +52,9 @@ describe("Index", () => {
     const store = getStore();
     const result = JSON.parse(await store.getIndex());
     const names = result.patterns.map((p: any) => p.name);
-    expect(names).toContain("_marketplace_tokens");
+    expect(names).toContain("_access_tokens");
     expect(names).toContain("_system_docs");
-    expect(names).toContain("_upload_tokens");
+    expect(names).toContain("_shared");
   });
 });
 
@@ -663,6 +663,197 @@ describe("Resolve", () => {
     const result = JSON.parse(await store.resolve("mnemion://nonexistent/path"));
     expect(result.error).toBe(true);
   });
+
+  // === Federated resolve ===
+
+  it("resolves foreign URI over HTTP", async () => {
+    const store = getStore();
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://other.hive.dev")
+      .intercept({ path: "/o/records/axioms/7" })
+      .reply(200, JSON.stringify({ id: 7, axiom: "Federation is just HTTP." }), {
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const result = JSON.parse(await store.resolve("mnemion://other.hive.dev/records/axioms/7"));
+    expect(result.federated).toBe(true);
+    expect(result.host).toBe("other.hive.dev");
+    expect(result.path).toBe("records/axioms/7");
+    expect(result.content.axiom).toBe("Federation is just HTTP.");
+
+    fetchMock.deactivate();
+  });
+
+  it("passes token as Bearer header for private access", async () => {
+    const store = getStore();
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://private.hive.dev")
+      .intercept({
+        path: "/o/records/secrets/1",
+        headers: { Authorization: "Bearer abc123" },
+      })
+      .reply(200, "classified", { headers: { "Content-Type": "text/plain" } });
+
+    const result = JSON.parse(await store.resolve("mnemion://private.hive.dev/records/secrets/1?token=abc123"));
+    expect(result.federated).toBe(true);
+    expect(result.content).toBe("classified");
+
+    fetchMock.deactivate();
+  });
+
+  it("returns error for 404 from foreign hive", async () => {
+    const store = getStore();
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://other.hive.dev")
+      .intercept({ path: "/o/missing/path" })
+      .reply(404, "Not found");
+
+    const result = JSON.parse(await store.resolve("mnemion://other.hive.dev/missing/path"));
+    expect(result.error).toBe(true);
+    expect(result.message).toContain("Not found");
+
+    fetchMock.deactivate();
+  });
+
+  it("returns error for 401 from foreign hive", async () => {
+    const store = getStore();
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://locked.hive.dev")
+      .intercept({ path: "/o/private/data" })
+      .reply(401, "Unauthorized");
+
+    const result = JSON.parse(await store.resolve("mnemion://locked.hive.dev/private/data"));
+    expect(result.error).toBe(true);
+    expect(result.message).toContain("requires authorization");
+
+    fetchMock.deactivate();
+  });
+
+  it("requires a path after the foreign host", async () => {
+    const store = getStore();
+    const result = JSON.parse(await store.resolve("mnemion://other.hive.dev"));
+    expect(result.error).toBe(true);
+    expect(result.message).toContain("requires a path");
+  });
+
+  it("does not treat local URIs as foreign", async () => {
+    const store = getStore();
+    const result = JSON.parse(await store.resolve("mnemion://index"));
+    expect(result.error).toBeUndefined();
+    expect(result.patterns).toBeInstanceOf(Array);
+  });
+
+  it("does not treat dotted pattern names as foreign", async () => {
+    const store = getStore();
+    await createPattern(store, "dotted", [{ name: "v", type: "text" }]);
+    const result = JSON.parse(await store.resolve("mnemion://schema/dotted"));
+    expect(result.error).toBeUndefined();
+    expect(result.pattern).toBe("dotted");
+  });
+});
+
+// === Entry Sharing ===
+
+describe("Sharing", () => {
+  it("shares an entry via set_sharing propose/apply", async () => {
+    const store = getStore();
+    await createPattern(store, "shareable", [{ name: "title", type: "text" }]);
+    const created = await createEntry(store, "shareable", { title: "Hello world" });
+
+    const proposed = JSON.parse(await store.proposeChange(
+      "Share entry",
+      JSON.stringify({ type: "set_sharing", pattern_name: "shareable", entry_id: created.entry.id, visibility: "public" })
+    ));
+    expect(proposed.change_id).toBeTruthy();
+
+    const applied = JSON.parse(await store.applyChange(proposed.change_id));
+    expect(applied.applied).toBe(true);
+
+    // Entry should now be retrievable via getSharedEntry
+    const shared = JSON.parse(await store.getSharedEntry("shareable", created.entry.id));
+    expect(shared.found).toBe(true);
+    expect(shared.visibility).toBe("public");
+    expect(shared.entry.title).toBe("Hello world");
+  });
+
+  it("unshares an entry by setting visibility to private", async () => {
+    const store = getStore();
+    await createPattern(store, "unshare-test", [{ name: "v", type: "text" }]);
+    const created = await createEntry(store, "unshare-test", { v: "secret" });
+
+    // Share it
+    const p1 = JSON.parse(await store.proposeChange("Share", JSON.stringify({ type: "set_sharing", pattern_name: "unshare-test", entry_id: created.entry.id, visibility: "public" })));
+    await store.applyChange(p1.change_id);
+
+    // Unshare it
+    const p2 = JSON.parse(await store.proposeChange("Unshare", JSON.stringify({ type: "set_sharing", pattern_name: "unshare-test", entry_id: created.entry.id, visibility: "private" })));
+    await store.applyChange(p2.change_id);
+
+    const shared = JSON.parse(await store.getSharedEntry("unshare-test", created.entry.id));
+    expect(shared.found).toBe(false);
+  });
+
+  it("returns not found for unshared entries", async () => {
+    const store = getStore();
+    await createPattern(store, "private-pat", [{ name: "v", type: "text" }]);
+    const created = await createEntry(store, "private-pat", { v: "hidden" });
+
+    const shared = JSON.parse(await store.getSharedEntry("private-pat", created.entry.id));
+    expect(shared.found).toBe(false);
+  });
+
+  it("supports unlisted visibility", async () => {
+    const store = getStore();
+    await createPattern(store, "unlisted-pat", [{ name: "v", type: "text" }]);
+    const created = await createEntry(store, "unlisted-pat", { v: "link only" });
+
+    const p = JSON.parse(await store.proposeChange("Unlisted share", JSON.stringify({ type: "set_sharing", pattern_name: "unlisted-pat", entry_id: created.entry.id, visibility: "unlisted" })));
+    await store.applyChange(p.change_id);
+
+    const shared = JSON.parse(await store.getSharedEntry("unlisted-pat", created.entry.id));
+    expect(shared.found).toBe(true);
+    expect(shared.visibility).toBe("unlisted");
+  });
+
+  it("rejects invalid visibility", async () => {
+    const store = getStore();
+    await createPattern(store, "bad-vis", [{ name: "v", type: "text" }]);
+    const created = await createEntry(store, "bad-vis", { v: "x" });
+
+    const result = JSON.parse(await store.proposeChange("Bad vis", JSON.stringify({ type: "set_sharing", pattern_name: "bad-vis", entry_id: created.entry.id, visibility: "secret" })));
+    expect(result.error).toBe(true);
+    expect(result.message).toContain("Invalid visibility");
+  });
+
+  it("rejects sharing nonexistent entry", async () => {
+    const store = getStore();
+    await createPattern(store, "no-entry", [{ name: "v", type: "text" }]);
+
+    const result = JSON.parse(await store.proposeChange("Share ghost", JSON.stringify({ type: "set_sharing", pattern_name: "no-entry", entry_id: 999 })));
+    expect(result.error).toBe(true);
+    expect(result.message).toContain("not found");
+  });
+
+  it("changes visibility from public to unlisted", async () => {
+    const store = getStore();
+    await createPattern(store, "revis", [{ name: "v", type: "text" }]);
+    const created = await createEntry(store, "revis", { v: "data" });
+
+    // Share as public
+    const p1 = JSON.parse(await store.proposeChange("Public", JSON.stringify({ type: "set_sharing", pattern_name: "revis", entry_id: created.entry.id, visibility: "public" })));
+    await store.applyChange(p1.change_id);
+
+    // Change to unlisted
+    const p2 = JSON.parse(await store.proposeChange("Unlisted", JSON.stringify({ type: "set_sharing", pattern_name: "revis", entry_id: created.entry.id, visibility: "unlisted" })));
+    await store.applyChange(p2.change_id);
+
+    const shared = JSON.parse(await store.getSharedEntry("revis", created.entry.id));
+    expect(shared.visibility).toBe("unlisted");
+  });
 });
 
 // === System Docs ===
@@ -711,52 +902,57 @@ describe("System Docs", () => {
   });
 });
 
-// === Upload Tokens ===
+// === Access Tokens ===
 
-describe("Upload Tokens", () => {
+describe("Access Tokens", () => {
+  // Helper: mint an upload token via _access_tokens
+  async function mintUploadToken(store: DurableObjectStub<HiveDO>, target: { target_pattern: string; target_id: number; target_facet: string; mode?: string }) {
+    const result = JSON.parse(
+      await store.mutate("_access_tokens", "create", JSON.stringify({
+        scope: "upload",
+        constraints: JSON.stringify(target),
+      }))
+    );
+    return result;
+  }
+
   it("mints a token with auto-generated fields", async () => {
     const store = getStore();
     await createPattern(store, "uploads-target", [{ name: "content", type: "text" }]);
     const entry = await createEntry(store, "uploads-target", { content: "original" });
 
-    const result = JSON.parse(
-      await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_pattern: "uploads-target",
-        target_id: entry.entry.id,
-        target_facet: "content",
-      }))
-    );
+    const result = await mintUploadToken(store, {
+      target_pattern: "uploads-target",
+      target_id: entry.entry.id,
+      target_facet: "content",
+    });
     expect(result.entry.token).toBeDefined();
-    expect(result.entry.token.length).toBe(32); // hex(randomblob(16))
+    expect(result.entry.token.length).toBe(32);
     expect(result.entry.expires_at).toBeDefined();
-    expect(result.entry.mode).toBe("replace");
+    expect(result.entry.single_use).toBe(1);
     expect(result.entry.consumed_at).toBeNull();
   });
 
-  it("rejects tokens targeting non-existent patterns", async () => {
+  it("rejects upload tokens targeting non-existent patterns", async () => {
     const store = getStore();
-    const result = JSON.parse(
-      await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_pattern: "ghost",
-        target_id: 1,
-        target_facet: "content",
-      }))
-    );
+    const result = await mintUploadToken(store, {
+      target_pattern: "ghost",
+      target_id: 1,
+      target_facet: "content",
+    });
     expect(result.error).toBe(true);
   });
 
-  it("rejects tokens targeting non-text facets", async () => {
+  it("rejects upload tokens targeting non-text facets", async () => {
     const store = getStore();
     await createPattern(store, "nums", [{ name: "count", type: "integer" }]);
     await createEntry(store, "nums", { count: 0 });
 
-    const result = JSON.parse(
-      await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_pattern: "nums",
-        target_id: 1,
-        target_facet: "count",
-      }))
-    );
+    const result = await mintUploadToken(store, {
+      target_pattern: "nums",
+      target_id: 1,
+      target_facet: "count",
+    });
     expect(result.error).toBe(true);
     expect(result.message).toContain("text type");
   });
@@ -766,13 +962,11 @@ describe("Upload Tokens", () => {
     await createPattern(store, "upload-replace", [{ name: "body", type: "text" }]);
     const entry = await createEntry(store, "upload-replace", { body: "old" });
 
-    const token = JSON.parse(
-      await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_pattern: "upload-replace",
-        target_id: entry.entry.id,
-        target_facet: "body",
-      }))
-    );
+    const token = await mintUploadToken(store, {
+      target_pattern: "upload-replace",
+      target_id: entry.entry.id,
+      target_facet: "body",
+    });
 
     const result = JSON.parse(await store.consumeUpload(token.entry.token, "new content"));
     expect(result.uploaded).toBe(true);
@@ -784,14 +978,12 @@ describe("Upload Tokens", () => {
     await createPattern(store, "upload-append", [{ name: "log", type: "text" }]);
     const entry = await createEntry(store, "upload-append", { log: "line1\n" });
 
-    const token = JSON.parse(
-      await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_pattern: "upload-append",
-        target_id: entry.entry.id,
-        target_facet: "log",
-        mode: "append",
-      }))
-    );
+    const token = await mintUploadToken(store, {
+      target_pattern: "upload-append",
+      target_id: entry.entry.id,
+      target_facet: "log",
+      mode: "append",
+    });
 
     const result = JSON.parse(await store.consumeUpload(token.entry.token, "line2\n"));
     expect(result.uploaded).toBe(true);
@@ -803,13 +995,11 @@ describe("Upload Tokens", () => {
     await createPattern(store, "upload-once", [{ name: "data", type: "text" }]);
     const entry = await createEntry(store, "upload-once", { data: "" });
 
-    const token = JSON.parse(
-      await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_pattern: "upload-once",
-        target_id: entry.entry.id,
-        target_facet: "data",
-      }))
-    );
+    const token = await mintUploadToken(store, {
+      target_pattern: "upload-once",
+      target_id: entry.entry.id,
+      target_facet: "data",
+    });
 
     await store.consumeUpload(token.entry.token, "first");
     const second = JSON.parse(await store.consumeUpload(token.entry.token, "second"));
@@ -822,13 +1012,11 @@ describe("Upload Tokens", () => {
     await createPattern(store, "upload-big", [{ name: "data", type: "text" }]);
     const entry = await createEntry(store, "upload-big", { data: "" });
 
-    const token = JSON.parse(
-      await store.mutate("_upload_tokens", "create", JSON.stringify({
-        target_pattern: "upload-big",
-        target_id: entry.entry.id,
-        target_facet: "data",
-      }))
-    );
+    const token = await mintUploadToken(store, {
+      target_pattern: "upload-big",
+      target_id: entry.entry.id,
+      target_facet: "data",
+    });
 
     const big = "x".repeat(1_100_000);
     const result = JSON.parse(await store.consumeUpload(token.entry.token, big));
@@ -840,6 +1028,22 @@ describe("Upload Tokens", () => {
     const store = getStore();
     const result = JSON.parse(await store.consumeUpload("nonexistent", "data"));
     expect(result.error).toBe(true);
+  });
+
+  it("validates scoped tokens with hierarchical matching", async () => {
+    const store = getStore();
+    // Create a wildcard token
+    const wide = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ label: "wide", scope: "read" })));
+    expect(await store.validateAccessToken(wide.entry.token, "read:entry:axioms:7")).toBe(true);
+
+    // Create a narrow token
+    const narrow = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ label: "narrow", scope: "read:entry:axioms" })));
+    expect(await store.validateAccessToken(narrow.entry.token, "read:entry:axioms:7")).toBe(true);
+    expect(await store.validateAccessToken(narrow.entry.token, "read:output:page")).toBe(false);
+
+    // Wildcard scope
+    const star = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ label: "star" })));
+    expect(await store.validateAccessToken(star.entry.token, "anything")).toBe(true);
   });
 });
 

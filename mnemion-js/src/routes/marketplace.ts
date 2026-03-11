@@ -69,23 +69,25 @@ export const seedMarketplace: RouteHandler = async (ctx) => {
 export const marketplaceToken: RouteHandler = async (ctx) => {
   if (ctx.request.method === "POST") {
     const body = await ctx.request.json().catch(() => ({})) as { name?: string; scope?: string[] };
-    const result = await ctx.hive.mutate("_marketplace_tokens", "create", JSON.stringify({
-      name: body.name || "default",
-      scope: body.scope ? JSON.stringify(body.scope) : null,
+    const result = await ctx.hive.mutate("_access_tokens", "create", JSON.stringify({
+      label: body.name || "marketplace",
+      scope: "marketplace",
+      plugins: body.scope ?? undefined,
     }));
     const parsed = JSON.parse(result);
     if (parsed.error) return Response.json(parsed, { status: 500 });
     const token = parsed.entry.token;
+    const constraints = parsed.entry.constraints ? JSON.parse(parsed.entry.constraints) : null;
     return Response.json({
       token,
-      name: parsed.entry.name,
-      scope: parsed.entry.scope ? JSON.parse(parsed.entry.scope) : null,
+      label: parsed.entry.label,
+      scope: constraints?.plugins ?? null,
       install: `https://${URI_SCHEME}:${token}@${ctx.url.host}/marketplace.git`,
     });
   }
 
-  // GET: list all active tokens
-  const result = await ctx.hive.query("_marketplace_tokens", "", "id,name,token,scope,created_at", "-created_at", 100, false);
+  // GET: list marketplace-scoped tokens
+  const result = await ctx.hive.query("_access_tokens", JSON.stringify(["scope=marketplace"]), "id,label,token,constraints,created_at", "-created_at", 100, false);
   return Response.json(JSON.parse(result));
 };
 

@@ -25,10 +25,59 @@ const IMMUTABLE: Record<string, { fields: string[]; message: string }> = {
 // === Create hooks — validate + transform before INSERT ===
 
 const ON_CREATE: Record<string, CreateHook> = {
-  _auth_codes(data) {
-    const ttl = typeof data.ttl_minutes === "number" ? data.ttl_minutes : 60;
-    data.expires_at = new Date(Date.now() + ttl * 60_000).toISOString();
-    delete data.ttl_minutes;
+  _access_tokens(data, ctx) {
+    const scope = (data.scope as string) || "*";
+    data.scope = scope;
+
+    // Auto-generate token — never accept from input
+    delete data.token;
+
+    // Scope-specific validation
+    if (scope === "upload" || scope.startsWith("upload:")) {
+      let constraints = data.constraints;
+      if (typeof constraints === "string") {
+        try { constraints = JSON.parse(constraints); } catch {
+          return { error: true, message: "constraints must be valid JSON" };
+        }
+      }
+      if (!constraints || typeof constraints !== "object")
+        return { error: true, message: "upload scope requires constraints: {target_pattern, target_id, target_facet}" };
+      const c = constraints as Record<string, unknown>;
+      if (!c.target_pattern || c.target_id == null || !c.target_facet)
+        return { error: true, message: "upload constraints require target_pattern, target_id, and target_facet" };
+      if (!ctx.patternExists(c.target_pattern as string))
+        return { error: true, message: `Target pattern "${c.target_pattern}" does not exist` };
+      if (!ctx.entryExists(c.target_pattern as string, c.target_id as number))
+        return { error: true, message: `Target entry ${c.target_id} not found in "${c.target_pattern}"` };
+      const meta = ctx.facetMeta(c.target_pattern as string, c.target_facet as string);
+      if (!meta)
+        return { error: true, message: `Facet "${c.target_facet}" does not exist on "${c.target_pattern}"` };
+      if (meta.type !== "text")
+        return { error: true, message: `Upload target facet must be text type, "${c.target_facet}" is ${meta.type}` };
+      c.mode = c.mode || "replace";
+      if (!["replace", "append"].includes(c.mode as string))
+        return { error: true, message: `Invalid mode "${c.mode}". Use "replace" or "append".` };
+      data.constraints = JSON.stringify(c);
+      // Upload tokens: 15-min TTL, single-use
+      data.expires_at = data.expires_at || new Date(Date.now() + 15 * 60_000).toISOString();
+      data.single_use = 1;
+    }
+
+    // Default TTL for wildcard tokens (old auth code behavior)
+    if (scope === "*" && !data.expires_at) {
+      const ttl = typeof data.ttl_minutes === "number" ? data.ttl_minutes : 60;
+      data.expires_at = new Date(Date.now() + ttl * 60_000).toISOString();
+      delete data.ttl_minutes;
+    }
+
+    // Marketplace tokens: store plugin scope in constraints
+    if (scope === "marketplace" || scope.startsWith("marketplace:")) {
+      if (data.plugins) {
+        data.constraints = JSON.stringify({ plugins: data.plugins });
+        delete data.plugins;
+      }
+    }
+
     return data;
   },
 
@@ -55,26 +104,30 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 
-  _upload_tokens(data, ctx) {
-    if (!data.target_pattern || data.target_id == null || !data.target_facet)
-      return { error: true, message: "target_pattern, target_id, and target_facet are required" };
-    if (!ctx.patternExists(data.target_pattern as string))
-      return { error: true, message: `Target pattern "${data.target_pattern}" does not exist` };
-    if (!ctx.entryExists(data.target_pattern as string, data.target_id as number))
-      return { error: true, message: `Target entry ${data.target_id} not found in "${data.target_pattern}"` };
-    const meta = ctx.facetMeta(data.target_pattern as string, data.target_facet as string);
-    if (!meta)
-      return { error: true, message: `Facet "${data.target_facet}" does not exist on "${data.target_pattern}"` };
-    if (meta.type !== "text")
-      return { error: true, message: `Upload target facet must be text type, "${data.target_facet}" is ${meta.type}` };
-    data.expires_at = new Date(Date.now() + 15 * 60_000).toISOString();
-    data.mode = data.mode || "replace";
-    if (!["replace", "append"].includes(data.mode as string))
-      return { error: true, message: `Invalid mode "${data.mode}". Use "replace" or "append".` };
-    delete data.token;
+  _shared(data, ctx) {
+    if (!data.source_pattern) return { error: true, message: "source_pattern is required for _shared" };
+    if (data.source_id == null) return { error: true, message: "source_id is required for _shared" };
+    if (!ctx.patternExists(data.source_pattern as string))
+      return { error: true, message: `Pattern "${data.source_pattern}" does not exist` };
+    if (!ctx.entryExists(data.source_pattern as string, data.source_id as number))
+      return { error: true, message: `Entry ${data.source_id} not found in "${data.source_pattern}"` };
+    const vis = data.visibility || "public";
+    if (!["public", "unlisted"].includes(vis as string))
+      return { error: true, message: `Invalid visibility "${vis}". Use "public" or "unlisted".` };
+    data.visibility = vis;
     return data;
   },
 };
+
+// === Scope matching ===
+
+/** Check if tokenScope grants access for requiredScope. Hierarchical prefix match with : boundary. */
+export function scopeMatches(tokenScope: string, requiredScope: string): boolean {
+  if (tokenScope === "*") return true;
+  if (tokenScope === requiredScope) return true;
+  if (requiredScope.startsWith(tokenScope + ":")) return true;
+  return false;
+}
 
 // === Public API ===
 

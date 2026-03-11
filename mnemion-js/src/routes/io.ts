@@ -1,5 +1,39 @@
 import type { RouteHandler } from "../router";
 
+// === Shared entries: GET /o/entry/:pattern/:id ===
+
+export const serveSharedEntry: RouteHandler = async (ctx) => {
+  const raw = await ctx.hive.getSharedEntry(ctx.params.pattern, Number(ctx.params.id));
+  const result = JSON.parse(raw);
+
+  if (!result.found) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  if (result.visibility === "unlisted" && ctx.env.MNEMION_SECRET) {
+    const authHeader = ctx.request.headers.get("Authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    const scope = `read:entry:${ctx.params.pattern}:${ctx.params.id}`;
+    if (!token || !(await ctx.hive.validateAccessToken(token, scope))) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+  }
+
+  const body = JSON.stringify(result.entry, null, 2);
+  const etag = `"${new Date(result.entry.updated_at).getTime()}"`;
+  if (ctx.request.headers.get("If-None-Match") === etag) {
+    return new Response(null, { status: 304 });
+  }
+
+  return new Response(body, {
+    headers: {
+      "Content-Type": "application/json",
+      "ETag": etag,
+      "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
+    },
+  });
+};
+
 // === Egress: GET /o/:path — serve _outputs content ===
 
 export const serveOutput: RouteHandler = async (ctx) => {
@@ -13,7 +47,7 @@ export const serveOutput: RouteHandler = async (ctx) => {
   if (result.visibility === "private" && ctx.env.MNEMION_SECRET) {
     const authHeader = ctx.request.headers.get("Authorization");
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token || !(await ctx.hive.validateAuthCode(token))) {
+    if (!token || !(await ctx.hive.validateAccessToken(token, `read:output:${ctx.params.path}`))) {
       return new Response("Unauthorized", { status: 401 });
     }
   }
@@ -45,7 +79,7 @@ export const receiveInput: RouteHandler = async (ctx) => {
   if (vis.visibility === "private" && ctx.env.MNEMION_SECRET) {
     const authHeader = ctx.request.headers.get("Authorization");
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token || !(await ctx.hive.validateAuthCode(token))) {
+    if (!token || !(await ctx.hive.validateAccessToken(token, `write:input:${ctx.params.path}`))) {
       return new Response("Unauthorized", { status: 401 });
     }
   }

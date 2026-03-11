@@ -67,3 +67,53 @@ describe("Dev Mode", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("Shared Entry Routes", () => {
+  // Helper: set up a shared entry via the HiveDO directly
+  async function setupSharedEntry(visibility: string) {
+    const id = env.MNEMION_HIVE.idFromName("user:owner");
+    const hive = env.MNEMION_HIVE.get(id);
+
+    // Create pattern + entry
+    const p = JSON.parse(await hive.proposeChange("Create", JSON.stringify({
+      type: "create_pattern", pattern_name: "articles", pattern_description: "Test", facets: [{ name: "title", type: "text" }],
+    })));
+    await hive.applyChange(p.change_id);
+    const entry = JSON.parse(await hive.mutate("articles", "create", JSON.stringify({ title: "Shared article" })));
+
+    // Share it
+    const s = JSON.parse(await hive.proposeChange("Share", JSON.stringify({
+      type: "set_sharing", pattern_name: "articles", entry_id: entry.entry.id, visibility,
+    })));
+    await hive.applyChange(s.change_id);
+    return entry.entry.id;
+  }
+
+  it("serves public shared entry at /o/entry/:pattern/:id", async () => {
+    const entryId = await setupSharedEntry("public");
+    const res = await SELF.fetch(`https://test.local/o/entry/articles/${entryId}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+    expect(res.headers.get("Cache-Control")).toBe("public, max-age=60");
+    const body = await res.json() as any;
+    expect(body.title).toBe("Shared article");
+  });
+
+  it("returns 404 for unshared entry", async () => {
+    // Pattern exists from previous test, but entry 999 is not shared
+    const res = await SELF.fetch("https://test.local/o/entry/articles/999");
+    expect(res.status).toBe(404);
+  });
+
+  it("supports ETag / If-None-Match", async () => {
+    const entryId = await setupSharedEntry("public");
+    const res1 = await SELF.fetch(`https://test.local/o/entry/articles/${entryId}`);
+    const etag = res1.headers.get("ETag")!;
+    expect(etag).toBeTruthy();
+
+    const res2 = await SELF.fetch(`https://test.local/o/entry/articles/${entryId}`, {
+      headers: { "If-None-Match": etag },
+    });
+    expect(res2.status).toBe(304);
+  });
+});
