@@ -11,14 +11,22 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/router.ts        Declarative router: types, enums, pattern matching, dispatch
   src/routes/auth.ts   /authorize, /auth/verify, passkey setup & authentication
   src/routes/io.ts     /o/entry/:pattern/:id shared entries, /o/:path egress, /i/:path ingress, /upload/:token
-  src/routes/marketplace.ts  Dev seed, token management, git endpoints
+  src/routes/marketplace.ts  Token management, git endpoints (composes query + git adapter)
+  src/routes/dev.ts    Dev-only seed routes (Auth.DEV gated, inert in production)
+  src/routes/pages.ts  Svelte SSR pages, /api/* JSON endpoints, WebSocket proxy
   src/session.ts       SessionDO: McpAgent, MCP protocol handler (per-session DO)
-  src/store.ts         StoreDO: per-user data storage (per-user DO, SQLite)
+  src/hive.ts          HiveDO: DO shell — RPC wrappers, URI resolution, federation, WebSocket
+  src/data.ts          Query engine, mutation engine (CRUD), cross-pattern search
+  src/evolution.ts     Schema evolution: CHANGE_TYPES declaration table, propose/apply/revert
+  src/credentials.ts   Passkey CRUD, access token validation
+  src/kernel.ts        Pre-mutation hooks, immutable fields, scope matching
+  src/schema.ts        DDL, migrations, kernel table declarations, system doc seeding
   src/passkey.ts       WebAuthn passkey registration + authentication
   src/transform.ts     Transform DSL evaluator for ingress field mapping
+  src/git.ts           Git protocol adapter (file tree → git pack, used by marketplace)
   src/constants.ts     Product identity (PRODUCT_NAME, URI_SCHEME, uri() helper)
   src/system-docs/     Markdown files with {{placeholder}} syntax, loaded at runtime
-  src/text.d.ts        Type declaration for .md text imports
+  src/pages/           Svelte components (SchemaViewer, HiveMap, LinkMap) + SSR entry points
   scripts/setup.sh     First-run setup: generates secret, deploys, opens passkey registration
 ```
 
@@ -31,8 +39,15 @@ Deployed to `https://your-worker.workers.dev/mcp`. Cross-surface data sharing pr
 ### Architecture
 
 Two Durable Objects:
-- **SessionDO** (`McpAgent`) — one per MCP session, handles protocol, proxies to store via RPC
-- **StoreDO** — one per user, holds all SQLite data. Keyed by `user:{userId}` (currently always `"owner"`)
+- **SessionDO** (`McpAgent`) — one per MCP session, handles protocol, proxies to hive via RPC
+- **HiveDO** — one per user, holds all SQLite data. Keyed by `user:{userId}` (currently always `"owner"`)
+
+HiveDO is a thin wiring shell. Domain logic lives in pure-function modules with `db`/context injected:
+- **`data.ts`** — query, mutate, search (DataContext)
+- **`evolution.ts`** — schema evolution via `CHANGE_TYPES` declaration table (EvolutionContext)
+- **`credentials.ts`** — passkey + token operations (db)
+- **`kernel.ts`** — pre-mutation hooks, immutable fields, scope matching
+- **`schema.ts`** — DDL, migrations, kernel table declarations, audit triggers
 
 ### Auth
 
@@ -81,7 +96,7 @@ Entry-level visibility via the `_shared` kernel pattern. Controlled through `pro
 
 ### Access tokens
 
-Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens`, `_marketplace_tokens`). Hierarchical scope matching via `scopeMatches()` in kernel.ts:
+Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens`, `_marketplace_tokens`). Hierarchical scope matching via `scopeMatches()` (kernel.ts, re-exported by credentials.ts):
 - `*` — full access (OAuth, session login, all reads/writes)
 - `read` — read any shared entry or output (matches `read:entry:axioms:7`)
 - `upload` — write via `/upload/{token}` (constraints JSON: `{target_pattern, target_id, target_facet, mode}`)
@@ -107,21 +122,23 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 ## Key conventions
 
 - The `agents` package bundles its own `@modelcontextprotocol/sdk`. Pin the top-level dep to match (currently 1.26.0) to avoid type conflicts.
-- McpAgent's base class has a `sql` tagged template property. Use `db` as the name for the raw `ctx.storage.sql` accessor in StoreDO.
+- McpAgent's base class has a `sql` tagged template property. Use `db` as the name for the raw `ctx.storage.sql` accessor in HiveDO.
 - The DO binding must be named `MCP_OBJECT` — the `McpAgent.serve()` method expects this.
 - `wrangler.toml` requires `compatibility_flags = ["nodejs_compat"]` for the agents package.
 - Kernel columns (`id`, `created_at`, `updated_at`, `archived_at`) are auto-provided on every pattern. They cannot be defined via `propose_change`.
 - Structure is resources, operations are tools. If it describes what the organism is, it's a resource. If it changes what the organism is or retrieves dynamic content, it's a tool.
 - Product name and URI scheme are defined in `src/constants.ts`. Import `PRODUCT_NAME`, `URI_SCHEME`, `uri()` from there — never hardcode `"mnemion://"` in source.
 - `@simplewebauthn/server` is lazy-imported in `routes/auth.ts` to avoid `tslib` resolution issues in the vitest/workerd test environment.
-- System docs live in `src/system-docs/*.md` with YAML frontmatter (`slug`, `title`). Placeholders (`{{PRODUCT_NAME}}`, `{{uri:path}}`) are resolved at runtime by `resolveDocPlaceholders()` in store.ts.
+- System docs live in `src/system-docs/*.md` with YAML frontmatter (`slug`, `title`). Placeholders (`{{PRODUCT_NAME}}`, `{{uri:path}}`) are resolved at runtime by `resolveDocPlaceholders()` in schema.ts.
 - `wrangler.toml` has a `[[rules]]` entry to import `.md` files as text modules.
 
 ## Design principle: code as schematic
 
 Structure code as declarative, scannable tables — not procedural chains. A reader should grasp the system's shape from the declarations alone, without tracing control flow. Enums for categories, typed records for configuration, implementation in focused single-purpose files.
 
-The route table in `index.ts` is the reference example: method, pattern, auth gate, and handler on one line per route. The full routing surface is visible in 15 lines.
+The route table in `index.ts` is the reference example: method, pattern, auth gate, and handler on one line per route. The full routing surface is visible in 15 lines. The `CHANGE_TYPES` table in `evolution.ts` follows the same pattern: validate, preview, apply per change type — the full schema evolution surface scannable in one table.
+
+Domain logic lives in pure-function modules with context injected. HiveDO builds context objects (`dataCtx()`, `evoCtx()`) and delegates. No God objects — each module owns one concern.
 
 ## Router architecture
 
@@ -134,11 +151,14 @@ Declarative dispatch table in `src/router.ts`. Routes are matched in declaration
 
 Route handlers are grouped by domain in `src/routes/`. OAuthProvider intercepts `/mcp`, `/token`, `/register` before the dispatch table runs.
 
-## Next milestone: Svelte frontend
+## Svelte frontend
 
-- **Keep the worker as the server** — no SvelteKit. The routing, auth, and data layers stay hand-built.
-- **Use Svelte as a component framework** for rendering pages (schema viewer, data browser, etc.)
-- First page: schema viewer.
+- **No SvelteKit** — Svelte as component framework only, worker serves pages.
+- Two Vite builds: server `.mjs` (SSR) + client `.client.txt` (text import via wrangler rules).
+- Session cookies (HMAC-SHA256) via `Auth.SESSION` gate for browser pages.
+- Pages: SchemaViewer (pattern browser + entry editor), HiveMap (force-directed pattern visualization), LinkMap (cross-pattern reference graph).
+- WebSocket live updates via Hibernatable API on HiveDO.
+- Test environment at `your-test-worker.workers.dev` (`[env.test]` in wrangler.toml, Auth.DEV mode).
 
 ## Development
 
