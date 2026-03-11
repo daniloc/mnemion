@@ -2,9 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 import { URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
-import { applyKernelRules, IMMUTABLE, type KernelContext } from "./kernel";
+import { IMMUTABLE } from "./kernel";
 import * as cred from "./credentials";
 import * as evo from "./evolution";
+import * as data from "./data";
 
 // === Types ===
 
@@ -34,29 +35,6 @@ export interface IndexFacetEntry {
 
 // === Constants ===
 
-// version is intentionally excluded — it may be a user field (e.g. semver on _plugins).
-// Kernel version handling is conditional per-table via hasKernelVersion().
-const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]);
-
-// === Guardrails ===
-
-const LIMITS = {
-  ENTRY_BYTES: 1_048_576,     // 1 MB per entry
-  QUERY_ROWS: 1_000,          // max rows a single query can return
-  BATCH_OPS: 100,             // max operations in a single batch mutate
-};
-
-function estimateRecordBytes(data: Record<string, unknown>): number {
-  let bytes = 0;
-  for (const v of Object.values(data)) {
-    if (typeof v === "string") bytes += v.length * 2;  // rough UTF-16 estimate
-    else if (typeof v === "number") bytes += 8;
-    else if (typeof v === "boolean") bytes += 4;
-    else if (v === null || v === undefined) bytes += 0;
-    else bytes += JSON.stringify(v).length * 2;
-  }
-  return bytes;
-}
 
 // === Hive: per-user data storage ===
 
@@ -193,90 +171,29 @@ export class HiveDO extends DurableObject {
     return rows.map((r: any) => r.name);
   }
 
-  // === Data operations ===
+  // === Data operations (delegated to data.ts) ===
+
+  private dataCtx(): data.DataContext {
+    return {
+      db: this.db,
+      patternExists: (name) => this.patternExists(name),
+      entryExists: (pattern, id) => this.entryExists(pattern, id),
+      hasKernelVersion: (name) => this.hasKernelVersion(name),
+      facetMeta: (pattern, facet) => {
+        const rows = this.db.exec(
+          "SELECT type FROM _fields WHERE object_name = ? AND name = ?", pattern, facet
+        ).toArray() as any[];
+        return rows.length ? { type: rows[0].type } : null;
+      },
+    };
+  }
 
   async query(patternName: string, filterJson: string, facets: string, sortField: string, limit: number, countOnly: boolean): Promise<string> {
-    if (!this.patternExists(patternName))
-      return this.errorJson(`Pattern "${patternName}" does not exist`);
-
-    // Count-only mode: return count without entries
-    if (countOnly) {
-      let countSql = `SELECT COUNT(*) as count FROM "${patternName}" WHERE archived_at IS NULL`;
-      const countBindings: (string | number)[] = [];
-      if (filterJson) {
-        const filters: string[] = JSON.parse(filterJson);
-        for (const expr of filters) {
-          const match = expr.match(/^(\w+)(=|!=|>|<|>=|<=|~)(.+)$/);
-          if (!match) return this.errorJson(`Invalid filter expression: ${expr}`);
-          const [, field, op, value] = match;
-          if (op === "~") {
-            countSql += ` AND "${field}" LIKE ?`;
-            countBindings.push(`%${value}%`);
-          } else {
-            countSql += ` AND "${field}" ${op} ?`;
-            countBindings.push(value);
-          }
-        }
-      }
-      try {
-        const r = this.db.exec(countSql, ...countBindings).one() as { count: number };
-        return JSON.stringify({ pattern: patternName, count: r.count }, null, 2);
-      } catch (err: any) {
-        return this.errorJson(`Query failed: ${err.message}`);
-      }
-    }
-
-    let sql = `SELECT`;
-
-    // Projection
-    if (facets) {
-      const requested = facets.split(",").map((f) => f.trim());
-      // Always include id
-      if (!requested.includes("id")) requested.unshift("id");
-      sql += ` ${requested.map((f) => `"${f}"`).join(", ")}`;
-    } else {
-      sql += ` *`;
-    }
-
-    sql += ` FROM "${patternName}" WHERE archived_at IS NULL`;
-
-    // Filters: facet=value, facet>value, facet<value, facet~text
-    const bindings: (string | number)[] = [];
-    if (filterJson) {
-      const filters: string[] = JSON.parse(filterJson);
-      for (const expr of filters) {
-        const match = expr.match(/^(\w+)(=|!=|>|<|>=|<=|~)(.+)$/);
-        if (!match) return this.errorJson(`Invalid filter expression: ${expr}`);
-        const [, field, op, value] = match;
-        if (op === "~") {
-          sql += ` AND "${field}" LIKE ?`;
-          bindings.push(`%${value}%`);
-        } else {
-          sql += ` AND "${field}" ${op} ?`;
-          bindings.push(value);
-        }
-      }
-    }
-
-    if (sortField) {
-      const desc = sortField.startsWith("-");
-      const col = desc ? sortField.slice(1) : sortField;
-      sql += ` ORDER BY "${col}" ${desc ? "DESC" : "ASC"}`;
-    }
-
-    const clampedLimit = Math.min(limit || 100, LIMITS.QUERY_ROWS);
-    sql += ` LIMIT ${clampedLimit}`;
-
-    try {
-      const rows = this.db.exec(sql, ...bindings).toArray();
-      return JSON.stringify({ pattern: patternName, entries: rows, count: rows.length }, null, 2);
-    } catch (err: any) {
-      return this.errorJson(`Query failed: ${err.message}`);
-    }
+    return data.query(this.dataCtx(), patternName, filterJson, facets, sortField, limit, countOnly);
   }
 
   async mutate(patternName: string, operation: string, dataJson: string): Promise<string> {
-    const result = this.executeMutate(patternName, operation, JSON.parse(dataJson));
+    const result = data.executeMutate(this.dataCtx(), patternName, operation, JSON.parse(dataJson));
     if (!result.error) this.broadcastChange([patternName]);
     return JSON.stringify(result, null, 2);
   }
@@ -284,24 +201,21 @@ export class HiveDO extends DurableObject {
   async batchMutate(operationsJson: string): Promise<string> {
     const operations = JSON.parse(operationsJson) as { pattern: string; operation: string; data: any }[];
 
-    if (operations.length > LIMITS.BATCH_OPS) {
-      return this.errorJson(`Batch too large: ${operations.length} operations exceeds limit of ${LIMITS.BATCH_OPS}`);
+    if (operations.length > data.LIMITS.BATCH_OPS) {
+      return this.errorJson(`Batch too large: ${operations.length} operations exceeds limit of ${data.LIMITS.BATCH_OPS}`);
     }
 
-    // Validate all operations before starting transaction
     for (const op of operations) {
-      if (!this.patternExists(op.pattern)) {
+      if (!this.patternExists(op.pattern))
         return this.errorJson(`Pattern "${op.pattern}" does not exist`);
-      }
     }
 
+    const ctx = this.dataCtx();
     const results: any[] = [];
     this.ctx.storage.transactionSync(() => {
       for (const op of operations) {
-        const result = this.executeMutate(op.pattern, op.operation, op.data);
-        if (result.error) {
-          throw new Error(result.message);
-        }
+        const result = data.executeMutate(ctx, op.pattern, op.operation, op.data);
+        if (result.error) throw new Error(result.message);
         results.push(result);
       }
     });
@@ -318,22 +232,17 @@ export class HiveDO extends DurableObject {
     ).toArray();
     if (consumed.length > 0) return this.errorJson("Upload token has already been used");
 
-    // Validate token with upload scope
     const accessToken = cred.findAccessToken(this.db, token);
     if (!accessToken) return this.errorJson("Invalid or expired upload token");
     if (!cred.scopeMatches(accessToken.scope, "upload")) return this.errorJson("Token does not have upload scope");
 
-    // Parse upload constraints
     const constraints = accessToken.constraints ? JSON.parse(accessToken.constraints) : null;
     if (!constraints) return this.errorJson("Upload token missing constraints");
 
-    // Check content size
     const contentBytes = new TextEncoder().encode(content).length;
-    if (contentBytes > LIMITS.ENTRY_BYTES) {
+    if (contentBytes > data.LIMITS.ENTRY_BYTES)
       return this.errorJson(`Content too large: ${Math.round(contentBytes / 1024)}KB exceeds the 1MB limit`);
-    }
 
-    // Write content to target
     try {
       if (constraints.mode === "append") {
         this.db.exec(
@@ -347,156 +256,28 @@ export class HiveDO extends DurableObject {
         );
       }
 
-      // Bump kernel version if applicable
       if (this.hasKernelVersion(constraints.target_pattern)) {
         try {
-          this.db.exec(
-            `UPDATE "${constraints.target_pattern}" SET version = version + 1 WHERE id = ?`,
-            constraints.target_id
-          );
+          this.db.exec(`UPDATE "${constraints.target_pattern}" SET version = version + 1 WHERE id = ?`, constraints.target_id);
         } catch { /* No version column — fine */ }
       }
     } catch (err: any) {
       return this.errorJson(`Upload write failed: ${err.message}`);
     }
 
-    // Mark token consumed
     cred.consumeToken(this.db, accessToken.id);
 
-    // Return the updated record
     const record = this.db.exec(
-      `SELECT * FROM "${constraints.target_pattern}" WHERE id = ?`,
-      constraints.target_id
+      `SELECT * FROM "${constraints.target_pattern}" WHERE id = ?`, constraints.target_id
     ).one();
 
     this.broadcastChange([constraints.target_pattern]);
 
     return JSON.stringify({
-      uploaded: true,
-      bytes: contentBytes,
+      uploaded: true, bytes: contentBytes,
       target: { pattern: constraints.target_pattern, id: constraints.target_id, facet: constraints.target_facet },
-      mode: constraints.mode,
-      entry: record,
+      mode: constraints.mode, entry: record,
     }, null, 2);
-  }
-
-  private kernelContext(): KernelContext {
-    return {
-      patternExists: (name) => this.patternExists(name),
-      facetMeta: (pattern, facet) => {
-        const rows = this.db.exec(
-          "SELECT type FROM _fields WHERE object_name = ? AND name = ?", pattern, facet
-        ).toArray() as any[];
-        return rows.length ? { type: rows[0].type } : null;
-      },
-      entryExists: (pattern, id) => this.entryExists(pattern, id),
-    };
-  }
-
-  private executeMutate(patternName: string, operation: string, data: any): any {
-    if (!this.patternExists(patternName))
-      return { error: true, message: `Pattern "${patternName}" does not exist` };
-
-    // Apply kernel pattern rules (immutable fields, create hooks)
-    const ruled = applyKernelRules(patternName, operation, data, this.kernelContext());
-    if ('error' in ruled) return ruled;
-    data = ruled;
-
-    // Entry size guard
-    if (operation === "create" || operation === "update") {
-      const size = estimateRecordBytes(data);
-      if (size > LIMITS.ENTRY_BYTES) {
-        return { error: true, message: `Entry too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
-      }
-    }
-
-    try {
-      switch (operation) {
-        case "create": {
-          const fields = Object.keys(data).filter((k) => !KERNEL_COLUMNS.has(k));
-          const cols = fields.map((f) => `"${f}"`).join(", ");
-          const placeholders = fields.map(() => "?").join(", ");
-          const values = fields.map((f) => data[f]);
-
-          this.db.exec(
-            `INSERT INTO "${patternName}" (${cols}) VALUES (${placeholders})`,
-            ...values
-          );
-
-          const row = this.db.exec(
-            `SELECT * FROM "${patternName}" WHERE id = last_insert_rowid()`
-          ).one();
-
-          return { operation: "create", pattern: patternName, entry: row };
-        }
-
-        case "update": {
-          if (!data.id) return { error: true, message: "id is required for update" };
-          const kernelVersion = this.hasKernelVersion(patternName);
-
-          // For kernel version tables: strip version from SET (it auto-increments).
-          // For user version tables: include version in SET like any other field.
-          const stripCols = ["id", "created_at", "archived_at"];
-          if (kernelVersion) stripCols.push("version");
-          const fields = Object.keys(data).filter((k) => !stripCols.includes(k));
-          if (fields.length === 0) return { error: true, message: "No facets to update" };
-
-          const sets = fields.map((f) => `"${f}" = ?`).join(", ");
-          const values = fields.map((f) => data[f]);
-
-          if (kernelVersion) {
-            // Kernel version: auto-increment + optional optimistic lock
-            let where = `id = ? AND archived_at IS NULL`;
-            values.push(data.id);
-            if (data.version != null) {
-              where += ` AND version = ?`;
-              values.push(data.version);
-            }
-
-            this.db.exec(
-              `UPDATE "${patternName}" SET ${sets}, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
-              ...values
-            );
-
-            if (data.version != null) {
-              const changes = this.db.exec("SELECT changes() as c").one() as { c: number };
-              if (changes.c === 0) {
-                return { error: true, message: `Version conflict: entry ${data.id} in "${patternName}" has been modified. Re-read and retry.` };
-              }
-            }
-          } else {
-            // No kernel version: simple update, version is a user field included in SET
-            values.push(data.id);
-            this.db.exec(
-              `UPDATE "${patternName}" SET ${sets}, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
-              ...values
-            );
-          }
-
-          const row = this.db.exec(
-            `SELECT * FROM "${patternName}" WHERE id = ?`,
-            data.id
-          ).one();
-
-          return { operation: "update", pattern: patternName, entry: row };
-        }
-
-        case "archive": {
-          if (!data.id) return { error: true, message: "id is required for archive" };
-          this.db.exec(
-            `UPDATE "${patternName}" SET archived_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
-            data.id
-          );
-
-          return { operation: "archive", pattern: patternName, id: data.id };
-        }
-
-        default:
-          return { error: true, message: `Unknown operation: ${operation}. Use create, update, or archive.` };
-      }
-    } catch (err: any) {
-      return { error: true, message: `Mutate failed: ${err.message}` };
-    }
   }
 
   // === URI resolution ===
@@ -601,55 +382,8 @@ export class HiveDO extends DurableObject {
     }
   }
 
-  // === Cross-object search ===
-
-  async search(term: string, objectsJson: string, limit_: number): Promise<string> {
-    const limit = Math.min(limit_ || 20, LIMITS.QUERY_ROWS);
-    const targetObjects = objectsJson
-      ? JSON.parse(objectsJson) as string[]
-      : (this.db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[]).map((r: any) => r.name);
-
-    const results: { pattern: string; entry: any; matched_facets: string[] }[] = [];
-
-    for (const objName of targetObjects) {
-      if (!this.patternExists(objName)) continue;
-
-      // Get text fields from normalized schema
-      const textFields = (this.db.exec(
-        "SELECT name FROM _fields WHERE object_name = ? AND type = 'text' ORDER BY id",
-        objName
-      ).toArray() as any[]).map((r: any) => r.name as string);
-      if (textFields.length === 0) continue;
-
-      const conditions = textFields.map((f) => `"${f}" LIKE ?`).join(" OR ");
-      const bindings = textFields.map(() => `%${term}%`);
-
-      try {
-        const rows = this.db.exec(
-          `SELECT * FROM "${objName}" WHERE archived_at IS NULL AND (${conditions}) LIMIT ?`,
-          ...bindings,
-          limit
-        ).toArray();
-
-        for (const row of rows) {
-          const matched = textFields.filter((f) => {
-            const val = (row as any)[f];
-            return typeof val === "string" && val.toLowerCase().includes(term.toLowerCase());
-          });
-          results.push({ pattern: objName, entry: row, matched_facets: matched });
-        }
-      } catch {
-        // Skip objects that error (e.g., table doesn't exist yet)
-      }
-
-      if (results.length >= limit) break;
-    }
-
-    return JSON.stringify({
-      term,
-      results: results.slice(0, limit),
-      count: Math.min(results.length, limit),
-    }, null, 2);
+  async search(term: string, objectsJson: string, limit: number): Promise<string> {
+    return data.search(this.dataCtx(), term, objectsJson, limit);
   }
 
   // === Mutation log ===
@@ -828,26 +562,26 @@ export class HiveDO extends DurableObject {
     if (rows.length === 0) return this.errorJson("No input endpoint for this path");
 
     const input = rows[0];
-    let data: Record<string, unknown>;
+    let entryData: Record<string, unknown>;
 
     if (input.facet_mapping) {
       const mapping = JSON.parse(input.facet_mapping) as Record<string, string>;
       let parsedBody: unknown = null;
       try { parsedBody = JSON.parse(body); } catch { /* not JSON */ }
 
-      data = evaluateMapping(mapping, {
+      entryData = evaluateMapping(mapping, {
         body: parsedBody,
         rawBody: body,
         headers: JSON.parse(headersJson),
         query: JSON.parse(queryJson),
       });
     } else if (input.body_facet) {
-      data = { [input.body_facet]: body };
+      entryData = { [input.body_facet]: body };
     } else {
-      data = { body };
+      entryData = { body };
     }
 
-    const result = this.executeMutate(input.target_pattern, "create", data);
+    const result = data.executeMutate(this.dataCtx(), input.target_pattern, "create", entryData);
     if (!result.error) this.broadcastChange([input.target_pattern]);
     return JSON.stringify(result, null, 2);
   }
