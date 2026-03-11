@@ -1,11 +1,11 @@
-import type { StoreDO } from "./store";
+import type { HiveDO } from "./hive";
 import { PRODUCT_NAME } from "./constants";
 
 // === Types ===
 
 export interface Env {
   OAUTH_KV: KVNamespace;
-  MNEMION_STORE: DurableObjectNamespace;
+  MNEMION_HIVE: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace;
   MNEMION_SECRET: string;
 }
@@ -29,7 +29,7 @@ export interface RouteContext {
   url: URL;
   env: Env;
   params: Record<string, string>;
-  store: DurableObjectStub<StoreDO>;
+  hive: DurableObjectStub<HiveDO>;
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<Response>;
@@ -167,10 +167,10 @@ export function createRouter(routes: Route[]) {
       }
 
       // Build context
-      const storeId = env.MNEMION_STORE.idFromName("user:owner");
-      const store = env.MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+      const hiveId = env.MNEMION_HIVE.idFromName("user:owner");
+      const hive = env.MNEMION_HIVE.get(hiveId) as DurableObjectStub<HiveDO>;
 
-      return route.handler({ request, url, env, params, store });
+      return route.handler({ request, url, env, params, hive });
     }
 
     return new Response("Not found", { status: 404 });

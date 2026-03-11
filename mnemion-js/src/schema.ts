@@ -1,7 +1,7 @@
 // Database initialization
 //
 // Table definitions, migrations, kernel pattern registration, and system doc seeding.
-// Called once per StoreDO construction via blockConcurrencyWhile.
+// Called once per HiveDO construction via blockConcurrencyWhile.
 //
 // Kernel tables are defined declaratively: DDL + description + facets co-located.
 // Internal tables (not exposed to agents) are plain DDL.

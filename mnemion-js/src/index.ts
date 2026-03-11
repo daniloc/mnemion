@@ -1,6 +1,6 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { SessionDO } from "./session";
-import { StoreDO } from "./store";
+import { HiveDO } from "./hive";
 import { Method, Auth, createRouter, type Route, type Env } from "./router";
 
 // Auth
@@ -13,7 +13,7 @@ import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/mark
 import { schemaPage, queryIndex, queryEntries, mutateEntry, liveSocket } from "./routes/pages";
 
 // Re-export DO classes for wrangler
-export { SessionDO, StoreDO };
+export { SessionDO, HiveDO };
 
 // === Route table ===
 
@@ -67,8 +67,8 @@ export default new OAuthProvider({
   async resolveExternalToken({ token, env }) {
     if (!/^[a-f0-9]{32}$/.test(token)) return null;
 
-    const storeId = (env as any).MNEMION_STORE.idFromName("user:owner");
-    const store = (env as any).MNEMION_STORE.get(storeId) as DurableObjectStub<StoreDO>;
+    const storeId = (env as any).MNEMION_HIVE.idFromName("user:owner");
+    const store = (env as any).MNEMION_HIVE.get(storeId) as DurableObjectStub<HiveDO>;
     const valid = await store.validateAuthCode(token);
     if (!valid) return null;
 

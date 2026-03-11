@@ -6,7 +6,7 @@ import { renderSchemaViewer } from "../../dist/server/entry-server.mjs";
 import clientScript from "../../dist/client/entry-client.client.txt";
 
 export const schemaPage: RouteHandler = async (ctx) => {
-  const raw = await ctx.store.getIndex();
+  const raw = await ctx.hive.getIndex();
   const index = JSON.parse(raw);
 
   const html = renderSchemaViewer(
@@ -24,14 +24,14 @@ export const schemaPage: RouteHandler = async (ctx) => {
 };
 
 export const queryIndex: RouteHandler = async (ctx) => {
-  const raw = await ctx.store.getIndex();
+  const raw = await ctx.hive.getIndex();
   return new Response(raw, {
     headers: { "Content-Type": "application/json" },
   });
 };
 
 export const queryEntries: RouteHandler = async (ctx) => {
-  const result = await ctx.store.query(
+  const result = await ctx.hive.query(
     ctx.params.pattern, "", "", "-updated_at", 100, false
   );
   return new Response(result, {
@@ -48,7 +48,7 @@ export const mutateEntry: RouteHandler = async (ctx) => {
       headers: { "Content-Type": "application/json" },
     });
   }
-  const result = await ctx.store.mutate(ctx.params.pattern, operation, JSON.stringify(data));
+  const result = await ctx.hive.mutate(ctx.params.pattern, operation, JSON.stringify(data));
   return new Response(result, {
     headers: { "Content-Type": "application/json" },
   });
@@ -59,5 +59,5 @@ export const liveSocket: RouteHandler = async (ctx) => {
     return new Response("Expected WebSocket", { status: 426 });
   }
   // WebSocket upgrades must go through fetch(), not RPC
-  return ctx.store.fetch(ctx.request);
+  return ctx.hive.fetch(ctx.request);
 };

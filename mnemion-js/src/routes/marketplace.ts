@@ -6,7 +6,7 @@ import { PRODUCT_NAME, URI_SCHEME } from "../constants";
 // === Dev-only: seed test marketplace data ===
 
 export const seedMarketplace: RouteHandler = async (ctx) => {
-  let result = await ctx.store.proposeChange("Create _plugins pattern", JSON.stringify({
+  let result = await ctx.hive.proposeChange("Create _plugins pattern", JSON.stringify({
     type: "create_pattern",
     pattern_name: "_plugins",
     pattern_description: "Plugin packages for the marketplace",
@@ -23,10 +23,10 @@ export const seedMarketplace: RouteHandler = async (ctx) => {
   }));
   let parsed = JSON.parse(result);
   if (parsed.change_id) {
-    await ctx.store.applyChange(parsed.change_id);
+    await ctx.hive.applyChange(parsed.change_id);
   }
 
-  result = await ctx.store.proposeChange("Create _skills pattern", JSON.stringify({
+  result = await ctx.hive.proposeChange("Create _skills pattern", JSON.stringify({
     type: "create_pattern",
     pattern_name: "_skills",
     pattern_description: "Skills within plugins",
@@ -41,10 +41,10 @@ export const seedMarketplace: RouteHandler = async (ctx) => {
   }));
   parsed = JSON.parse(result);
   if (parsed.change_id) {
-    await ctx.store.applyChange(parsed.change_id);
+    await ctx.hive.applyChange(parsed.change_id);
   }
 
-  result = await ctx.store.mutate("_plugins", "create", JSON.stringify({
+  result = await ctx.hive.mutate("_plugins", "create", JSON.stringify({
     name: `${URI_SCHEME}-test`,
     description: "Test plugin for marketplace validation",
     version: "0.1.0",
@@ -52,7 +52,7 @@ export const seedMarketplace: RouteHandler = async (ctx) => {
   }));
   const plugin = JSON.parse(result);
 
-  await ctx.store.mutate("_skills", "create", JSON.stringify({
+  await ctx.hive.mutate("_skills", "create", JSON.stringify({
     plugin_id: plugin.entry.id,
     name: "hello-world",
     description: "A test skill that greets the user",
@@ -69,7 +69,7 @@ export const seedMarketplace: RouteHandler = async (ctx) => {
 export const marketplaceToken: RouteHandler = async (ctx) => {
   if (ctx.request.method === "POST") {
     const body = await ctx.request.json().catch(() => ({})) as { name?: string; scope?: string[] };
-    const result = await ctx.store.mutate("_marketplace_tokens", "create", JSON.stringify({
+    const result = await ctx.hive.mutate("_marketplace_tokens", "create", JSON.stringify({
       name: body.name || "default",
       scope: body.scope ? JSON.stringify(body.scope) : null,
     }));
@@ -85,7 +85,7 @@ export const marketplaceToken: RouteHandler = async (ctx) => {
   }
 
   // GET: list all active tokens
-  const result = await ctx.store.query("_marketplace_tokens", "", "id,name,token,scope,created_at", "-created_at", 100, false);
+  const result = await ctx.hive.query("_marketplace_tokens", "", "id,name,token,scope,created_at", "-created_at", 100, false);
   return Response.json(JSON.parse(result));
 };
 
@@ -96,9 +96,9 @@ export const marketplaceGit: RouteHandler = async (ctx) => {
 
   let raw: string;
   if (isPublic) {
-    raw = await ctx.store.getMarketplaceDataPublic();
+    raw = await ctx.hive.getMarketplaceDataPublic();
   } else if (!ctx.env.MNEMION_SECRET) {
-    raw = await ctx.store.getMarketplaceDataPublic();
+    raw = await ctx.hive.getMarketplaceDataPublic();
   } else {
     const password = extractBasicPassword(ctx.request);
     if (!password) {
@@ -107,7 +107,7 @@ export const marketplaceGit: RouteHandler = async (ctx) => {
         headers: { "WWW-Authenticate": `Basic realm="${PRODUCT_NAME}"` },
       });
     }
-    raw = await ctx.store.getMarketplaceDataForToken(password);
+    raw = await ctx.hive.getMarketplaceDataForToken(password);
     const check = JSON.parse(raw);
     if (check.error) {
       return new Response("Invalid token", {

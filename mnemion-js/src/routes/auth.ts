@@ -93,7 +93,7 @@ export const authorize: RouteHandler = async (ctx) => {
   );
 
   // Check if a passkey is registered — show passkey-first page if so
-  const hasPasskey = await ctx.store.hasPasskey();
+  const hasPasskey = await ctx.hive.hasPasskey();
   const pk = await passkey();
   const html = hasPasskey
     ? pk.passkeyLoginPage(authStateId)
@@ -113,7 +113,7 @@ export const authVerify: RouteHandler = async (ctx) => {
   if (ctx.env.MNEMION_SECRET && secret === ctx.env.MNEMION_SECRET) {
     authenticated = true;
   } else {
-    authenticated = await ctx.store.consumeAuthCode(secret);
+    authenticated = await ctx.hive.consumeAuthCode(secret);
   }
 
   if (!authenticated) {
@@ -165,7 +165,7 @@ export const setupComplete: RouteHandler = async (ctx) => {
 
   try {
     const stored = await (await passkey()).completeRegistration(ctx.request, credential, challenge);
-    await ctx.store.storePasskey(stored.credential_id, stored.public_key, stored.counter, stored.transports);
+    await ctx.hive.storePasskey(stored.credential_id, stored.public_key, stored.counter, stored.transports);
     return Response.json({ ok: true });
   } catch (err: any) {
     return Response.json({ error: err.message }, { status: 400 });
@@ -175,7 +175,7 @@ export const setupComplete: RouteHandler = async (ctx) => {
 export const passkeyBegin: RouteHandler = async (ctx) => {
   const { authStateId } = (await ctx.request.json()) as { authStateId: string };
 
-  const storedPasskey = await ctx.store.getPasskey();
+  const storedPasskey = await ctx.hive.getPasskey();
   if (!storedPasskey) {
     return Response.json({ error: "No passkey registered" }, { status: 404 });
   }
@@ -194,7 +194,7 @@ export const passkeyComplete: RouteHandler = async (ctx) => {
   }
   await ctx.env.OAUTH_KV.delete(`passkey_challenge:${authStateId}`);
 
-  const storedPasskey = await ctx.store.getPasskey();
+  const storedPasskey = await ctx.hive.getPasskey();
   if (!storedPasskey) {
     return Response.json({ error: "No passkey registered" }, { status: 404 });
   }
@@ -205,7 +205,7 @@ export const passkeyComplete: RouteHandler = async (ctx) => {
       return Response.json({ error: "Passkey verification failed" }, { status: 401 });
     }
 
-    await ctx.store.updatePasskeyCounter(newCounter);
+    await ctx.hive.updatePasskeyCounter(newCounter);
 
     const oauthReq = await ctx.env.OAUTH_KV.get(`auth_state:${authStateId}`, { type: "json" }) as any;
     if (!oauthReq) {
@@ -321,14 +321,14 @@ function sessionLoginPage(returnTo: string, hasPasskey: boolean): string {
 
 export const loginPage: RouteHandler = async (ctx) => {
   const returnTo = ctx.url.searchParams.get("return") || "/";
-  const hasPasskey = await ctx.store.hasPasskey();
+  const hasPasskey = await ctx.hive.hasPasskey();
   return new Response(sessionLoginPage(returnTo, hasPasskey), {
     headers: { "Content-Type": "text/html" },
   });
 };
 
 export const loginBegin: RouteHandler = async (ctx) => {
-  const storedPasskey = await ctx.store.getPasskey();
+  const storedPasskey = await ctx.hive.getPasskey();
   if (!storedPasskey) {
     return Response.json({ error: "No passkey registered" }, { status: 404 });
   }
@@ -347,7 +347,7 @@ export const loginComplete: RouteHandler = async (ctx) => {
   }
   await ctx.env.OAUTH_KV.delete("passkey_challenge:session");
 
-  const storedPasskey = await ctx.store.getPasskey();
+  const storedPasskey = await ctx.hive.getPasskey();
   if (!storedPasskey) {
     return Response.json({ error: "No passkey registered" }, { status: 404 });
   }
@@ -357,7 +357,7 @@ export const loginComplete: RouteHandler = async (ctx) => {
     if (!verified) {
       return Response.json({ error: "Passkey verification failed" }, { status: 401 });
     }
-    await ctx.store.updatePasskeyCounter(newCounter);
+    await ctx.hive.updatePasskeyCounter(newCounter);
 
     const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host);
     const safePath = returnTo.startsWith("/") ? returnTo : "/";
@@ -379,7 +379,7 @@ export const loginVerify: RouteHandler = async (ctx) => {
   if (ctx.env.MNEMION_SECRET && secret === ctx.env.MNEMION_SECRET) {
     authenticated = true;
   } else {
-    authenticated = await ctx.store.consumeAuthCode(secret);
+    authenticated = await ctx.hive.consumeAuthCode(secret);
   }
 
   if (!authenticated) {

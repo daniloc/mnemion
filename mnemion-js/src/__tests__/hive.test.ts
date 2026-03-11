@@ -1,15 +1,15 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
-import type { StoreDO } from "../store";
+import type { HiveDO } from "../hive";
 
-function getStore(): DurableObjectStub<StoreDO> {
-  const id = env.MNEMION_STORE.idFromName("user:test");
-  return env.MNEMION_STORE.get(id);
+function getStore(): DurableObjectStub<HiveDO> {
+  const id = env.MNEMION_HIVE.idFromName("user:test");
+  return env.MNEMION_HIVE.get(id);
 }
 
 // Helper: create a pattern via propose + apply
 async function createPattern(
-  store: DurableObjectStub<StoreDO>,
+  store: DurableObjectStub<HiveDO>,
   name: string,
   facets: { name: string; type: string; required?: boolean; links?: { pattern: string; facet?: string } }[],
   description?: string
@@ -30,7 +30,7 @@ async function createPattern(
 }
 
 // Helper: create an entry
-async function createEntry(store: DurableObjectStub<StoreDO>, pattern: string, data: Record<string, unknown>) {
+async function createEntry(store: DurableObjectStub<HiveDO>, pattern: string, data: Record<string, unknown>) {
   const result = await store.mutate(pattern, "create", JSON.stringify(data));
   return JSON.parse(result);
 }

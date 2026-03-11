@@ -77,9 +77,9 @@ function estimateRecordBytes(data: Record<string, unknown>): number {
   return bytes;
 }
 
-// === MnemionStore: per-user data storage ===
+// === Hive: per-user data storage ===
 
-export class StoreDO extends DurableObject {
+export class HiveDO extends DurableObject {
   private get db() {
     return this.ctx.storage.sql;
   }

@@ -1,13 +1,13 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { StoreDO } from "./store";
+import type { HiveDO } from "./hive";
 import { PRODUCT_NAME, URI_SCHEME, uri } from "./constants";
 
 // === Types ===
 
 interface Env {
-  MNEMION_STORE: DurableObjectNamespace<StoreDO>;
+  MNEMION_HIVE: DurableObjectNamespace<HiveDO>;
 }
 
 interface AuthProps {
@@ -15,7 +15,7 @@ interface AuthProps {
   [key: string]: unknown;
 }
 
-// === SessionDO: MCP protocol handler, proxies data to StoreDO ===
+// === SessionDO: MCP protocol handler, proxies data to HiveDO ===
 
 export class SessionDO extends McpAgent<Env, unknown, AuthProps> {
   server = new McpServer(
@@ -35,14 +35,14 @@ Key capabilities agents commonly miss:
 
   private confirmed = new Set<string>();
 
-  private getStore(): DurableObjectStub<StoreDO> {
+  private getHive(): DurableObjectStub<HiveDO> {
     const userId = this.props?.userId ?? "anonymous";
-    const id = this.env.MNEMION_STORE.idFromName(`user:${userId}`);
-    return this.env.MNEMION_STORE.get(id);
+    const id = this.env.MNEMION_HIVE.idFromName(`user:${userId}`);
+    return this.env.MNEMION_HIVE.get(id);
   }
 
   async init() {
-    const store = this.getStore();
+    const hive = this.getHive();
 
     // === Resources (stable, cacheable, subscribable) ===
 
@@ -51,7 +51,7 @@ Key capabilities agents commonly miss:
       uri("index"),
       { description: "Master index. Complete orientation to what exists and what matters.", mimeType: "application/json" },
       async (u) => {
-        const result = await store.getIndex();
+        const result = await hive.getIndex();
         return {
           contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
         };
@@ -62,7 +62,7 @@ Key capabilities agents commonly miss:
       "schema",
       new ResourceTemplate(uri("schema/{pattern_name}"), {
         list: async () => {
-          const names = await store.listPatterns();
+          const names = await hive.listPatterns();
           return {
             resources: names.map((name) => ({
               uri: uri(`schema/${name}`),
@@ -75,7 +75,7 @@ Key capabilities agents commonly miss:
       }),
       { description: "Facet definitions for a pattern", mimeType: "application/json" },
       async (u, { pattern_name }) => {
-        const result = await store.getSchema(pattern_name as string);
+        const result = await hive.getSchema(pattern_name as string);
         const parsed = JSON.parse(result);
         if (parsed.error) {
           throw new Error(parsed.message);
@@ -91,7 +91,7 @@ Key capabilities agents commonly miss:
       uri("history"),
       { description: "Recent schema evolution history", mimeType: "application/json" },
       async (u) => {
-        const result = await store.getHistory(20);
+        const result = await hive.getHistory(20);
         return {
           contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
         };
@@ -105,7 +105,7 @@ Key capabilities agents commonly miss:
       }),
       { description: "Individual entry by pattern and ID", mimeType: "application/json" },
       async (u, { pattern, id }) => {
-        const result = await store.getEntry(pattern as string, Number(id));
+        const result = await hive.getEntry(pattern as string, Number(id));
         const parsed = JSON.parse(result);
         if (parsed.error) {
           throw new Error(parsed.message);
@@ -139,7 +139,7 @@ Valid URIs:
         uri: z.string().describe(`A ${URI_SCHEME}:// URI to resolve`),
       },
       async ({ uri: resolveUri }) => {
-        const result = await store.resolve(resolveUri);
+        const result = await hive.resolve(resolveUri);
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {
@@ -180,7 +180,7 @@ Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 6
         }),
       },
       async ({ description, change }) => {
-        const result = await store.proposeChange(description, JSON.stringify(change));
+        const result = await hive.proposeChange(description, JSON.stringify(change));
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {
@@ -223,7 +223,7 @@ For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (
           }
           this.confirmed.delete(confirmKey);
 
-          const result = await store.revertChange(revert_history_id);
+          const result = await hive.revertChange(revert_history_id);
           const parsed = JSON.parse(result);
           if (parsed.error) {
             return {
@@ -244,7 +244,7 @@ For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (
           };
         }
 
-        const result = await store.applyChange(change_id);
+        const result = await hive.applyChange(change_id);
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {
@@ -285,7 +285,7 @@ For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (
         count_only: z.boolean().optional().describe("If true, return only the count matching the filters, not the entries"),
       },
       async ({ pattern, filter, facets, sort, limit, count_only }) => {
-        const result = await store.query(
+        const result = await hive.query(
           pattern,
           filter ? JSON.stringify(filter) : "",
           facets ?? "",
@@ -315,7 +315,7 @@ For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (
         limit: z.number().optional().describe("Max total results (default: 20)"),
       },
       async ({ term, patterns, limit }) => {
-        const result = await store.search(
+        const result = await hive.search(
           term,
           patterns ? JSON.stringify(patterns) : "",
           limit ?? 20
@@ -371,7 +371,7 @@ Entries limited to ~1 MB each.`,
               content: [{ type: "text" as const, text: "For batch operations, data must be an array of {pattern, operation, data} items." }],
             };
           }
-          const result = await store.batchMutate(JSON.stringify(batchData));
+          const result = await hive.batchMutate(JSON.stringify(batchData));
           const parsed = JSON.parse(result);
           if (parsed.error) {
             return {
@@ -419,7 +419,7 @@ Entries limited to ~1 MB each.`,
           this.confirmed.delete(confirmKey);
         }
 
-        const result = await store.mutate(pattern, operation, JSON.stringify(singleData));
+        const result = await hive.mutate(pattern, operation, JSON.stringify(singleData));
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {
