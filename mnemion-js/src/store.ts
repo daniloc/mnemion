@@ -1,15 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { evaluateMapping } from "./transform";
-
-// System docs — imported as raw text, placeholders resolved at load time
-import toolsRaw from "./system-docs/tools.md";
-import schemaEvolutionRaw from "./system-docs/schema-evolution.md";
-import skillsRaw from "./system-docs/skills.md";
-import conventionsRaw from "./system-docs/conventions.md";
-import indexGuideRaw from "./system-docs/index-guide.md";
-import remoteAccessRaw from "./system-docs/remote-access.md";
-import httpIoRaw from "./system-docs/http-io.md";
+import { initializeSchema, ensureAuditTriggers } from "./schema";
+import { applyKernelRules, type KernelContext } from "./kernel";
 
 // === Types ===
 
@@ -84,34 +77,6 @@ function estimateRecordBytes(data: Record<string, unknown>): number {
   return bytes;
 }
 
-// === System docs: loaded from markdown files ===
-
-/** Resolve {{placeholder}} syntax in system doc markdown. */
-function resolveDocPlaceholders(raw: string): string {
-  return raw
-    .replace(/\{\{PRODUCT_NAME\}\}/g, PRODUCT_NAME)
-    .replace(/\{\{URI_SCHEME\}\}/g, URI_SCHEME)
-    .replace(/\{\{URI_PREFIX\}\}/g, URI_PREFIX)
-    .replace(/\{\{uri:(.*?)\}\}/g, (_, path) => uri(path));
-}
-
-/** Parse frontmatter (slug, title) and body from a markdown string. */
-function parseDocFile(raw: string): { slug: string; title: string; content: string } {
-  const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (!fmMatch) throw new Error("System doc missing frontmatter");
-  const fm = fmMatch[1];
-  const body = resolveDocPlaceholders(fmMatch[2].trimEnd());
-  const slug = fm.match(/^slug:\s*(.+)$/m)?.[1]?.trim() ?? "";
-  const title = fm.match(/^title:\s*"?([^"\n]+)"?$/m)?.[1]?.trim() ?? "";
-  return { slug, title, content: body };
-}
-
-const SYSTEM_DOCS_SEED = [
-  toolsRaw, schemaEvolutionRaw, skillsRaw, conventionsRaw,
-  indexGuideRaw, remoteAccessRaw, httpIoRaw,
-].map(parseDocFile);
-
-
 // === MnemionStore: per-user data storage ===
 
 export class StoreDO extends DurableObject {
@@ -122,361 +87,8 @@ export class StoreDO extends DurableObject {
   constructor(ctx: DurableObjectState, env: any) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      this.ensureTables();
+      initializeSchema(this.db);
     });
-  }
-
-  private ensureTables() {
-    // === Normalized schema tables (replacing _index JSON blob) ===
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _objects (
-      name TEXT PRIMARY KEY,
-      description TEXT NOT NULL DEFAULT ''
-    )`);
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _fields (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      object_name TEXT NOT NULL REFERENCES _objects(name),
-      name TEXT NOT NULL,
-      type TEXT NOT NULL,
-      required INTEGER NOT NULL DEFAULT 0,
-      default_value TEXT,
-      references_object TEXT,
-      UNIQUE(object_name, name)
-    )`);
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _conventions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      text TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`);
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _meta (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      version INTEGER NOT NULL DEFAULT 0,
-      guidance TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`);
-
-    // === Ensure meta row exists (fresh install) ===
-
-    const metaRows = this.db.exec("SELECT id FROM _meta WHERE id = 1").toArray();
-    if (metaRows.length === 0) {
-      this.db.exec(
-        "INSERT INTO _meta (id, version, guidance) VALUES (1, 0, ?)",
-        `This is a new ${PRODUCT_NAME} instance. No objects exist yet. Create what the work demands.`
-      );
-    }
-
-    // One-time rename fixup: replace stale "Cambium" references in stored data
-    this.db.exec(
-      "UPDATE _meta SET guidance = ? WHERE id = 1 AND guidance LIKE '%Cambium%'",
-      `${PRODUCT_NAME} is active. Read ${uri("index")} for orientation, then query and mutate to work with data.`
-    );
-    this.db.exec(
-      "UPDATE _objects SET description = REPLACE(description, 'Cambium', ?) WHERE description LIKE '%Cambium%'",
-      PRODUCT_NAME
-    );
-
-    // === Other kernel tables ===
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _schema_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      description TEXT NOT NULL,
-      change_type TEXT NOT NULL,
-      change_detail TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`);
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _pending_changes (
-      id TEXT PRIMARY KEY,
-      description TEXT NOT NULL,
-      change_spec TEXT NOT NULL,
-      preview_index TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`);
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS "_marketplace_tokens" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "name" TEXT NOT NULL,
-      "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
-      "scope" TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT
-    )`);
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _passkeys (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      credential_id TEXT NOT NULL,
-      public_key TEXT NOT NULL,
-      counter INTEGER NOT NULL DEFAULT 0,
-      transports TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`);
-
-    // === HTTP I/O endpoints ===
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS "_outputs" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "path" TEXT NOT NULL,
-      "content" TEXT NOT NULL,
-      "mime_type" TEXT NOT NULL DEFAULT 'text/plain',
-      "visibility" TEXT NOT NULL DEFAULT 'public',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT,
-      version INTEGER NOT NULL DEFAULT 0
-    )`);
-    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "_outputs_path_active" ON "_outputs" ("path") WHERE archived_at IS NULL`);
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS "_inputs" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "path" TEXT NOT NULL,
-      "target_pattern" TEXT NOT NULL,
-      "body_facet" TEXT,
-      "facet_mapping" TEXT,
-      "visibility" TEXT NOT NULL DEFAULT 'public',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT,
-      version INTEGER NOT NULL DEFAULT 0
-    )`);
-    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "_inputs_path_active" ON "_inputs" ("path") WHERE archived_at IS NULL`);
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS "_system_docs" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "slug" TEXT NOT NULL UNIQUE,
-      "title" TEXT NOT NULL,
-      "content" TEXT,
-      "default_content" TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`);
-
-    // Seed system docs (insert new, update default_content on existing)
-    for (const doc of SYSTEM_DOCS_SEED) {
-      const existing = this.db.exec(
-        `SELECT id, default_content FROM "_system_docs" WHERE slug = ?`, doc.slug
-      ).toArray() as any[];
-      if (existing.length === 0) {
-        this.db.exec(
-          `INSERT INTO "_system_docs" (slug, title, content, default_content) VALUES (?, ?, ?, ?)`,
-          doc.slug, doc.title, doc.content, doc.content
-        );
-      } else if (existing[0].default_content !== doc.content) {
-        // Source changed — update default_content (and content if it was still on the old default)
-        const wasDefault = existing[0].default_content === (this.db.exec(
-          `SELECT content FROM "_system_docs" WHERE id = ?`, existing[0].id
-        ).one() as any)?.content;
-        this.db.exec(
-          `UPDATE "_system_docs" SET default_content = ?, title = ?${wasDefault ? ', content = ?' : ''}, updated_at = datetime('now') WHERE id = ?`,
-          ...(wasDefault
-            ? [doc.content, doc.title, doc.content, existing[0].id]
-            : [doc.content, doc.title, existing[0].id])
-        );
-      }
-    }
-
-    // === Migrate: add version column to existing user tables ===
-
-    const userObjects = this.db.exec(
-      "SELECT name FROM _objects WHERE name NOT LIKE '\\_%' ESCAPE '\\'"
-    ).toArray() as any[];
-    for (const obj of userObjects) {
-      try {
-        this.db.exec(`ALTER TABLE "${obj.name}" ADD COLUMN version INTEGER NOT NULL DEFAULT 0`);
-      } catch {
-        // Column already exists
-      }
-    }
-
-    // === Migrate: add bookmark column to _schema_history ===
-
-    try {
-      this.db.exec(`ALTER TABLE _schema_history ADD COLUMN bookmark TEXT`);
-    } catch {
-      // Column already exists
-    }
-
-    // === Migrate: add references_object column to _fields ===
-
-    try {
-      this.db.exec(`ALTER TABLE _fields ADD COLUMN references_object TEXT`);
-    } catch {
-      // Column already exists
-    }
-
-    // === Migrate: rebuild _outputs/_inputs to replace column-level UNIQUE with partial index ===
-
-    for (const table of ["_outputs", "_inputs"]) {
-      // Detect old schema by checking sqlite_master for the auto-index created by column-level UNIQUE
-      const autoIdx = this.db.exec(
-        `SELECT 1 FROM sqlite_master WHERE type='index' AND name LIKE 'sqlite_autoindex_${table}_%'`
-      ).toArray();
-      if (autoIdx.length > 0) {
-        // Auto-index exists → old column-level UNIQUE, needs rebuild
-        const cols = table === "_outputs"
-          ? `id, "path", "content", "mime_type", "visibility", created_at, updated_at, archived_at`
-          : `id, "path", "target_pattern", "body_facet", "facet_mapping", "visibility", created_at, updated_at, archived_at`;
-        const newCols = table === "_outputs"
-          ? `id INTEGER PRIMARY KEY AUTOINCREMENT, "path" TEXT NOT NULL, "content" TEXT NOT NULL, "mime_type" TEXT NOT NULL DEFAULT 'text/plain', "visibility" TEXT NOT NULL DEFAULT 'public', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), archived_at TEXT, version INTEGER NOT NULL DEFAULT 0`
-          : `id INTEGER PRIMARY KEY AUTOINCREMENT, "path" TEXT NOT NULL, "target_pattern" TEXT NOT NULL, "body_facet" TEXT, "facet_mapping" TEXT, "visibility" TEXT NOT NULL DEFAULT 'public', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), archived_at TEXT, version INTEGER NOT NULL DEFAULT 0`;
-        // Also copy version if it exists (may have been added by ALTER TABLE)
-        let selectCols = cols;
-        try {
-          this.db.exec(`SELECT version FROM "${table}" LIMIT 0`);
-          selectCols = cols + ", version";
-        } catch { /* version column doesn't exist yet */ }
-        this.db.exec(`CREATE TABLE "${table}_new" (${newCols})`);
-        this.db.exec(`INSERT INTO "${table}_new" (${selectCols}) SELECT ${selectCols} FROM "${table}"`);
-        this.db.exec(`DROP TABLE "${table}"`);
-        this.db.exec(`ALTER TABLE "${table}_new" RENAME TO "${table}"`);
-      }
-      this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "${table}_path_active" ON "${table}" ("path") WHERE archived_at IS NULL`);
-    }
-
-    // === Migrate: rename columns to new vocabulary ===
-
-    // _inputs: target_object → target_pattern, field_mapping → facet_mapping, body_field → body_facet
-    try { this.db.exec(`ALTER TABLE "_inputs" RENAME COLUMN "target_object" TO "target_pattern"`); } catch { /* already renamed */ }
-    try { this.db.exec(`ALTER TABLE "_inputs" RENAME COLUMN "field_mapping" TO "facet_mapping"`); } catch { /* already renamed */ }
-    try { this.db.exec(`ALTER TABLE "_inputs" RENAME COLUMN "body_field" TO "body_facet"`); } catch { /* already renamed */ }
-
-    // _upload_tokens: target_object → target_pattern, target_field → target_facet
-    try { this.db.exec(`ALTER TABLE "_upload_tokens" RENAME COLUMN "target_object" TO "target_pattern"`); } catch { /* already renamed */ }
-    try { this.db.exec(`ALTER TABLE "_upload_tokens" RENAME COLUMN "target_field" TO "target_facet"`); } catch { /* already renamed */ }
-
-    // === Mutation audit log ===
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS _mutation_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      table_name TEXT NOT NULL,
-      record_id INTEGER,
-      operation TEXT NOT NULL,
-      old_data TEXT,
-      new_data TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`);
-
-    // Create audit triggers for all registered user objects
-    const allObjects = this.db.exec(
-      "SELECT name FROM _objects"
-    ).toArray() as any[];
-    for (const obj of allObjects) {
-      this.ensureAuditTriggers(obj.name);
-    }
-
-    // === Auth codes (one-time, for remote agents) ===
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS "_auth_codes" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "code" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
-      "label" TEXT,
-      "expires_at" TEXT NOT NULL,
-      "consumed_at" TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT
-    )`);
-
-    // === Upload tokens ===
-
-    this.db.exec(`CREATE TABLE IF NOT EXISTS "_upload_tokens" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
-      "target_pattern" TEXT NOT NULL,
-      "target_id" INTEGER NOT NULL,
-      "target_facet" TEXT NOT NULL,
-      "mode" TEXT NOT NULL DEFAULT 'replace',
-      "expires_at" TEXT NOT NULL,
-      "consumed_at" TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT
-    )`);
-
-    // === Register kernel tables in normalized schema ===
-
-    this.registerKernelObject("_auth_codes",
-      "One-time auth codes for remote agents. Code and expiry auto-generated on create. Single-use — consumed when used to authenticate.",
-      [
-        { name: "code", type: "text", required: false },
-        { name: "label", type: "text", required: false },
-        { name: "expires_at", type: "datetime", required: false },
-        { name: "consumed_at", type: "datetime", required: false },
-      ]
-    );
-
-    this.registerKernelObject("_upload_tokens",
-      "Temporary capability tokens for large content uploads via HTTP POST. Token and expiry auto-generated on create. Single-use.",
-      [
-        { name: "token", type: "text", required: false },
-        { name: "target_pattern", type: "text", required: true },
-        { name: "target_id", type: "integer", required: true },
-        { name: "target_facet", type: "text", required: true },
-        { name: "mode", type: "text", required: false },
-        { name: "expires_at", type: "datetime", required: false },
-        { name: "consumed_at", type: "datetime", required: false },
-      ]
-    );
-
-    this.registerKernelObject("_marketplace_tokens",
-      "Scoped access tokens for private marketplace delivery. Token auto-generated on create.",
-      [
-        { name: "name", type: "text", required: true },
-        { name: "token", type: "text", required: false },
-        { name: "scope", type: "text", required: false },
-      ]
-    );
-
-    this.registerKernelObject("_outputs",
-      "HTTP egress endpoints. Each entry serves content at GET /o/{path}. Public by default.",
-      [
-        { name: "path", type: "text", required: true },
-        { name: "content", type: "text", required: true },
-        { name: "mime_type", type: "text", required: false },
-        { name: "visibility", type: "text", required: false },
-      ]
-    );
-
-    this.registerKernelObject("_inputs",
-      "HTTP ingress endpoints. Each entry accepts POST /i/{path} and creates entries in target_pattern. Supports facet_mapping DSL for JSON body transformation.",
-      [
-        { name: "path", type: "text", required: true },
-        { name: "target_pattern", type: "text", required: true },
-        { name: "body_facet", type: "text", required: false },
-        { name: "facet_mapping", type: "text", required: false },
-        { name: "visibility", type: "text", required: false },
-      ]
-    );
-
-    this.registerKernelObject("_system_docs",
-      "System documentation for agent orientation. Editable but requires confirmation. Set content to null to restore defaults.",
-      [
-        { name: "slug", type: "text", required: true },
-        { name: "title", type: "text", required: true },
-        { name: "content", type: "text", required: false },
-        { name: "default_content", type: "text", required: true },
-      ]
-    );
-  }
-
-  private registerKernelObject(
-    name: string,
-    description: string,
-    fields: { name: string; type: string; required: boolean }[]
-  ) {
-    this.db.exec(
-      "INSERT OR IGNORE INTO _objects (name, description) VALUES (?, ?)",
-      name, description
-    );
-    for (const f of fields) {
-      this.db.exec(
-        "INSERT OR IGNORE INTO _fields (object_name, name, type, required) VALUES (?, ?, ?, ?)",
-        name, f.name, f.type, f.required ? 1 : 0
-      );
-    }
   }
 
   // === RPC methods (called from MnemionSession) ===
@@ -674,7 +286,7 @@ export class StoreDO extends DurableObject {
           }
 
           // Create audit triggers for the new table
-          this.ensureAuditTriggers(change.pattern_name);
+          ensureAuditTriggers(this.db, change.pattern_name);
           break;
         }
 
@@ -707,7 +319,7 @@ export class StoreDO extends DurableObject {
           this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_insert"`);
           this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_update"`);
           this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_delete"`);
-          this.ensureAuditTriggers(change.pattern_name);
+          ensureAuditTriggers(this.db, change.pattern_name);
           break;
         }
 
@@ -954,9 +566,6 @@ export class StoreDO extends DurableObject {
       if (!this.patternExists(op.pattern)) {
         return this.errorJson(`Pattern "${op.pattern}" does not exist`);
       }
-      if (op.pattern === "_system_docs" && "default_content" in op.data) {
-        return this.errorJson("default_content is immutable. It preserves the original seed for recovery.");
-      }
     }
 
     const results: any[] = [];
@@ -1056,100 +665,40 @@ export class StoreDO extends DurableObject {
     }, null, 2);
   }
 
+  private kernelContext(): KernelContext {
+    return {
+      patternExists: (name) => this.patternExists(name),
+      facetMeta: (pattern, facet) => {
+        const rows = this.db.exec(
+          "SELECT type FROM _fields WHERE object_name = ? AND name = ?", pattern, facet
+        ).toArray() as any[];
+        return rows.length ? { type: rows[0].type } : null;
+      },
+      entryExists: (pattern, id) => {
+        try {
+          return this.db.exec(
+            `SELECT 1 FROM "${pattern}" WHERE id = ? AND archived_at IS NULL`, id
+          ).toArray().length > 0;
+        } catch { return false; }
+      },
+    };
+  }
+
   private executeMutate(patternName: string, operation: string, data: any): any {
     if (!this.patternExists(patternName))
       return { error: true, message: `Pattern "${patternName}" does not exist` };
 
-    // Protect default_content on _system_docs
-    if (patternName === "_system_docs" && "default_content" in data) {
-      return { error: true, message: "default_content is immutable. It preserves the original seed for recovery." };
-    }
+    // Apply kernel pattern rules (immutable fields, create hooks)
+    const ruled = applyKernelRules(patternName, operation, data, this.kernelContext());
+    if ('error' in ruled) return ruled;
+    data = ruled;
 
-    // Auth code create: auto-set expiry (default 1 hour, accepts ttl_minutes)
-    if (patternName === "_auth_codes" && operation === "create") {
-      const ttlMinutes = typeof data.ttl_minutes === "number" ? data.ttl_minutes : 60;
-      data.expires_at = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
-      delete data.ttl_minutes; // not a stored field
-    }
-
-    // Outputs create: validate required fields, set defaults
-    if (patternName === "_outputs" && operation === "create") {
-      if (!data.path) return { error: true, message: "path is required for _outputs" };
-      data.mime_type = data.mime_type || "text/plain";
-      data.visibility = data.visibility || "public";
-    }
-
-    // Inputs create: validate target_pattern exists, validate facet_mapping JSON
-    if (patternName === "_inputs" && operation === "create") {
-      if (!data.path) return { error: true, message: "path is required for _inputs" };
-      if (!data.target_pattern) return { error: true, message: "target_pattern is required for _inputs" };
-      if (!this.patternExists(data.target_pattern)) {
-        return { error: true, message: `Target pattern "${data.target_pattern}" does not exist` };
-      }
-      if (data.facet_mapping && typeof data.facet_mapping === "string") {
-        try { JSON.parse(data.facet_mapping); } catch {
-          return { error: true, message: "facet_mapping must be valid JSON" };
-        }
-      }
-      if (data.body_facet) {
-        const facetExists = this.db.exec(
-          "SELECT 1 FROM _fields WHERE object_name = ? AND name = ?",
-          data.target_pattern, data.body_facet
-        ).toArray().length > 0;
-        if (!facetExists) {
-          return { error: true, message: `Facet "${data.body_facet}" does not exist on "${data.target_pattern}"` };
-        }
-      }
-      data.visibility = data.visibility || "public";
-    }
-
-    // Entry size guard (skip for upload tokens — they're small metadata)
+    // Entry size guard
     if (operation === "create" || operation === "update") {
       const size = estimateRecordBytes(data);
       if (size > LIMITS.ENTRY_BYTES) {
         return { error: true, message: `Entry too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
       }
-    }
-
-    // Upload token create: validate target, set expiry
-    if (patternName === "_upload_tokens" && operation === "create") {
-      if (!data.target_pattern || data.target_id == null || !data.target_facet) {
-        return { error: true, message: "target_pattern, target_id, and target_facet are required" };
-      }
-      if (!this.patternExists(data.target_pattern)) {
-        return { error: true, message: `Target pattern "${data.target_pattern}" does not exist` };
-      }
-      // Verify the target entry exists
-      try {
-        const row = this.db.exec(
-          `SELECT id FROM "${data.target_pattern}" WHERE id = ? AND archived_at IS NULL`,
-          data.target_id
-        ).toArray();
-        if (row.length === 0) {
-          return { error: true, message: `Target entry ${data.target_id} not found in "${data.target_pattern}"` };
-        }
-      } catch {
-        return { error: true, message: `Could not verify target entry` };
-      }
-      // Verify the target facet exists
-      const facetRows = this.db.exec(
-        "SELECT type FROM _fields WHERE object_name = ? AND name = ?",
-        data.target_pattern, data.target_facet
-      ).toArray() as any[];
-      if (facetRows.length === 0) {
-        return { error: true, message: `Facet "${data.target_facet}" does not exist on "${data.target_pattern}"` };
-      }
-      if (facetRows[0].type !== "text") {
-        return { error: true, message: `Upload target facet must be text type, "${data.target_facet}" is ${facetRows[0].type}` };
-      }
-      // Auto-set expiry (15 minutes) and mode
-      data.expires_at = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-      data.mode = data.mode || "replace";
-      if (!["replace", "append"].includes(data.mode)) {
-        return { error: true, message: `Invalid mode "${data.mode}". Use "replace" or "append".` };
-      }
-      // Strip token if caller tried to set it — it's auto-generated
-      delete data.token;
     }
 
     try {
@@ -1487,39 +1036,6 @@ export class StoreDO extends DurableObject {
       conventions: conventions.map((c: any) => c.text),
       guidance: meta.guidance,
     };
-  }
-
-  private ensureAuditTriggers(tableName: string) {
-    // Get columns for this table from sqlite_master (works for any table)
-    let columns: string[];
-    try {
-      const info = this.db.exec(`PRAGMA table_info("${tableName}")`).toArray() as any[];
-      columns = info.map((c: any) => c.name as string);
-    } catch {
-      return; // Table doesn't exist yet
-    }
-    if (columns.length === 0) return;
-
-    const newJson = columns.map((c) => `'${c}', NEW."${c}"`).join(", ");
-    const oldJson = columns.map((c) => `'${c}', OLD."${c}"`).join(", ");
-
-    this.db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_insert"
-      AFTER INSERT ON "${tableName}" BEGIN
-        INSERT INTO _mutation_log (table_name, record_id, operation, new_data)
-        VALUES ('${tableName}', NEW.id, 'INSERT', json_object(${newJson}));
-      END`);
-
-    this.db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_update"
-      AFTER UPDATE ON "${tableName}" BEGIN
-        INSERT INTO _mutation_log (table_name, record_id, operation, old_data, new_data)
-        VALUES ('${tableName}', NEW.id, 'UPDATE', json_object(${oldJson}), json_object(${newJson}));
-      END`);
-
-    this.db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_delete"
-      AFTER DELETE ON "${tableName}" BEGIN
-        INSERT INTO _mutation_log (table_name, record_id, operation, old_data)
-        VALUES ('${tableName}', OLD.id, 'DELETE', json_object(${oldJson}));
-      END`);
   }
 
   private patternExists(name: string): boolean {
