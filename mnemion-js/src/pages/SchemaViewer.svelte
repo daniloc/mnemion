@@ -1,6 +1,10 @@
 <script lang="ts">
   import { browser } from './env.js';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+
+  function focusOnMount(node: HTMLElement) {
+    tick().then(() => node.focus());
+  }
   import HiveMap from './HiveMap.svelte';
   import LinkMap from './LinkMap.svelte';
 
@@ -98,15 +102,6 @@
     loadingEntries = false;
   }
 
-  function selectEntry(entry: Record<string, unknown>) {
-    selectedEntry = entry;
-    if (selected) pushHash(selected.name, entry.id);
-  }
-
-  function deselectEntry() {
-    selectedEntry = null;
-    if (selected) pushHash(selected.name);
-  }
 
   function showMap() {
     selected = null;
@@ -185,13 +180,95 @@
     };
   });
 
+  const KERNEL_FIELDS = ['id', 'created_at', 'updated_at', 'archived_at', 'version'];
+
   // All facets + kernel columns for detail view
   let detailFields = $derived.by(() => {
     if (!selected || !selectedEntry) return [];
-    const kernelFields = ['id', 'created_at', 'updated_at', 'archived_at'];
     const facetNames = selected.facets.map(f => f.name);
-    return [...kernelFields, ...facetNames];
+    return [...KERNEL_FIELDS, ...facetNames];
   });
+
+  // Editing state — per-field inline editing
+  let editingField: string | null = $state(null);
+  let editData: Record<string, unknown> = $state({});
+  let saving = $state(false);
+  let editError: string | null = $state(null);
+
+  let dirty = $derived.by(() => {
+    if (!selectedEntry) return false;
+    for (const key of Object.keys(editData)) {
+      if (String(editData[key] ?? '') !== String(selectedEntry[key] ?? '')) return true;
+    }
+    return false;
+  });
+
+  function startFieldEdit(field: string) {
+    if (!selectedEntry || !selected) return;
+    // Seed editData with current values for all facets (only once per edit session)
+    if (Object.keys(editData).length === 0) {
+      for (const f of selected.facets) {
+        editData[f.name] = selectedEntry[f.name] ?? '';
+      }
+    }
+    editError = null;
+    editingField = field;
+  }
+
+  function cancelEditing() {
+    editingField = null;
+    editData = {};
+    editError = null;
+  }
+
+  async function saveEditing() {
+    if (!selectedEntry || !selected || !browser) return;
+    saving = true;
+    editError = null;
+    try {
+      const data: Record<string, unknown> = { id: selectedEntry.id };
+      for (const f of selected.facets) {
+        const val = editData[f.name];
+        if (f.type === 'integer') data[f.name] = val === '' ? null : Number(val);
+        else if (f.type === 'real') data[f.name] = val === '' ? null : Number(val);
+        else if (f.type === 'boolean') data[f.name] = val === 'true' || val === true;
+        else data[f.name] = val === '' ? null : val;
+      }
+      const res = await fetch(`/api/mutate/${selected.name}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operation: 'update', data }),
+      });
+      const result = await res.json();
+      if (result.error) {
+        editError = result.message || 'Update failed';
+      } else {
+        editingField = null;
+        editData = {};
+      }
+    } catch {
+      editError = 'Network error';
+    }
+    saving = false;
+  }
+
+  function facetType(fieldName: string): string {
+    if (!selected) return 'text';
+    const f = selected.facets.find(f => f.name === fieldName);
+    return f?.type ?? 'text';
+  }
+
+  function selectEntry(entry: Record<string, unknown>) {
+    cancelEditing();
+    selectedEntry = entry;
+    if (selected) pushHash(selected.name, entry.id);
+  }
+
+  function deselectEntry() {
+    cancelEditing();
+    selectedEntry = null;
+    if (selected) pushHash(selected.name);
+  }
 </script>
 
 <div class="hive">
@@ -282,12 +359,67 @@
 
           <div class="entry-detail">
             {#if selectedEntry}
-              <button class="back-to-schema" onclick={() => deselectEntry()}>← schema</button>
+              {#if dirty || editError}
+                <div class="detail-toolbar">
+                  {#if editError}
+                    <span class="edit-error">{editError}</span>
+                  {:else}
+                    <span></span>
+                  {/if}
+                  <div class="toolbar-actions">
+                    <button class="toolbar-btn cancel" onclick={cancelEditing} disabled={saving}>cancel</button>
+                    <button class="toolbar-btn save" onclick={saveEditing} disabled={saving}>
+                      {saving ? 'saving…' : 'save'}
+                    </button>
+                  </div>
+                </div>
+              {/if}
               <div class="detail-scroll">
                 {#each detailFields as field}
                   {@const val = selectedEntry[field]}
-                  {#if val != null}
+                  {@const isKernel = KERNEL_FIELDS.includes(field)}
+                  {@const isEditing = editingField === field}
+                  {#if isEditing && !isKernel}
+                    {@const ft = facetType(field)}
                     <div class="field-row">
+                      <span class="field-name">{field}</span>
+                      {#if ft === 'boolean'}
+                        <select
+                          class="field-input"
+                          value={String(editData[field])}
+                          onchange={(e) => { editData[field] = e.currentTarget.value; editingField = null; }}
+                        >
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                      {:else if ft === 'integer' || ft === 'real'}
+                        <input
+                          class="field-input"
+                          type="number"
+                          step={ft === 'real' ? 'any' : '1'}
+                          value={editData[field] ?? ''}
+                          oninput={(e) => { editData[field] = e.currentTarget.value; }}
+                          onblur={() => { editingField = null; }}
+                          onkeydown={(e) => { if (e.key === 'Escape') { editingField = null; } }}
+                          use:focusOnMount
+                        />
+                      {:else}
+                        <textarea
+                          class="field-input field-textarea"
+                          oninput={(e) => { editData[field] = e.currentTarget.value; }}
+                          onblur={() => { editingField = null; }}
+                          onkeydown={(e) => { if (e.key === 'Escape') { editingField = null; } }}
+                          use:focusOnMount
+                        >{String(editData[field] ?? '')}</textarea>
+                      {/if}
+                    </div>
+                  {:else if val != null}
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div
+                      class="field-row"
+                      class:editable={!isKernel}
+                      ondblclick={() => { if (!isKernel) startFieldEdit(field); }}
+                    >
                       <span class="field-name">{field}</span>
                       <span class="field-value" class:long={String(val).length > 120}>{String(val)}</span>
                     </div>
@@ -595,24 +727,12 @@
   .entry-detail {
     height: 66.67%;
     min-height: 0;
+    position: relative;
   }
-
-  .back-to-schema {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    color: #6a6a78;
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0.75rem 2rem 0;
-    display: block;
-    transition: color 0.1s;
-  }
-  .back-to-schema:hover { color: #e8c872; }
 
   .detail-scroll {
     overflow-y: auto;
-    height: calc(100% - 2rem);
+    height: 100%;
     padding: 0.75rem 2rem 1.5rem;
   }
 
@@ -704,5 +824,93 @@
   .field-value.long {
     font-size: 0.78rem;
     color: #9a9aa8;
+  }
+
+  .field-row.editable { cursor: text; }
+  .field-row.editable:hover .field-value {
+    outline: 1px dashed #2a2a38;
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  /* Editing */
+  .detail-toolbar {
+    position: absolute;
+    top: 0.75rem;
+    right: 2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    z-index: 1;
+  }
+
+  .toolbar-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .toolbar-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    padding: 0.35rem 0.8rem;
+    border: 1px solid #2a2a38;
+    border-radius: 4px;
+    background: #12121a;
+    color: #8a8a98;
+    cursor: pointer;
+    transition: all 0.1s;
+  }
+  .toolbar-btn:hover { border-color: #3a3a48; color: #c8c8d0; }
+  .toolbar-btn:disabled { opacity: 0.4; cursor: default; }
+
+  .toolbar-btn.save {
+    background: #e8c872;
+    color: #0a0a0c;
+    border-color: #e8c872;
+  }
+  .toolbar-btn.save:hover { background: #f0d888; }
+  .toolbar-btn.save:disabled { background: #6a5a30; border-color: #6a5a30; }
+
+  .edit-error {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    color: #d46a6a;
+    padding: 0.5rem 2rem 0;
+  }
+
+  .field-input {
+    flex: 1;
+    min-width: 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    color: #c8c8d0;
+    background: transparent;
+    border: 1px solid #2a2a38;
+    border-radius: 3px;
+    padding: 0;
+    margin: -1px;
+    outline: none;
+    transition: border-color 0.15s;
+    line-height: 1.5;
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+  .field-input:focus { border-color: #e8c872; }
+
+  .field-textarea {
+    resize: vertical;
+    min-height: 1.5em;
+    field-sizing: content;
+  }
+
+  select.field-input {
+    cursor: pointer;
+    appearance: none;
+    padding-right: 1.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236a6a78'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
   }
 </style>

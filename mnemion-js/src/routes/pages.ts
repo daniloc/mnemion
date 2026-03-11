@@ -39,6 +39,21 @@ export const queryEntries: RouteHandler = async (ctx) => {
   });
 };
 
+export const mutateEntry: RouteHandler = async (ctx) => {
+  const body = await ctx.request.json() as { operation: string; data: Record<string, unknown> };
+  const { operation, data } = body;
+  if (!operation || !data) {
+    return new Response(JSON.stringify({ error: true, message: "Missing operation or data" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  const result = await ctx.store.mutate(ctx.params.pattern, operation, JSON.stringify(data));
+  return new Response(result, {
+    headers: { "Content-Type": "application/json" },
+  });
+};
+
 export const liveSocket: RouteHandler = async (ctx) => {
   if (ctx.request.headers.get("Upgrade") !== "websocket") {
     return new Response("Expected WebSocket", { status: 426 });

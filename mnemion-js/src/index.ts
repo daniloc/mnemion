@@ -10,7 +10,7 @@ import { serveOutput, receiveInput, upload } from "./routes/io";
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/marketplace";
 // Pages
-import { schemaPage, queryIndex, queryEntries, liveSocket } from "./routes/pages";
+import { schemaPage, queryIndex, queryEntries, mutateEntry, liveSocket } from "./routes/pages";
 
 // Re-export DO classes for wrangler
 export { SessionDO, StoreDO };
@@ -42,6 +42,7 @@ const routes: Route[] = [
   { method: Method.GET,  pattern: "/schema",               auth: Auth.SESSION, handler: schemaPage },
   { method: Method.GET,  pattern: "/api/index",            auth: Auth.SESSION, handler: queryIndex },
   { method: Method.GET,  pattern: "/api/query/:pattern",   auth: Auth.SESSION, handler: queryEntries },
+  { method: Method.POST, pattern: "/api/mutate/:pattern",  auth: Auth.SESSION, handler: mutateEntry },
   { method: Method.GET,  pattern: "/ws",                   auth: Auth.SESSION, handler: liveSocket },
 
   // Marketplace
