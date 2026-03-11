@@ -92,16 +92,18 @@ export const marketplaceToken: RouteHandler = async (ctx) => {
 };
 
 // === Marketplace git endpoints ===
+//
+// The marketplace is emergent: a route that reads _plugins and _skills via
+// the same query() RPC any agent uses, then projects them through the git adapter.
+// HiveDO has no marketplace-specific methods.
 
 export const marketplaceGit: RouteHandler = async (ctx) => {
   const isPublic = ctx.url.pathname.startsWith("/marketplace/public");
+  const publicOnly = isPublic || !ctx.env.MNEMION_SECRET;
 
-  let raw: string;
-  if (isPublic) {
-    raw = await ctx.hive.getMarketplaceDataPublic();
-  } else if (!ctx.env.MNEMION_SECRET) {
-    raw = await ctx.hive.getMarketplaceDataPublic();
-  } else {
+  let pluginNames: string[] | null = null;
+
+  if (!publicOnly) {
     const password = extractBasicPassword(ctx.request);
     if (!password) {
       return new Response("Authentication required", {
@@ -109,36 +111,98 @@ export const marketplaceGit: RouteHandler = async (ctx) => {
         headers: { "WWW-Authenticate": `Basic realm="${PRODUCT_NAME}"` },
       });
     }
-    raw = await ctx.hive.getMarketplaceDataForToken(password);
-    const check = JSON.parse(raw);
-    if (check.error) {
+
+    const valid = await ctx.hive.validateAccessToken(password, "marketplace");
+    if (!valid) {
       return new Response("Invalid token", {
         status: 401,
         headers: { "WWW-Authenticate": `Basic realm="${PRODUCT_NAME}"` },
       });
     }
+
+    // Retrieve plugin scope from token constraints
+    const tokenResult = JSON.parse(await ctx.hive.query(
+      "_access_tokens", JSON.stringify(["token=" + password]),
+      "constraints", "", 1, false
+    ));
+    if (tokenResult.entries?.length) {
+      const constraints = tokenResult.entries[0].constraints
+        ? JSON.parse(tokenResult.entries[0].constraints)
+        : null;
+      pluginNames = constraints?.plugins ?? null;
+    }
   }
 
-  const { plugins: dbPlugins } = JSON.parse(raw) as { plugins: any[] };
+  const plugins = await fetchMarketplacePlugins(ctx, pluginNames, publicOnly);
 
-  const plugins: MarketplacePlugin[] = dbPlugins.map((p: any) => ({
-    name: p.name,
-    description: p.description,
-    version: p.version || "0.1.0",
-    claude_md: p.claude_md || undefined,
-    mcp_json: p.mcp_json || undefined,
-    settings_json: p.settings_json || undefined,
-    skills: (p.skills || []).map((s: any) => ({
-      name: s.name,
-      description: s.description || undefined,
-      argument_hint: s.argument_hint || undefined,
-      skill_md: s.skill_md,
-    })),
-  }));
-
-  let gitPath = isPublic
+  const gitPath = isPublic
     ? ctx.url.pathname.replace(/^\/marketplace\/public(\.git)?/, "")
     : ctx.url.pathname.replace(/^\/marketplace(\.git)?/, "");
 
   return handleMarketplaceGit(ctx.request, gitPath, plugins);
 };
+
+// Compose plugin + skill data from queries — no marketplace-specific RPC needed.
+
+async function fetchMarketplacePlugins(
+  ctx: { hive: import("../router").RouteContext["hive"] },
+  pluginNames: string[] | null,
+  publicOnly: boolean,
+): Promise<MarketplacePlugin[]> {
+  const patterns = await ctx.hive.listPatterns();
+  if (!patterns.includes("_plugins") || !patterns.includes("_skills")) return [];
+
+  // Query plugins
+  const pluginFilters: string[] = [];
+  if (publicOnly) pluginFilters.push("visibility=public");
+  const pluginResult = JSON.parse(await ctx.hive.query(
+    "_plugins", pluginFilters.length ? JSON.stringify(pluginFilters) : "",
+    "", "-id", 1000, false
+  ));
+  let dbPlugins: any[] = pluginResult.entries ?? [];
+
+  // query() doesn't support IN — filter by name post-hoc
+  if (pluginNames) {
+    const nameSet = new Set(pluginNames);
+    dbPlugins = dbPlugins.filter((p: any) => nameSet.has(p.name));
+  }
+  if (dbPlugins.length === 0) return [];
+
+  // Query all skills in one call, group by plugin_id
+  const skillResult = JSON.parse(await ctx.hive.query(
+    "_skills", "", "", "plugin_id", 1000, false
+  ));
+  const skillsByPlugin = new Map<number, any[]>();
+  for (const s of (skillResult.entries ?? [])) {
+    if (!skillsByPlugin.has(s.plugin_id)) skillsByPlugin.set(s.plugin_id, []);
+    skillsByPlugin.get(s.plugin_id)!.push(s);
+  }
+
+  // Assemble, applying all-or-nothing public visibility
+  const result: MarketplacePlugin[] = [];
+  for (const p of dbPlugins) {
+    const skills = skillsByPlugin.get(p.id) ?? [];
+
+    if (publicOnly) {
+      const publicSkills = skills.filter((s: any) => s.visibility === "public");
+      if (publicSkills.length !== skills.length) continue; // any non-public skill → skip plugin
+    }
+
+    result.push({
+      name: p.name,
+      description: p.description,
+      version: p.version || "0.1.0",
+      claude_md: p.claude_md || undefined,
+      mcp_json: p.mcp_json || undefined,
+      settings_json: p.settings_json || undefined,
+      skills: skills.map((s: any) => ({
+        name: s.name,
+        description: s.description || undefined,
+        argument_hint: s.argument_hint || undefined,
+        skill_md: s.skill_md,
+      })),
+    });
+  }
+
+  return result;
+}

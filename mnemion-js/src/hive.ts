@@ -1,8 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
-import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
+import { URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { evaluateMapping } from "./transform";
-import { initializeSchema, ensureAuditTriggers } from "./schema";
-import { applyKernelRules, IMMUTABLE, scopeMatches, type KernelContext } from "./kernel";
+import { initializeSchema } from "./schema";
+import { applyKernelRules, IMMUTABLE, type KernelContext } from "./kernel";
+import * as cred from "./credentials";
+import * as evo from "./evolution";
 
 // === Types ===
 
@@ -32,14 +34,6 @@ export interface IndexFacetEntry {
 
 // === Constants ===
 
-const SQLITE_TYPE_MAP: Record<string, string> = {
-  text: "TEXT",
-  number: "REAL",
-  integer: "INTEGER",
-  boolean: "INTEGER",
-  datetime: "TEXT",
-};
-
 // version is intentionally excluded — it may be a user field (e.g. semver on _plugins).
 // Kernel version handling is conditional per-table via hasKernelVersion().
 const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]);
@@ -50,21 +44,7 @@ const LIMITS = {
   ENTRY_BYTES: 1_048_576,     // 1 MB per entry
   QUERY_ROWS: 1_000,          // max rows a single query can return
   BATCH_OPS: 100,             // max operations in a single batch mutate
-  NAME_MAX_LEN: 64,           // max length for pattern/facet names
-  FACETS_PER_PATTERN: 64,    // max facets on a single pattern
 };
-
-const NAME_RE = /^[a-z][a-z0-9_-]*$/;  // lowercase, starts with letter, allows hyphens/underscores/digits
-
-function validateName(kind: string, name: string): string | null {
-  if (!name || name.length > LIMITS.NAME_MAX_LEN) {
-    return `${kind} name must be 1–${LIMITS.NAME_MAX_LEN} characters, got ${name?.length ?? 0}`;
-  }
-  if (!NAME_RE.test(name)) {
-    return `${kind} name must be lowercase, start with a letter, and contain only a-z, 0-9, hyphens, underscores. Got: "${name}"`;
-  }
-  return null;
-}
 
 function estimateRecordBytes(data: Record<string, unknown>): number {
   let bytes = 0;
@@ -122,325 +102,34 @@ export class HiveDO extends DurableObject {
     }, null, 2);
   }
 
+  // === Schema evolution (delegated to evolution.ts) ===
+
+  private evoCtx(): evo.EvolutionContext {
+    return {
+      db: this.db,
+      patternExists: (name) => this.patternExists(name),
+      entryExists: (pattern, id) => this.entryExists(pattern, id),
+    };
+  }
+
   async proposeChange(description: string, changeJson: string): Promise<string> {
-    const change = JSON.parse(changeJson);
-    const currentIndex = this.getCurrentIndex();
-    const preview = structuredClone(currentIndex);
-
-    switch (change.type) {
-      case "create_pattern": {
-        if (!change.pattern_name)
-          return this.errorJson("pattern_name is required for create_pattern");
-        const nameErr = validateName("Pattern", change.pattern_name);
-        if (nameErr) return this.errorJson(nameErr);
-        if (!change.facets?.length)
-          return this.errorJson("At least one facet is required for create_pattern");
-        if (change.facets.length > LIMITS.FACETS_PER_PATTERN)
-          return this.errorJson(`Too many facets: ${change.facets.length} exceeds limit of ${LIMITS.FACETS_PER_PATTERN}`);
-        if (this.patternExists(change.pattern_name))
-          return this.errorJson(`Pattern "${change.pattern_name}" already exists`);
-        for (const a of change.facets) {
-          const facetNameErr = validateName("Facet", a.name);
-          if (facetNameErr) return this.errorJson(facetNameErr);
-          if (!SQLITE_TYPE_MAP[a.type])
-            return this.errorJson(`Unknown facet type: ${a.type}`);
-          if (KERNEL_COLUMNS.has(a.name))
-            return this.errorJson(`Facet "${a.name}" is a kernel-provided column and cannot be defined by the user`);
-          if (a.links && !this.patternExists(a.links.pattern))
-            return this.errorJson(`Linked pattern "${a.links.pattern}" does not exist`);
-        }
-
-        preview.patterns.push({
-          name: change.pattern_name,
-          description: change.pattern_description || "",
-          facets: change.facets.map((a: any) => {
-            const facet: IndexFacetEntry = {
-              name: a.name,
-              type: a.type,
-              required: a.required ?? false,
-              default: a.default_value ?? null,
-            };
-            if (a.links) facet.links = a.links.pattern;
-            return facet;
-          }),
-          entry_count: 0,
-        });
-        break;
-      }
-
-      case "add_facet": {
-        if (!change.pattern_name)
-          return this.errorJson("pattern_name is required for add_facet");
-        if (!change.facets?.length)
-          return this.errorJson("At least one facet is required for add_facet");
-        if (!this.patternExists(change.pattern_name))
-          return this.errorJson(`Pattern "${change.pattern_name}" does not exist`);
-
-        const pat = preview.patterns.find((p: IndexPatternEntry) => p.name === change.pattern_name);
-        if (!pat)
-          return this.errorJson(`Pattern "${change.pattern_name}" does not exist`);
-
-        if (pat.facets.length + change.facets.length > LIMITS.FACETS_PER_PATTERN)
-          return this.errorJson(`Adding ${change.facets.length} facets would exceed the limit of ${LIMITS.FACETS_PER_PATTERN} facets per pattern`);
-
-        for (const a of change.facets) {
-          const facetNameErr = validateName("Facet", a.name);
-          if (facetNameErr) return this.errorJson(facetNameErr);
-          if (KERNEL_COLUMNS.has(a.name))
-            return this.errorJson(`Facet "${a.name}" is a kernel-provided column and cannot be defined by the user`);
-          if (pat.facets.some((existing: IndexFacetEntry) => existing.name === a.name))
-            return this.errorJson(`Facet "${a.name}" already exists on "${change.pattern_name}"`);
-          if (a.links && !this.patternExists(a.links.pattern))
-            return this.errorJson(`Linked pattern "${a.links.pattern}" does not exist`);
-          const facet: IndexFacetEntry = {
-            name: a.name,
-            type: a.type,
-            required: a.required ?? false,
-            default: a.default_value ?? null,
-          };
-          if (a.links) facet.links = a.links.pattern;
-          pat.facets.push(facet);
-        }
-        break;
-      }
-
-      case "add_convention": {
-        if (!change.convention)
-          return this.errorJson("convention is required for add_convention");
-        preview.conventions.push(change.convention);
-        break;
-      }
-
-      case "set_sharing": {
-        if (!change.pattern_name)
-          return this.errorJson("pattern_name is required for set_sharing");
-        if (change.entry_id == null)
-          return this.errorJson("entry_id is required for set_sharing");
-        if (!this.patternExists(change.pattern_name))
-          return this.errorJson(`Pattern "${change.pattern_name}" does not exist`);
-        if (!this.entryExists(change.pattern_name, change.entry_id))
-          return this.errorJson(`Entry ${change.entry_id} not found in "${change.pattern_name}"`);
-        const vis = change.visibility ?? "public";
-        if (!["public", "unlisted", "private"].includes(vis))
-          return this.errorJson(`Invalid visibility "${vis}". Use "public", "unlisted", or "private".`);
-        break;
-      }
-    }
-
-    const changeId = crypto.randomUUID();
-    this.db.exec(
-      "INSERT INTO _pending_changes (id, description, change_spec, preview_index) VALUES (?, ?, ?, ?)",
-      changeId,
-      description,
-      JSON.stringify(change),
-      JSON.stringify(preview)
-    );
-
-    return JSON.stringify({
-      change_id: changeId,
-      description,
-      preview_index: preview,
-      message: "Change proposed. Call apply_change with this change_id to commit.",
-    }, null, 2);
+    return evo.proposeChange(description, changeJson, this.evoCtx(), () => this.getCurrentIndex());
   }
 
   async applyChange(changeId: string): Promise<string> {
-    const rows = this.db.exec(
-      "SELECT * FROM _pending_changes WHERE id = ?",
-      changeId
-    ).toArray() as any[];
-
-    if (rows.length === 0)
-      return this.errorJson(`No pending change found with id: ${changeId}`);
-
-    const pending = rows[0];
-    const change = JSON.parse(pending.change_spec);
-
-    try {
-      switch (change.type) {
-        case "create_pattern": {
-          const colDefs = change.facets.map((a: any) => {
-            let col = `"${a.name}" ${SQLITE_TYPE_MAP[a.type]}`;
-            if (a.required) col += " NOT NULL";
-            if (a.default_value != null) {
-              col +=
-                typeof a.default_value === "string"
-                  ? ` DEFAULT '${a.default_value}'`
-                  : ` DEFAULT ${a.default_value}`;
-            }
-            if (a.links) {
-              col += ` REFERENCES "${a.links.pattern}"("${a.links.facet || 'id'}")`;
-            }
-            return col;
-          });
-
-          const hasUserVersion = change.facets.some((a: any) => a.name === "version");
-          const kernelCols = [
-            ...(hasUserVersion ? [] : ["version INTEGER NOT NULL DEFAULT 0"]),
-            "created_at TEXT NOT NULL DEFAULT (datetime('now'))",
-            "updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
-            "archived_at TEXT",
-          ];
-          this.db.exec(`CREATE TABLE "${change.pattern_name}" (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ${colDefs.join(",\n            ")},
-            ${kernelCols.join(",\n            ")}
-          )`);
-
-          // Register in normalized schema
-          this.db.exec(
-            "INSERT INTO _objects (name, description) VALUES (?, ?)",
-            change.pattern_name, change.pattern_description || ""
-          );
-          for (const a of change.facets) {
-            this.db.exec(
-              "INSERT INTO _fields (object_name, name, type, required, default_value, references_object) VALUES (?, ?, ?, ?, ?, ?)",
-              change.pattern_name, a.name, a.type, a.required ? 1 : 0,
-              a.default_value != null ? JSON.stringify(a.default_value) : null,
-              a.links?.pattern ?? null
-            );
-          }
-
-          // Create audit triggers for the new table
-          ensureAuditTriggers(this.db, change.pattern_name);
-          break;
-        }
-
-        case "add_facet": {
-          for (const a of change.facets) {
-            let ddl = `ALTER TABLE "${change.pattern_name}" ADD COLUMN "${a.name}" ${SQLITE_TYPE_MAP[a.type]}`;
-            if (a.default_value != null) {
-              ddl +=
-                typeof a.default_value === "string"
-                  ? ` DEFAULT '${a.default_value}'`
-                  : ` DEFAULT ${a.default_value}`;
-            }
-            if (a.links) {
-              ddl += ` REFERENCES "${a.links.pattern}"("${a.links.facet || 'id'}")`;
-            }
-            this.db.exec(ddl);
-          }
-
-          // Register facets in normalized schema
-          for (const a of change.facets) {
-            this.db.exec(
-              "INSERT INTO _fields (object_name, name, type, required, default_value, references_object) VALUES (?, ?, ?, ?, ?, ?)",
-              change.pattern_name, a.name, a.type, a.required ? 1 : 0,
-              a.default_value != null ? JSON.stringify(a.default_value) : null,
-              a.links?.pattern ?? null
-            );
-          }
-
-          // Recreate audit triggers (columns changed)
-          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_insert"`);
-          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_update"`);
-          this.db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_delete"`);
-          ensureAuditTriggers(this.db, change.pattern_name);
-          break;
-        }
-
-        case "add_convention": {
-          this.db.exec("INSERT INTO _conventions (text) VALUES (?)", change.convention);
-          break;
-        }
-
-        case "set_sharing": {
-          const vis = change.visibility ?? "public";
-          if (vis === "private") {
-            // Archive any existing sharing entry
-            this.db.exec(
-              `UPDATE "_shared" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE source_pattern = ? AND source_id = ? AND archived_at IS NULL`,
-              change.pattern_name, change.entry_id
-            );
-          } else {
-            // Upsert: archive old, insert new
-            this.db.exec(
-              `UPDATE "_shared" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE source_pattern = ? AND source_id = ? AND archived_at IS NULL`,
-              change.pattern_name, change.entry_id
-            );
-            this.db.exec(
-              `INSERT INTO "_shared" (source_pattern, source_id, visibility) VALUES (?, ?, ?)`,
-              change.pattern_name, change.entry_id, vis
-            );
-          }
-          break;
-        }
-      }
-
-      // Update meta
-      this.db.exec(
-        "UPDATE _meta SET version = version + 1, updated_at = datetime('now')"
-      );
-
-      // Update guidance if still has empty-instance text
-      const meta = this.db.exec("SELECT guidance FROM _meta WHERE id = 1").one() as { guidance: string };
-      if (meta.guidance.includes("No objects exist yet")) {
-        const objCount = this.db.exec("SELECT COUNT(*) as count FROM _objects").one() as { count: number };
-        if (objCount.count > 0) {
-          this.db.exec(
-            "UPDATE _meta SET guidance = ?",
-            `${PRODUCT_NAME} is active. Read ${uri("index")} for orientation, then query and mutate to work with data.`
-          );
-        }
-      }
-
-      // Log to history with PITR bookmark for rollback
-      let bookmark: string | null = null;
-      try {
-        bookmark = await this.ctx.storage.getCurrentBookmark();
-      } catch {
-        // PITR not available (local dev)
-      }
-      this.db.exec(
-        "INSERT INTO _schema_history (description, change_type, change_detail, bookmark) VALUES (?, ?, ?, ?)",
-        pending.description,
-        change.type,
-        pending.change_spec,
-        bookmark
-      );
-
-      this.db.exec("DELETE FROM _pending_changes WHERE id = ?", changeId);
-
-      // Synthesize current index for response
-      const currentIndex = this.getCurrentIndex();
-
-      this.broadcastChange(["_schema"]);
-
-      return JSON.stringify({
-        applied: true,
-        description: pending.description,
-        index: currentIndex,
-      }, null, 2);
-    } catch (err: any) {
-      return this.errorJson(`Failed to apply change: ${err.message}`);
-    }
+    return evo.applyChange(
+      changeId, this.evoCtx(), () => this.getCurrentIndex(),
+      async () => { try { return await this.ctx.storage.getCurrentBookmark(); } catch { return null; } },
+      (patterns) => this.broadcastChange(patterns),
+    );
   }
 
-  // === Schema rollback via PITR ===
-
   async revertChange(historyId: number): Promise<string> {
-    const rows = this.db.exec(
-      "SELECT * FROM _schema_history WHERE id = ?", historyId
-    ).toArray() as any[];
-
-    if (rows.length === 0)
-      return this.errorJson(`No schema history entry with id: ${historyId}`);
-
-    const entry = rows[0];
-    if (!entry.bookmark)
-      return this.errorJson("No PITR bookmark stored for this change. Rollback unavailable (change may predate PITR support or was made in local dev).");
-
-    try {
-      this.ctx.storage.onNextSessionRestoreBookmark(entry.bookmark);
-      this.ctx.abort();
-      return JSON.stringify({
-        reverted: true,
-        description: entry.description,
-        message: "PITR restore initiated. The Durable Object will restart at the state before this change. WARNING: This restores ALL data, not just schema.",
-      }, null, 2);
-    } catch (err: any) {
-      return this.errorJson(`Rollback failed: ${err.message}`);
-    }
+    return evo.revertChange(
+      historyId, this.evoCtx(),
+      (bookmark) => this.ctx.storage.onNextSessionRestoreBookmark(bookmark),
+      () => this.ctx.abort(),
+    );
   }
 
   // === Resource RPC methods ===
@@ -630,9 +319,9 @@ export class HiveDO extends DurableObject {
     if (consumed.length > 0) return this.errorJson("Upload token has already been used");
 
     // Validate token with upload scope
-    const accessToken = this.findAccessToken(token);
+    const accessToken = cred.findAccessToken(this.db, token);
     if (!accessToken) return this.errorJson("Invalid or expired upload token");
-    if (!scopeMatches(accessToken.scope, "upload")) return this.errorJson("Token does not have upload scope");
+    if (!cred.scopeMatches(accessToken.scope, "upload")) return this.errorJson("Token does not have upload scope");
 
     // Parse upload constraints
     const constraints = accessToken.constraints ? JSON.parse(accessToken.constraints) : null;
@@ -672,7 +361,7 @@ export class HiveDO extends DurableObject {
     }
 
     // Mark token consumed
-    this.consumeToken(accessToken.id);
+    cred.consumeToken(this.db, accessToken.id);
 
     // Return the updated record
     const record = this.db.exec(
@@ -1011,67 +700,6 @@ export class HiveDO extends DurableObject {
     }, null, 2);
   }
 
-  // === Marketplace ===
-
-  async getMarketplaceDataForToken(token: string): Promise<string> {
-    try {
-      const accessToken = this.findAccessToken(token);
-      if (!accessToken) return JSON.stringify({ error: true, message: "Invalid token" });
-      if (!scopeMatches(accessToken.scope, "marketplace"))
-        return JSON.stringify({ error: true, message: "Token does not have marketplace scope" });
-      const constraints = accessToken.constraints ? JSON.parse(accessToken.constraints) : null;
-      const pluginNames = constraints?.plugins ?? null;
-      return this.getMarketplaceDataScoped(pluginNames);
-    } catch {
-      return JSON.stringify({ error: true, message: "Token validation failed" });
-    }
-  }
-
-  async getMarketplaceDataPublic(): Promise<string> {
-    return this.getMarketplaceDataScoped(null, true);
-  }
-
-  private getMarketplaceDataScoped(pluginNames: string[] | null, publicOnly: boolean = false): string {
-    const hasPlugins = this.patternExists("_plugins");
-    const hasSkills = this.patternExists("_skills");
-
-    if (!hasPlugins || !hasSkills) {
-      return JSON.stringify({ plugins: [] });
-    }
-
-    try {
-      let pluginSql = `SELECT * FROM "_plugins" WHERE archived_at IS NULL`;
-      const bindings: any[] = [];
-      if (publicOnly) pluginSql += ` AND visibility = 'public'`;
-      if (pluginNames) {
-        pluginSql += ` AND name IN (${pluginNames.map(() => "?").join(", ")})`;
-        bindings.push(...pluginNames);
-      }
-      const plugins = this.db.exec(pluginSql, ...bindings).toArray() as any[];
-
-      const result = [];
-      for (const plugin of plugins) {
-        let skillSql = `SELECT * FROM "_skills" WHERE plugin_id = ? AND archived_at IS NULL`;
-        const skillBindings: any[] = [plugin.id];
-        if (publicOnly) skillSql += ` AND visibility = 'public'`;
-        const skills = this.db.exec(skillSql, ...skillBindings).toArray();
-
-        if (publicOnly) {
-          const total = this.db.exec(
-            `SELECT COUNT(*) as count FROM "_skills" WHERE plugin_id = ? AND archived_at IS NULL`,
-            plugin.id
-          ).one() as { count: number };
-          if (total.count !== skills.length) continue;
-        }
-
-        result.push({ ...plugin, skills });
-      }
-      return JSON.stringify({ plugins: result });
-    } catch {
-      return JSON.stringify({ plugins: [] });
-    }
-  }
-
   // === Helpers ===
 
   private getCurrentIndex(): StoreIndex {
@@ -1133,83 +761,19 @@ export class HiveDO extends DurableObject {
     ).toArray().length === 0;
   }
 
-  // === Passkey storage ===
+  // === Credentials (delegated to credentials.ts) ===
 
-  async hasPasskey(): Promise<boolean> {
-    return this.db.exec("SELECT 1 FROM _passkeys WHERE id = 1").toArray().length > 0;
+  async hasPasskey(): Promise<boolean> { return cred.hasPasskey(this.db); }
+  async getPasskey() { return cred.getPasskey(this.db); }
+  async storePasskey(credentialId: string, publicKey: string, counter: number, transports: string) {
+    cred.storePasskey(this.db, credentialId, publicKey, counter, transports);
   }
-
-  async getPasskey(): Promise<{ credential_id: string; public_key: string; counter: number; transports: string } | null> {
-    const rows = this.db.exec("SELECT * FROM _passkeys WHERE id = 1").toArray() as any[];
-    if (rows.length === 0) return null;
-    const r = rows[0];
-    return {
-      credential_id: r.credential_id,
-      public_key: r.public_key,
-      counter: r.counter,
-      transports: r.transports,
-    };
+  async updatePasskeyCounter(counter: number) { cred.updatePasskeyCounter(this.db, counter); }
+  async validateAccessToken(token: string, requiredScope: string) {
+    return cred.validateAccessToken(this.db, token, requiredScope);
   }
-
-  async storePasskey(credentialId: string, publicKey: string, counter: number, transports: string): Promise<void> {
-    this.db.exec("DELETE FROM _passkeys");
-    this.db.exec(
-      "INSERT INTO _passkeys (id, credential_id, public_key, counter, transports) VALUES (1, ?, ?, ?, ?)",
-      credentialId, publicKey, counter, transports
-    );
-  }
-
-  async updatePasskeyCounter(counter: number): Promise<void> {
-    this.db.exec("UPDATE _passkeys SET counter = ? WHERE id = 1", counter);
-  }
-
-  // === Auth codes ===
-
-  /** Check and consume a code (for browser auth — single use). */
-  // === Access token operations ===
-
-  /** Find a valid (non-archived, non-expired, non-consumed) access token. */
-  private findAccessToken(token: string): any | null {
-    const rows = this.db.exec(
-      `SELECT * FROM "_access_tokens" WHERE token = ? AND archived_at IS NULL AND consumed_at IS NULL`,
-      token
-    ).toArray() as any[];
-    if (rows.length === 0) return null;
-    const row = rows[0];
-    if (row.expires_at && new Date(row.expires_at) < new Date()) return null;
-    return row;
-  }
-
-  /** Mark a token as consumed (for single-use tokens). */
-  private consumeToken(id: number): void {
-    this.db.exec(
-      `UPDATE "_access_tokens" SET consumed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
-      id
-    );
-  }
-
-  /** Validate a token against a required scope. Consumes single-use tokens. */
-  async validateAccessToken(token: string, requiredScope: string): Promise<boolean> {
-    const accessToken = this.findAccessToken(token);
-    if (!accessToken) return false;
-    if (!scopeMatches(accessToken.scope, requiredScope)) return false;
-    if (accessToken.single_use) this.consumeToken(accessToken.id);
-    return true;
-  }
-
-  /** Validate a token without consuming it (for reusable Bearer sessions). */
-  async validateAuthCode(code: string): Promise<boolean> {
-    const accessToken = this.findAccessToken(code);
-    return accessToken !== null;
-  }
-
-  /** Validate and consume a single-use token (for browser auth). */
-  async consumeAuthCode(code: string): Promise<boolean> {
-    const accessToken = this.findAccessToken(code);
-    if (!accessToken) return false;
-    if (accessToken.single_use) this.consumeToken(accessToken.id);
-    return true;
-  }
+  async validateAuthCode(code: string) { return cred.validateAuthCode(this.db, code); }
+  async consumeAuthCode(code: string) { return cred.consumeAuthCode(this.db, code); }
 
   // === HTTP I/O ===
 
