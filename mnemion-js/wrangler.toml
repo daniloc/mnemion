@@ -56,6 +56,26 @@ class_name = "HiveDO"
 tag = "v1"
 new_sqlite_classes = ["SessionDO", "HiveDO"]
 
+# === House environment (friend's instance) ===
+[env.house]
+name = "mnemion-house"
+
+[[env.house.kv_namespaces]]
+binding = "OAUTH_KV"
+id = "REPLACE_ME"
+
+[[env.house.durable_objects.bindings]]
+name = "MCP_OBJECT"
+class_name = "SessionDO"
+
+[[env.house.durable_objects.bindings]]
+name = "MNEMION_HIVE"
+class_name = "HiveDO"
+
+[[env.house.migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionDO", "HiveDO"]
+
 # Import .md files as text modules
 [[rules]]
 type = "Text"
