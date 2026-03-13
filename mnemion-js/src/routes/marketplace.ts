@@ -10,6 +10,7 @@ export const seedMarketplace: RouteHandler = async (ctx) => {
     type: "create_pattern",
     pattern_name: "_plugins",
     pattern_description: "Plugin packages for the marketplace",
+    doctrine: "Each plugin is a self-contained package. Name must be globally unique. Set visibility to control marketplace listing.",
     facets: [
       { name: "name", type: "text", required: true },
       { name: "description", type: "text", required: true },
@@ -30,6 +31,7 @@ export const seedMarketplace: RouteHandler = async (ctx) => {
     type: "create_pattern",
     pattern_name: "_skills",
     pattern_description: "Skills within plugins",
+    doctrine: "Skills belong to a plugin via plugin_id. Each skill needs a skill_md with complete instructions. Match plugin visibility.",
     facets: [
       { name: "plugin_id", type: "integer", required: true },
       { name: "name", type: "text", required: true },

@@ -3,7 +3,7 @@ import SchemaViewer from './SchemaViewer.svelte';
 
 export interface SchemaViewerProps {
   patterns: any[];
-  conventions: string[];
+  charter: Record<string, string>;
   guidance: string;
 }
 

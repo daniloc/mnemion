@@ -9,6 +9,7 @@ export const seedTestData: RouteHandler = async (ctx) => {
     type: "create_pattern",
     pattern_name: "axioms",
     pattern_description: "Core principles for testing federation",
+    doctrine: "Record fundamental architectural truths. Each axiom should be self-contained and verifiable.",
     facets: [
       { name: "text", type: "text", required: true },
       { name: "category", type: "text" },

@@ -6,7 +6,7 @@
 
 export interface KernelContext {
   patternExists(name: string): boolean;
-  facetMeta(pattern: string, facet: string): { type: string } | null;
+  facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
   entryExists(pattern: string, id: number): boolean;
 }
 

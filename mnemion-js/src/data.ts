@@ -14,7 +14,7 @@ export interface DataContext {
   patternExists(name: string): boolean;
   entryExists(pattern: string, id: number): boolean;
   hasKernelVersion(patternName: string): boolean;
-  facetMeta(pattern: string, facet: string): { type: string } | null;
+  facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
 }
 
 // === Constants ===
@@ -143,11 +143,18 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   if ('error' in ruled) return ruled;
   data = ruled;
 
-  // Size guard
+  // Size guard + select validation
   if (operation === "create" || operation === "update") {
     const size = estimateRecordBytes(data);
     if (size > LIMITS.ENTRY_BYTES)
       return { error: true, message: `Entry too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
+
+    for (const [key, val] of Object.entries(data)) {
+      if (val == null || key === "id") continue;
+      const meta = ctx.facetMeta(patternName, key);
+      if (meta?.options && !meta.options.includes(String(val)))
+        return { error: true, message: `Invalid value "${val}" for "${key}". Options: ${meta.options.join(", ")}` };
+    }
   }
 
   try {

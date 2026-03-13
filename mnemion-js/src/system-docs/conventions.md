@@ -28,10 +28,13 @@ All {{PRODUCT_NAME}} data is addressable via `{{URI_PREFIX}}` URIs:
 
 ## The index
 The index is the single source of truth for what exists in your hive. Read it first in any new session. It contains:
-- All patterns with descriptions and facet lists
+- The hive charter (identity, purpose, principles)
+- All patterns with descriptions, doctrines, and facet lists
 - Active entry counts
-- Conventions established for this hive
 - Guidance text
+
+## Charter
+The `_charter` kernel pattern holds the hive's identity as key-value pairs (e.g. owner, purpose, principles). Charter entries are surfaced to every agent on connection via MCP instructions. Use `mutate` on `_charter` to set charter values.
 
 ## Visibility model
 Entries can be `public` or `private`. This controls marketplace distribution:

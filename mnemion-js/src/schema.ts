@@ -53,6 +53,7 @@ interface KernelFacet { name: string; type: string; required: boolean }
 interface KernelTable {
   name: string;
   description: string;
+  doctrine: string;
   ddl: string;
   indexes?: string[];
   facets: KernelFacet[];
@@ -71,6 +72,7 @@ Scopes:
 - read:output:{path} — read a specific output
 - upload — write via POST /upload/{token} (constraints: {target_pattern, target_id, target_facet, mode})
 - marketplace — private marketplace git access (constraints: {plugins: [...]})`,
+    doctrine: "Create tokens only when the human requests external access. Use the narrowest scope possible. Never create wildcard tokens without explicit instruction.",
     ddl: `CREATE TABLE IF NOT EXISTS "_access_tokens" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
@@ -98,6 +100,7 @@ Scopes:
   {
     name: "_shared",
     description: "Entry-level sharing. Links an entry to a visibility mode for HTTP access at /o/entry/{pattern}/{id}. Public entries are openly readable; unlisted entries require a valid auth code token (anyone-with-the-link access).",
+    doctrine: "Only share entries the human explicitly asks to make accessible. Default to unlisted over public. Archive sharing when access is no longer needed.",
     ddl: `CREATE TABLE IF NOT EXISTS "_shared" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "source_pattern" TEXT NOT NULL,
@@ -120,6 +123,7 @@ Scopes:
   {
     name: "_outputs",
     description: "HTTP egress endpoints. Each entry serves content at GET /o/{path}. Public by default.",
+    doctrine: "Create outputs when the human wants to publish content at a stable URL. Set mime_type to match the content. Archive when the endpoint is no longer needed.",
     ddl: `CREATE TABLE IF NOT EXISTS "_outputs" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "path" TEXT NOT NULL,
@@ -144,6 +148,7 @@ Scopes:
   {
     name: "_inputs",
     description: "HTTP ingress endpoints. Each entry accepts POST /i/{path} and creates entries in target_pattern. Supports facet_mapping DSL for JSON body transformation.",
+    doctrine: "Create ingress endpoints when the human wants to receive external data. Validate facet_mapping DSL before saving. Always specify target_pattern.",
     ddl: `CREATE TABLE IF NOT EXISTS "_inputs" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "path" TEXT NOT NULL,
@@ -168,8 +173,30 @@ Scopes:
     ],
   },
   {
+    name: "_charter",
+    description: "Hive identity and purpose. Key-value pairs that define who owns this hive, what it's for, and guiding principles. Surfaced to every agent on connection.",
+    doctrine: "Set charter values when the human establishes identity, purpose, or principles for this hive. Charter is the root context — keep entries concise and meaningful.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_charter" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "key" TEXT NOT NULL,
+      "value" TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_charter_key_active" ON "_charter" ("key") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "key", type: "text", required: true },
+      { name: "value", type: "text", required: true },
+    ],
+  },
+  {
     name: "_system_docs",
     description: "System documentation for agent orientation. Editable but requires confirmation. Set content to null to restore defaults.",
+    doctrine: "Read before acting. Edit content only when the human requests it. Set content to null to restore defaults. Never modify default_content.",
     ddl: `CREATE TABLE IF NOT EXISTS "_system_docs" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "slug" TEXT NOT NULL UNIQUE,
@@ -196,7 +223,9 @@ export function initializeSchema(db: any): void {
 
   db.exec(`CREATE TABLE IF NOT EXISTS _objects (
     name TEXT PRIMARY KEY,
-    description TEXT NOT NULL DEFAULT ''
+    description TEXT NOT NULL DEFAULT '',
+    doctrine TEXT NOT NULL DEFAULT '',
+    archived_at TEXT
   )`);
 
   db.exec(`CREATE TABLE IF NOT EXISTS _fields (
@@ -207,6 +236,7 @@ export function initializeSchema(db: any): void {
     required INTEGER NOT NULL DEFAULT 0,
     default_value TEXT,
     references_object TEXT,
+    options TEXT,
     UNIQUE(object_name, name)
   )`);
 
@@ -299,6 +329,49 @@ export function initializeSchema(db: any): void {
     }
   } catch {}
 
+  // --- v6: add doctrine column to _objects ---
+
+  try {
+    const objCols = db.exec(`PRAGMA table_info("_objects")`).toArray() as any[];
+    if (!objCols.some((c: any) => c.name === "doctrine")) {
+      db.exec(`ALTER TABLE "_objects" ADD COLUMN "doctrine" TEXT NOT NULL DEFAULT ''`);
+    }
+  } catch {}
+
+  // --- v7: add options column to _fields for select facets ---
+
+  try {
+    const fieldCols = db.exec(`PRAGMA table_info("_fields")`).toArray() as any[];
+    if (!fieldCols.some((c: any) => c.name === "options")) {
+      db.exec(`ALTER TABLE "_fields" ADD COLUMN "options" TEXT`);
+    }
+  } catch {}
+
+  // --- v8: add archived_at to _objects for pattern archiving ---
+
+  try {
+    const objCols2 = db.exec(`PRAGMA table_info("_objects")`).toArray() as any[];
+    if (!objCols2.some((c: any) => c.name === "archived_at")) {
+      db.exec(`ALTER TABLE "_objects" ADD COLUMN "archived_at" TEXT`);
+    }
+  } catch {}
+
+  // --- GC: drop archived patterns older than 30 days ---
+
+  try {
+    const expired = db.exec(
+      `SELECT name FROM _objects WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-30 days') AND name NOT LIKE '\\_%' ESCAPE '\\'`
+    ).toArray() as any[];
+    for (const obj of expired) {
+      for (const op of ["insert", "update", "delete"]) {
+        try { db.exec(`DROP TRIGGER IF EXISTS "_audit_${obj.name}_${op}"`); } catch {}
+      }
+      try { db.exec(`DROP TABLE IF EXISTS "${obj.name}"`); } catch {}
+      db.exec(`DELETE FROM _fields WHERE object_name = ?`, obj.name);
+      db.exec(`DELETE FROM _objects WHERE name = ?`, obj.name);
+    }
+  } catch {}
+
   // --- System doc seeding ---
 
   for (const doc of SYSTEM_DOCS_SEED) {
@@ -327,8 +400,8 @@ export function initializeSchema(db: any): void {
 
   for (const table of KERNEL_TABLES) {
     db.exec(
-      "INSERT OR IGNORE INTO _objects (name, description) VALUES (?, ?)",
-      table.name, table.description
+      "INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET doctrine = excluded.doctrine",
+      table.name, table.description, table.doctrine
     );
     for (const f of table.facets) {
       db.exec(

@@ -76,7 +76,7 @@ describe("Shared Entry Routes", () => {
 
     // Create pattern + entry
     const p = JSON.parse(await hive.proposeChange("Create", JSON.stringify({
-      type: "create_pattern", pattern_name: "articles", pattern_description: "Test", facets: [{ name: "title", type: "text" }],
+      type: "create_pattern", pattern_name: "articles", pattern_description: "Test", doctrine: "test", facets: [{ name: "title", type: "text" }],
     })));
     await hive.applyChange(p.change_id);
     const entry = JSON.parse(await hive.mutate("articles", "create", JSON.stringify({ title: "Shared article" })));

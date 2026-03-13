@@ -15,11 +15,13 @@
     default?: string | number | boolean | null;
     links?: string | null;
     readonly?: boolean;
+    options?: string[];
   }
 
   interface Pattern {
     name: string;
     description: string;
+    doctrine: string;
     facets: Facet[];
     entry_count: number;
     latest_activity?: string | null;
@@ -27,11 +29,11 @@
 
   interface Props {
     patterns: Pattern[];
-    conventions: string[];
+    charter: Record<string, string>;
     guidance: string;
   }
 
-  let { patterns, conventions, guidance }: Props = $props();
+  let { patterns, charter, guidance }: Props = $props();
 
   let selected: Pattern | null = $state(null);
   let filter = $state('');
@@ -81,6 +83,7 @@
     selected = pattern;
     entries = [];
     selectedEntry = null;
+    editingDoctrine = false;
     if (!restoreEntryId) pushHash(pattern.name);
     if (!browser) return;
     loadingEntries = true;
@@ -143,6 +146,7 @@
             const res = await fetch('/api/index');
             const idx = await res.json();
             patterns = idx.patterns;
+            charter = idx.charter ?? {};
             // Update selected pattern reference if still viewing one
             if (selected) {
               const fresh = patterns.find(p => p.name === selected!.name);
@@ -222,6 +226,38 @@
     editError = null;
   }
 
+  // Doctrine editing
+  let editingDoctrine = $state(false);
+  let doctrineText = $state('');
+  let savingDoctrine = $state(false);
+
+  function startDoctrineEdit() {
+    if (!selected) return;
+    doctrineText = selected.doctrine || '';
+    editingDoctrine = true;
+  }
+
+  async function saveDoctrine() {
+    if (!selected || !browser) return;
+    savingDoctrine = true;
+    try {
+      const res = await fetch('/api/evolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          description: `Set doctrine for ${selected.name}`,
+          change: { type: 'set_doctrine', pattern_name: selected.name, doctrine: doctrineText },
+        }),
+      });
+      const result = await res.json();
+      if (!result.error) {
+        selected.doctrine = doctrineText;
+        editingDoctrine = false;
+      }
+    } catch {}
+    savingDoctrine = false;
+  }
+
   async function saveEditing() {
     if (!selectedEntry || !selected || !browser) return;
     saving = true;
@@ -257,6 +293,12 @@
     if (!selected) return 'text';
     const f = selected.facets.find(f => f.name === fieldName);
     return f?.type ?? 'text';
+  }
+
+  function facetOptions(fieldName: string): string[] | undefined {
+    if (!selected) return undefined;
+    const f = selected.facets.find(f => f.name === fieldName);
+    return f?.options;
   }
 
   function selectEntry(entry: Record<string, unknown>) {
@@ -319,11 +361,14 @@
         </section>
       {/if}
 
-      {#if conventions.length > 0}
-        <section>
-          <h2>conventions</h2>
-          {#each conventions as c}
-            <p class="convention">{c}</p>
+      {#if Object.keys(charter).length > 0}
+        <section class="charter-section">
+          <h2>charter</h2>
+          {#each Object.entries(charter) as [key, value]}
+            <div class="charter-entry">
+              <span class="charter-key">{key}</span>
+              <span class="charter-value">{value}</span>
+            </div>
           {/each}
         </section>
       {/if}
@@ -382,20 +427,47 @@
                   {@const isFacetReadonly = selected.facets.some(f => f.name === field && f.readonly)}
                   {@const isReadonly = isKernel || isFacetReadonly}
                   {@const isEditing = editingField === field}
-                  {#if isEditing && !isReadonly}
+                  {#if facetType(field) === 'boolean' && !isReadonly}
+                    <div class="field-row">
+                      <span class="field-name">{field}{#if isFacetReadonly}<span class="lock-icon" title="read-only">&#x1f512;</span>{/if}</span>
+                      <input
+                        type="checkbox"
+                        class="field-checkbox"
+                        checked={editData[field] != null ? (editData[field] === true || editData[field] === 'true') : (val === 1 || val === true || val === 'true')}
+                        onchange={(e) => {
+                          if (!selectedEntry || !selected) return;
+                          if (Object.keys(editData).length === 0) {
+                            for (const f of selected.facets) editData[f.name] = selectedEntry[f.name] ?? '';
+                          }
+                          editData[field] = e.currentTarget.checked;
+                        }}
+                      />
+                    </div>
+                  {:else if facetType(field) === 'select' && !isReadonly}
+                    {@const opts = facetOptions(field) ?? []}
+                    <div class="field-row">
+                      <span class="field-name">{field}</span>
+                      <select
+                        class="field-select"
+                        value={editData[field] != null ? String(editData[field]) : String(val ?? '')}
+                        onchange={(e) => {
+                          if (!selectedEntry || !selected) return;
+                          if (Object.keys(editData).length === 0) {
+                            for (const f of selected.facets) editData[f.name] = selectedEntry[f.name] ?? '';
+                          }
+                          editData[field] = e.currentTarget.value;
+                        }}
+                      >
+                        {#each opts as opt}
+                          <option value={opt}>{opt}</option>
+                        {/each}
+                      </select>
+                    </div>
+                  {:else if isEditing && !isReadonly}
                     {@const ft = facetType(field)}
                     <div class="field-row">
                       <span class="field-name">{field}</span>
-                      {#if ft === 'boolean'}
-                        <select
-                          class="field-input"
-                          value={String(editData[field])}
-                          onchange={(e) => { editData[field] = e.currentTarget.value; editingField = null; }}
-                        >
-                          <option value="true">true</option>
-                          <option value="false">false</option>
-                        </select>
-                      {:else if ft === 'integer' || ft === 'real'}
+                      {#if ft === 'integer' || ft === 'real'}
                         <input
                           class="field-input"
                           type="number"
@@ -416,7 +488,7 @@
                         >{String(editData[field] ?? '')}</textarea>
                       {/if}
                     </div>
-                  {:else if val != null}
+                  {:else if val != null && facetType(field) !== 'boolean' && facetType(field) !== 'select'}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                       class="field-row"
@@ -434,6 +506,27 @@
                 <div class="schema-header">
                   <h3>schema</h3>
                   <p class="description">{selected.description}</p>
+                  {#if editingDoctrine}
+                    <div class="doctrine-edit">
+                      <textarea
+                        class="doctrine-textarea"
+                        bind:value={doctrineText}
+                        onkeydown={(e) => { if (e.key === 'Escape') { editingDoctrine = false; } }}
+                        use:focusOnMount
+                      ></textarea>
+                      <div class="doctrine-actions">
+                        <button class="toolbar-btn cancel" onclick={() => { editingDoctrine = false; }} disabled={savingDoctrine}>cancel</button>
+                        <button class="toolbar-btn save" onclick={saveDoctrine} disabled={savingDoctrine}>
+                          {savingDoctrine ? 'saving…' : 'save'}
+                        </button>
+                      </div>
+                    </div>
+                  {:else}
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <p class="doctrine" class:empty={!selected.doctrine} ondblclick={startDoctrineEdit}>
+                      {selected.doctrine || 'no doctrine — double-click to set'}
+                    </p>
+                  {/if}
                 </div>
                 <table>
                   <thead>
@@ -600,11 +693,21 @@
   }
   .active .count { color: #a89044; }
 
-  .convention {
-    padding: 0.35rem 1rem;
+  .charter-entry {
+    padding: 0.25rem 1rem;
     font-size: 0.78rem;
-    color: #5a5a68;
     line-height: 1.4;
+    display: flex;
+    gap: 0.5rem;
+  }
+  .charter-key {
+    color: #a89044;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .charter-key::after { content: ":"; }
+  .charter-value {
+    color: #8a8a98;
   }
 
   main {
@@ -765,6 +868,43 @@
     line-height: 1.5;
   }
 
+  .doctrine {
+    font-size: 0.75rem;
+    color: #e8c872;
+    line-height: 1.4;
+    margin-top: 0.3rem;
+    padding: 0.3rem 0.4rem;
+    border-left: 2px solid #e8c87233;
+    cursor: pointer;
+  }
+  .doctrine.empty {
+    color: #3a3a48;
+    font-style: italic;
+  }
+
+  .doctrine-edit {
+    margin-top: 0.3rem;
+  }
+  .doctrine-textarea {
+    width: 100%;
+    min-height: 3rem;
+    background: #0d0d12;
+    color: #e8c872;
+    border: 1px solid #e8c87255;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    padding: 0.4rem;
+    resize: vertical;
+  }
+  .doctrine-textarea:focus { border-color: #e8c872; outline: none; }
+  .doctrine-actions {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.3rem;
+    justify-content: flex-end;
+  }
+
   table {
     width: 100%;
     border-collapse: collapse;
@@ -914,12 +1054,23 @@
     field-sizing: content;
   }
 
-  select.field-input {
+  .field-checkbox {
+    accent-color: #e8c872;
+    width: 14px;
+    height: 14px;
     cursor: pointer;
-    appearance: none;
-    padding-right: 1.5rem;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236a6a78'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.5rem center;
   }
+
+  .field-select {
+    flex: 1;
+    background: #0d0d12;
+    color: #c8c8d0;
+    border: 1px solid #2a2a35;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    padding: 0.25rem 0.4rem;
+    cursor: pointer;
+  }
+  .field-select:focus { border-color: #e8c872; outline: none; }
 </style>

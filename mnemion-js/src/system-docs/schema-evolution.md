@@ -12,12 +12,17 @@ Patterns are created through `propose_change` / `apply_change`. This is a two-st
 - Patterns starting with `_` are kernel/system patterns (e.g. `_plugins`, `_skills`, `_system_docs`)
 
 ## Facet types
-`text`, `number`, `integer`, `boolean`, `datetime`
+`text`, `number`, `integer`, `boolean`, `datetime`, `select`
+
+`select` requires an `options` array of allowed string values. Mutation validates against the list.
 
 ## Kernel columns (auto-provided, never define these)
 `id`, `created_at`, `updated_at`, `archived_at`
 
 Every pattern gets these automatically. Do not include them in `propose_change` facet lists.
+
+## Doctrine (required)
+Every pattern has a `doctrine` — a statement of how the pattern should be used. Doctrine is required on `create_pattern`. It tells agents when and how to create entries, what invariants to maintain, and what to avoid. Read the doctrine before writing to any pattern.
 
 ## When to create a new pattern vs. add facets
 - New pattern: the data represents a distinct concept with its own lifecycle

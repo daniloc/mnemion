@@ -12,7 +12,7 @@ export const schemaPage: RouteHandler = async (ctx) => {
   const html = renderSchemaViewer(
     {
       patterns: index.patterns,
-      conventions: index.conventions,
+      charter: index.charter ?? {},
       guidance: index.guidance,
     },
     clientScript,
@@ -52,6 +52,17 @@ export const mutateEntry: RouteHandler = async (ctx) => {
   return new Response(result, {
     headers: { "Content-Type": "application/json" },
   });
+};
+
+export const evolveSchema: RouteHandler = async (ctx) => {
+  const body = await ctx.request.json() as { description: string; change: Record<string, unknown> };
+  if (!body.description || !body.change) {
+    return Response.json({ error: true, message: "Missing description or change" }, { status: 400 });
+  }
+  const proposed = JSON.parse(await ctx.hive.proposeChange(body.description, JSON.stringify(body.change)));
+  if (proposed.error) return Response.json(proposed);
+  const applied = JSON.parse(await ctx.hive.applyChange(proposed.change_id));
+  return Response.json(applied);
 };
 
 export const liveSocket: RouteHandler = async (ctx) => {

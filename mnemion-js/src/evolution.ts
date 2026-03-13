@@ -21,7 +21,7 @@ export interface EvolutionContext {
 // === Constants (shared with hive.ts — could be centralized later) ===
 
 const SQLITE_TYPE_MAP: Record<string, string> = {
-  text: "TEXT", number: "REAL", integer: "INTEGER", boolean: "INTEGER", datetime: "TEXT",
+  text: "TEXT", number: "REAL", integer: "INTEGER", boolean: "INTEGER", datetime: "TEXT", select: "TEXT",
 };
 
 const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]);
@@ -58,6 +58,10 @@ function validateFacets(
       return `Facet "${a.name}" already exists on the pattern`;
     if (a.links && !ctx.patternExists(a.links.pattern))
       return `Linked pattern "${a.links.pattern}" does not exist`;
+    if (a.type === "select" && (!Array.isArray(a.options) || a.options.length === 0))
+      return `Facet "${a.name}" is type select but has no options`;
+    if (a.type !== "select" && a.options)
+      return `Facet "${a.name}" has options but is not type select`;
   }
   return null;
 }
@@ -68,6 +72,7 @@ function facetToIndexEntry(a: any): IndexFacetEntry {
     default: a.default_value ?? null,
   };
   if (a.links) facet.links = a.links.pattern;
+  if (a.options) facet.options = a.options;
   return facet;
 }
 
@@ -86,10 +91,11 @@ function facetToDDL(a: any): string {
 function registerFacets(db: DB, patternName: string, facets: any[]): void {
   for (const a of facets) {
     db.exec(
-      "INSERT INTO _fields (object_name, name, type, required, default_value, references_object) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO _fields (object_name, name, type, required, default_value, references_object, options) VALUES (?, ?, ?, ?, ?, ?, ?)",
       patternName, a.name, a.type, a.required ? 1 : 0,
       a.default_value != null ? JSON.stringify(a.default_value) : null,
-      a.links?.pattern ?? null
+      a.links?.pattern ?? null,
+      a.options ? JSON.stringify(a.options) : null
     );
   }
 }
@@ -109,6 +115,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       if (!change.pattern_name) return "pattern_name is required for create_pattern";
       const nameErr = validateName("Pattern", change.pattern_name);
       if (nameErr) return nameErr;
+      if (!change.doctrine) return "doctrine is required for create_pattern — describe how this pattern should be used";
       if (!change.facets?.length) return "At least one facet is required for create_pattern";
       if (change.facets.length > LIMITS.FACETS_PER_PATTERN)
         return `Too many facets: ${change.facets.length} exceeds limit of ${LIMITS.FACETS_PER_PATTERN}`;
@@ -120,6 +127,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       preview.patterns.push({
         name: change.pattern_name,
         description: change.pattern_description || "",
+        doctrine: change.doctrine,
         facets: change.facets.map(facetToIndexEntry),
         entry_count: 0,
       });
@@ -138,8 +146,8 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         ${colDefs.join(",\n        ")},
         ${kernelCols.join(",\n        ")}
       )`);
-      db.exec("INSERT INTO _objects (name, description) VALUES (?, ?)",
-        change.pattern_name, change.pattern_description || "");
+      db.exec("INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?)",
+        change.pattern_name, change.pattern_description || "", change.doctrine);
       registerFacets(db, change.pattern_name, change.facets);
       ensureAuditTriggers(db, change.pattern_name);
     },
@@ -174,19 +182,6 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     },
   },
 
-  add_convention: {
-    validate(change) {
-      if (!change.convention) return "convention is required for add_convention";
-      return null;
-    },
-    preview(change, preview) {
-      preview.conventions.push(change.convention);
-    },
-    apply(change, { db }) {
-      db.exec("INSERT INTO _conventions (text) VALUES (?)", change.convention);
-    },
-  },
-
   set_sharing: {
     validate(change, ctx) {
       if (!change.pattern_name) return "pattern_name is required for set_sharing";
@@ -214,6 +209,95 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
           change.pattern_name, change.entry_id, vis
         );
       }
+    },
+  },
+
+  set_options: {
+    validate(change, ctx, preview) {
+      if (!change.pattern_name) return "pattern_name is required for set_options";
+      if (!change.facet_name) return "facet_name is required for set_options";
+      if (!ctx.patternExists(change.pattern_name))
+        return `Pattern "${change.pattern_name}" does not exist`;
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      if (!pat) return `Pattern "${change.pattern_name}" does not exist`;
+      const facet = pat.facets.find((f) => f.name === change.facet_name);
+      if (!facet) return `Facet "${change.facet_name}" does not exist on "${change.pattern_name}"`;
+      if (facet.type !== "text" && facet.type !== "select")
+        return `set_options only works on text or select facets, "${change.facet_name}" is ${facet.type}`;
+      if (!Array.isArray(change.options) || change.options.length === 0)
+        return "options must be a non-empty array of strings";
+      return null;
+    },
+    preview(change, preview) {
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name)!;
+      const facet = pat.facets.find((f) => f.name === change.facet_name)!;
+      facet.type = "select";
+      facet.options = change.options;
+    },
+    apply(change, { db }) {
+      db.exec(
+        "UPDATE _fields SET type = 'select', options = ? WHERE object_name = ? AND name = ?",
+        JSON.stringify(change.options), change.pattern_name, change.facet_name
+      );
+    },
+  },
+
+  set_doctrine: {
+    validate(change, ctx) {
+      if (!change.pattern_name) return "pattern_name is required for set_doctrine";
+      if (!change.doctrine) return "doctrine is required for set_doctrine";
+      if (!ctx.patternExists(change.pattern_name))
+        return `Pattern "${change.pattern_name}" does not exist`;
+      return null;
+    },
+    preview(change, preview) {
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      if (pat) pat.doctrine = change.doctrine;
+    },
+    apply(change, { db }) {
+      db.exec(
+        "UPDATE _objects SET doctrine = ? WHERE name = ?",
+        change.doctrine, change.pattern_name
+      );
+    },
+  },
+
+  archive_pattern: {
+    validate(change, ctx) {
+      if (!change.pattern_name) return "pattern_name is required for archive_pattern";
+      if (!ctx.patternExists(change.pattern_name))
+        return `Pattern "${change.pattern_name}" does not exist`;
+      if (change.pattern_name.startsWith("_"))
+        return `Cannot archive kernel pattern "${change.pattern_name}"`;
+      return null;
+    },
+    preview(change, preview) {
+      preview.patterns = preview.patterns.filter((p) => p.name !== change.pattern_name);
+    },
+    apply(change, { db }) {
+      db.exec(
+        "UPDATE _objects SET archived_at = datetime('now') WHERE name = ?",
+        change.pattern_name
+      );
+    },
+  },
+
+  unarchive_pattern: {
+    validate(change, { db }) {
+      if (!change.pattern_name) return "pattern_name is required for unarchive_pattern";
+      const rows = db.exec(
+        "SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NOT NULL", change.pattern_name
+      ).toArray();
+      if (rows.length === 0)
+        return `No archived pattern "${change.pattern_name}" found`;
+      return null;
+    },
+    preview() { /* pattern reappears after apply — preview unchanged */ },
+    apply(change, { db }) {
+      db.exec(
+        "UPDATE _objects SET archived_at = NULL WHERE name = ?",
+        change.pattern_name
+      );
     },
   },
 };

@@ -12,14 +12,15 @@ import * as data from "./data";
 export interface StoreIndex {
   version: number;
   updated_at: string;
+  charter: Record<string, string>;
   patterns: IndexPatternEntry[];
-  conventions: string[];
   guidance: string;
 }
 
 export interface IndexPatternEntry {
   name: string;
   description: string;
+  doctrine: string;
   facets: IndexFacetEntry[];
   entry_count: number;
 }
@@ -30,6 +31,7 @@ export interface IndexFacetEntry {
   required: boolean;
   default?: string | number | boolean | null;
   links?: string | null;
+  options?: string[];
   readonly?: boolean;
 }
 
@@ -78,6 +80,15 @@ export class HiveDO extends DurableObject {
       ...index,
       system_docs: uri("_system/"),
     }, null, 2);
+  }
+
+  async getCharter(): Promise<Record<string, string>> {
+    const rows = this.db.exec(
+      `SELECT "key", "value" FROM "_charter" WHERE archived_at IS NULL ORDER BY id`
+    ).toArray() as any[];
+    const charter: Record<string, string> = {};
+    for (const r of rows) charter[r.key] = r.value;
+    return charter;
   }
 
   // === Schema evolution (delegated to evolution.ts) ===
@@ -167,7 +178,7 @@ export class HiveDO extends DurableObject {
   }
 
   async listPatterns(): Promise<string[]> {
-    const rows = this.db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[];
+    const rows = this.db.exec("SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as any[];
     return rows.map((r: any) => r.name);
   }
 
@@ -181,9 +192,12 @@ export class HiveDO extends DurableObject {
       hasKernelVersion: (name) => this.hasKernelVersion(name),
       facetMeta: (pattern, facet) => {
         const rows = this.db.exec(
-          "SELECT type FROM _fields WHERE object_name = ? AND name = ?", pattern, facet
+          "SELECT type, options FROM _fields WHERE object_name = ? AND name = ?", pattern, facet
         ).toArray() as any[];
-        return rows.length ? { type: rows[0].type } : null;
+        if (!rows.length) return null;
+        const meta: { type: string; options?: string[] } = { type: rows[0].type };
+        if (rows[0].options) meta.options = JSON.parse(rows[0].options);
+        return meta;
       },
     };
   }
@@ -438,9 +452,13 @@ export class HiveDO extends DurableObject {
 
   private getCurrentIndex(): StoreIndex {
     const meta = this.db.exec("SELECT * FROM _meta WHERE id = 1").one() as any;
-    const objects = this.db.exec("SELECT name, description FROM _objects ORDER BY name").toArray() as any[];
+    const objects = this.db.exec("SELECT name, description, doctrine FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as any[];
     const allFields = this.db.exec("SELECT * FROM _fields ORDER BY object_name, id").toArray() as any[];
-    const conventions = this.db.exec("SELECT text FROM _conventions ORDER BY id").toArray() as any[];
+    const charterRows = this.db.exec(
+      `SELECT "key", "value" FROM "_charter" WHERE archived_at IS NULL ORDER BY id`
+    ).toArray() as any[];
+    const charter: Record<string, string> = {};
+    for (const r of charterRows) charter[r.key] = r.value;
 
     // Group facets by pattern
     const facetsByPattern = new Map<string, IndexFacetEntry[]>();
@@ -453,6 +471,7 @@ export class HiveDO extends DurableObject {
         default: f.default_value != null ? JSON.parse(f.default_value) : null,
       };
       if (f.references_object) facet.links = f.references_object;
+      if (f.options) facet.options = JSON.parse(f.options);
       if (IMMUTABLE[f.object_name]?.fields.includes(f.name)) facet.readonly = true;
       facetsByPattern.get(f.object_name)!.push(facet);
     }
@@ -463,17 +482,18 @@ export class HiveDO extends DurableObject {
       patterns: objects.map((o: any) => ({
         name: o.name,
         description: o.description,
+        doctrine: o.doctrine || "",
         facets: facetsByPattern.get(o.name) || [],
         entry_count: 0,
       })),
-      conventions: conventions.map((c: any) => c.text),
+      charter,
       guidance: meta.guidance,
     };
   }
 
   private patternExists(name: string): boolean {
     return this.db.exec(
-      "SELECT 1 FROM _objects WHERE name = ?", name
+      "SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NULL", name
     ).toArray().length > 0;
   }
 

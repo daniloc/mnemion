@@ -20,6 +20,7 @@ async function createPattern(
       type: "create_pattern",
       pattern_name: name,
       pattern_description: description || `Test pattern: ${name}`,
+      doctrine: `Test doctrine for ${name}`,
       facets,
     })
   );
@@ -44,7 +45,7 @@ describe("Index", () => {
     expect(result.version).toBeTypeOf("number");
     expect(result.guidance).toBeTypeOf("string");
     expect(result.patterns).toBeInstanceOf(Array);
-    expect(result.conventions).toBeInstanceOf(Array);
+    expect(result.charter).toBeTypeOf("object");
     expect(result.system_docs).toBe("mnemion://_system/");
   });
 
@@ -81,7 +82,7 @@ describe("Schema Evolution", () => {
     await createPattern(store, "items", [{ name: "label", type: "text" }]);
     const result = await store.proposeChange(
       "Duplicate",
-      JSON.stringify({ type: "create_pattern", pattern_name: "items", facets: [{ name: "x", type: "text" }] })
+      JSON.stringify({ type: "create_pattern", pattern_name: "items", doctrine: "test", facets: [{ name: "x", type: "text" }] })
     );
     expect(JSON.parse(result).error).toBe(true);
   });
@@ -110,23 +111,20 @@ describe("Schema Evolution", () => {
       JSON.stringify({
         type: "create_pattern",
         pattern_name: "bad-pat",
+        doctrine: "test",
         facets: [{ name: "id", type: "integer" }],
       })
     );
     expect(JSON.parse(result).error).toBe(true);
   });
 
-  it("adds conventions", async () => {
+  it("includes charter in index", async () => {
     const store = getStore();
-    const propose = await store.proposeChange(
-      "Add convention",
-      JSON.stringify({ type: "add_convention", convention: "Always use kebab-case for pattern names" })
-    );
-    const parsed = JSON.parse(propose);
-    await store.applyChange(parsed.change_id);
+    await store.mutate("_charter", "create", JSON.stringify({ key: "owner", value: "test-user" }));
+    await store.mutate("_charter", "create", JSON.stringify({ key: "purpose", value: "testing" }));
 
     const index = JSON.parse(await store.getIndex());
-    expect(index.conventions).toContain("Always use kebab-case for pattern names");
+    expect(index.charter).toEqual({ owner: "test-user", purpose: "testing" });
   });
 
   it("supports foreign key links", async () => {
@@ -149,6 +147,7 @@ describe("Schema Evolution", () => {
       JSON.stringify({
         type: "create_pattern",
         pattern_name: "orphans",
+        doctrine: "test",
         facets: [{ name: "parent_id", type: "integer", links: { pattern: "nonexistent" } }],
       })
     );
@@ -202,6 +201,7 @@ describe("Name Validation", () => {
       JSON.stringify({
         type: "create_pattern",
         pattern_name: "my-cool-pattern",
+        doctrine: "test",
         facets: [{ name: "some_facet", type: "text" }],
       })
     );
@@ -225,6 +225,7 @@ describe("Name Validation", () => {
       JSON.stringify({
         type: "create_pattern",
         pattern_name: "valid-pat",
+        doctrine: "test",
         facets: [{ name: "BadFacet", type: "text" }],
       })
     );
@@ -243,7 +244,7 @@ describe("Facet Limits", () => {
     }));
     const result = await store.proposeChange(
       "Too many facets",
-      JSON.stringify({ type: "create_pattern", pattern_name: "wide-table", facets })
+      JSON.stringify({ type: "create_pattern", pattern_name: "wide-table", doctrine: "test", facets })
     );
     expect(JSON.parse(result).error).toBe(true);
     expect(JSON.parse(result).message).toContain("64");

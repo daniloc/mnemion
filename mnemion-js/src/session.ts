@@ -44,6 +44,14 @@ Key capabilities agents commonly miss:
   async init() {
     const hive = this.getHive();
 
+    // === Inject charter into instructions ===
+    const charter = await hive.getCharter();
+    if (Object.keys(charter).length > 0) {
+      const charterLines = Object.entries(charter).map(([k, v]) => `- ${k}: ${v}`).join("\n");
+      const base = (this.server as any)._instructions ?? "";
+      (this.server as any)._instructions = `=== Hive Charter ===\n${charterLines}\n\n${base}`;
+    }
+
     // === Resources (stable, cacheable, subscribable) ===
 
     this.server.resource(
@@ -131,7 +139,7 @@ Valid URIs:
 - ${uri("entry/{pattern}/{id}")} — a single entry
 - ${uri("history")} — schema change log (supports ?limit=N)
 - ${uri("_system/")} — list all system docs
-- ${uri("_system/{slug}")} — read a system doc (tools, schema-evolution, skills, conventions, index-guide)
+- ${uri("_system/{slug}")} — read a system doc (tools, schema-evolution, skills, index-guide, conventions)
 - ${uri("_system/{slug}/default")} — read original seed version
 - ${uri("mutation")} — mutation audit log (supports ?limit=N). Use for diagnostics and integrity checks.
 - ${uri("mutation/{pattern}")} — mutations filtered to one pattern
@@ -162,7 +170,7 @@ Federation: foreign hive URIs resolve over HTTP.
       "propose_change",
       `Propose a structural change. Validates and returns a preview of the index after the change. Does not commit.
 
-Supports: create_pattern (with facets), add_facet (to existing pattern), add_convention, set_sharing (entry-level HTTP visibility).
+Supports: create_pattern (with facets), add_facet (to existing pattern), set_sharing (entry-level HTTP visibility), set_options, set_doctrine, archive_pattern, unarchive_pattern.
 Facets can declare foreign key links to other patterns via the links parameter.
 Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 facets per pattern.
 
@@ -173,20 +181,23 @@ set_sharing: control HTTP access to individual entries at /o/entry/{pattern}/{id
       {
         description: z.string().describe("Natural language description of the change"),
         change: z.object({
-          type: z.enum(["create_pattern", "add_facet", "add_convention", "set_sharing"]).describe("Type of structural change"),
+          type: z.enum(["create_pattern", "add_facet", "set_sharing", "set_options", "set_doctrine", "archive_pattern", "unarchive_pattern"]).describe("Type of structural change"),
           pattern_name: z.string().optional().describe("Target pattern name"),
           pattern_description: z.string().optional().describe("Purpose of the pattern (for create_pattern)"),
+          doctrine: z.string().optional().describe("How this pattern should be used — required for create_pattern"),
           facets: z.array(z.object({
             name: z.string(),
-            type: z.enum(["text", "number", "integer", "boolean", "datetime"]),
+            type: z.enum(["text", "number", "integer", "boolean", "datetime", "select"]),
             required: z.boolean().default(false),
             default_value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+            options: z.array(z.string()).optional().describe("Allowed values (required for select type)"),
             links: z.object({
               pattern: z.string().describe("Linked pattern name"),
               facet: z.string().default("id").describe("Linked facet (default: id)"),
             }).optional().describe("Foreign key link to another pattern"),
           })).optional().describe("Facets to create (for create_pattern or add_facet)"),
-          convention: z.string().optional().describe("Convention text (for add_convention)"),
+          facet_name: z.string().optional().describe("Target facet name (for set_options)"),
+          options: z.array(z.string()).optional().describe("Allowed values (for set_options)"),
           entry_id: z.number().optional().describe("Entry ID (for set_sharing)"),
           visibility: z.enum(["public", "unlisted", "private"]).optional().describe("Sharing visibility (for set_sharing)"),
         }),
