@@ -4,6 +4,7 @@
 // that add broadcast and transaction concerns.
 
 import { applyKernelRules, type KernelContext } from "./kernel";
+import { uri } from "./constants";
 
 // === Types ===
 
@@ -167,7 +168,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
         ctx.db.exec(`INSERT INTO "${patternName}" (${cols}) VALUES (${placeholders})`, ...values);
         const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = last_insert_rowid()`).one();
-        return { operation: "create", pattern: patternName, entry: row };
+        return { operation: "create", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${(row as any).id}`) };
       }
 
       case "update": {
@@ -206,7 +207,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         }
 
         const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = ?`, data.id).one();
-        return { operation: "update", pattern: patternName, entry: row };
+        return { operation: "update", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${data.id}`) };
       }
 
       case "archive": {
@@ -215,7 +216,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           `UPDATE "${patternName}" SET archived_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
           data.id
         );
-        return { operation: "archive", pattern: patternName, id: data.id };
+        return { operation: "archive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
       }
 
       default:

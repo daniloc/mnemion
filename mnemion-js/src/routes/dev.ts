@@ -1,5 +1,12 @@
 import type { RouteHandler } from "../router";
 
+// Seed vectors: embed all existing entries into Vectorize.
+// Gated behind Auth.SECRET — requires master secret.
+export const seedVectors: RouteHandler = async (ctx) => {
+  const result = await ctx.hive.seedVectors();
+  return Response.json(JSON.parse(result));
+};
+
 // Dev-only seed: creates a test pattern with a shared entry for federation testing.
 // Gated behind Auth.DEV — only reachable when no MNEMION_SECRET is configured.
 

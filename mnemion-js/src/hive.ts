@@ -6,6 +6,7 @@ import { IMMUTABLE } from "./kernel";
 import * as cred from "./credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
+import * as priming from "./prime";
 
 // === Types ===
 
@@ -23,6 +24,7 @@ export interface IndexPatternEntry {
   doctrine: string;
   facets: IndexFacetEntry[];
   entry_count: number;
+  latest_activity: string | null;
 }
 
 export interface IndexFacetEntry {
@@ -57,24 +59,35 @@ export class HiveDO extends DurableObject {
   async getIndex(): Promise<string> {
     const index = this.getCurrentIndex();
 
-    // Enrich with live entry counts
+    // Enrich with live entry counts and latest activity
     for (const pat of index.patterns) {
       try {
         const r = this.db.exec(
-          `SELECT COUNT(*) as count FROM "${pat.name}" WHERE archived_at IS NULL`
-        ).one() as { count: number };
+          `SELECT COUNT(*) as count, MAX(updated_at) as latest FROM "${pat.name}" WHERE archived_at IS NULL`
+        ).one() as { count: number; latest: string | null };
         pat.entry_count = r.count;
+        pat.latest_activity = r.latest;
       } catch {
         try {
           const r = this.db.exec(
-            `SELECT COUNT(*) as count FROM "${pat.name}"`
-          ).one() as { count: number };
+            `SELECT COUNT(*) as count, MAX(updated_at) as latest FROM "${pat.name}"`
+          ).one() as { count: number; latest: string | null };
           pat.entry_count = r.count;
+          pat.latest_activity = r.latest;
         } catch {
           pat.entry_count = 0;
+          pat.latest_activity = null;
         }
       }
     }
+
+    // Sort by latest activity (most recent first), nulls last
+    index.patterns.sort((a, b) => {
+      if (!a.latest_activity && !b.latest_activity) return a.name.localeCompare(b.name);
+      if (!a.latest_activity) return 1;
+      if (!b.latest_activity) return -1;
+      return b.latest_activity.localeCompare(a.latest_activity);
+    });
 
     return JSON.stringify({
       ...index,
@@ -89,6 +102,49 @@ export class HiveDO extends DurableObject {
     const charter: Record<string, string> = {};
     for (const r of rows) charter[r.key] = r.value;
     return charter;
+  }
+
+  async getRecentActivity(limit: number = 10): Promise<string> {
+    // Most recently modified entries across all non-kernel patterns
+    const patterns = this.db.exec(
+      "SELECT name FROM _objects WHERE archived_at IS NULL AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name"
+    ).toArray() as { name: string }[];
+
+    const all: { pattern: string; id: number; summary: string; updated_at: string }[] = [];
+
+    for (const pat of patterns) {
+      try {
+        // Get text/select facets to build a summary
+        const facets = this.db.exec(
+          "SELECT name FROM _fields WHERE object_name = ? AND type IN ('text', 'select') ORDER BY id",
+          pat.name
+        ).toArray() as { name: string }[];
+
+        const firstFacet = facets[0]?.name;
+        const selectCols = firstFacet ? `, "${firstFacet}"` : "";
+
+        const rows = this.db.exec(
+          `SELECT id, updated_at${selectCols} FROM "${pat.name}" WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT ?`,
+          limit
+        ).toArray() as any[];
+
+        for (const row of rows) {
+          const preview = firstFacet && row[firstFacet]
+            ? String(row[firstFacet]).slice(0, 120)
+            : "";
+          all.push({
+            pattern: pat.name,
+            id: row.id,
+            summary: preview,
+            updated_at: row.updated_at,
+          });
+        }
+      } catch { /* table may not exist */ }
+    }
+
+    // Sort by recency, take top N
+    all.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    return JSON.stringify(all.slice(0, limit));
   }
 
   // === Schema evolution (delegated to evolution.ts) ===
@@ -171,7 +227,15 @@ export class HiveDO extends DurableObject {
         entryId
       ).toArray();
       if (rows.length === 0) return this.errorJson(`Entry ${entryId} not found in "${patternName}"`);
-      return JSON.stringify({ pattern: patternName, entry: rows[0] }, null, 2);
+
+      const entry = rows[0] as Record<string, unknown>;
+      const result: any = { pattern: patternName, entry };
+
+      // One-hop link following
+      const linked = priming.followLinks(this.primeCtx(), patternName, entry);
+      if (linked.length > 0) result.linked = linked;
+
+      return JSON.stringify(result, null, 2);
     } catch (err: any) {
       return this.errorJson(`Failed to read entry: ${err.message}`);
     }
@@ -208,7 +272,13 @@ export class HiveDO extends DurableObject {
 
   async mutate(patternName: string, operation: string, dataJson: string): Promise<string> {
     const result = data.executeMutate(this.dataCtx(), patternName, operation, JSON.parse(dataJson));
-    if (!result.error) this.broadcastChange([patternName]);
+    if (!result.error) {
+      this.broadcastChange([patternName]);
+      this.embedAfterMutate(patternName, operation, result.entry?.id);
+      if (patternName === "_system_tasks" && operation === "create") {
+        await this.runTask(result.entry.id, result.entry.task);
+      }
+    }
     return JSON.stringify(result, null, 2);
   }
 
@@ -236,6 +306,9 @@ export class HiveDO extends DurableObject {
 
     const affectedPatterns = [...new Set(operations.map(op => op.pattern))];
     this.broadcastChange(affectedPatterns);
+    for (const r of results) {
+      this.embedAfterMutate(r.pattern, r.operation, r.entry?.id);
+    }
     return JSON.stringify({ batch: true, results, count: results.length }, null, 2);
   }
 
@@ -448,6 +521,87 @@ export class HiveDO extends DurableObject {
     }, null, 2);
   }
 
+  // === System tasks ===
+
+  private async runTask(taskId: number, task: string) {
+    this.db.exec(
+      `UPDATE "_system_tasks" SET status = 'running', updated_at = datetime('now') WHERE id = ?`, taskId
+    );
+    this.broadcastChange(["_system_tasks"]);
+
+    try {
+      let result: string;
+      switch (task) {
+        case "seed_vectors":
+          result = await this.seedVectors();
+          break;
+        default:
+          result = JSON.stringify({ error: true, message: `Unknown task: ${task}` });
+      }
+      this.db.exec(
+        `UPDATE "_system_tasks" SET status = 'done', result = ?, updated_at = datetime('now') WHERE id = ?`,
+        result, taskId
+      );
+    } catch (err: any) {
+      this.db.exec(
+        `UPDATE "_system_tasks" SET status = 'failed', result = ?, updated_at = datetime('now') WHERE id = ?`,
+        JSON.stringify({ error: true, message: err.message }), taskId
+      );
+    }
+    this.broadcastChange(["_system_tasks"]);
+  }
+
+  // === Priming (auto-associative memory, delegated to prime.ts) ===
+
+  private primeCtx(): priming.PrimeContext {
+    return {
+      env: this.env as any,
+      db: this.db,
+      patternExists: (name) => this.patternExists(name),
+    };
+  }
+
+  private embedAfterMutate(pattern: string, operation: string, id?: number) {
+    if (!id) return;
+    const ctx = this.primeCtx();
+    if (operation === "archive") {
+      this.ctx.waitUntil(priming.removeEntry(ctx, pattern, id));
+    } else {
+      this.ctx.waitUntil(priming.embedEntry(ctx, pattern, id));
+    }
+  }
+
+  async prime(context: string, patternsJson: string, limit: number): Promise<string> {
+    const patterns = patternsJson ? JSON.parse(patternsJson) as string[] : undefined;
+    const [primeResult, charter] = await Promise.all([
+      priming.prime(this.primeCtx(), context, patterns, limit),
+      this.getCharter(),
+    ]);
+    return JSON.stringify({ charter, ...primeResult }, null, 2);
+  }
+
+  async seedVectors(): Promise<string> {
+    const ctx = this.primeCtx();
+    const patterns = this.db.exec(
+      "SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name"
+    ).toArray() as { name: string }[];
+
+    let total = 0;
+    for (const pat of patterns) {
+      try {
+        const ids = this.db.exec(
+          `SELECT id FROM "${pat.name}" WHERE archived_at IS NULL`
+        ).toArray() as { id: number }[];
+        for (const row of ids) {
+          await priming.embedEntry(ctx, pat.name, row.id);
+          total++;
+        }
+      } catch { /* table may not exist yet */ }
+    }
+
+    return JSON.stringify({ seeded: true, vectors: total });
+  }
+
   // === Helpers ===
 
   private getCurrentIndex(): StoreIndex {
@@ -485,6 +639,7 @@ export class HiveDO extends DurableObject {
         doctrine: o.doctrine || "",
         facets: facetsByPattern.get(o.name) || [],
         entry_count: 0,
+        latest_activity: null,
       })),
       charter,
       guidance: meta.guidance,

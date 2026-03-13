@@ -18,6 +18,15 @@ class_name = "SessionDO"
 name = "MNEMION_HIVE"
 class_name = "HiveDO"
 
+# Workers AI (embedding generation)
+[ai]
+binding = "AI"
+
+# Vectorize (semantic search index)
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "mnemion-vectors"
+
 # Migration: rename old class, add new ones
 [[migrations]]
 tag = "v1"
@@ -71,6 +80,13 @@ class_name = "SessionDO"
 [[env.house.durable_objects.bindings]]
 name = "MNEMION_HIVE"
 class_name = "HiveDO"
+
+[env.house.ai]
+binding = "AI"
+
+[[env.house.vectorize]]
+binding = "VECTORIZE"
+index_name = "your-other-vectors"
 
 [[env.house.migrations]]
 tag = "v1"

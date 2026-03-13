@@ -40,7 +40,7 @@
   let entries: Record<string, unknown>[] = $state([]);
   let loadingEntries = $state(false);
   let selectedEntry: Record<string, unknown> | null = $state(null);
-  let landingView: 'patterns' | 'links' = $state('patterns');
+  let landingView: 'patterns' | 'links' | 'tools' = $state('patterns');
 
   let visible = $derived(
     patterns.filter(p =>
@@ -366,8 +366,8 @@
           <h2>charter</h2>
           {#each Object.entries(charter) as [key, value]}
             <div class="charter-entry">
-              <span class="charter-key">{key}</span>
-              <span class="charter-value">{value}</span>
+              <div class="charter-key">{key}</div>
+              <div class="charter-value">{value}</div>
             </div>
           {/each}
         </section>
@@ -694,20 +694,21 @@
   .active .count { color: #a89044; }
 
   .charter-entry {
-    padding: 0.25rem 1rem;
+    padding: 0.35rem 1rem;
     font-size: 0.78rem;
     line-height: 1.4;
-    display: flex;
-    gap: 0.5rem;
   }
+  .charter-entry + .charter-entry { margin-top: 0.25rem; }
   .charter-key {
     color: #a89044;
-    font-weight: 500;
-    white-space: nowrap;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
-  .charter-key::after { content: ":"; }
   .charter-value {
     color: #8a8a98;
+    margin-top: 0.1rem;
   }
 
   main {

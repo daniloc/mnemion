@@ -48,7 +48,7 @@ const SYSTEM_DOCS_SEED = [
 // facet metadata together. The full kernel surface is visible by scanning
 // this array.
 
-interface KernelFacet { name: string; type: string; required: boolean }
+interface KernelFacet { name: string; type: string; required: boolean; options?: string[] }
 
 interface KernelTable {
   name: string;
@@ -191,6 +191,26 @@ Scopes:
     facets: [
       { name: "key", type: "text", required: true },
       { name: "value", type: "text", required: true },
+    ],
+  },
+  {
+    name: "_system_tasks",
+    description: "Maintenance jobs. Create an entry to dispatch a task. Status updates automatically as the task runs.",
+    doctrine: "Create a task when the human requests maintenance like reindexing vectors. Do not create tasks speculatively.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_system_tasks" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "task" TEXT NOT NULL,
+      "status" TEXT NOT NULL DEFAULT 'pending',
+      "result" TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    facets: [
+      { name: "task", type: "select", required: true, options: ["seed_vectors"] },
+      { name: "status", type: "select", required: false, options: ["pending", "running", "done", "failed"] },
+      { name: "result", type: "text", required: false },
     ],
   },
   {
@@ -405,8 +425,8 @@ export function initializeSchema(db: any): void {
     );
     for (const f of table.facets) {
       db.exec(
-        "INSERT OR IGNORE INTO _fields (object_name, name, type, required) VALUES (?, ?, ?, ?)",
-        table.name, f.name, f.type, f.required ? 1 : 0
+        "INSERT OR IGNORE INTO _fields (object_name, name, type, required, options) VALUES (?, ?, ?, ?, ?)",
+        table.name, f.name, f.type, f.required ? 1 : 0, f.options ? JSON.stringify(f.options) : null
       );
     }
   }

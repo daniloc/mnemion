@@ -21,15 +21,15 @@ export class SessionDO extends McpAgent<Env, unknown, AuthProps> {
   server = new McpServer(
     { name: URI_SCHEME, version: "0.5.0" },
     {
-      instructions: `${PRODUCT_NAME} is persistent shared memory. Read ${uri("_system/tools")} before your first action for full capability reference.
+      instructions: `${PRODUCT_NAME} is persistent shared memory. Call prime with your conversational context as your first action — it returns the hive charter, relevant entries, and linked context in one call.
 
-Key capabilities agents commonly miss:
-- mutate accepts a batch parameter — an array of {pattern, operation, data} for atomic all-or-nothing execution (max 100 ops). Use it to combine multiple writes into one call.
-- Update operations support optimistic locking via the version field. Include version from a prior read to prevent lost updates when multiple surfaces write concurrently.
-- Facets support foreign key links to other patterns. Use the links parameter in propose_change.
-- ${uri("mutation")} is an audit log for diagnostics. Use it instead of querying entries to verify data integrity.
-- For large content that exceeds MCP parameter limits, mint an upload token via mutate on _access_tokens with scope "upload", then POST content to /upload/{token} via HTTP.
-- apply_change supports revert_history_id for point-in-time rollback via Cloudflare PITR (30-day window).`,
+Key capabilities:
+- prime: pass conversational context, get back charter + semantically relevant entries + linked entries. Your universal onramp.
+- mutate: create, update, archive. Supports batch (array of ops, atomic). Optimistic locking via version field.
+- propose_change / apply_change: schema evolution. Supports revert via PITR (30-day window).
+- resolve: read by ${URI_SCHEME}:// URI. Returns linked entries one hop deep.
+- query: filtered reads. search: cross-pattern full-text.
+- ${uri("_system/")} has detailed reference docs if needed.`,
     },
   );
 
@@ -44,12 +44,17 @@ Key capabilities agents commonly miss:
   async init() {
     const hive = this.getHive();
 
-    // === Inject charter into instructions ===
-    const charter = await hive.getCharter();
-    if (Object.keys(charter).length > 0) {
-      const charterLines = Object.entries(charter).map(([k, v]) => `- ${k}: ${v}`).join("\n");
+    // === Inject working memory into instructions ===
+    const recentJson = await hive.getRecentActivity(10);
+    const recent = JSON.parse(recentJson) as { pattern: string; id: number; summary: string; updated_at: string }[];
+
+    if (recent.length > 0) {
+      const lines = recent.map(r =>
+        `- ${r.pattern}/${r.id}: ${r.summary || "(no preview)"}`,
+      ).join("\n");
+      const briefing = `=== Working Memory ===\n${lines}\n\n`;
       const base = (this.server as any)._instructions ?? "";
-      (this.server as any)._instructions = `=== Hive Charter ===\n${charterLines}\n\n${base}`;
+      (this.server as any)._instructions = briefing + base;
     }
 
     // === Resources (stable, cacheable, subscribable) ===
@@ -129,9 +134,7 @@ Key capabilities agents commonly miss:
     // resolve — the universal reader. One tool, the URI is the API.
     this.server.tool(
       "resolve",
-      `Read anything by its ${URI_SCHEME}:// address. The URI scheme is the API.
-
-IMPORTANT: Start every session by reading ${uri("_system/tools")} for full capability reference.
+      `Read anything by its ${URI_SCHEME}:// address. Returns linked entries one hop deep for entry URIs.
 
 Valid URIs:
 - ${uri("index")} — master index (orientation, what patterns exist)
@@ -357,6 +360,28 @@ For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (
     );
 
     this.server.tool(
+      "prime",
+      `Auto-associative priming. Pass conversational context and get back the most relevant entries across all patterns, ranked by semantic similarity. Each result includes the full entry, its URI, and any linked entries one hop away.
+
+Use prime when starting a session, changing topics, or whenever you need to recall what's relevant to the current conversation. It replaces the pattern of reading the index then querying — instead, describe what you're thinking about and the hive activates.`,
+      {
+        context: z.string().describe("What you're thinking about — conversational context, a question, a topic. The cue that activates relevant memories."),
+        patterns: z.array(z.string()).optional().describe("Limit priming to these patterns (default: all)"),
+        limit: z.number().optional().describe("Max results (default: 5, max: 20)"),
+      },
+      async ({ context, patterns, limit }) => {
+        const result = await hive.prime(
+          context,
+          patterns ? JSON.stringify(patterns) : "",
+          limit ?? 5
+        );
+        return {
+          content: [{ type: "text" as const, text: result }],
+        };
+      }
+    );
+
+    this.server.tool(
       "mutate",
       `Create, update, or archive entries. One tool for all writes.
 
@@ -455,5 +480,6 @@ Entries limited to ~1 MB each.`,
         };
       }
     );
+
   }
 }

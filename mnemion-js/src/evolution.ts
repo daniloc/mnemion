@@ -130,6 +130,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         doctrine: change.doctrine,
         facets: change.facets.map(facetToIndexEntry),
         entry_count: 0,
+        latest_activity: null,
       });
     },
     apply(change, { db }) {

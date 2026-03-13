@@ -12,7 +12,7 @@ import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/mark
 // Pages
 import { schemaPage, queryIndex, queryEntries, mutateEntry, evolveSchema, liveSocket } from "./routes/pages";
 // Dev
-import { seedTestData } from "./routes/dev";
+import { seedTestData, seedVectors } from "./routes/dev";
 
 // Re-export DO classes for wrangler
 export { SessionDO, HiveDO };
@@ -49,8 +49,9 @@ const routes: Route[] = [
   { method: Method.POST, pattern: "/api/evolve",           auth: Auth.SESSION, handler: evolveSchema },
   { method: Method.GET,  pattern: "/ws",                   auth: Auth.SESSION, handler: liveSocket },
 
-  // Marketplace
+  // Dev / Admin
   { method: Method.ANY,  pattern: "/dev/seed",              auth: Auth.DEV, handler: seedTestData },
+  { method: Method.ANY,  pattern: "/dev/seed-vectors",      auth: Auth.SECRET, handler: seedVectors },
   { method: Method.ANY,  pattern: "/dev/seed-marketplace", auth: Auth.DEV, handler: seedMarketplace },
   { method: Method.ANY,  pattern: "/marketplace/token",    auth: Auth.SECRET, handler: marketplaceToken },
   { method: Method.ANY,  pattern: "/marketplace*",         handler: marketplaceGit },

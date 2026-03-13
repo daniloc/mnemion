@@ -104,6 +104,13 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 
+  _system_tasks(data) {
+    if (!data.task) return { error: true, message: "task is required" };
+    data.status = "pending";
+    delete data.result;
+    return data;
+  },
+
   _shared(data, ctx) {
     if (!data.source_pattern) return { error: true, message: "source_pattern is required for _shared" };
     if (data.source_id == null) return { error: true, message: "source_id is required for _shared" };
