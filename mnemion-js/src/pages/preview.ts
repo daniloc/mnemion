@@ -3,11 +3,11 @@ import SchemaViewer from './SchemaViewer.svelte';
 
 // Mock data — edit to match what you're designing for
 const props = {
-  guidance: 'Mnemion is active. 4 patterns, 2 conventions.',
-  conventions: [
-    'Use kebab-case for pattern names',
-    'Prefer text facets for human-readable identifiers',
-  ],
+  guidance: 'Mnemion is active. 4 patterns.',
+  charter: {
+    owner: 'Preview User — testing the schema viewer',
+    purpose: 'Local development preview with mock data',
+  },
   patterns: [
     {
       name: 'research-threads',
@@ -133,10 +133,24 @@ const mockEntries: Record<string, any[]> = {
   ],
 };
 
-// Intercept fetch for /api/query/* in preview mode
+// Intercept fetch for /api/* in preview mode
 const originalFetch = window.fetch;
 window.fetch = async (input, init) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+  if (url === '/api/tools') {
+    const { TOOLS } = await import('../tools');
+    return new Response(JSON.stringify(TOOLS), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (url === '/api/index') {
+    return new Response(JSON.stringify({ patterns: props.patterns, charter: props.charter }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const match = url.match(/^\/api\/query\/(.+)$/);
   if (match) {
     const pattern = match[1];

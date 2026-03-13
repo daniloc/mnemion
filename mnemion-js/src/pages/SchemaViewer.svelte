@@ -42,6 +42,23 @@
   let selectedEntry: Record<string, unknown> | null = $state(null);
   let landingView: 'patterns' | 'links' | 'tools' = $state('patterns');
 
+  interface ToolMeta {
+    name: string;
+    description: string;
+    when: string;
+  }
+  let tools: ToolMeta[] = $state([]);
+  let toolsLoaded = $state(false);
+
+  async function loadTools() {
+    if (toolsLoaded) return;
+    try {
+      const res = await fetch('/api/tools');
+      tools = await res.json();
+      toolsLoaded = true;
+    } catch {}
+  }
+
   let visible = $derived(
     patterns.filter(p =>
       p.name.toLowerCase().includes(filter.toLowerCase())
@@ -559,9 +576,35 @@
           <div class="landing-toggle">
             <button class:active={landingView === 'patterns'} onclick={() => { landingView = 'patterns'; }}>patterns</button>
             <button class:active={landingView === 'links'} onclick={() => { landingView = 'links'; }}>links</button>
+            <button class:active={landingView === 'tools'} onclick={() => { landingView = 'tools'; loadTools(); }}>tools</button>
           </div>
           {#if landingView === 'links'}
             <LinkMap {patterns} onselect={(pn, eid) => { const p = patterns.find(x => x.name === pn); if (p) selectPattern(p, eid); }} />
+          {:else if landingView === 'tools'}
+            <div class="tools-guide">
+              {#if tools.length === 0}
+                <p class="status">loading…</p>
+              {:else}
+                <table class="tools-table">
+                  <thead>
+                    <tr>
+                      <th>tool</th>
+                      <th>purpose</th>
+                      <th>when to use</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each tools as tool (tool.name)}
+                      <tr>
+                        <td class="tool-name">{tool.name}</td>
+                        <td>{tool.description.split('\n')[0]}</td>
+                        <td>{tool.when}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              {/if}
+            </div>
           {:else}
             <HiveMap {patterns} onselect={(p) => selectPattern(p)} />
           {/if}
@@ -1074,4 +1117,51 @@
     cursor: pointer;
   }
   .field-select:focus { border-color: #e8c872; outline: none; }
+
+  /* Tools guide */
+  .tools-guide {
+    padding: 2rem;
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  .tools-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .tools-table th {
+    border-bottom: 1px solid #1a1a22;
+  }
+
+  .tools-table td {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    font-size: 0.85rem;
+    color: #8a8a98;
+    padding: 0.8rem 1rem;
+    border-bottom: 1px solid #111118;
+    line-height: 1.5;
+    vertical-align: top;
+  }
+
+  .tools-table .tool-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    color: #e8c872;
+    font-weight: 600;
+    white-space: nowrap;
+    padding-right: 2rem;
+  }
+
+  .tools-table td:nth-child(2),
+  .tools-table td:nth-child(3) {
+    width: 42%;
+  }
+
+  .tools-table td:last-child {
+    color: #6a6a78;
+    font-size: 0.8rem;
+  }
+
+  .tools-table tr:hover td { background: #0e0e14; }
 </style>

@@ -10,7 +10,7 @@ import { serveSharedEntry, serveOutput, receiveInput, upload } from "./routes/io
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/marketplace";
 // Pages
-import { schemaPage, queryIndex, queryEntries, mutateEntry, evolveSchema, liveSocket } from "./routes/pages";
+import { schemaPage, queryIndex, queryEntries, queryTools, mutateEntry, evolveSchema, liveSocket } from "./routes/pages";
 // Dev
 import { seedTestData, seedVectors } from "./routes/dev";
 
@@ -44,6 +44,7 @@ const routes: Route[] = [
   // Pages
   { method: Method.GET,  pattern: "/schema",               auth: Auth.SESSION, handler: schemaPage },
   { method: Method.GET,  pattern: "/api/index",            auth: Auth.SESSION, handler: queryIndex },
+  { method: Method.GET,  pattern: "/api/tools",             auth: Auth.SESSION, handler: queryTools },
   { method: Method.GET,  pattern: "/api/query/:pattern",   auth: Auth.SESSION, handler: queryEntries },
   { method: Method.POST, pattern: "/api/mutate/:pattern",  auth: Auth.SESSION, handler: mutateEntry },
   { method: Method.POST, pattern: "/api/evolve",           auth: Auth.SESSION, handler: evolveSchema },

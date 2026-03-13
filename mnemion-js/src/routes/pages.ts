@@ -1,4 +1,5 @@
 import type { RouteHandler } from "../router";
+import { TOOLS } from "../tools";
 // @ts-ignore — compiled Svelte SSR bundle
 import { renderSchemaViewer } from "../../dist/server/entry-server.mjs";
 // @ts-ignore — text import via wrangler rules
@@ -63,6 +64,10 @@ export const evolveSchema: RouteHandler = async (ctx) => {
   if (proposed.error) return Response.json(proposed);
   const applied = JSON.parse(await ctx.hive.applyChange(proposed.change_id));
   return Response.json(applied);
+};
+
+export const queryTools: RouteHandler = async () => {
+  return Response.json(TOOLS);
 };
 
 export const liveSocket: RouteHandler = async (ctx) => {
