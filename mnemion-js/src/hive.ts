@@ -253,6 +253,7 @@ export class HiveDO extends DurableObject {
     return {
       db: this.db,
       patternExists: (name) => this.patternExists(name),
+      listPatterns: () => this.db.exec("SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray().map((r: any) => r.name as string),
       entryExists: (pattern, id) => this.entryExists(pattern, id),
       hasKernelVersion: (name) => this.hasKernelVersion(name),
       facetMeta: (pattern, facet) => {

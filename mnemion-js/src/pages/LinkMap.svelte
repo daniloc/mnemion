@@ -144,6 +144,19 @@
       }
     }
 
+    // Also fetch _links junction table entries
+    try {
+      const res = await fetch('/api/query/_links');
+      const data = await res.json();
+      const junctionLinks = (data.entries || []) as Record<string, unknown>[];
+      for (const jl of junctionLinks) {
+        const sourceKey = `${jl.source_pattern}:${jl.source_id}`;
+        const targetKey = `${jl.target_pattern}:${jl.target_id}`;
+        inboundCount.set(targetKey, (inboundCount.get(targetKey) || 0) + 1);
+        rawLinks.push({ sourceKey, targetKey });
+      }
+    } catch { /* _links may not exist */ }
+
     // Only include entries that participate in links (have inbound refs or make outbound refs)
     const participantKeys = new Set<string>();
     for (const l of rawLinks) {

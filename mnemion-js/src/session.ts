@@ -407,11 +407,11 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           try { singleData = JSON.parse(singleData); } catch { /* fall through */ }
         }
         // Resolve operation from shortcut if omitted
-        let resolvedOp = operation;
+        let resolvedOp: string | undefined = operation;
         if (!resolvedOp && pattern) {
           const { expandShortcut } = await import("./kernel");
           const shortcut = expandShortcut(pattern);
-          if (shortcut) resolvedOp = shortcut.operation as typeof operation;
+          if (shortcut) resolvedOp = shortcut.operation;
         }
 
         if (!pattern || !resolvedOp || !singleData || typeof singleData !== "object" || Array.isArray(singleData)) {
