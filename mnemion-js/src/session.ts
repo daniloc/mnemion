@@ -364,12 +364,12 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       toolDesc("mutate"),
       {
         pattern: z.string().optional().describe("Pattern name (for single operation; ignored for batch)"),
-        operation: z.enum(["create", "update", "archive", "patch", "batch"]).optional().describe("create, update, archive, patch, or batch. Optional for shortcuts (e.g. pattern: \"fragment\" implies create)."),
+        operation: z.enum(["create", "update", "archive", "unarchive", "patch", "batch"]).optional().describe("create, update, archive, unarchive, patch, or batch. Optional for shortcuts (e.g. pattern: \"fragment\" implies create)."),
         data: z.union([
           z.record(z.string(), z.unknown()).describe("For single ops: {facet: value, ...}. For update: include version for optimistic locking. For patch: {id, facet, match, replacement}."),
           z.array(z.object({
             pattern: z.string(),
-            operation: z.enum(["create", "update", "archive", "patch"]),
+            operation: z.enum(["create", "update", "archive", "unarchive", "patch"]),
             data: z.record(z.string(), z.unknown()),
           })).describe("For batch: array of {pattern, operation, data} items."),
         ]),
