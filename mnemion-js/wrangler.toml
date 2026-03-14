@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+[vars]
+WORKER_HOST = "your-worker.workers.dev"
+
 # KV namespace for OAuth tokens
 [[kv_namespaces]]
 binding = "OAUTH_KV"
@@ -49,6 +52,9 @@ renamed_classes = [{from = "StoreDO", to = "HiveDO"}]
 [env.test]
 name = "mnemion-test"
 
+[env.test.vars]
+WORKER_HOST = "your-test-worker.workers.dev"
+
 [[env.test.kv_namespaces]]
 binding = "OAUTH_KV"
 id = "REPLACE_ME"
@@ -68,6 +74,9 @@ new_sqlite_classes = ["SessionDO", "HiveDO"]
 # === House environment (friend's instance) ===
 [env.house]
 name = "mnemion-house"
+
+[env.house.vars]
+WORKER_HOST = "your-other-worker.workers.dev"
 
 [[env.house.kv_namespaces]]
 binding = "OAUTH_KV"

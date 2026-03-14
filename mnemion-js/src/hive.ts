@@ -7,6 +7,7 @@ import * as cred from "./credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
 import * as priming from "./prime";
+import * as web from "./web";
 
 // === Types ===
 
@@ -50,7 +51,7 @@ export class HiveDO extends DurableObject {
   constructor(ctx: DurableObjectState, env: any) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      initializeSchema(this.db);
+      initializeSchema(this.db, env);
     });
   }
 
@@ -367,11 +368,44 @@ export class HiveDO extends DurableObject {
     }, null, 2);
   }
 
+  // === Web resolution (delegated to web.ts) ===
+
+  private webCtx(): web.WebContext {
+    return { env: this.env as any, db: this.db };
+  }
+
+  private async resolveWeb(url: string): Promise<string> {
+    const result = await web.resolveWeb(this.webCtx(), url);
+
+    if (result.metadata?.error) {
+      return this.errorJson(result.metadata.message as string);
+    }
+
+    // Embed fresh fetches for prime recall
+    if (!result.cached && result.content) {
+      try {
+        const cached = this.db.exec(
+          `SELECT id FROM "_web_cache" WHERE url = ? AND archived_at IS NULL ORDER BY id DESC LIMIT 1`, url
+        ).toArray() as any[];
+        if (cached.length > 0) {
+          this.ctx.waitUntil(priming.embedEntry(this.primeCtx(), "_web_cache", cached[0].id));
+        }
+      } catch { /* best-effort */ }
+    }
+
+    return JSON.stringify(result, null, 2);
+  }
+
   // === URI resolution ===
 
   async resolve(input: string): Promise<string> {
+    // https:// and http:// URLs → web resolution
+    if (input.startsWith("https://") || input.startsWith("http://")) {
+      return this.resolveWeb(input);
+    }
+
     const match = input.match(new RegExp(`^${URI_SCHEME}://(.+)$`));
-    if (!match) return this.errorJson(`Invalid URI scheme. Expected ${URI_PREFIX} URI, got: ${input}`);
+    if (!match) return this.errorJson(`Invalid URI scheme. Expected ${URI_PREFIX} URI or https:// URL, got: ${input}`);
 
     const path = match[1];
 

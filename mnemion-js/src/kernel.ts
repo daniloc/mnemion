@@ -104,6 +104,14 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 
+  _web_cache(data) {
+    if (!data.url) return { error: true, message: "url is required for _web_cache" };
+    if (!data.content) return { error: true, message: "content is required for _web_cache" };
+    if (!data.source_adapter) return { error: true, message: "source_adapter is required for _web_cache" };
+    if (!data.fetched_at) data.fetched_at = new Date().toISOString();
+    return data;
+  },
+
   _system_tasks(data) {
     if (!data.task) return { error: true, message: "task is required" };
     data.status = "pending";

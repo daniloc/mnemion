@@ -214,6 +214,35 @@ Scopes:
     ],
   },
   {
+    name: "_web_cache",
+    description: "Cached web content fetched via resolve(). Entries are automatically created when resolving https:// URLs. Cached content expires based on the source adapter's TTL.",
+    doctrine: "Managed automatically by the web resolution system. Do not create entries directly — use resolve with an https:// URL instead.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_web_cache" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "url" TEXT NOT NULL,
+      "content" TEXT NOT NULL,
+      "source_adapter" TEXT NOT NULL,
+      "metadata" TEXT,
+      "fetched_at" TEXT NOT NULL DEFAULT (datetime('now')),
+      "expires_at" TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_web_cache_url_active" ON "_web_cache" ("url") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "url", type: "text", required: true },
+      { name: "content", type: "text", required: true },
+      { name: "source_adapter", type: "text", required: true },
+      { name: "metadata", type: "text", required: false },
+      { name: "fetched_at", type: "datetime", required: false },
+      { name: "expires_at", type: "datetime", required: true },
+    ],
+  },
+  {
     name: "_system_docs",
     description: "System documentation for agent orientation. Editable but requires confirmation. Set content to null to restore defaults.",
     doctrine: "Read before acting. Edit content only when the human requests it. Set content to null to restore defaults. Never modify default_content.",
@@ -238,7 +267,7 @@ Scopes:
 
 // === Initialization ===
 
-export function initializeSchema(db: any): void {
+export function initializeSchema(db: any, env?: { WORKER_HOST?: string }): void {
   // --- Core schema tables ---
 
   db.exec(`CREATE TABLE IF NOT EXISTS _objects (
@@ -412,6 +441,35 @@ export function initializeSchema(db: any): void {
         ...(wasDefault
           ? [doc.content, doc.title, doc.content, existing[0].id]
           : [doc.content, doc.title, existing[0].id])
+      );
+    }
+  }
+
+  // --- Instance info doc (seeded from env, not from file) ---
+
+  if (env?.WORKER_HOST) {
+    const instanceContent = `# Instance Info
+
+- **Host**: ${env.WORKER_HOST}
+- **Base URL**: https://${env.WORKER_HOST}
+- **MCP endpoint**: https://${env.WORKER_HOST}/mcp
+- **Upload endpoint**: https://${env.WORKER_HOST}/upload/{token}
+- **Shared entries**: https://${env.WORKER_HOST}/o/entry/{pattern}/{id}
+- **Egress outputs**: https://${env.WORKER_HOST}/o/{path}
+- **Ingress inputs**: https://${env.WORKER_HOST}/i/{path}`;
+
+    const existing = db.exec(
+      `SELECT id, default_content FROM "_system_docs" WHERE slug = 'instance'`
+    ).toArray() as any[];
+    if (existing.length === 0) {
+      db.exec(
+        `INSERT INTO "_system_docs" (slug, title, content, default_content) VALUES ('instance', 'Instance Info', ?, ?)`,
+        instanceContent, instanceContent
+      );
+    } else if (existing[0].default_content !== instanceContent) {
+      db.exec(
+        `UPDATE "_system_docs" SET default_content = ?, content = ?, title = 'Instance Info', updated_at = datetime('now') WHERE slug = 'instance'`,
+        instanceContent, instanceContent
       );
     }
   }

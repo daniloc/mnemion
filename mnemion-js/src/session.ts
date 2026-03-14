@@ -141,7 +141,7 @@ Key capabilities:
       "resolve",
       toolDesc("resolve"),
       {
-        uri: z.string().describe(`A ${URI_SCHEME}:// URI — local or foreign (e.g. ${URI_SCHEME}://other.host.dev/path)`),
+        uri: z.string().describe(`A ${URI_SCHEME}:// URI, or an https:// URL to fetch web content. Examples: ${URI_SCHEME}://entry/notes/1, https://bsky.app/profile/user/post/abc`),
       },
       async ({ uri: resolveUri }) => {
         const result = await hive.resolve(resolveUri);

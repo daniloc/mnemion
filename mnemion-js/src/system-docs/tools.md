@@ -56,7 +56,7 @@ Schema changes are permanent and logged in `{{uri:history}}`. Propose first, rev
 When content is too large for MCP tool parameters (e.g. research results, file contents), use the upload token flow:
 
 1. Mint a token: `mutate({ pattern: "_access_tokens", operation: "create", data: { scope: "upload", constraints: { target_pattern, target_id, target_facet, mode } } })`
-2. POST content: `curl -X POST https://<host>/upload/<token> -d @file.txt`
+2. POST content: `POST https://<host>/upload/<token>` (see `{{uri:_system/instance}}` for your worker hostname)
 
 Properties:
 - `mode`: `replace` (default) overwrites the facet, `append` concatenates to existing content

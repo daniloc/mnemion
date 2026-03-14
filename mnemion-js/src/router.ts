@@ -8,6 +8,9 @@ export interface Env {
   MNEMION_HIVE: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace;
   MNEMION_SECRET: string;
+  WORKER_HOST?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
 }
 
 export enum Method {

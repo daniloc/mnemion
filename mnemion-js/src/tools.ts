@@ -45,7 +45,7 @@ Entries limited to ~1 MB each.`,
   },
   {
     name: "resolve",
-    description: `Read anything by its ${URI_SCHEME}:// address. Returns linked entries one hop deep for entry URIs.
+    description: `Read anything by its ${URI_SCHEME}:// address or https:// URL. Returns linked entries one hop deep for entry URIs.
 
 Valid URIs:
 - ${uri("index")} — master index (orientation, what patterns exist)
@@ -58,11 +58,17 @@ Valid URIs:
 - ${uri("mutation")} — mutation audit log (supports ?limit=N). Use for diagnostics and integrity checks.
 - ${uri("mutation/{pattern}")} — mutations filtered to one pattern
 
+Web URLs: pass any https:// URL to fetch and cache web content.
+- Bluesky threads (bsky.app/profile/*/post/*) are fetched via AT Protocol API — no scraping needed.
+- Other URLs use Cloudflare Browser Rendering (requires CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN secrets).
+- Cached content appears in prime results for future recall.
+- Stale cache returned if re-fetch fails.
+
 Federation: foreign hive URIs resolve over HTTP.
 - ${URI_SCHEME}://host.example.com/path → GET https://host.example.com/o/path
 - Private access: append ?token=<auth_code> for Bearer authentication
 - Public responses are cached at the Cloudflare edge`,
-    when: "Following URIs from prime results. Reading system docs. Cross-hive federation.",
+    when: "Following URIs from prime results. Reading system docs. Cross-hive federation. Reading web pages and social threads.",
   },
   {
     name: "propose_change",
