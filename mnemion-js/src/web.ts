@@ -31,16 +31,16 @@ const WEB_ADAPTERS: WebAdapter[] = [
 export async function resolveWeb(
   ctx: WebContext,
   rawUrl: string,
-): Promise<{ content: string; url: string; source_adapter: string; cached: boolean; stale?: boolean; metadata?: Record<string, unknown> }> {
+): Promise<{ content: string; url: string; source: string; cached: boolean; stale?: boolean; metadata?: Record<string, unknown> }> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
   } catch {
-    return { content: "", url: rawUrl, source_adapter: "none", cached: false, metadata: { error: true, message: "Invalid URL" } };
+    return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Invalid URL" } };
   }
 
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return { content: "", url: rawUrl, source_adapter: "none", cached: false, metadata: { error: true, message: "Only http:// and https:// URLs are supported" } };
+    return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Only http:// and https:// URLs are supported" } };
   }
 
   // Check cache first
@@ -49,7 +49,7 @@ export async function resolveWeb(
     return {
       content: cached.content,
       url: rawUrl,
-      source_adapter: cached.source_adapter,
+      source: cached.source_adapter,
       cached: true,
       metadata: cached.metadata ? JSON.parse(cached.metadata) : undefined,
     };
@@ -58,7 +58,7 @@ export async function resolveWeb(
   // Find matching adapter
   const adapter = WEB_ADAPTERS.find(a => a.match(parsed));
   if (!adapter) {
-    return { content: "", url: rawUrl, source_adapter: "none", cached: false, metadata: { error: true, message: "No adapter matched" } };
+    return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "No adapter matched" } };
   }
 
   // Fetch via adapter
@@ -72,7 +72,7 @@ export async function resolveWeb(
     return {
       content: result.content,
       url: rawUrl,
-      source_adapter: adapter.name,
+      source: adapter.name,
       cached: false,
       metadata: result.metadata,
     };
@@ -82,7 +82,7 @@ export async function resolveWeb(
       return {
         content: cached.content,
         url: rawUrl,
-        source_adapter: cached.source_adapter,
+        source: cached.source_adapter,
         cached: true,
         stale: true,
         metadata: cached.metadata ? JSON.parse(cached.metadata) : undefined,
@@ -91,7 +91,7 @@ export async function resolveWeb(
     return {
       content: "",
       url: rawUrl,
-      source_adapter: adapter.name,
+      source: adapter.name,
       cached: false,
       metadata: { error: true, message: `Fetch failed: ${err.message}` },
     };

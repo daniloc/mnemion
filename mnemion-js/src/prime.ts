@@ -18,7 +18,7 @@ export interface PrimeContext {
 export interface PrimeResult {
   pattern: string;
   id: number;
-  score: number;
+  relevance: number;
   entry: Record<string, unknown>;
   uri: string;
   linked?: { pattern: string; id: number; entry: Record<string, unknown>; uri: string }[];
@@ -134,10 +134,11 @@ export async function prime(
     const allowed = new Set(patterns);
     filtered = filtered.filter((m: any) => allowed.has(m.metadata?.pattern));
   } else {
-    // Default: exclude kernel patterns (system noise, not working memory)
+    // Default: exclude kernel patterns (system noise) but keep working memory
+    const KERNEL_INCLUDE = new Set(["_short_term_fragments", "_long_term_fragments"]);
     filtered = filtered.filter((m: any) => {
       const p = m.metadata?.pattern as string;
-      return p && !p.startsWith("_");
+      return p && (!p.startsWith("_") || KERNEL_INCLUDE.has(p));
     });
   }
 
@@ -161,7 +162,7 @@ export async function prime(
     const result: PrimeResult = {
       pattern,
       id: entryId,
-      score: match.score,
+      relevance: Math.round(match.score * 100) / 100,
       entry,
       uri: uri(`entry/${pattern}/${entryId}`),
     };

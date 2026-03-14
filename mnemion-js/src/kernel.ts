@@ -104,6 +104,11 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 
+  _short_term_fragments(data) {
+    if (!data.content) return { error: true, message: "content is required for _short_term_fragments" };
+    return data;
+  },
+
   _web_cache(data) {
     if (!data.url) return { error: true, message: "url is required for _web_cache" };
     if (!data.content) return { error: true, message: "content is required for _web_cache" };
@@ -133,6 +138,19 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 };
+
+// === Mutate shortcuts — kernel-level aliases for common operations ===
+
+export interface Shortcut { pattern: string; operation: string }
+
+export const SHORTCUTS: Record<string, Shortcut> = {
+  fragment: { pattern: "_short_term_fragments", operation: "create" },
+};
+
+/** Expand a shortcut name to pattern + operation, or return null if not a shortcut. */
+export function expandShortcut(name: string): Shortcut | null {
+  return SHORTCUTS[name] ?? null;
+}
 
 // === Scope matching ===
 

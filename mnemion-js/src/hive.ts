@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
-import { IMMUTABLE } from "./kernel";
+import { IMMUTABLE, expandShortcut } from "./kernel";
 import * as cred from "./credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
@@ -272,6 +272,13 @@ export class HiveDO extends DurableObject {
   }
 
   async mutate(patternName: string, operation: string, dataJson: string): Promise<string> {
+    // Expand shortcuts: "fragment" → _short_term_fragments + create
+    const shortcut = expandShortcut(patternName);
+    if (shortcut) {
+      patternName = shortcut.pattern;
+      operation = shortcut.operation;
+    }
+
     const result = data.executeMutate(this.dataCtx(), patternName, operation, JSON.parse(dataJson));
     if (!result.error) {
       this.broadcastChange([patternName]);
@@ -621,7 +628,65 @@ export class HiveDO extends DurableObject {
       if (rows.length > 0) capabilities = rows[0].content ?? rows[0].default_content;
     } catch { /* not seeded yet */ }
 
-    return JSON.stringify({ charter, capabilities, ...primeResult }, null, 2);
+    // Pattern directory: non-kernel patterns with counts and descriptions
+    const patternDir: { name: string; description: string; entries: number }[] = [];
+    try {
+      const objs = this.db.exec(
+        `SELECT name, description FROM _objects WHERE archived_at IS NULL AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name`
+      ).toArray() as { name: string; description: string }[];
+      for (const obj of objs) {
+        try {
+          const r = this.db.exec(
+            `SELECT COUNT(*) as c FROM "${obj.name}" WHERE archived_at IS NULL`
+          ).one() as { c: number };
+          patternDir.push({ name: obj.name, description: obj.description, entries: r.c });
+        } catch {
+          patternDir.push({ name: obj.name, description: obj.description, entries: 0 });
+        }
+      }
+    } catch { /* fresh instance */ }
+
+    // Promote short-term fragments that surface repeatedly (access_count >= 3)
+    const PROMOTION_THRESHOLD = 3;
+    try {
+      const fragmentHits = primeResult.results
+        .filter(r => r.pattern === "_short_term_fragments")
+        .map(r => r.id);
+      for (const id of fragmentHits) {
+        this.db.exec(
+          `UPDATE "_short_term_fragments" SET access_count = access_count + 1, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`, id
+        );
+        const row = this.db.exec(
+          `SELECT access_count, content, context FROM "_short_term_fragments" WHERE id = ?`, id
+        ).one() as any;
+        if (row && row.access_count >= PROMOTION_THRESHOLD) {
+          // Promote to long-term
+          this.db.exec(
+            `INSERT INTO "_long_term_fragments" (content, context, source_id) VALUES (?, ?, ?)`,
+            row.content, row.context, id
+          );
+          this.db.exec(
+            `UPDATE "_short_term_fragments" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`, id
+          );
+          // Embed the new long-term entry
+          const promoted = this.db.exec(
+            `SELECT id FROM "_long_term_fragments" WHERE source_id = ? ORDER BY id DESC LIMIT 1`, id
+          ).one() as any;
+          if (promoted) {
+            this.ctx.waitUntil(priming.embedEntry(this.primeCtx(), "_long_term_fragments", promoted.id));
+          }
+        }
+      }
+    } catch { /* best-effort */ }
+
+    return JSON.stringify({
+      charter,
+      capabilities,
+      patterns: patternDir,
+      practice: "Always write notes to yourself as you work: mutate(pattern: \"fragment\", data: {content: \"your observation\"}). The next instance will arrive with no memory of this conversation — your observations are the only thing that survives. Your notes ensure the success of the long-term collaboration. Write in first person. Operation is implied.",
+      system_docs: "Resolve mnemion://_system/ for detailed reference on tools, schema evolution, conventions, and system mechanics.",
+      ...primeResult,
+    }, null, 2);
   }
 
   async seedVectors(): Promise<string> {

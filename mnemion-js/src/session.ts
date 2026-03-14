@@ -35,7 +35,9 @@ Key capabilities:
 - resolve: read by ${URI_SCHEME}:// URI. Returns linked entries one hop deep.
 - query: filtered reads. search: cross-pattern full-text.
 - ${uri("_system/")} has detailed reference docs if needed.
-- ${uri("_system/instance")} has this instance's hostname and endpoint URLs.`,
+- ${uri("_system/instance")} has this instance's hostname and endpoint URLs.
+
+Note: tools may need to be loaded before first use. If a tool call fails, load it and retry.`,
     },
   );
 
@@ -343,13 +345,13 @@ Key capabilities:
       {
         context: z.string().describe("What you're thinking about — conversational context, a question, a topic. The cue that activates relevant memories."),
         patterns: z.array(z.string()).optional().describe("Limit priming to these patterns (default: all)"),
-        limit: z.number().optional().describe("Max results (default: 5, max: 20)"),
+        limit: z.number().optional().describe("Max results (default: 10, max: 20)"),
       },
       async ({ context, patterns, limit }) => {
         const result = await hive.prime(
           context,
           patterns ? JSON.stringify(patterns) : "",
-          limit ?? 5
+          limit ?? 10
         );
         return {
           content: [{ type: "text" as const, text: result }],
@@ -362,12 +364,12 @@ Key capabilities:
       toolDesc("mutate"),
       {
         pattern: z.string().optional().describe("Pattern name (for single operation; ignored for batch)"),
-        operation: z.enum(["create", "update", "archive", "batch"]).describe("create, update, archive, or batch. For batch: data is an array of {pattern, operation, data} items."),
+        operation: z.enum(["create", "update", "archive", "patch", "batch"]).optional().describe("create, update, archive, patch, or batch. Optional for shortcuts (e.g. pattern: \"fragment\" implies create)."),
         data: z.union([
-          z.record(z.string(), z.unknown()).describe("For single ops: {facet: value, ...}. For update: include version for optimistic locking."),
+          z.record(z.string(), z.unknown()).describe("For single ops: {facet: value, ...}. For update: include version for optimistic locking. For patch: {id, facet, match, replacement}."),
           z.array(z.object({
             pattern: z.string(),
-            operation: z.enum(["create", "update", "archive"]),
+            operation: z.enum(["create", "update", "archive", "patch"]),
             data: z.record(z.string(), z.unknown()),
           })).describe("For batch: array of {pattern, operation, data} items."),
         ]),
@@ -404,7 +406,15 @@ Key capabilities:
         if (typeof singleData === "string") {
           try { singleData = JSON.parse(singleData); } catch { /* fall through */ }
         }
-        if (!pattern || !operation || !singleData || typeof singleData !== "object" || Array.isArray(singleData)) {
+        // Resolve operation from shortcut if omitted
+        let resolvedOp = operation;
+        if (!resolvedOp && pattern) {
+          const { expandShortcut } = await import("./kernel");
+          const shortcut = expandShortcut(pattern);
+          if (shortcut) resolvedOp = shortcut.operation as typeof operation;
+        }
+
+        if (!pattern || !resolvedOp || !singleData || typeof singleData !== "object" || Array.isArray(singleData)) {
           return {
             isError: true as const,
             content: [{ type: "text" as const, text: "For single operations, pass pattern, operation (create|update|archive), and data (object). For batch, pass operation 'batch' with data as array." }],
@@ -412,7 +422,7 @@ Key capabilities:
         }
 
         // Confirmation gate for system docs
-        if (pattern === "_system_docs" && (operation === "update" || operation === "create")) {
+        if (pattern === "_system_docs" && (resolvedOp === "update" || resolvedOp === "create")) {
           const confirmKey = `_system_docs_confirmed:${JSON.stringify(singleData)}`;
           const alreadyConfirmed = this.confirmed.has(confirmKey);
 
@@ -425,7 +435,7 @@ Key capabilities:
                   confirmation_required: true,
                   message: "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
                   pattern,
-                  operation,
+                  operation: resolvedOp,
                   data: singleData,
                 }, null, 2),
               }],
@@ -434,7 +444,7 @@ Key capabilities:
           this.confirmed.delete(confirmKey);
         }
 
-        const result = await hive.mutate(pattern, operation, JSON.stringify(singleData));
+        const result = await hive.mutate(pattern, resolvedOp, JSON.stringify(singleData));
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {

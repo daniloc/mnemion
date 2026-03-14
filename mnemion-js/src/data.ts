@@ -210,6 +210,66 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         return { operation: "update", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${data.id}`) };
       }
 
+      case "patch": {
+        if (!data.id) return { error: true, message: "id is required for patch" };
+        if (!data.facet) return { error: true, message: "facet is required for patch" };
+        if (typeof data.match !== "string") return { error: true, message: "match (string to find) is required for patch" };
+        if (typeof data.replacement !== "string") return { error: true, message: "replacement (string to insert) is required for patch" };
+
+        const meta = ctx.facetMeta(patternName, data.facet as string);
+        if (!meta) return { error: true, message: `Facet "${data.facet}" does not exist on "${patternName}"` };
+        if (meta.type !== "text") return { error: true, message: `Patch only works on text facets, "${data.facet}" is ${meta.type}` };
+
+        // Read current value
+        let current: string;
+        try {
+          const row = ctx.db.exec(
+            `SELECT "${data.facet}" FROM "${patternName}" WHERE id = ? AND archived_at IS NULL`, data.id
+          ).one() as any;
+          if (!row) return { error: true, message: `Entry ${data.id} not found in "${patternName}"` };
+          current = row[data.facet as string] ?? "";
+        } catch (err: any) {
+          return { error: true, message: `Patch read failed: ${err.message}` };
+        }
+
+        // Validate match uniqueness
+        const matchStr = data.match as string;
+        const firstIdx = current.indexOf(matchStr);
+        if (firstIdx === -1) return { error: true, message: `Match not found in "${data.facet}". Read the entry and provide an exact substring.` };
+        const secondIdx = current.indexOf(matchStr, firstIdx + 1);
+        if (secondIdx !== -1) return { error: true, message: `Match is ambiguous — found ${matchStr.length < 40 ? `"${matchStr}"` : "it"} more than once. Provide a longer, unique substring.` };
+
+        // Apply replacement
+        const patched = current.slice(0, firstIdx) + (data.replacement as string) + current.slice(firstIdx + matchStr.length);
+        const patchSize = estimateRecordBytes({ [data.facet as string]: patched });
+        if (patchSize > LIMITS.ENTRY_BYTES)
+          return { error: true, message: `Patched entry too large: ~${Math.round(patchSize / 1024)}KB exceeds the 1MB limit` };
+
+        const kernelVersion = ctx.hasKernelVersion(patternName);
+        if (kernelVersion) {
+          const bindings: any[] = [patched, data.id];
+          let where = `id = ? AND archived_at IS NULL`;
+          if (data.version != null) { where += ` AND version = ?`; bindings.push(data.version); }
+          ctx.db.exec(
+            `UPDATE "${patternName}" SET "${data.facet}" = ?, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
+            ...bindings
+          );
+          if (data.version != null) {
+            const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
+            if (changes.c === 0)
+              return { error: true, message: `Version conflict: entry ${data.id} in "${patternName}" has been modified. Re-read and retry.` };
+          }
+        } else {
+          ctx.db.exec(
+            `UPDATE "${patternName}" SET "${data.facet}" = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+            patched, data.id
+          );
+        }
+
+        const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = ?`, data.id).one();
+        return { operation: "patch", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${data.id}`) };
+      }
+
       case "archive": {
         if (!data.id) return { error: true, message: "id is required for archive" };
         ctx.db.exec(
@@ -219,8 +279,17 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         return { operation: "archive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
       }
 
+      case "unarchive": {
+        if (!data.id) return { error: true, message: "id is required for unarchive" };
+        ctx.db.exec(
+          `UPDATE "${patternName}" SET archived_at = NULL, updated_at = datetime('now') WHERE id = ? AND archived_at IS NOT NULL`,
+          data.id
+        );
+        return { operation: "unarchive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
+      }
+
       default:
-        return { error: true, message: `Unknown operation: ${operation}. Use create, update, or archive.` };
+        return { error: true, message: `Unknown operation: ${operation}. Use create, update, patch, archive, or unarchive.` };
     }
   } catch (err: any) {
     return { error: true, message: `Mutate failed: ${err.message}` };

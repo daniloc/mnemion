@@ -215,6 +215,48 @@ Scopes:
     ],
   },
   {
+    name: "_short_term_fragments",
+    description: "Ephemeral working memory. Write from your perspective as an agent — your observations, impressions, and insights from working with the human. Garbage collected after 30 days. Feeds vector search and surfaces in prime results when relevant.",
+    doctrine: "Write fragments from your perspective. Describe what you noticed, what surprised you, what felt important in the moment. 'The human pushed back hard on X — I think the real concern is Y.' 'This conversation revealed a pattern: when Z comes up, the energy shifts.' These are your field notes as an agent in a relationship. They exist to be found later by prime when they're relevant. Don't overthink it — write liberally, the 30-day TTL handles cleanup.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_short_term_fragments" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "content" TEXT NOT NULL,
+      "context" TEXT,
+      "access_count" INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    facets: [
+      { name: "content", type: "text", required: true },
+      { name: "context", type: "text", required: false },
+      { name: "access_count", type: "integer", required: false },
+    ],
+  },
+  {
+    name: "_long_term_fragments",
+    description: "Durable working memory. Fragments promoted automatically from _short_term_fragments after surfacing in 3+ prime calls — proof of recurring relevance. Garbage collected after 6 months.",
+    doctrine: "Do not write directly. Fragments are promoted here automatically when they prove their value by surfacing repeatedly in prime results. These are the observations that turned out to matter.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_long_term_fragments" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "content" TEXT NOT NULL,
+      "context" TEXT,
+      "source_id" INTEGER,
+      "promoted_at" TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    facets: [
+      { name: "content", type: "text", required: true },
+      { name: "context", type: "text", required: false },
+      { name: "source_id", type: "integer", required: false },
+      { name: "promoted_at", type: "datetime", required: false },
+    ],
+  },
+  {
     name: "_web_cache",
     description: "Cached web content fetched via resolve(). Entries are automatically created when resolving https:// URLs. Cached content expires based on the source adapter's TTL.",
     doctrine: "Managed automatically by the web resolution system. Do not create entries directly — use resolve with an https:// URL instead.",
@@ -406,6 +448,37 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string }): void 
     }
   } catch {}
 
+  // --- v9: add access_count to _short_term_fragments ---
+
+  try {
+    const fragCols = db.exec(`PRAGMA table_info("_short_term_fragments")`).toArray() as any[];
+    if (fragCols.length && !fragCols.some((c: any) => c.name === "access_count")) {
+      db.exec(`ALTER TABLE "_short_term_fragments" ADD COLUMN "access_count" INTEGER NOT NULL DEFAULT 0`);
+    }
+  } catch {}
+
+  // --- GC: expire short-term fragments older than 30 days ---
+
+  try {
+    db.exec(
+      `UPDATE "_short_term_fragments" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE archived_at IS NULL AND created_at < datetime('now', '-30 days')`
+    );
+    db.exec(
+      `DELETE FROM "_short_term_fragments" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days')`
+    );
+  } catch {}
+
+  // --- GC: expire long-term fragments older than 6 months ---
+
+  try {
+    db.exec(
+      `UPDATE "_long_term_fragments" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE archived_at IS NULL AND created_at < datetime('now', '-180 days')`
+    );
+    db.exec(
+      `DELETE FROM "_long_term_fragments" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days')`
+    );
+  } catch {}
+
   // --- GC: drop archived patterns older than 30 days ---
 
   try {
@@ -448,6 +521,31 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string }): void 
 
   // --- Instance info doc (seeded from env, not from file) ---
 
+  // Compute storage stats
+  let storageLine = "";
+  try {
+    const tables = db.exec("SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as { name: string }[];
+    let totalEntries = 0;
+    let totalBytes = 0;
+    for (const t of tables) {
+      try {
+        const r = db.exec(`SELECT COUNT(*) as c FROM "${t.name}" WHERE archived_at IS NULL`).one() as any;
+        totalEntries += r.c;
+        // Sum lengths of all text columns for data size estimate
+        const cols = db.exec(`PRAGMA table_info("${t.name}")`).toArray() as any[];
+        const textCols = cols.filter((c: any) => c.type === "TEXT" || c.type === "").map((c: any) => c.name);
+        if (textCols.length) {
+          const sumExpr = textCols.map((c: string) => `COALESCE(LENGTH("${c}"), 0)`).join(" + ");
+          const s = db.exec(`SELECT SUM(${sumExpr}) as bytes FROM "${t.name}" WHERE archived_at IS NULL`).one() as any;
+          totalBytes += s.bytes || 0;
+        }
+      } catch {}
+    }
+    const mutations = (db.exec("SELECT COUNT(*) as c FROM _mutation_log").one() as any).c;
+    const fmt = (b: number) => b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / (1024 * 1024)).toFixed(1)} MB`;
+    storageLine = `\n\n## Storage\n\n- **Data**: ${fmt(totalBytes)} · **Patterns**: ${tables.length} · **Active entries**: ${totalEntries} · **Mutations**: ${mutations}`;
+  } catch {}
+
   if (env?.WORKER_HOST) {
     const instanceContent = `# Instance Info
 
@@ -457,7 +555,7 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string }): void 
 - **Upload endpoint**: https://${env.WORKER_HOST}/upload/{token}
 - **Shared entries**: https://${env.WORKER_HOST}/o/entry/{pattern}/{id}
 - **Egress outputs**: https://${env.WORKER_HOST}/o/{path}
-- **Ingress inputs**: https://${env.WORKER_HOST}/i/{path}`;
+- **Ingress inputs**: https://${env.WORKER_HOST}/i/{path}${storageLine}`;
 
     const existing = db.exec(
       `SELECT id, default_content FROM "_system_docs" WHERE slug = 'instance'`

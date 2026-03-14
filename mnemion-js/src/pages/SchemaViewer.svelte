@@ -71,12 +71,15 @@
   // Determine which facet to use as the "name" for list cells
   function entryLabel(entry: Record<string, unknown>): string {
     if (!selected) return String(entry.id);
-    // Try 'name', 'title', then first text facet
-    for (const key of ['name', 'title']) {
+    // Try common label facets in priority order, then first text facet
+    for (const key of ['name', 'title', 'label', 'key', 'context']) {
       if (entry[key] && typeof entry[key] === 'string') return entry[key] as string;
     }
     const firstText = selected.facets.find(f => f.type === 'text');
-    if (firstText && entry[firstText.name]) return String(entry[firstText.name]);
+    if (firstText && entry[firstText.name]) {
+      const val = String(entry[firstText.name]);
+      return val.length > 80 ? val.slice(0, 80) + '…' : val;
+    }
     return `${selected.name} #${entry.id}`;
   }
 
@@ -795,6 +798,8 @@
     border-bottom: 1px solid #1a1a22;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
   }
 
   .list-header {
@@ -829,6 +834,7 @@
     display: flex;
     flex-direction: column;
     width: 100%;
+    min-width: 0;
     padding: 0.6rem 2rem;
     border: none;
     background: none;
@@ -1124,7 +1130,7 @@
 
   .tool-entry .tool-name {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 1rem;
+    font-size: 0.9rem;
     color: #e8c872;
     font-weight: 600;
     margin-bottom: 0.25rem;
