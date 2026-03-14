@@ -7,9 +7,9 @@
 // Internal tables (not exposed to agents) are plain DDL.
 
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
+import { TOOLS } from "./tools";
 
 // System docs — imported as raw text, placeholders resolved at load time
-import toolsRaw from "./system-docs/tools.md";
 import schemaEvolutionRaw from "./system-docs/schema-evolution.md";
 import skillsRaw from "./system-docs/skills.md";
 import conventionsRaw from "./system-docs/conventions.md";
@@ -38,8 +38,16 @@ function parseDocFile(raw: string): { slug: string; title: string; content: stri
   return { slug, title, content: body };
 }
 
+// Generate tools doc from TOOLS metadata — always in sync with tool definitions
+function generateToolsDoc(): string {
+  const sections = TOOLS.map(t =>
+    `## ${t.name}\n**When to use:** ${t.when}\n\n${t.description}`
+  ).join("\n\n");
+  return `# Tools\n\n${PRODUCT_NAME} has ${TOOLS.length} tools. New capabilities come from patterns and entries, not new tools.\n\n${sections}`;
+}
+
 const SYSTEM_DOCS_SEED = [
-  toolsRaw, schemaEvolutionRaw, skillsRaw, conventionsRaw,
+  schemaEvolutionRaw, skillsRaw, conventionsRaw,
   indexGuideRaw, remoteAccessRaw, httpIoRaw, capabilitiesRaw,
 ].map(parseDocFile);
 
@@ -497,7 +505,11 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string }): void 
 
   // --- System doc seeding ---
 
-  for (const doc of SYSTEM_DOCS_SEED) {
+  const allDocs = [
+    ...SYSTEM_DOCS_SEED,
+    { slug: "tools", title: "Tools", content: generateToolsDoc() },
+  ];
+  for (const doc of allDocs) {
     const existing = db.exec(
       `SELECT id, default_content FROM "_system_docs" WHERE slug = ?`, doc.slug
     ).toArray() as any[];

@@ -31,11 +31,13 @@ Filtered, sorted, paginated reads from a single pattern.
 Cross-pattern full-text search across all text facets. Use when you don't know which pattern holds what you need.
 
 ## mutate
-Create, update, or archive entries. One tool for all writes.
+Create, update, patch, archive, or unarchive entries. One tool for all writes.
 - `create`: provide facet values, kernel columns (id, timestamps) are auto-set
 - `update`: provide `id` + facets to change. Include `version` for optimistic locking (prevents lost updates when multiple surfaces write concurrently).
+- `patch`: provide `id`, `facet`, `match` (exact substring to find), `replacement` (string to insert). Match must appear exactly once — token-efficient for editing large entries.
 - `archive`: provide `id` only — soft-deletes, never destroys data
-- `batch`: pass an array of {object, operation, data} for atomic all-or-nothing execution (max 100 ops)
+- `unarchive`: provide `id` — restores a previously archived entry
+- `batch`: pass an array of {pattern, operation, data} for atomic all-or-nothing execution (max 100 ops)
 
 Entries are limited to ~1 MB each.
 
