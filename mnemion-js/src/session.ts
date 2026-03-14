@@ -34,7 +34,8 @@ Key capabilities:
 - propose_change / apply_change: schema evolution. Supports revert via PITR (30-day window).
 - resolve: read by ${URI_SCHEME}:// URI. Returns linked entries one hop deep.
 - query: filtered reads. search: cross-pattern full-text.
-- ${uri("_system/")} has detailed reference docs if needed.`,
+- ${uri("_system/")} has detailed reference docs if needed.
+- ${uri("_system/instance")} has this instance's hostname and endpoint URLs.`,
     },
   );
 

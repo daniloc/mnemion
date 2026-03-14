@@ -585,24 +585,15 @@
               {#if tools.length === 0}
                 <p class="status">loading…</p>
               {:else}
-                <table class="tools-table">
-                  <thead>
-                    <tr>
-                      <th>tool</th>
-                      <th>purpose</th>
-                      <th>when to use</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {#each tools as tool (tool.name)}
-                      <tr>
-                        <td class="tool-name">{tool.name}</td>
-                        <td>{tool.description.split('\n')[0]}</td>
-                        <td>{tool.when}</td>
-                      </tr>
-                    {/each}
-                  </tbody>
-                </table>
+                <div class="tools-list">
+                  {#each tools as tool (tool.name)}
+                    <div class="tool-entry">
+                      <div class="tool-name">{tool.name}</div>
+                      <div class="tool-when"><span class="tool-when-label">when to use</span> {tool.when}</div>
+                      <pre class="tool-description">{tool.description}</pre>
+                    </div>
+                  {/each}
+                </div>
               {/if}
             </div>
           {:else}
@@ -1125,43 +1116,40 @@
     flex: 1;
   }
 
-  .tools-table {
-    width: 100%;
-    border-collapse: collapse;
+  .tools-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
   }
 
-  .tools-table th {
-    border-bottom: 1px solid #1a1a22;
-  }
-
-  .tools-table td {
-    font-family: 'DM Sans', system-ui, sans-serif;
-    font-size: 0.85rem;
-    color: #8a8a98;
-    padding: 0.8rem 1rem;
-    border-bottom: 1px solid #111118;
-    line-height: 1.5;
-    vertical-align: top;
-  }
-
-  .tools-table .tool-name {
+  .tool-entry .tool-name {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 0.82rem;
+    font-size: 1rem;
     color: #e8c872;
     font-weight: 600;
-    white-space: nowrap;
-    padding-right: 2rem;
+    margin-bottom: 0.25rem;
   }
 
-  .tools-table td:nth-child(2),
-  .tools-table td:nth-child(3) {
-    width: 42%;
-  }
-
-  .tools-table td:last-child {
+  .tool-entry .tool-when {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    font-size: 0.88rem;
     color: #6a6a78;
-    font-size: 0.8rem;
+    margin-bottom: 0.5rem;
   }
 
-  .tools-table tr:hover td { background: #0e0e14; }
+  .tool-when-label {
+    font-variant: small-caps;
+    letter-spacing: 0.05em;
+    margin-right: 0.35em;
+  }
+
+  .tool-entry .tool-description {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    font-size: 0.9rem;
+    color: #8a8a98;
+    line-height: 1.6;
+    margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
 </style>

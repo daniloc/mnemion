@@ -16,7 +16,7 @@ export const TOOLS: ToolMeta[] = [
     name: "prime",
     description: `Auto-associative priming. Pass conversational context and get back the most relevant entries across all patterns, ranked by semantic similarity. Each result includes the full entry, its URI, and any linked entries one hop away.
 
-Use prime when starting a session, changing topics, or whenever you need to recall what's relevant to the current conversation. It replaces the pattern of reading the index then querying — instead, describe what you're thinking about and the hive activates.`,
+Use prime when starting a session, changing topics, or whenever you need to recall what's relevant to the current conversation. Describe what you're talking about and the hive activates. Write 1-3 natural sentences describing the current conversational focus. Embedding-based retrieval responds better to descriptive language than keyword lists."`,
     when: "First action on connect. When topics shift. When you need to recall what's relevant.",
   },
   {
@@ -28,7 +28,7 @@ Batch: pass operation "batch" + data as array of [{pattern, operation, data}, ..
 
 Update supports optimistic locking: include the version field from a prior read to detect conflicts across concurrent surfaces.
 
-Large content: to write content too large for MCP parameters, create an _access_tokens entry with {scope: "upload", constraints: {target_pattern, target_id, target_facet, mode}}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP.
+Large content: to write content too large for MCP parameters, create an _access_tokens entry with {scope: "upload", constraints: {target_pattern, target_id, target_facet, mode}}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP. Resolve ${uri("_system/instance")} for the full upload URL.
 
 Entries limited to ~1 MB each.`,
     when: "Any write. Batch multiple writes into one call for atomicity.",

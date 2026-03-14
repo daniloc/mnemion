@@ -611,7 +611,17 @@ export class HiveDO extends DurableObject {
       priming.prime(this.primeCtx(), context, patterns, limit),
       this.getCharter(),
     ]);
-    return JSON.stringify({ charter, ...primeResult }, null, 2);
+
+    // Include capabilities brief if available
+    let capabilities: string | undefined;
+    try {
+      const rows = this.db.exec(
+        `SELECT content, default_content FROM "_system_docs" WHERE slug = 'capabilities'`
+      ).toArray() as any[];
+      if (rows.length > 0) capabilities = rows[0].content ?? rows[0].default_content;
+    } catch { /* not seeded yet */ }
+
+    return JSON.stringify({ charter, capabilities, ...primeResult }, null, 2);
   }
 
   async seedVectors(): Promise<string> {

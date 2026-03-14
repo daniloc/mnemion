@@ -16,6 +16,7 @@ import conventionsRaw from "./system-docs/conventions.md";
 import indexGuideRaw from "./system-docs/index-guide.md";
 import remoteAccessRaw from "./system-docs/remote-access.md";
 import httpIoRaw from "./system-docs/http-io.md";
+import capabilitiesRaw from "./system-docs/capabilities.md";
 
 // === System doc parsing ===
 
@@ -39,7 +40,7 @@ function parseDocFile(raw: string): { slug: string; title: string; content: stri
 
 const SYSTEM_DOCS_SEED = [
   toolsRaw, schemaEvolutionRaw, skillsRaw, conventionsRaw,
-  indexGuideRaw, remoteAccessRaw, httpIoRaw,
+  indexGuideRaw, remoteAccessRaw, httpIoRaw, capabilitiesRaw,
 ].map(parseDocFile);
 
 // === Kernel table declarations ===
