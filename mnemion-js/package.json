@@ -17,6 +17,7 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@simplewebauthn/server": "^13.2.3",
     "agents": "^0.7.5",
+    "fflate": "^0.8.2",
     "svelte": "^5.53.10",
     "zod": "^4.3.6"
   },

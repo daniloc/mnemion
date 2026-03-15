@@ -64,19 +64,27 @@ function editDistance(a: string, b: string): number {
   return dp[n];
 }
 
-function suggestPattern(name: string, ctx: DataContext): string {
-  const all = ctx.listPatterns();
-  if (all.length === 0) return "";
+function suggestMatch(name: string, candidates: string[]): string {
+  if (candidates.length === 0) return "";
   let best = "", bestDist = Infinity;
-  for (const p of all) {
-    // Prefix match
-    if (p.startsWith(name) || name.startsWith(p)) return ` Did you mean "${p}"?`;
-    const d = editDistance(name.toLowerCase(), p.toLowerCase());
-    if (d < bestDist) { bestDist = d; best = p; }
+  for (const c of candidates) {
+    if (c.startsWith(name) || name.startsWith(c)) return ` Did you mean "${c}"?`;
+    const d = editDistance(name.toLowerCase(), c.toLowerCase());
+    if (d < bestDist) { bestDist = d; best = c; }
   }
-  // Only suggest if reasonably close (within ~40% of the name length)
   if (bestDist <= Math.max(2, Math.floor(name.length * 0.4))) return ` Did you mean "${best}"?`;
   return "";
+}
+
+function suggestPattern(name: string, ctx: DataContext): string {
+  return suggestMatch(name, ctx.listPatterns());
+}
+
+function suggestFacet(name: string, pattern: string, ctx: DataContext): string {
+  const facets = ctx.db.exec(
+    "SELECT name FROM _fields WHERE object_name = ? ORDER BY id", pattern
+  ).toArray().map((r: any) => r.name as string);
+  return suggestMatch(name, facets);
 }
 
 // === Query ===
@@ -183,10 +191,13 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
     if (size > LIMITS.ENTRY_BYTES)
       return { error: true, message: `Entry too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
 
+    const SKIP_KEYS = new Set(["id", "version", "created_at", "updated_at", "archived_at"]);
     for (const [key, val] of Object.entries(data)) {
-      if (val == null || key === "id") continue;
+      if (SKIP_KEYS.has(key)) continue;
       const meta = ctx.facetMeta(patternName, key);
-      if (meta?.options && !meta.options.includes(String(val)))
+      if (!meta)
+        return { error: true, message: `Facet "${key}" does not exist on "${patternName}".${suggestFacet(key, patternName, ctx)}` };
+      if (val != null && meta.options && !meta.options.includes(String(val)))
         return { error: true, message: `Invalid value "${val}" for "${key}". Options: ${meta.options.join(", ")}` };
     }
   }
