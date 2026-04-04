@@ -182,20 +182,23 @@ export function followLinks(
   ctx: PrimeContext,
   pattern: string,
   entry: Record<string, unknown>,
-): { pattern: string; id: number; entry: Record<string, unknown>; uri: string }[] {
-  // Find facets with foreign key references
+): { pattern: string; id: number; entry: Record<string, unknown>; uri: string; label?: string }[] {
+  const linked: { pattern: string; id: number; entry: Record<string, unknown>; uri: string; label?: string }[] = [];
+  const seen = new Set<string>();
+
+  // 1. Schema-level foreign key references (single-value facets)
   const refs = ctx.db.exec(
     "SELECT name, references_object FROM _fields WHERE object_name = ? AND references_object IS NOT NULL",
     pattern
   ).toArray() as { name: string; references_object: string }[];
-
-  const linked: { pattern: string; id: number; entry: Record<string, unknown>; uri: string }[] = [];
 
   for (const ref of refs) {
     const targetId = entry[ref.name];
     if (targetId == null) continue;
     const targetPattern = ref.references_object;
     if (!ctx.patternExists(targetPattern)) continue;
+    const key = `${targetPattern}:${targetId}`;
+    if (seen.has(key)) continue;
 
     try {
       const rows = ctx.db.exec(
@@ -203,6 +206,7 @@ export function followLinks(
         Number(targetId)
       ).toArray();
       if (rows.length > 0) {
+        seen.add(key);
         linked.push({
           pattern: targetPattern,
           id: Number(targetId),
@@ -211,6 +215,42 @@ export function followLinks(
         });
       }
     } catch { /* target table may not exist */ }
+  }
+
+  // 2. _links table (many-to-many, bidirectional)
+  const entryId = entry.id as number;
+  if (entryId != null) {
+    try {
+      const linkRows = ctx.db.exec(
+        `SELECT target_pattern, target_id, label FROM "_links" WHERE source_pattern = ? AND source_id = ? AND archived_at IS NULL
+         UNION ALL
+         SELECT source_pattern, source_id, label FROM "_links" WHERE target_pattern = ? AND target_id = ? AND archived_at IS NULL`,
+        pattern, entryId, pattern, entryId
+      ).toArray() as { target_pattern: string; target_id: number; label: string | null }[];
+
+      for (const link of linkRows) {
+        const key = `${link.target_pattern}:${link.target_id}`;
+        if (seen.has(key)) continue;
+        if (!ctx.patternExists(link.target_pattern)) continue;
+
+        try {
+          const rows = ctx.db.exec(
+            `SELECT * FROM "${link.target_pattern}" WHERE id = ? AND archived_at IS NULL`,
+            link.target_id
+          ).toArray();
+          if (rows.length > 0) {
+            seen.add(key);
+            linked.push({
+              pattern: link.target_pattern,
+              id: link.target_id,
+              entry: rows[0] as Record<string, unknown>,
+              uri: uri(`entry/${link.target_pattern}/${link.target_id}`),
+              label: link.label || undefined,
+            });
+          }
+        } catch { /* target table may not exist */ }
+      }
+    } catch { /* _links table may not exist yet */ }
   }
 
   return linked;

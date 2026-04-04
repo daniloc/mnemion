@@ -6,7 +6,7 @@ import { Method, Auth, createRouter, type Route, type Env } from "./router";
 // Auth
 import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify } from "./routes/auth";
 // I/O
-import { serveSharedEntry, serveOutput, receiveInput, upload } from "./routes/io";
+import { serveSharedEntry, serveOutput, receiveInput, upload, exportPattern } from "./routes/io";
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/marketplace";
 // Pages
@@ -40,6 +40,7 @@ const routes: Route[] = [
   { method: Method.GET,  pattern: "/o/:path",              handler: serveOutput },
   { method: Method.POST, pattern: "/i/:path",              handler: receiveInput },
   { method: Method.POST, pattern: "/upload/:token",        where: { token: /^[a-fA-F0-9]+$/ }, handler: upload },
+  { method: Method.GET,  pattern: "/export/:pattern",       auth: Auth.SESSION, handler: exportPattern },
 
   // Pages
   { method: Method.GET,  pattern: "/schema",               auth: Auth.SESSION, handler: schemaPage },

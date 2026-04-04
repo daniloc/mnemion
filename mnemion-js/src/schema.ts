@@ -182,6 +182,35 @@ Scopes:
     ],
   },
   {
+    name: "_links",
+    description: "Cross-pattern connections between entries. Use the 'link' shortcut: mutate(pattern: \"link\", data: {source: \"pattern/id\", target: \"pattern/id\", label: \"optional\"}). Links surface automatically in prime results via one-hop following.",
+    doctrine: "Use links to connect entries across patterns — tasks to goals, axioms to strategies, etc. Always use the link shortcut rather than storing IDs in text fields. Links are structural and validated. The label describes the relationship (e.g. 'serves', 'inspired-by', 'blocks').",
+    ddl: `CREATE TABLE IF NOT EXISTS "_links" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "source_pattern" TEXT NOT NULL,
+      "source_id" INTEGER NOT NULL,
+      "target_pattern" TEXT NOT NULL,
+      "target_id" INTEGER NOT NULL,
+      "label" TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_links_pair_active" ON "_links" ("source_pattern", "source_id", "target_pattern", "target_id") WHERE archived_at IS NULL`,
+      `CREATE INDEX IF NOT EXISTS "_links_source_active" ON "_links" ("source_pattern", "source_id") WHERE archived_at IS NULL`,
+      `CREATE INDEX IF NOT EXISTS "_links_target_active" ON "_links" ("target_pattern", "target_id") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "source_pattern", type: "text", required: true },
+      { name: "source_id", type: "integer", required: true },
+      { name: "target_pattern", type: "text", required: true },
+      { name: "target_id", type: "integer", required: true },
+      { name: "label", type: "text", required: false },
+    ],
+  },
+  {
     name: "_charter",
     description: "Hive identity and purpose. Key-value pairs that define who owns this hive, what it's for, and guiding principles. Surfaced to every agent on connection.",
     doctrine: "Set charter values when the human establishes identity, purpose, or principles for this hive. Charter is the root context — keep entries concise and meaningful.",

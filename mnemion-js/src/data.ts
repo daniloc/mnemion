@@ -13,6 +13,7 @@ type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one
 export interface DataContext {
   db: DB;
   patternExists(name: string): boolean;
+  listPatterns(): string[];
   entryExists(pattern: string, id: number): boolean;
   hasKernelVersion(patternName: string): boolean;
   facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
@@ -46,6 +47,46 @@ function errorJson(message: string): string {
   return JSON.stringify({ error: true, message });
 }
 
+// === Fuzzy pattern suggestion ===
+
+function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[] = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const tmp = dp[j];
+      dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      prev = tmp;
+    }
+  }
+  return dp[n];
+}
+
+function suggestMatch(name: string, candidates: string[]): string {
+  if (candidates.length === 0) return "";
+  let best = "", bestDist = Infinity;
+  for (const c of candidates) {
+    if (c.startsWith(name) || name.startsWith(c)) return ` Did you mean "${c}"?`;
+    const d = editDistance(name.toLowerCase(), c.toLowerCase());
+    if (d < bestDist) { bestDist = d; best = c; }
+  }
+  if (bestDist <= Math.max(2, Math.floor(name.length * 0.4))) return ` Did you mean "${best}"?`;
+  return "";
+}
+
+function suggestPattern(name: string, ctx: DataContext): string {
+  return suggestMatch(name, ctx.listPatterns());
+}
+
+function suggestFacet(name: string, pattern: string, ctx: DataContext): string {
+  const facets = ctx.db.exec(
+    "SELECT name FROM _fields WHERE object_name = ? ORDER BY id", pattern
+  ).toArray().map((r: any) => r.name as string);
+  return suggestMatch(name, facets);
+}
+
 // === Query ===
 
 export function query(
@@ -58,7 +99,7 @@ export function query(
   countOnly: boolean,
 ): string {
   if (!ctx.patternExists(patternName))
-    return errorJson(`Pattern "${patternName}" does not exist`);
+    return errorJson(`Pattern "${patternName}" does not exist.${suggestPattern(patternName, ctx)}`);
 
   if (countOnly) {
     let countSql = `SELECT COUNT(*) as count FROM "${patternName}" WHERE archived_at IS NULL`;
@@ -132,7 +173,7 @@ function parseFilter(expr: string): { clause: string; binding: string } | null {
 
 export function executeMutate(ctx: DataContext, patternName: string, operation: string, data: any): any {
   if (!ctx.patternExists(patternName))
-    return { error: true, message: `Pattern "${patternName}" does not exist` };
+    return { error: true, message: `Pattern "${patternName}" does not exist.${suggestPattern(patternName, ctx)}` };
 
   // Kernel rules (immutable fields, create hooks)
   const kernelCtx: KernelContext = {
@@ -150,10 +191,13 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
     if (size > LIMITS.ENTRY_BYTES)
       return { error: true, message: `Entry too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
 
+    const SKIP_KEYS = new Set(["id", "version", "created_at", "updated_at", "archived_at"]);
     for (const [key, val] of Object.entries(data)) {
-      if (val == null || key === "id") continue;
+      if (SKIP_KEYS.has(key)) continue;
       const meta = ctx.facetMeta(patternName, key);
-      if (meta?.options && !meta.options.includes(String(val)))
+      if (!meta)
+        return { error: true, message: `Facet "${key}" does not exist on "${patternName}".${suggestFacet(key, patternName, ctx)}` };
+      if (val != null && meta.options && !meta.options.includes(String(val)))
         return { error: true, message: `Invalid value "${val}" for "${key}". Options: ${meta.options.join(", ")}` };
     }
   }
@@ -277,6 +321,37 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           data.id
         );
         return { operation: "archive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
+      }
+
+      case "unlink": {
+        // Find link by source+target shorthand and archive it
+        let sp = data.source_pattern as string, si = data.source_id as number;
+        let tp = data.target_pattern as string, ti = data.target_id as number;
+
+        // Parse shorthand if provided
+        if (data.source && typeof data.source === "string") {
+          const parts = (data.source as string).split("/");
+          if (parts.length === 2) { sp = parts[0]; si = Number(parts[1]); }
+        }
+        if (data.target && typeof data.target === "string") {
+          const parts = (data.target as string).split("/");
+          if (parts.length === 2) { tp = parts[0]; ti = Number(parts[1]); }
+        }
+
+        if (!sp || si == null || !tp || ti == null)
+          return { error: true, message: "unlink requires source and target (e.g. source: \"tasks/6\", target: \"goals/9\")" };
+
+        const links = ctx.db.exec(
+          `SELECT id FROM "_links" WHERE source_pattern = ? AND source_id = ? AND target_pattern = ? AND target_id = ? AND archived_at IS NULL`,
+          sp, si, tp, ti
+        ).toArray() as any[];
+        if (links.length === 0)
+          return { error: true, message: `No active link from ${sp}/${si} to ${tp}/${ti}` };
+
+        ctx.db.exec(
+          `UPDATE "_links" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`, links[0].id
+        );
+        return { operation: "unlink", pattern: "_links", id: links[0].id, source: `${sp}/${si}`, target: `${tp}/${ti}` };
       }
 
       case "unarchive": {

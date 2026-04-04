@@ -104,6 +104,40 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 
+  _links(data, ctx) {
+    // Accept shorthand: source: "pattern/id", target: "pattern/id"
+    if (data.source && typeof data.source === "string") {
+      const parts = (data.source as string).split("/");
+      if (parts.length !== 2) return { error: true, message: `Invalid source format "${data.source}". Use "pattern/id".` };
+      data.source_pattern = parts[0];
+      data.source_id = Number(parts[1]);
+      delete data.source;
+    }
+    if (data.target && typeof data.target === "string") {
+      const parts = (data.target as string).split("/");
+      if (parts.length !== 2) return { error: true, message: `Invalid target format "${data.target}". Use "pattern/id".` };
+      data.target_pattern = parts[0];
+      data.target_id = Number(parts[1]);
+      delete data.target;
+    }
+
+    if (!data.source_pattern) return { error: true, message: "source is required (e.g. source: \"tasks/6\")" };
+    if (data.source_id == null) return { error: true, message: "source is required (e.g. source: \"tasks/6\")" };
+    if (!data.target_pattern) return { error: true, message: "target is required (e.g. target: \"goals/9\")" };
+    if (data.target_id == null) return { error: true, message: "target is required (e.g. target: \"goals/9\")" };
+
+    if (!ctx.patternExists(data.source_pattern as string))
+      return { error: true, message: `Source pattern "${data.source_pattern}" does not exist` };
+    if (!ctx.entryExists(data.source_pattern as string, data.source_id as number))
+      return { error: true, message: `Source entry ${data.source_id} not found in "${data.source_pattern}"` };
+    if (!ctx.patternExists(data.target_pattern as string))
+      return { error: true, message: `Target pattern "${data.target_pattern}" does not exist` };
+    if (!ctx.entryExists(data.target_pattern as string, data.target_id as number))
+      return { error: true, message: `Target entry ${data.target_id} not found in "${data.target_pattern}"` };
+
+    return data;
+  },
+
   _short_term_fragments(data) {
     if (!data.content) return { error: true, message: "content is required for _short_term_fragments" };
     return data;
@@ -145,6 +179,8 @@ export interface Shortcut { pattern: string; operation: string }
 
 export const SHORTCUTS: Record<string, Shortcut> = {
   fragment: { pattern: "_short_term_fragments", operation: "create" },
+  link:     { pattern: "_links", operation: "create" },
+  unlink:   { pattern: "_links", operation: "unlink" },
 };
 
 /** Expand a shortcut name to pattern + operation, or return null if not a shortcut. */

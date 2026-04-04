@@ -35,3 +35,21 @@ Every pattern has a `doctrine` — a statement of how the pattern should be used
 
 ## Archiving vs. deletion
 {{PRODUCT_NAME}} never deletes. `archive` sets `archived_at`, excluding the entry from queries. The data persists for history and recovery.
+
+## Decommissioning a pattern
+
+When a pattern is no longer needed, decommission it cleanly:
+
+1. **Export**: download the pattern as a zip from `https://{host}/export/{pattern}` (requires session login). The zip contains `_pattern.yml` (schema, doctrine, facets, links) and one markdown file per entry with YAML frontmatter.
+2. **Archive**: `propose_change` with `archive_pattern` + `apply_change`. The pattern disappears from the index. Entries remain in SQLite for 30 days, then GC drops the table.
+
+Always export before archiving — there is no undo after GC. The export is the pattern's portable archive, readable by humans and reimportable by future agents.
+
+## Links between entries
+
+Use the `_links` junction pattern instead of storing IDs in text fields. Links are structural, validated, and surface automatically in prime results.
+
+- **Link**: `mutate(pattern: "link", data: {source: "tasks/6", target: "goals/9", label: "serves"})`
+- **Unlink**: `mutate(pattern: "unlink", data: {source: "tasks/6", target: "goals/9"})`
+
+Links are bidirectional in queries — resolving either end shows the other. Labels describe the relationship (e.g. "serves", "references", "depends-on", "inspired-by").

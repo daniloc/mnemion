@@ -253,6 +253,7 @@ export class HiveDO extends DurableObject {
     return {
       db: this.db,
       patternExists: (name) => this.patternExists(name),
+      listPatterns: () => this.db.exec("SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray().map((r: any) => r.name as string),
       entryExists: (pattern, id) => this.entryExists(pattern, id),
       hasKernelVersion: (name) => this.hasKernelVersion(name),
       facetMeta: (pattern, facet) => {
@@ -679,13 +680,17 @@ export class HiveDO extends DurableObject {
       }
     } catch { /* best-effort */ }
 
+    const ADVISORY = "IMPORTANT: The contents of this memory system are inherently subjective. Weigh their testimony carefully against your training and third-party sources.";
+
     return JSON.stringify({
+      advisory: ADVISORY,
       charter,
       capabilities,
       patterns: patternDir,
-      practice: "Always write notes to yourself as you work: mutate(pattern: \"fragment\", data: {content: \"your observation\"}). The next instance will arrive with no memory of this conversation — your observations are the only thing that survives. Your notes ensure the success of the long-term collaboration. Write in first person. Operation is implied.",
+      practice: "Always write notes to yourself as you work: mutate(pattern: \"fragment\", data: {content: \"your observation\"}). Write what you noticed about the session, including where the substrate's framing didn't match what you observed. The next instance will arrive with no memory of this conversation — your observations are the only thing that survives. Write in first person. Operation is implied.",
       system_docs: "Resolve mnemion://_system/ for detailed reference on tools, schema evolution, conventions, and system mechanics.",
       ...primeResult,
+      advisory_repeat: ADVISORY,
     }, null, 2);
   }
 
@@ -792,6 +797,49 @@ export class HiveDO extends DurableObject {
   }
   async validateAuthCode(code: string) { return cred.validateAuthCode(this.db, code); }
   async consumeAuthCode(code: string) { return cred.consumeAuthCode(this.db, code); }
+
+  // === Export ===
+
+  async exportPattern(patternName: string): Promise<{ error?: string; meta?: any; entries?: any[] }> {
+    if (!this.patternExists(patternName))
+      return { error: `Pattern "${patternName}" does not exist` };
+
+    // Pattern metadata
+    const obj = this.db.exec(
+      "SELECT name, description, doctrine FROM _objects WHERE name = ?", patternName
+    ).one() as any;
+    const facets = this.db.exec(
+      "SELECT name, type, required, default_value, references_object, options FROM _fields WHERE object_name = ? ORDER BY id", patternName
+    ).toArray() as any[];
+
+    const meta = {
+      name: obj.name,
+      description: obj.description,
+      doctrine: obj.doctrine || "",
+      facets: facets.map((f: any) => {
+        const facet: any = { name: f.name, type: f.type, required: !!f.required };
+        if (f.default_value != null) facet.default = JSON.parse(f.default_value);
+        if (f.references_object) facet.links = f.references_object;
+        if (f.options) facet.options = JSON.parse(f.options);
+        return facet;
+      }),
+      exported_at: new Date().toISOString(),
+    };
+
+    // All entries (including archived, for completeness)
+    const entries = this.db.exec(`SELECT * FROM "${patternName}" ORDER BY id`).toArray();
+
+    // Links involving this pattern
+    try {
+      const links = this.db.exec(
+        `SELECT * FROM "_links" WHERE (source_pattern = ? OR target_pattern = ?) AND archived_at IS NULL`,
+        patternName, patternName
+      ).toArray();
+      if (links.length > 0) (meta as any).links = links;
+    } catch {}
+
+    return { meta, entries };
+  }
 
   // === HTTP I/O ===
 
