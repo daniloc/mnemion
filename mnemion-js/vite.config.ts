@@ -17,7 +17,10 @@ export default defineConfig(({ isSsrBuild }) => ({
     ? {
         ssr: true,
         rollupOptions: {
-          input: 'src/pages/entry-server.ts',
+          input: {
+            'entry-server': 'src/pages/entry-server.ts',
+            'canvas-server': 'src/pages/canvas-server.ts',
+          },
           output: { format: 'es' },
         },
         outDir: 'dist/server',
