@@ -151,6 +151,12 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 
+  _canvases(data) {
+    if (!data.name) return { error: true, message: "name is required for _canvases" };
+    if (!data.snapshot) data.snapshot = '{}';
+    return data;
+  },
+
   _system_tasks(data) {
     if (!data.task) return { error: true, message: "task is required" };
     data.status = "pending";

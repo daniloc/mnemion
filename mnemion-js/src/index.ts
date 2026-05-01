@@ -11,6 +11,8 @@ import { serveSharedEntry, serveOutput, receiveInput, upload, exportPattern } fr
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/marketplace";
 // Pages
 import { schemaPage, queryIndex, queryEntries, queryTools, mutateEntry, evolveSchema, liveSocket } from "./routes/pages";
+// Canvas
+import { canvasPage, listCanvases, saveCanvas, resolveUri } from "./routes/canvas";
 // Dev
 import { seedTestData, seedVectors } from "./routes/dev";
 
@@ -50,6 +52,12 @@ const routes: Route[] = [
   { method: Method.POST, pattern: "/api/mutate/:pattern",  auth: Auth.SESSION, handler: mutateEntry },
   { method: Method.POST, pattern: "/api/evolve",           auth: Auth.SESSION, handler: evolveSchema },
   { method: Method.GET,  pattern: "/ws",                   auth: Auth.SESSION, handler: liveSocket },
+
+  // Canvas
+  { method: Method.GET,  pattern: "/canvas",           auth: Auth.SESSION, handler: canvasPage },
+  { method: Method.GET,  pattern: "/api/canvases",     auth: Auth.SESSION, handler: listCanvases },
+  { method: Method.POST, pattern: "/api/canvas",       auth: Auth.SESSION, handler: saveCanvas },
+  { method: Method.POST, pattern: "/api/resolve",      auth: Auth.SESSION, handler: resolveUri },
 
   // Dev / Admin
   { method: Method.ANY,  pattern: "/dev/seed",              auth: Auth.DEV, handler: seedTestData },

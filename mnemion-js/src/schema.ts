@@ -8,6 +8,7 @@
 
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { TOOLS } from "./tools";
+import { seedDevData } from "./dev-seed";
 
 // System docs — imported as raw text, placeholders resolved at load time
 import schemaEvolutionRaw from "./system-docs/schema-evolution.md";
@@ -323,6 +324,26 @@ Scopes:
     ],
   },
   {
+    name: "_canvases",
+    description: "Infinite canvases for spatial thinking. Each canvas stores a tldraw document snapshot as its source of truth.",
+    doctrine: "Create canvases when the human wants to organize thinking spatially. The snapshot facet holds the full tldraw document state — do not modify it directly. Use the canvas UI or dedicated canvas tools.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_canvases" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "name" TEXT NOT NULL,
+      "folder" TEXT,
+      "snapshot" TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    facets: [
+      { name: "name", type: "text", required: true },
+      { name: "folder", type: "text", required: false },
+      { name: "snapshot", type: "text", required: false },
+    ],
+  },
+  {
     name: "_system_docs",
     description: "System documentation for agent orientation. Editable but requires confirmation. Set content to null to restore defaults.",
     doctrine: "Read before acting. Edit content only when the human requests it. Set content to null to restore defaults. Never modify default_content.",
@@ -347,7 +368,7 @@ Scopes:
 
 // === Initialization ===
 
-export function initializeSchema(db: any, env?: { WORKER_HOST?: string }): void {
+export function initializeSchema(db: any, env?: { WORKER_HOST?: string; MNEMION_SECRET?: string; DEV_SEED?: string }): void {
   // --- Core schema tables ---
 
   db.exec(`CREATE TABLE IF NOT EXISTS _objects (
@@ -634,6 +655,17 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string }): void 
   const allObjects = db.exec("SELECT name FROM _objects").toArray() as any[];
   for (const obj of allObjects) {
     ensureAuditTriggers(db, obj.name);
+  }
+
+  // --- Dev seed: populate with realistic data when no secret is configured ---
+
+  if (!env?.MNEMION_SECRET && env?.DEV_SEED) {
+    const userPatterns = (db.exec(
+      "SELECT COUNT(*) as c FROM _objects WHERE name NOT LIKE '\\_%' ESCAPE '\\'"
+    ).one() as { c: number }).c;
+    if (userPatterns === 0) {
+      seedDevData(db);
+    }
   }
 }
 
