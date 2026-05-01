@@ -72,6 +72,14 @@
   let dragging: string | null = $state(null);
   let dragOffset = { x: 0, y: 0 };
 
+  // Group drawing + resize
+  let drawingGroup = $state(false);
+  let resizing: { id: string; corner: string; startX: number; startY: number; origX: number; origY: number; origW: number; origH: number } | null = $state(null);
+  let groupDrawStart: { x: number; y: number } | null = $state(null);
+  let groupDrawEnd: { x: number; y: number } | null = $state(null);
+  let namingGroup: string | null = $state(null);
+  let groupName = $state('');
+
   // Connection drawing
   let connecting: string | null = $state(null);
   let connectEnd = $state({ x: 0, y: 0 });
@@ -289,25 +297,59 @@
   let panStart = { x: 0, y: 0 };
 
   function handleStageDown(e: MouseEvent) {
-    // Only pan on background click (not on shapes)
     if ((e.target as HTMLElement).closest('.canvas-shape')) return;
+
+    // Group drawing mode: start rect
+    if (drawingGroup && e.button === 0) {
+      const rect = stageEl.getBoundingClientRect();
+      const wx = (e.clientX - rect.left - camera.x) / camera.zoom;
+      const wy = (e.clientY - rect.top - camera.y) / camera.zoom;
+      groupDrawStart = { x: wx, y: wy };
+      groupDrawEnd = { x: wx, y: wy };
+      e.preventDefault();
+      return;
+    }
+
     if (e.button === 1 || e.button === 0) {
-      // Deselect
-      if (!(e.target as HTMLElement).closest('.canvas-shape')) {
-        selected = null;
-        editingNote = null;
-      }
-      if (e.button === 1 || e.altKey) {
-        panning = true;
-        panStart = { x: e.clientX - camera.x, y: e.clientY - camera.y };
-        e.preventDefault();
-      }
+      selected = null;
+      editingNote = null;
+      // Pan on any background click (not just middle-click/alt)
+      panning = true;
+      panStart = { x: e.clientX - camera.x, y: e.clientY - camera.y };
+      e.preventDefault();
     }
   }
 
   function handleStageMove(e: MouseEvent) {
     if (panning) {
       camera = { ...camera, x: e.clientX - panStart.x, y: e.clientY - panStart.y };
+      return;
+    }
+    if (groupDrawStart) {
+      const rect = stageEl.getBoundingClientRect();
+      groupDrawEnd = {
+        x: (e.clientX - rect.left - camera.x) / camera.zoom,
+        y: (e.clientY - rect.top - camera.y) / camera.zoom,
+      };
+      return;
+    }
+    if (resizing) {
+      const rect = stageEl.getBoundingClientRect();
+      const wx = (e.clientX - rect.left - camera.x) / camera.zoom;
+      const wy = (e.clientY - rect.top - camera.y) / camera.zoom;
+      const dx = wx - resizing.startX;
+      const dy = wy - resizing.startY;
+      shapes = shapes.map(s => {
+        if (s.id !== resizing!.id) return s;
+        let { origX, origY, origW, origH } = resizing!;
+        const c = resizing!.corner;
+        let nx = origX, ny = origY, nw = origW, nh = origH;
+        if (c.includes('e')) nw = Math.max(40, origW + dx);
+        if (c.includes('w')) { nx = origX + dx; nw = Math.max(40, origW - dx); }
+        if (c.includes('s')) nh = Math.max(40, origH + dy);
+        if (c.includes('n')) { ny = origY + dy; nh = Math.max(40, origH - dy); }
+        return { ...s, x: nx, y: ny, w: nw, h: nh };
+      });
       return;
     }
     if (dragging) {
@@ -329,6 +371,28 @@
 
   function handleStageUp(e: MouseEvent) {
     if (panning) { panning = false; scheduleSave(); return; }
+    if (resizing) { resizing = null; scheduleSave(); return; }
+    if (groupDrawStart && groupDrawEnd) {
+      const x = Math.min(groupDrawStart.x, groupDrawEnd.x);
+      const y = Math.min(groupDrawStart.y, groupDrawEnd.y);
+      const w = Math.abs(groupDrawEnd.x - groupDrawStart.x);
+      const h = Math.abs(groupDrawEnd.y - groupDrawStart.y);
+      if (w > 20 && h > 20) {
+        const id = genId();
+        shapes = [...shapes, {
+          id, type: 'group', x, y, w, h,
+          data: { name: '', color: '#e8c872' },
+        }];
+        namingGroup = id;
+        groupName = '';
+        selected = id;
+      }
+      groupDrawStart = null;
+      groupDrawEnd = null;
+      drawingGroup = false;
+      scheduleSave();
+      return;
+    }
     if (dragging) { dragging = null; scheduleSave(); return; }
     if (connecting) {
       // Find shape under cursor
@@ -384,6 +448,18 @@
         s.id === editingNote ? { ...s, data: { ...s.data, text: editText } } : s
       );
       editingNote = null;
+      scheduleSave();
+    }
+  }
+
+  // === Group naming ===
+
+  function finishGroupName() {
+    if (namingGroup) {
+      shapes = shapes.map(s =>
+        s.id === namingGroup ? { ...s, data: { ...s.data, name: groupName } } : s
+      );
+      namingGroup = null;
       scheduleSave();
     }
   }
@@ -516,6 +592,10 @@
       selected = null;
       connecting = null;
       editingNote = null;
+      drawingGroup = false;
+      groupDrawStart = null;
+      groupDrawEnd = null;
+      namingGroup = null;
     }
   }
 
@@ -607,6 +687,7 @@
         <div class="toolbar-actions">
           <button class="tool-btn" onclick={addNote} title="Add note">+ note</button>
           <button class="tool-btn" onclick={() => { showLinkInput = !showLinkInput; }} title="Add link">+ link</button>
+          <button class="tool-btn" class:active={drawingGroup} onclick={() => { drawingGroup = !drawingGroup; }} title="Draw group">+ group</button>
           {#if showLinkInput}
             <div class="toolbar-link-input">
               <input
@@ -620,13 +701,14 @@
               />
             </div>
           {/if}
-          <span class="toolbar-hint">shift+click to connect &middot; alt+drag to pan &middot; scroll to zoom</span>
+          <span class="toolbar-hint">shift+click to connect &middot; drag background to pan &middot; scroll to zoom</span>
         </div>
       </div>
 
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="stage"
+        class:drawing={drawingGroup}
         bind:this={stageEl}
         onmousedown={handleStageDown}
         onmousemove={handleStageMove}
@@ -668,8 +750,87 @@
             </marker>
           </defs>
 
-          <!-- Shapes -->
-          {#each shapes as shape (shape.id)}
+          <!-- Group draw preview -->
+          {#if groupDrawStart && groupDrawEnd}
+            {@const gx = Math.min(groupDrawStart.x, groupDrawEnd.x)}
+            {@const gy = Math.min(groupDrawStart.y, groupDrawEnd.y)}
+            {@const gw = Math.abs(groupDrawEnd.x - groupDrawStart.x)}
+            {@const gh = Math.abs(groupDrawEnd.y - groupDrawStart.y)}
+            <rect
+              x={gx} y={gy} width={gw} height={gh}
+              rx={12} ry={12}
+              fill="rgba(232, 200, 114, 0.04)"
+              stroke="#e8c872" stroke-width={1.5} stroke-dasharray="2 4" stroke-linecap="round"
+              opacity={0.6}
+            />
+          {/if}
+
+          <!-- Groups (rendered behind other shapes) -->
+          {#each shapes.filter(s => s.type === 'group') as shape (shape.id)}
+            <rect
+              x={shape.x} y={shape.y} width={shape.w} height={shape.h}
+              rx={12} ry={12}
+              fill="rgba(232, 200, 114, 0.03)"
+              stroke={selected === shape.id ? '#e8c872' : '#3a3a48'}
+              stroke-width={selected === shape.id ? 2 : 1}
+              stroke-dasharray="2 4"
+              stroke-linecap="round"
+              class="group-rect"
+              onmousedown={(e) => { e.stopPropagation(); handleShapeDown(e, shape); }}
+            />
+            <!-- Label outside, above the group -->
+            {#if namingGroup === shape.id}
+              <foreignObject x={shape.x} y={shape.y - 24} width={shape.w} height={22}>
+                <input
+                  class="group-name-input"
+                  autofocus
+                  placeholder="group name\u2026"
+                  bind:value={groupName}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter') finishGroupName();
+                    if (e.key === 'Escape') { namingGroup = null; }
+                  }}
+                  onblur={finishGroupName}
+                />
+              </foreignObject>
+            {:else}
+              <text
+                x={shape.x} y={shape.y - 8}
+                class="group-name-label"
+                ondblclick={() => { namingGroup = shape.id; groupName = (shape.data.name as string) || ''; }}
+              >{(shape.data.name as string) || 'unnamed group'}</text>
+            {/if}
+            <!-- Resize handles (visible when selected) -->
+            {#if selected === shape.id}
+              {#each [
+                { corner: 'nw', cx: shape.x, cy: shape.y },
+                { corner: 'ne', cx: shape.x + shape.w, cy: shape.y },
+                { corner: 'sw', cx: shape.x, cy: shape.y + shape.h },
+                { corner: 'se', cx: shape.x + shape.w, cy: shape.y + shape.h },
+              ] as handle}
+                <rect
+                  x={handle.cx - 5} y={handle.cy - 5} width={10} height={10}
+                  rx={2} ry={2}
+                  fill="#e8c872" opacity={0.8}
+                  class="resize-handle resize-{handle.corner}"
+                  onmousedown={(e) => {
+                    e.stopPropagation();
+                    const rect = stageEl.getBoundingClientRect();
+                    resizing = {
+                      id: shape.id,
+                      corner: handle.corner,
+                      startX: (e.clientX - rect.left - camera.x) / camera.zoom,
+                      startY: (e.clientY - rect.top - camera.y) / camera.zoom,
+                      origX: shape.x, origY: shape.y, origW: shape.w, origH: shape.h,
+                    };
+                  }}
+                />
+              {/each}
+            {/if}
+          {/each}
+
+          <!-- Shapes (notes, entries, links) -->
+          {#each shapes.filter(s => s.type !== 'group') as shape (shape.id)}
             <foreignObject
               x={shape.x}
               y={shape.y}
@@ -931,6 +1092,7 @@
     background: #12121a; color: #8a8a98; cursor: pointer; transition: all 0.1s;
   }
   .tool-btn:hover { border-color: #e8c872; color: #e8c872; }
+  .tool-btn.active { border-color: #e8c872; color: #e8c872; background: #1a1a28; }
 
   .toolbar-link-input input {
     padding: 0.3rem 0.5rem;
@@ -955,10 +1117,35 @@
   .stage {
     flex: 1; overflow: hidden; cursor: default; background: #0c0c10; position: relative;
   }
+  .stage.drawing { cursor: crosshair; }
 
   .canvas-svg {
     width: 100%; height: 100%; transform-origin: 0 0; position: absolute; top: 0; left: 0;
     overflow: visible;
+  }
+
+  .group-rect { cursor: grab; }
+  .group-rect:active { cursor: grabbing; }
+
+  .resize-handle { pointer-events: all; }
+  .resize-nw, .resize-se { cursor: nwse-resize; }
+  .resize-ne, .resize-sw { cursor: nesw-resize; }
+
+  .group-name-input {
+    width: 100%; padding: 2px 4px;
+    background: rgba(15, 15, 20, 0.9); border: 1px solid #e8c872; border-radius: 3px;
+    color: #e8c872; font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
+    text-transform: uppercase; outline: none;
+  }
+  .group-name-input::placeholder { color: #3a3a48; text-transform: uppercase; }
+
+  .group-name-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 600;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    fill: #6a6a78; cursor: text;
+    pointer-events: all;
   }
 
   .shape-label-below {
