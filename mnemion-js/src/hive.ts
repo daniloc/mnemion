@@ -575,7 +575,12 @@ export class HiveDO extends DurableObject {
       slug: doc.slug,
       title: doc.title,
       content,
-      is_default: doc.content === null || doc.content === doc.default_content,
+      // Instance content is always freshly computed, so the seed-vs-customized
+      // distinction doesn't apply — the flag would only ever compare the
+      // placeholder to itself and lie. Other docs use the normal check.
+      is_default: slug === "instance"
+        ? false
+        : (doc.content === null || doc.content === doc.default_content),
       uri: uri(`_system/${doc.slug}`),
     }, null, 2);
   }
