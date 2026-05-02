@@ -110,7 +110,7 @@ export function query(
         const parsed = parseFilter(expr);
         if (!parsed) return errorJson(`Invalid filter expression: ${expr}`);
         countSql += ` AND ${parsed.clause}`;
-        countBindings.push(parsed.binding);
+        countBindings.push(...parsed.bindings);
       }
     }
     try {
@@ -140,7 +140,7 @@ export function query(
       const parsed = parseFilter(expr);
       if (!parsed) return errorJson(`Invalid filter expression: ${expr}`);
       sql += ` AND ${parsed.clause}`;
-      bindings.push(parsed.binding);
+      bindings.push(...parsed.bindings);
     }
   }
 
@@ -161,12 +161,18 @@ export function query(
   }
 }
 
-function parseFilter(expr: string): { clause: string; binding: string } | null {
-  const match = expr.match(/^(\w+)(=|!=|>|<|>=|<=|~)(.+)$/);
+function parseFilter(expr: string): { clause: string; bindings: string[] } | null {
+  const match = expr.match(/^(\w+)(\|=|=|!=|>=|<=|>|<|~)(.+)$/);
   if (!match) return null;
   const [, field, op, value] = match;
-  if (op === "~") return { clause: `"${field}" LIKE ?`, binding: `%${value}%` };
-  return { clause: `"${field}" ${op} ?`, binding: value };
+  if (op === "~") return { clause: `"${field}" LIKE ?`, bindings: [`%${value}%`] };
+  if (op === "|=") {
+    const values = value.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
+    if (values.length === 0) return null;
+    const placeholders = values.map(() => "?").join(",");
+    return { clause: `"${field}" IN (${placeholders})`, bindings: values };
+  }
+  return { clause: `"${field}" ${op} ?`, bindings: [value] };
 }
 
 // === Mutate ===

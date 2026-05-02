@@ -32,8 +32,14 @@ export const queryIndex: RouteHandler = async (ctx) => {
 };
 
 export const queryEntries: RouteHandler = async (ctx) => {
+  // Optional knobs from query string. Repeat ?filter=... for multiple AND'd filters.
+  const filters = ctx.url.searchParams.getAll("filter");
+  const facets = ctx.url.searchParams.get("facets") ?? "";
+  const sort = ctx.url.searchParams.get("sort") ?? "-updated_at";
+  const limit = parseInt(ctx.url.searchParams.get("limit") ?? "100", 10) || 100;
+  const filterJson = filters.length > 0 ? JSON.stringify(filters) : "";
   const result = await ctx.hive.query(
-    ctx.params.pattern, "", "", "-updated_at", 100, false
+    ctx.params.pattern, filterJson, facets, sort, limit, false
   );
   return new Response(result, {
     headers: { "Content-Type": "application/json" },

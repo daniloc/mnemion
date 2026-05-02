@@ -5,6 +5,9 @@ compatibility_flags = ["nodejs_compat"]
 
 
 [vars]
+# Cold-start fallback only — the runtime prefers the inbound request Host header.
+# Used solely by the _system/instance doc when no HTTP request has been observed
+# since DO eviction. Safe to omit; defaults to "localhost" when missing.
 WORKER_HOST = "your-worker.workers.dev"
 
 # KV namespace for OAuth tokens

@@ -37,8 +37,13 @@ Entries limited to ~1 MB each.`,
   },
   {
     name: "query",
-    description: "Use this to help the user find specific entries. Read from a pattern with filtering, facet projection, sorting, and limits (max 1,000 rows). Use count_only for efficient counts without fetching entries.",
-    when: "Reading entries with specific filters. Checking counts without fetching data.",
+    description: `Use this to help the user find specific entries. Read from a pattern with filtering, facet projection, sorting, and limits (max 1,000 rows). Use count_only for efficient counts without fetching entries.
+
+Filter syntax: each filter is "field<op>value". Operators: = != > < >= <= ~ |=
+- = != > < >= <= : standard comparisons
+- ~ : LIKE substring match (e.g. title~urgent)
+- |= : in any of (e.g. id|=1,3,7) — comma-separated values, useful for batched lookups`,
+    when: "Reading entries with specific filters. Checking counts without fetching data. Use id|=1,2,3 for batched multi-id lookups.",
   },
   {
     name: "search",

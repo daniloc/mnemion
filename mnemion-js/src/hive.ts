@@ -44,6 +44,11 @@ export interface IndexFacetEntry {
 // === Hive: per-user data storage ===
 
 export class HiveDO extends DurableObject {
+  // Most recently observed HTTP Host header (from fetch() — WebSocket upgrades,
+  // direct route hits). Authoritative source for the instance doc; env.WORKER_HOST
+  // is only a cold-start fallback. Not persisted; resets on DO eviction.
+  private lastKnownHost: string | null = null;
+
   private get db() {
     return this.ctx.storage.sql;
   }
@@ -53,6 +58,10 @@ export class HiveDO extends DurableObject {
     ctx.blockConcurrencyWhile(async () => {
       initializeSchema(this.db, env);
     });
+  }
+
+  private currentHost(): string {
+    return this.lastKnownHost ?? (this.env as any).WORKER_HOST ?? "localhost";
   }
 
   // === RPC methods (called from MnemionSession) ===
@@ -553,7 +562,15 @@ export class HiveDO extends DurableObject {
     ).toArray() as any[];
     if (rows.length === 0) return this.errorJson(`No system doc with slug: ${slug}`);
     const doc = rows[0];
-    const content = returnDefault ? doc.default_content : (doc.content ?? doc.default_content);
+    let content = returnDefault ? doc.default_content : (doc.content ?? doc.default_content);
+
+    // Instance doc is fully computed at resolve time — regenerate host-related
+    // lines from the most recently observed Host header rather than serving the
+    // seed-time snapshot, which baked in a possibly-stale env.WORKER_HOST.
+    if (slug === "instance" && !returnDefault) {
+      content = this.renderInstanceDoc() + this.computeStorageStats();
+    }
+
     return JSON.stringify({
       slug: doc.slug,
       title: doc.title,
@@ -561,6 +578,48 @@ export class HiveDO extends DurableObject {
       is_default: doc.content === null || doc.content === doc.default_content,
       uri: uri(`_system/${doc.slug}`),
     }, null, 2);
+  }
+
+  private renderInstanceDoc(): string {
+    const host = this.currentHost();
+    return `# Instance Info
+
+- **Host**: ${host}
+- **Base URL**: https://${host}
+- **MCP endpoint**: https://${host}/mcp
+- **Upload endpoint**: https://${host}/upload/{token}
+- **Shared entries**: https://${host}/o/entry/{pattern}/{id}
+- **Egress outputs**: https://${host}/o/{path}
+- **Ingress inputs**: https://${host}/i/{path}`;
+  }
+
+  private computeStorageStats(): string {
+    try {
+      const tables = this.db.exec(
+        "SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name"
+      ).toArray() as { name: string }[];
+      let totalEntries = 0;
+      let totalBytes = 0;
+      for (const t of tables) {
+        try {
+          const cols = this.db.exec(`PRAGMA table_info("${t.name}")`).toArray() as any[];
+          const textCols = cols.filter((c: any) => c.type === "TEXT" || c.type === "").map((c: any) => c.name);
+          const sumExpr = textCols.length
+            ? textCols.map((c: string) => `COALESCE(LENGTH("${c}"), 0)`).join(" + ")
+            : "0";
+          const r = this.db.exec(
+            `SELECT COUNT(*) as c, SUM(${sumExpr}) as bytes FROM "${t.name}" WHERE archived_at IS NULL`
+          ).one() as any;
+          totalEntries += r.c;
+          totalBytes += r.bytes || 0;
+        } catch { /* table may be missing */ }
+      }
+      const mutations = (this.db.exec("SELECT COUNT(*) as c FROM _mutation_log").one() as any).c;
+      const fmt = (b: number) => b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / (1024 * 1024)).toFixed(1)} MB`;
+      return `\n\n## Storage\n\n- **Data**: ${fmt(totalBytes)} · **Patterns**: ${tables.length} · **Active entries**: ${totalEntries} · **Mutations logged**: ${mutations}`;
+    } catch {
+      return "";
+    }
   }
 
   // === System tasks ===
@@ -647,35 +706,49 @@ export class HiveDO extends DurableObject {
       }
     } catch { /* fresh instance */ }
 
-    // Promote short-term fragments that surface repeatedly (access_count >= 3)
+    // Promote short-term fragments that surface repeatedly. Promotion eligibility
+    // is derived from _fragment_access_log (one row per prime hit), not a stored
+    // counter — there's no parallel state to disagree with the log.
+    //
+    // Idempotency guard: if a long-term entry already references this short-term
+    // fragment via source_id, we've already promoted; skip.
     const PROMOTION_THRESHOLD = 3;
     try {
       const fragmentHits = primeResult.results
         .filter(r => r.pattern === "_short_term_fragments")
         .map(r => r.id);
       for (const id of fragmentHits) {
+        // Append a hit to the log (this is the only mutation; everything else is read-then-decide)
         this.db.exec(
-          `UPDATE "_short_term_fragments" SET access_count = access_count + 1, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`, id
+          `INSERT INTO "_fragment_access_log" (fragment_id) VALUES (?)`, id
         );
+        // Already promoted? Don't re-promote (and don't re-archive a still-active fragment)
+        const existing = this.db.exec(
+          `SELECT 1 FROM "_long_term_fragments" WHERE source_id = ? AND archived_at IS NULL LIMIT 1`, id
+        ).toArray();
+        if (existing.length > 0) continue;
+        // Eligible? Count log rows for this fragment
+        const hits = (this.db.exec(
+          `SELECT COUNT(*) as c FROM "_fragment_access_log" WHERE fragment_id = ?`, id
+        ).one() as any).c as number;
+        if (hits < PROMOTION_THRESHOLD) continue;
+        // Read the source fragment and promote
         const row = this.db.exec(
-          `SELECT access_count, content, context FROM "_short_term_fragments" WHERE id = ?`, id
+          `SELECT content, context FROM "_short_term_fragments" WHERE id = ? AND archived_at IS NULL`, id
         ).one() as any;
-        if (row && row.access_count >= PROMOTION_THRESHOLD) {
-          // Promote to long-term
-          this.db.exec(
-            `INSERT INTO "_long_term_fragments" (content, context, source_id) VALUES (?, ?, ?)`,
-            row.content, row.context, id
-          );
-          this.db.exec(
-            `UPDATE "_short_term_fragments" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`, id
-          );
-          // Embed the new long-term entry
-          const promoted = this.db.exec(
-            `SELECT id FROM "_long_term_fragments" WHERE source_id = ? ORDER BY id DESC LIMIT 1`, id
-          ).one() as any;
-          if (promoted) {
-            this.ctx.waitUntil(priming.embedEntry(this.primeCtx(), "_long_term_fragments", promoted.id));
-          }
+        if (!row) continue;
+        this.db.exec(
+          `INSERT INTO "_long_term_fragments" (content, context, source_id) VALUES (?, ?, ?)`,
+          row.content, row.context, id
+        );
+        this.db.exec(
+          `UPDATE "_short_term_fragments" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`, id
+        );
+        const promoted = this.db.exec(
+          `SELECT id FROM "_long_term_fragments" WHERE source_id = ? ORDER BY id DESC LIMIT 1`, id
+        ).one() as any;
+        if (promoted) {
+          this.ctx.waitUntil(priming.embedEntry(this.primeCtx(), "_long_term_fragments", promoted.id));
         }
       }
     } catch { /* best-effort */ }
@@ -921,6 +994,10 @@ export class HiveDO extends DurableObject {
   // === Live updates via WebSocket (Hibernatable API) ===
 
   async fetch(request: Request): Promise<Response> {
+    // Record the inbound host so instance-doc generation reflects reality, not
+    // a wrangler config that can drift from the worker name.
+    const host = request.headers.get("host");
+    if (host) this.lastKnownHost = host;
     if (request.headers.get("Upgrade") === "websocket") {
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);

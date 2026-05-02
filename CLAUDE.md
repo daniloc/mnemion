@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # Mnemion
 
 Persistent, evolving shared memory between a human and their AI agents. MCP server on Cloudflare Workers.
@@ -13,20 +17,28 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/routes/io.ts     /o/entry/:pattern/:id shared entries, /o/:path egress, /i/:path ingress, /upload/:token
   src/routes/marketplace.ts  Token management, git endpoints (composes query + git adapter)
   src/routes/dev.ts    Dev-only seed routes (Auth.DEV gated, inert in production)
+  src/routes/canvas.ts /canvas SSR page + /api/canvases, /api/canvas (list/save tldraw snapshots)
   src/routes/pages.ts  Svelte SSR pages, /api/* JSON endpoints, WebSocket proxy
   src/session.ts       SessionDO: McpAgent, MCP protocol handler (per-session DO)
   src/hive.ts          HiveDO: DO shell — RPC wrappers, URI resolution, federation, WebSocket
   src/data.ts          Query engine, mutation engine (CRUD), cross-pattern search
   src/evolution.ts     Schema evolution: CHANGE_TYPES declaration table, propose/apply/revert
+  src/prime.ts         Auto-associative priming: Workers AI embeddings + Vectorize KNN
+  src/web.ts           Web URL resolution adapter dispatch (Bluesky, browser-rendering); _web_cache
+  src/tools.ts         Tool metadata SSOT — feeds session.ts MCP registration and /api/tools
   src/credentials.ts   Passkey CRUD, access token validation
   src/kernel.ts        Pre-mutation hooks, immutable fields, scope matching
+  src/labels.ts        Single source of truth for "what does this entry look like" (deriveLabel, truncate)
   src/schema.ts        DDL, migrations, kernel table declarations, system doc seeding
+  src/dev-seed.ts      DEV_SEED-gated realistic data population (raw SQL, runs in DO ctor)
   src/passkey.ts       WebAuthn passkey registration + authentication
   src/transform.ts     Transform DSL evaluator for ingress field mapping
   src/git.ts           Git protocol adapter (file tree → git pack, used by marketplace)
   src/constants.ts     Product identity (PRODUCT_NAME, URI_SCHEME, uri() helper)
   src/system-docs/     Markdown files with {{placeholder}} syntax, loaded at runtime
-  src/pages/           Svelte components (SchemaViewer, HiveMap, LinkMap) + SSR entry points
+  src/pages/           Svelte components (SchemaViewer, HiveMap, LinkMap, Canvas, EntryDetail) + SSR + canvas entry points
+  vite.config.ts       Main SSR + client build (SchemaViewer/HiveMap/LinkMap/EntryDetail)
+  vite.canvas.ts       Separate build for canvas-client.client.txt → dist/canvas/
   scripts/setup.sh     First-run setup: generates secret, deploys, opens passkey registration
 ```
 
@@ -69,10 +81,13 @@ Mnemion uses biological vocabulary at every layer — API parameters, URIs, JSON
 - `mnemion://history` — schema evolution history (supports `?limit=N`)
 - `mnemion://entry/{pattern}/{id}` — individual entry by URI
 
-### Tools (6 total)
+### Tools (7 total)
 
-- `resolve` — read anything by `mnemion://` URI, including federated cross-hive URIs (escape hatch for platforms without resource support)
-- `query` — filtered, sorted, paginated reads (supports `count_only` mode)
+Tool metadata is centralized in `src/tools.ts` (SSOT for `session.ts` MCP registration + `/api/tools` frontend):
+
+- `prime` — auto-associative recall: pass conversational context, get semantically-nearest entries + one-hop links. Workers AI embeds entries on write, Vectorize indexes them, prime queries KNN.
+- `resolve` — read anything by `mnemion://` URI, including federated cross-hive URIs and `mnemion://web/<https-url>` for adapter-cached web fetches (escape hatch for platforms without resource support)
+- `query` — filtered, sorted, paginated reads (supports `count_only` mode). Filter operators: `= != > < >= <= ~` (LIKE) and `|=` (IN, comma-separated values — e.g. `id|=1,3,7` for batched multi-id lookups)
 - `search` — cross-pattern full-text search across text facets
 - `mutate` — create, update, or archive entries
 - `propose_change` — propose schema evolution (preview, no commit)
@@ -110,14 +125,33 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `_shared` — entry-level sharing for HTTP access
 - `_outputs` / `_inputs` — HTTP I/O endpoint definitions
 - `_system_docs` — agent orientation docs (seeded from `src/system-docs/*.md`)
+- `_web_cache` — adapter-fetched web content (Bluesky threads, browser-rendered markdown), TTL'd per adapter
+- `_canvases` — tldraw document snapshots for the Canvas spatial-thinking UI (full document state in the `snapshot` facet — do not modify directly; mutate via canvas tools/UI). Entry-type shapes inside the snapshot store **only references** (`{type: 'entry', pattern, entryId, x, y, w, h}`) — display label and facet preview are hydrated at render time from the live entry. Do not denormalize entry data into the snapshot; it goes stale.
+- `_fragment_access_log` — append-only log of prime hits per short-term fragment. Promotion to `_long_term_fragments` is COUNT(*)-derived from this log, not a stored counter. GC'd alongside fragments. Audit-exempt (high-frequency append-only).
 
 ## Tech stack
 
 - **Runtime**: Cloudflare Workers + Durable Objects (SQLite storage)
 - **MCP**: `agents` npm package (`McpAgent` class), `@modelcontextprotocol/sdk`
 - **Auth**: `@cloudflare/workers-oauth-provider` (OAuth 2.1 + PKCE + DCR), `@simplewebauthn/server` for passkeys
+- **AI**: Workers AI (embeddings) + Vectorize (KNN index, `mnemion-vectors` / per-env `*-vectors`)
 - **Validation**: Zod for tool parameter schemas
 - **Storage**: KV for OAuth tokens, DO SQLite for all user data
+- **Frontend**: Svelte 5 (component framework only, no SvelteKit), Vite for SSR + client builds
+
+### Wrangler bindings
+
+- `MCP_OBJECT` — SessionDO binding (required name; `McpAgent.serve()` expects it)
+- `MNEMION_HIVE` — HiveDO binding
+- `OAUTH_KV` — OAuth token storage
+- `AI` — Workers AI for embeddings
+- `VECTORIZE` — Vectorize index for prime KNN
+
+### Environments
+
+- Default (`your-worker.workers.dev`) — production
+- `[env.test]` (`your-test-worker.workers.dev`) — Auth.DEV mode, no secret, used as the test environment target
+- `[env.house]` (`your-other-worker.workers.dev`) — secondary deploy with its own Vectorize index
 
 ## Key conventions
 
@@ -131,6 +165,17 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `@simplewebauthn/server` is lazy-imported in `routes/auth.ts` to avoid `tslib` resolution issues in the vitest/workerd test environment.
 - System docs live in `src/system-docs/*.md` with YAML frontmatter (`slug`, `title`). Placeholders (`{{PRODUCT_NAME}}`, `{{uri:path}}`) are resolved at runtime by `resolveDocPlaceholders()` in schema.ts.
 - `wrangler.toml` has a `[[rules]]` entry to import `.md` files as text modules.
+
+## Design principle: data is destiny
+
+`project-docs/data-is-destiny.md` is doctrine. Operational rules derived from it:
+
+- **Store truth once, derive its consequences.** Counts, summaries, labels, and previews are computed at read time, not stored as columns. The `entry_count`/`latest_activity` on `/api/index` are SQL-computed every call. Entry labels are derived via `src/labels.ts` (`deriveLabel`) wherever they're needed; never persisted.
+- **Snapshots store references, not denormalized data.** Canvas entry shapes hold `{pattern, entryId}` and hydrate from the live entry; `_fragment_access_log` is the source of promotion eligibility, not a stored counter.
+- **Audit logs are exempt** — `_mutation_log`, `_schema_history`, `_pending_changes` are point-in-time records on purpose.
+- **Caches are bounded with explicit invalidation policy** — `_web_cache` has per-adapter TTLs; Vectorize embeddings are re-upserted on every mutate via `embedAfterMutate`.
+- **Schema integrity is checked at boot.** `verifyFieldsIntegrity` in `schema.ts` walks every pattern and warns on drift between actual table DDL and the `_fields` metadata table — guards against migration mistakes producing lying agent-facing schemas. `_fields` is the long-standing partial duplication that justifies the check; full deduplication (deriving facet metadata from PRAGMA) is a future cleanup.
+- **`WORKER_HOST` is derived at runtime.** HiveDO records the inbound `Host` header in `fetch()`; `_system/instance` doc is regenerated on every read from that, with `env.WORKER_HOST` as cold-start fallback only.
 
 ## Design principle: code as schematic
 
@@ -154,9 +199,13 @@ Route handlers are grouped by domain in `src/routes/`. OAuthProvider intercepts 
 ## Svelte frontend
 
 - **No SvelteKit** — Svelte as component framework only, worker serves pages.
-- Two Vite builds: server `.mjs` (SSR) + client `.client.txt` (text import via wrangler rules).
+- Three Vite builds (chained in `npm run build:pages`): main client + canvas client (`vite.canvas.ts`) + SSR server bundle. Each emits `.client.txt` text modules consumed by route handlers via wrangler `[[rules]]`.
 - Session cookies (HMAC-SHA256) via `Auth.SESSION` gate for browser pages.
-- Pages: SchemaViewer (pattern browser + entry editor), HiveMap (force-directed pattern visualization), LinkMap (cross-pattern reference graph).
+- Pages:
+  - **SchemaViewer** — pattern browser + entry editor (extracted detail logic into `EntryDetail.svelte`)
+  - **HiveMap** — force-directed pattern visualization
+  - **LinkMap** — cross-pattern reference graph
+  - **Canvas** (`/canvas`) — tldraw-based infinite canvas for spatial thinking; persists snapshots to `_canvases` via `/api/canvas`. Murderboard-style: drag pattern instances, group/note/link elements, draw connections.
 - WebSocket live updates via Hibernatable API on HiveDO.
 - Test environment at `your-test-worker.workers.dev` (`[env.test]` in wrangler.toml, Auth.DEV mode).
 
@@ -165,8 +214,23 @@ Route handlers are grouped by domain in `src/routes/`. OAuthProvider intercepts 
 ```bash
 cd mnemion-js
 npm install
-npm run dev          # local server on :8787 (dev mode, no secret needed)
+npm run dev          # build:pages + wrangler dev on :8787 (dev mode, no secret needed)
+npm run preview      # vite dev with mock data (frontend-only iteration, no worker)
+npm run build:pages  # main client + canvas client + SSR — all required before dev/deploy
+npm run types        # regenerate worker-configuration.d.ts from wrangler.toml
 ```
+
+## Testing
+
+```bash
+cd mnemion-js
+npm test             # vitest run — full suite
+npm run test:watch   # vitest in watch mode
+npx vitest run path/to/file.test.ts                 # single test file
+npx vitest run -t "name of test"                    # tests matching a name
+```
+
+Tests live in `mnemion-js/src/__tests__/` and run inside `@cloudflare/vitest-pool-workers` (workerd runtime). `isolatedStorage: true` rolls back DO SQLite between tests. `tsconfig` excludes `src/__tests__` because tests import the `cloudflare:test` virtual module. Use `fetchMock` from `cloudflare:test` to mock outbound HTTP in DO tests (`activate()`/`deactivate()` per test).
 
 ## First-time setup
 

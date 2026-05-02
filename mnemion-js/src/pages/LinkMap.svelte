@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { browser } from './env.js';
+  import { deriveLabel, truncate } from '../labels';
 
   interface Facet {
     name: string;
@@ -78,15 +79,7 @@
   /* ── Label resolution ── */
 
   function entryLabel(entry: Record<string, unknown>, facets: Facet[]): string {
-    for (const key of ['name', 'title']) {
-      if (entry[key] && typeof entry[key] === 'string') return entry[key] as string;
-    }
-    const firstText = facets.find(f => f.type === 'text');
-    if (firstText && entry[firstText.name]) {
-      const val = String(entry[firstText.name]);
-      return val.length > 25 ? val.slice(0, 24) + '…' : val;
-    }
-    return `#${entry.id}`;
+    return truncate(deriveLabel(entry, facets), 25);
   }
 
   /* ── Vibrancy from recency ── */

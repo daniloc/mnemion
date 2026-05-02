@@ -260,7 +260,6 @@ Scopes:
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "content" TEXT NOT NULL,
       "context" TEXT,
-      "access_count" INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       archived_at TEXT,
@@ -269,7 +268,24 @@ Scopes:
     facets: [
       { name: "content", type: "text", required: true },
       { name: "context", type: "text", required: false },
-      { name: "access_count", type: "integer", required: false },
+    ],
+  },
+  {
+    name: "_fragment_access_log",
+    description: "Append-only log of prime hits per short-term fragment. Promotion eligibility is COUNT(*) of these rows, not a stored counter. GC'd alongside fragments.",
+    doctrine: "Do not write directly. Each prime call that surfaces a short-term fragment appends a row here. The promotion logic queries this log; nothing else should.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_fragment_access_log" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "fragment_id" INTEGER NOT NULL,
+      "accessed_at" TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    facets: [
+      { name: "fragment_id", type: "integer", required: true },
+      { name: "accessed_at", type: "datetime", required: false },
     ],
   },
   {
@@ -368,7 +384,7 @@ Scopes:
 
 // === Initialization ===
 
-export function initializeSchema(db: any, env?: { WORKER_HOST?: string; MNEMION_SECRET?: string; DEV_SEED?: string }): void {
+export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_SEED?: string }): void {
   // --- Core schema tables ---
 
   db.exec(`CREATE TABLE IF NOT EXISTS _objects (
@@ -506,13 +522,27 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string; MNEMION_
     }
   } catch {}
 
-  // --- v9: add access_count to _short_term_fragments ---
+  // --- v9: add access_count to _short_term_fragments (superseded by v10) ---
 
   try {
     const fragCols = db.exec(`PRAGMA table_info("_short_term_fragments")`).toArray() as any[];
     if (fragCols.length && !fragCols.some((c: any) => c.name === "access_count")) {
       db.exec(`ALTER TABLE "_short_term_fragments" ADD COLUMN "access_count" INTEGER NOT NULL DEFAULT 0`);
     }
+  } catch {}
+
+  // --- v10: replace access_count counter with derived count via _fragment_access_log ---
+  //
+  // Counter was a stored derivation of "how often did prime surface this." The log
+  // is the truth; promotion is COUNT(*) FROM log WHERE fragment_id = ?. Drop the
+  // column and the parallel _fields row so /api/index doesn't lie.
+
+  try {
+    const fragCols = db.exec(`PRAGMA table_info("_short_term_fragments")`).toArray() as any[];
+    if (fragCols.some((c: any) => c.name === "access_count")) {
+      db.exec(`ALTER TABLE "_short_term_fragments" DROP COLUMN "access_count"`);
+    }
+    db.exec(`DELETE FROM _fields WHERE object_name = '_short_term_fragments' AND name = 'access_count'`);
   } catch {}
 
   // --- GC: expire short-term fragments older than 30 days ---
@@ -523,6 +553,18 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string; MNEMION_
     );
     db.exec(
       `DELETE FROM "_short_term_fragments" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days')`
+    );
+    // Log entries don't outlive the fragments they describe
+    db.exec(
+      `DELETE FROM "_fragment_access_log" WHERE accessed_at < datetime('now', '-30 days')`
+    );
+  } catch {}
+
+  // --- GC: cap _mutation_log to last 1000 rows (single DELETE, no full read) ---
+
+  try {
+    db.exec(
+      `DELETE FROM _mutation_log WHERE id <= (SELECT IFNULL(MAX(id), 0) - 1000 FROM _mutation_log)`
     );
   } catch {}
 
@@ -581,43 +623,14 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string; MNEMION_
     }
   }
 
-  // --- Instance info doc (seeded from env, not from file) ---
+  // --- Instance info doc (placeholder row only — content is computed at
+  // resolve time in HiveDO.renderInstanceDoc() from the live request Host
+  // header, with env.WORKER_HOST as cold-start fallback). The seeded content
+  // here exists only so the row can be listed by getSystemDocList(); it is
+  // never returned by getSystemDoc('instance', false).
 
-  // Compute storage stats
-  let storageLine = "";
-  try {
-    const tables = db.exec("SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as { name: string }[];
-    let totalEntries = 0;
-    let totalBytes = 0;
-    for (const t of tables) {
-      try {
-        const r = db.exec(`SELECT COUNT(*) as c FROM "${t.name}" WHERE archived_at IS NULL`).one() as any;
-        totalEntries += r.c;
-        // Sum lengths of all text columns for data size estimate
-        const cols = db.exec(`PRAGMA table_info("${t.name}")`).toArray() as any[];
-        const textCols = cols.filter((c: any) => c.type === "TEXT" || c.type === "").map((c: any) => c.name);
-        if (textCols.length) {
-          const sumExpr = textCols.map((c: string) => `COALESCE(LENGTH("${c}"), 0)`).join(" + ");
-          const s = db.exec(`SELECT SUM(${sumExpr}) as bytes FROM "${t.name}" WHERE archived_at IS NULL`).one() as any;
-          totalBytes += s.bytes || 0;
-        }
-      } catch {}
-    }
-    const mutations = (db.exec("SELECT COUNT(*) as c FROM _mutation_log").one() as any).c;
-    const fmt = (b: number) => b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / (1024 * 1024)).toFixed(1)} MB`;
-    storageLine = `\n\n## Storage\n\n- **Data**: ${fmt(totalBytes)} · **Patterns**: ${tables.length} · **Active entries**: ${totalEntries} · **Mutations**: ${mutations}`;
-  } catch {}
-
-  if (env?.WORKER_HOST) {
-    const instanceContent = `# Instance Info
-
-- **Host**: ${env.WORKER_HOST}
-- **Base URL**: https://${env.WORKER_HOST}
-- **MCP endpoint**: https://${env.WORKER_HOST}/mcp
-- **Upload endpoint**: https://${env.WORKER_HOST}/upload/{token}
-- **Shared entries**: https://${env.WORKER_HOST}/o/entry/{pattern}/{id}
-- **Egress outputs**: https://${env.WORKER_HOST}/o/{path}
-- **Ingress inputs**: https://${env.WORKER_HOST}/i/{path}${storageLine}`;
+  {
+    const placeholder = "(generated at resolve time from the inbound request Host header)";
 
     const existing = db.exec(
       `SELECT id, default_content FROM "_system_docs" WHERE slug = 'instance'`
@@ -625,12 +638,12 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string; MNEMION_
     if (existing.length === 0) {
       db.exec(
         `INSERT INTO "_system_docs" (slug, title, content, default_content) VALUES ('instance', 'Instance Info', ?, ?)`,
-        instanceContent, instanceContent
+        placeholder, placeholder
       );
-    } else if (existing[0].default_content !== instanceContent) {
+    } else if (existing[0].default_content !== placeholder) {
       db.exec(
         `UPDATE "_system_docs" SET default_content = ?, content = ?, title = 'Instance Info', updated_at = datetime('now') WHERE slug = 'instance'`,
-        instanceContent, instanceContent
+        placeholder, placeholder
       );
     }
   }
@@ -657,6 +670,10 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string; MNEMION_
     ensureAuditTriggers(db, obj.name);
   }
 
+  // --- Integrity: detect drift between _fields metadata and actual table DDL ---
+
+  verifyFieldsIntegrity(db);
+
   // --- Dev seed: populate with realistic data when no secret is configured ---
 
   if (!env?.MNEMION_SECRET && env?.DEV_SEED) {
@@ -669,9 +686,86 @@ export function initializeSchema(db: any, env?: { WORKER_HOST?: string; MNEMION_
   }
 }
 
+// === Integrity check: _fields vs. actual table DDL ===
+
+// SQLite is the authority for column structure (name, NOT NULL). _fields is a
+// parallel record that adds semantic type ("select", "datetime") and "options"
+// for selects. The two must stay aligned. This function logs drift loudly so
+// migration mistakes don't silently produce lying agent-facing schemas.
+//
+// Drift is reported, not thrown — a degraded boot is recoverable; a refusing
+// boot is not. Real fix is to derive name/required/etc. from PRAGMA at read
+// time and shrink _fields to only its semantic-only columns.
+const KERNEL_COLS = new Set(["id", "version", "created_at", "updated_at", "archived_at"]);
+
+function verifyFieldsIntegrity(db: any): void {
+  const drifts: string[] = [];
+  const objects = db.exec("SELECT name FROM _objects WHERE archived_at IS NULL").toArray() as { name: string }[];
+
+  for (const obj of objects) {
+    let cols: any[];
+    try {
+      cols = db.exec(`PRAGMA table_info("${obj.name}")`).toArray();
+    } catch {
+      drifts.push(`pattern "${obj.name}" has _objects row but no table`);
+      continue;
+    }
+    if (cols.length === 0) {
+      drifts.push(`pattern "${obj.name}" has _objects row but no table`);
+      continue;
+    }
+
+    const ddlCols = new Map<string, { notnull: number; hasDefault: boolean }>();
+    for (const c of cols) {
+      if (KERNEL_COLS.has(c.name)) continue;
+      ddlCols.set(c.name, { notnull: c.notnull, hasDefault: c.dflt_value !== null });
+    }
+
+    const fieldRows = db.exec(
+      "SELECT name, required FROM _fields WHERE object_name = ?", obj.name
+    ).toArray() as { name: string; required: number }[];
+    const fieldsByName = new Map<string, { required: number }>();
+    for (const f of fieldRows) fieldsByName.set(f.name, { required: f.required });
+
+    // Columns in DDL but missing from _fields — agent-facing schema is incomplete
+    for (const [name] of ddlCols) {
+      if (!fieldsByName.has(name)) {
+        drifts.push(`"${obj.name}".${name}: column exists in DDL but missing from _fields`);
+      }
+    }
+    // Rows in _fields but no column — metadata lies
+    for (const [name] of fieldsByName) {
+      if (!ddlCols.has(name)) {
+        drifts.push(`"${obj.name}".${name}: _fields row exists but no DDL column`);
+      }
+    }
+    // required flag mismatch — agents told a column is optional but DB rejects NULL (or vice versa).
+    // NOT NULL with DEFAULT is effectively optional from the agent's perspective (SQLite fills it in)
+    // — skip those, only flag the case where the DB will actually reject an omitted value.
+    for (const [name, ddl] of ddlCols) {
+      const f = fieldsByName.get(name);
+      if (!f) continue;
+      const ddlRequired = ddl.notnull && !ddl.hasDefault ? 1 : 0;
+      if (ddlRequired !== f.required) {
+        drifts.push(`"${obj.name}".${name}: _fields.required=${f.required} but DDL ${ddl.notnull ? "NOT NULL" : "nullable"}${ddl.hasDefault ? " with default" : ""}`);
+      }
+    }
+  }
+
+  if (drifts.length > 0) {
+    console.warn(`[mnemion] schema integrity drift detected (${drifts.length}):\n  ${drifts.join("\n  ")}`);
+  }
+}
+
 // === Audit triggers ===
 
+// Tables that mutate too often to be worth auditing — high-frequency append-only
+// logs whose change history is the data itself. Auditing them would just churn
+// the bounded _mutation_log and evict useful entries.
+const AUDIT_EXEMPT = new Set(["_fragment_access_log"]);
+
 export function ensureAuditTriggers(db: any, tableName: string): void {
+  if (AUDIT_EXEMPT.has(tableName)) return;
   let columns: string[];
   try {
     const info = db.exec(`PRAGMA table_info("${tableName}")`).toArray() as any[];

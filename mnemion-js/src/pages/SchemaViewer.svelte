@@ -1,6 +1,7 @@
 <script lang="ts">
   import { browser } from './env.js';
   import { onMount, tick } from 'svelte';
+  import { deriveLabel, truncate } from '../labels';
 
   function focusOnMount(node: HTMLElement) {
     tick().then(() => node.focus());
@@ -72,16 +73,7 @@
   // Determine which facet to use as the "name" for list cells
   function entryLabel(entry: Record<string, unknown>): string {
     if (!selected) return String(entry.id);
-    // Try common label facets in priority order, then first text facet
-    for (const key of ['name', 'title', 'label', 'key', 'context']) {
-      if (entry[key] && typeof entry[key] === 'string') return entry[key] as string;
-    }
-    const firstText = selected.facets.find(f => f.type === 'text');
-    if (firstText && entry[firstText.name]) {
-      const val = String(entry[firstText.name]);
-      return val.length > 80 ? val.slice(0, 80) + '…' : val;
-    }
-    return `${selected.name} #${entry.id}`;
+    return truncate(deriveLabel(entry, selected.facets), 80);
   }
 
   function formatDate(val: unknown): string {

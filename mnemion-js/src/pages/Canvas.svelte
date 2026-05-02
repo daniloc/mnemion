@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { browser } from './env.js';
   import EntryDetail from './EntryDetail.svelte';
+  import { deriveLabel, truncate } from '../labels';
 
   // === Types ===
 
@@ -107,6 +108,32 @@
   // Save timer
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Live updates via WebSocket
+  let ws: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastLocalSaveAt = 0;
+  let pendingPatternChanges: Set<string> = $state(new Set());
+
+  // Hydrated entry cache: keyed by `${pattern}:${id}`. Source of truth for
+  // entry-shape display content — never denormalize into the snapshot.
+  let entryCache: Record<string, Record<string, unknown>> = $state({});
+
+  // Pattern lookup by name (derived from $state patterns array)
+  let patternByName = $derived.by(() => {
+    const m: Record<string, Pattern> = {};
+    for (const p of patterns) m[p.name] = p;
+    return m;
+  });
+
+  // Set of pattern names currently referenced by entry shapes on the active canvas
+  let referencedPatterns = $derived.by(() => {
+    const s = new Set<string>();
+    for (const sh of shapes) {
+      if (sh.type === 'entry' && typeof sh.data.pattern === 'string') s.add(sh.data.pattern);
+    }
+    return s;
+  });
+
   // === Canvas CRUD ===
 
   async function loadCanvases() {
@@ -163,6 +190,8 @@
       camera = { x: 0, y: 0, zoom: 1 };
     }
     if (browser) history.replaceState(null, '', `#${canvas.id}`);
+    // Hydrate entries referenced by the freshly loaded shapes
+    await hydrateEntries();
   }
 
   function buildSnapshot(): string {
@@ -173,6 +202,7 @@
   async function saveSnapshot() {
     if (!activeCanvas) return;
     try {
+      lastLocalSaveAt = Date.now();
       await fetch('/api/canvas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -182,6 +212,144 @@
         }),
       });
     } catch {}
+  }
+
+  // === Live updates ===
+
+  // Fetch entries referenced by entry shapes; merge into entryCache.
+  // refreshPatterns: if provided, only re-fetch those (others stay cached).
+  // Otherwise fetches any (pattern, id) ref not already cached.
+  async function hydrateEntries(refreshPatterns?: Set<string>) {
+    // Group ref ids by pattern. Refresh-mode collects all referenced ids in the
+    // affected patterns; cache-fill mode collects only ids not already cached.
+    const byPattern: Record<string, Set<number>> = {};
+    for (const sh of shapes) {
+      if (sh.type !== 'entry') continue;
+      const pattern = sh.data.pattern as string;
+      const entryId = sh.data.entryId as number;
+      if (!pattern || typeof entryId !== 'number') continue;
+      const key = `${pattern}:${entryId}`;
+      const force = refreshPatterns?.has(pattern) ?? false;
+      if (!force && entryCache[key]) continue;
+      (byPattern[pattern] ??= new Set()).add(entryId);
+    }
+    if (Object.keys(byPattern).length === 0) return;
+
+    // One fetch per referenced pattern — `id|=1,2,3` IN-clause filter
+    const fetches = Object.entries(byPattern).map(async ([pattern, ids]) => {
+      const idList = Array.from(ids).join(',');
+      try {
+        const res = await fetch(`/api/query/${encodeURIComponent(pattern)}?filter=${encodeURIComponent(`id|=${idList}`)}`);
+        const data = await res.json();
+        return { pattern, entries: (data.entries || []) as Record<string, unknown>[] };
+      } catch {
+        return { pattern, entries: [] as Record<string, unknown>[] };
+      }
+    });
+    const results = await Promise.all(fetches);
+
+    const next = { ...entryCache };
+    // If refreshing, drop stale entries in affected patterns whose ids weren't returned (e.g. archived)
+    if (refreshPatterns) {
+      for (const pattern of refreshPatterns) {
+        for (const key of Object.keys(next)) {
+          if (key.startsWith(`${pattern}:`)) delete next[key];
+        }
+      }
+    }
+    for (const { pattern, entries } of results) {
+      for (const e of entries) {
+        if (typeof e.id === 'number') next[`${pattern}:${e.id}`] = e;
+      }
+    }
+    entryCache = next;
+  }
+
+  function isInteracting(): boolean {
+    return dragging !== null
+      || resizing !== null
+      || connecting !== null
+      || editingNote !== null
+      || namingGroup !== null
+      || drawingGroup;
+  }
+
+  async function refreshActiveCanvas() {
+    if (!activeCanvas) {
+      // No active canvas — just refresh the list (agent may have added one)
+      await loadCanvases();
+      return;
+    }
+    try {
+      // Refresh list (name/folder may have changed, items may have been added/removed)
+      await loadCanvases();
+      // Refresh active canvas snapshot
+      const res = await fetch(`/api/canvases?id=${activeCanvas.id}`);
+      const data = await res.json();
+      const entry = data.entries?.[0];
+      if (!entry) {
+        // Active canvas was archived — clear view
+        activeCanvas = null;
+        shapes = [];
+        connections = [];
+        return;
+      }
+      activeCanvas = entry;
+      if (entry.snapshot && entry.snapshot !== '{}') {
+        const snap: CanvasSnapshot = JSON.parse(entry.snapshot);
+        // Reassigning these arrays is enough — keyed each blocks diff per-shape
+        shapes = snap.shapes || [];
+        connections = snap.connections || [];
+        // Don't yank the camera; user's viewport is local UI state
+      }
+    } catch {}
+  }
+
+  // Apply a set of changed patterns: refresh snapshot if _canvases changed,
+  // and re-hydrate any referenced patterns whose entries may have changed.
+  async function applyChanges(changed: Set<string>) {
+    const wantsSnapshot = changed.has('_canvases');
+    if (wantsSnapshot) await refreshActiveCanvas();
+    // Re-hydrate referenced patterns that changed (overwrites stale cache)
+    const hydrate = new Set<string>();
+    for (const p of changed) {
+      if (p !== '_canvases' && referencedPatterns.has(p)) hydrate.add(p);
+    }
+    if (hydrate.size > 0) await hydrateEntries(hydrate);
+    // Snapshot may reference new patterns/ids — fill any cache misses
+    if (wantsSnapshot) await hydrateEntries();
+  }
+
+  function queueChanges(patterns: string[]) {
+    // Echo suppression: ignore broadcasts within 1.5s of our own save
+    if (Date.now() - lastLocalSaveAt < 1500) return;
+    // Filter to patterns we care about: _canvases or any referenced pattern
+    const relevant = patterns.filter(p => p === '_canvases' || referencedPatterns.has(p));
+    if (relevant.length === 0) return;
+    if (isInteracting()) {
+      pendingPatternChanges = new Set([...pendingPatternChanges, ...relevant]);
+      return;
+    }
+    applyChanges(new Set(relevant));
+  }
+
+  function connectLive() {
+    if (!browser) return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'changed' && Array.isArray(msg.patterns)) {
+          queueChanges(msg.patterns);
+        }
+      } catch {}
+    };
+    ws.onclose = () => {
+      ws = null;
+      reconnectTimer = setTimeout(connectLive, 3000);
+    };
+    ws.onerror = () => { ws?.close(); };
   }
 
   function scheduleSave() {
@@ -217,11 +385,7 @@
   function addEntryShape(pattern: Pattern, entry: Record<string, unknown>) {
     const cx = (-camera.x + (stageEl?.clientWidth ?? 800) / 2) / camera.zoom;
     const cy = (-camera.y + (stageEl?.clientHeight ?? 600) / 2) / camera.zoom;
-    const label = entryLabel(entry, pattern);
-    const facets: Record<string, unknown> = {};
-    for (const f of pattern.facets.slice(0, 4)) {
-      if (entry[f.name] != null) facets[f.name] = entry[f.name];
-    }
+    // Snapshot stores only the reference; display data is hydrated from the live entry.
     const shape: CanvasShape = {
       id: genId(),
       type: 'entry',
@@ -229,9 +393,11 @@
       y: cy - 60 + Math.random() * 40,
       w: 240,
       h: 120,
-      data: { pattern: pattern.name, entryId: entry.id, label, facets },
+      data: { pattern: pattern.name, entryId: entry.id },
     };
     shapes = [...shapes, shape];
+    // Seed the cache so the new shape renders immediately without a fetch
+    entryCache = { ...entryCache, [`${pattern.name}:${entry.id}`]: entry };
     selected = shape.id;
     scheduleSave();
   }
@@ -470,33 +636,29 @@
     if (shape.type !== 'entry') return;
     const patternName = shape.data.pattern as string;
     const entryId = shape.data.entryId as number;
-    const pat = patterns.find(p => p.name === patternName);
+    const pat = patternByName[patternName];
     if (!pat) return;
-    try {
-      const res = await fetch(`/api/query/${patternName}`);
-      const data = await res.json();
-      const entry = (data.entries || []).find((e: any) => e.id === entryId);
-      if (!entry) return;
-      overlayEntry = { patternName, facets: pat.facets, entry, shapeId: shape.id };
-    } catch {}
+    // Prefer cache; fall back to a targeted fetch
+    let entry = entryCache[`${patternName}:${entryId}`];
+    if (!entry) {
+      try {
+        const res = await fetch(`/api/query/${encodeURIComponent(patternName)}?filter=${encodeURIComponent(`id|=${entryId}`)}`);
+        const data = await res.json();
+        entry = (data.entries || [])[0];
+        if (entry) entryCache = { ...entryCache, [`${patternName}:${entryId}`]: entry };
+      } catch {}
+    }
+    if (!entry) return;
+    overlayEntry = { patternName, facets: pat.facets, entry, shapeId: shape.id };
   }
 
   function handleEntrySaved(updated: Record<string, unknown>) {
     if (!overlayEntry) return;
-    const shapeId = overlayEntry.shapeId;
-    const pat = patterns.find(p => p.name === overlayEntry!.patternName);
-    if (pat) {
-      const label = entryLabel(updated, pat);
-      const newFacets: Record<string, unknown> = {};
-      for (const f of pat.facets.slice(0, 4)) {
-        if (updated[f.name] != null) newFacets[f.name] = updated[f.name];
-      }
-      shapes = shapes.map(s =>
-        s.id === shapeId
-          ? { ...s, data: { ...s.data, label, facets: newFacets } }
-          : s
-      );
-      scheduleSave();
+    const patternName = overlayEntry.patternName;
+    const id = updated.id as number | undefined;
+    if (typeof id === 'number') {
+      // Single source of truth: update the cache, not the snapshot
+      entryCache = { ...entryCache, [`${patternName}:${id}`]: updated };
     }
     // Update the overlay's entry data without reassigning the object
     // (reassigning would unmount/remount EntryDetail)
@@ -562,15 +724,7 @@
   }
 
   function entryLabel(entry: Record<string, unknown>, pattern: Pattern): string {
-    for (const key of ['name', 'title', 'label', 'key']) {
-      if (entry[key] && typeof entry[key] === 'string') return entry[key] as string;
-    }
-    const firstText = pattern.facets.find(f => f.type === 'text');
-    if (firstText && entry[firstText.name]) {
-      const val = String(entry[firstText.name]);
-      return val.length > 40 ? val.slice(0, 39) + '\u2026' : val;
-    }
-    return `#${entry.id}`;
+    return truncate(deriveLabel(entry, pattern.facets), 40);
   }
 
   // === Connection geometry ===
@@ -631,12 +785,26 @@
       if (match) selectCanvas(match);
     }
 
+    connectLive();
+
     window.addEventListener('keydown', handleKeydown);
     return () => window.removeEventListener('keydown', handleKeydown);
   });
 
+  // Apply deferred external updates once user finishes interacting
+  $effect(() => {
+    if (pendingPatternChanges.size > 0 && !isInteracting()) {
+      const drained = pendingPatternChanges;
+      pendingPatternChanges = new Set();
+      // Defer one tick so the interaction-end state has fully settled
+      Promise.resolve().then(() => applyChanges(drained));
+    }
+  });
+
   onDestroy(() => {
     if (browser && saveTimer) clearTimeout(saveTimer);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    ws?.close();
   });
 </script>
 
@@ -863,13 +1031,17 @@
                   {/if}
 
                 {:else if shape.type === 'entry'}
-                  <div class="entry-label">{shape.data.label || ''}</div>
-                  {#if shape.data.facets && typeof shape.data.facets === 'object'}
+                  {@const cached = entryCache[`${shape.data.pattern}:${shape.data.entryId}`]}
+                  {@const pat = patternByName[shape.data.pattern as string]}
+                  {#if cached && pat}
+                    <div class="entry-label">{entryLabel(cached, pat)}</div>
                     <div class="entry-facets">
-                      {#each Object.entries(shape.data.facets as Record<string, unknown>).slice(0, 3) as [key, val]}
-                        <div class="facet-row"><span class="facet-key">{key}:</span> {String(val ?? '')}</div>
+                      {#each pat.facets.filter(f => cached[f.name] != null && cached[f.name] !== '').slice(0, 3) as f}
+                        <div class="facet-row"><span class="facet-key">{f.name}:</span> {String(cached[f.name] ?? '')}</div>
                       {/each}
                     </div>
+                  {:else}
+                    <div class="entry-label entry-label-loading">loading…</div>
                   {/if}
 
                 {:else if shape.type === 'link'}
@@ -1198,9 +1370,11 @@
     display: flex; flex-direction: column; gap: 4px;
   }
   .entry-label {
-    font-size: 13px; font-weight: 600; color: #e0e0e8;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 12px; font-weight: 600; color: #e0e0e8;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .entry-label-loading { color: #6a6a78; font-weight: 400; font-style: italic; }
   .entry-facets { display: flex; flex-direction: column; gap: 2px; }
   .facet-row {
     font-size: 10px; color: #8a8a98;
@@ -1220,7 +1394,8 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .link-title {
-    font-size: 13px; font-weight: 600; color: #a0c4e8;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 12px; font-weight: 600; color: #a0c4e8;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .link-desc {
