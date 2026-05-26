@@ -1,0 +1,10 @@
+{
+  "name": "mnemion-monorepo",
+  "private": true,
+  "scripts": {
+    "setup": "cd mnemion-js && npm install && npm run setup",
+    "deploy": "cd mnemion-js && npm run deploy",
+    "dev": "cd mnemion-js && npm run dev",
+    "test": "cd mnemion-js && npm test"
+  }
+}
