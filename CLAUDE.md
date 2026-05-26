@@ -46,7 +46,7 @@ Future peer: iOS app (Swift).
 
 ## Current state
 
-Deployed to `https://your-worker.workers.dev/mcp`. Cross-surface data sharing proven (Claude Code + Claude.ai reading/writing the same store).
+Deploys as a single Cloudflare Worker that exposes MCP at `/mcp`. Cross-surface data sharing proven (Claude Code + Claude.ai reading/writing the same store).
 
 ### Architecture
 
@@ -149,9 +149,8 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 
 ### Environments
 
-- Default (`your-worker.workers.dev`) — production
-- `[env.test]` (`your-test-worker.workers.dev`) — Auth.DEV mode, no secret, used as the test environment target
-- `[env.house]` (`your-other-worker.workers.dev`) — secondary deploy with its own Vectorize index
+- Default — production deploy (host comes from your CF account's `workers.dev` subdomain, or a custom route).
+- `[env.test]` — `Auth.DEV` mode, no secret. Used as a federation peer / test target. Provision with `wrangler deploy --env test` after the main env exists.
 
 ## Key conventions
 
@@ -207,7 +206,7 @@ Route handlers are grouped by domain in `src/routes/`. OAuthProvider intercepts 
   - **LinkMap** — cross-pattern reference graph
   - **Canvas** (`/canvas`) — tldraw-based infinite canvas for spatial thinking; persists snapshots to `_canvases` via `/api/canvas`. Murderboard-style: drag pattern instances, group/note/link elements, draw connections.
 - WebSocket live updates via Hibernatable API on HiveDO.
-- Test environment at `your-test-worker.workers.dev` (`[env.test]` in wrangler.toml, Auth.DEV mode).
+- Test environment configured as `[env.test]` in wrangler.toml (Auth.DEV mode).
 
 ## Development
 

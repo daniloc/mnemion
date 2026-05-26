@@ -10,7 +10,8 @@ compatibility_flags = ["nodejs_compat"]
 # since DO eviction. Safe to omit; defaults to "localhost" when missing.
 WORKER_HOST = "your-worker.workers.dev"
 
-# KV namespace for OAuth tokens
+# KV namespace for OAuth tokens.
+# `npm run setup` finds-or-creates this namespace on your account and patches the id in.
 [[kv_namespaces]]
 binding = "OAUTH_KV"
 id = "REPLACE_ME"
@@ -52,7 +53,9 @@ renamed_classes = [{from = "CambiumSession", to = "SessionDO"}, {from = "Cambium
 tag = "v4"
 renamed_classes = [{from = "StoreDO", to = "HiveDO"}]
 
-# === Test environment (federation peer) ===
+# === Test environment (federation peer, Auth.DEV mode) ===
+# Optional. Used as a second hive for testing federation against the main env.
+# Provision with: wrangler deploy --env test (and create its own OAUTH_KV namespace).
 [env.test]
 name = "mnemion-test"
 
@@ -72,36 +75,6 @@ name = "MNEMION_HIVE"
 class_name = "HiveDO"
 
 [[env.test.migrations]]
-tag = "v1"
-new_sqlite_classes = ["SessionDO", "HiveDO"]
-
-# === House environment (friend's instance) ===
-[env.house]
-name = "mnemion-house"
-
-[env.house.vars]
-WORKER_HOST = "your-other-worker.workers.dev"
-
-[[env.house.kv_namespaces]]
-binding = "OAUTH_KV"
-id = "REPLACE_ME"
-
-[[env.house.durable_objects.bindings]]
-name = "MCP_OBJECT"
-class_name = "SessionDO"
-
-[[env.house.durable_objects.bindings]]
-name = "MNEMION_HIVE"
-class_name = "HiveDO"
-
-[env.house.ai]
-binding = "AI"
-
-[[env.house.vectorize]]
-binding = "VECTORIZE"
-index_name = "your-other-vectors"
-
-[[env.house.migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionDO", "HiveDO"]
 

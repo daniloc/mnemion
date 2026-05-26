@@ -61,9 +61,12 @@ fi
 
 if [ "$NEW_KV_ID" != "$CURRENT_KV_ID" ]; then
   echo "  Patching wrangler.toml: $CURRENT_KV_ID -> $NEW_KV_ID"
-  # CURRENT_KV_ID is a unique hex string in the file (env blocks use different ids), so global replace is safe
-  sed -i.bak "s/$CURRENT_KV_ID/$NEW_KV_ID/g" wrangler.toml
-  rm wrangler.toml.bak
+  # Replace only the FIRST occurrence — the [env.test] block may share the same
+  # "REPLACE_ME" placeholder, and setup.sh only provisions the production namespace.
+  awk -v old="$CURRENT_KV_ID" -v new="$NEW_KV_ID" '
+    !done && index($0, old) { sub(old, new); done=1 }
+    { print }
+  ' wrangler.toml > wrangler.toml.tmp && mv wrangler.toml.tmp wrangler.toml
 fi
 
 # === Vectorize index: find-or-create ===

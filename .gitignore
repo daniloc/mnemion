@@ -22,3 +22,6 @@ build/
 
 # Logs
 *.log
+
+# Per-user MCP client config — points at the user's own deploy
+.mcp.json
