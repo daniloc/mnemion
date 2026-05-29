@@ -10,8 +10,6 @@ See [`CLAUDE.md`](CLAUDE.md) for architecture and internals.
 
 ### The model
 
-Mnemion uses biological vocabulary throughout — at the API, in URIs, in JSON keys, in the UI:
-
 - **Hive** — the whole store (one per user)
 - **Pattern** — an organizing structure, like a table (e.g. `tasks`, `decisions`, `people`)
 - **Entry** — an instance within a pattern (a single row)
