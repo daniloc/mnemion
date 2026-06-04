@@ -757,6 +757,147 @@ describe("Resolve", () => {
   });
 });
 
+// === Web resolution: Bluesky ===
+
+describe("Bluesky resolution", () => {
+  // A thread whose root post quotes another post and embeds an image.
+  function threadFixture() {
+    return {
+      thread: {
+        $type: "app.bsky.feed.defs#threadViewPost",
+        post: {
+          uri: "at://did:plc:alice/app.bsky.feed.post/abc123",
+          author: { handle: "alice.bsky.social", displayName: "Alice" },
+          record: { text: "Hello world", createdAt: "2026-01-01T00:00:00.000Z" },
+          embed: {
+            $type: "app.bsky.embed.recordWithMedia#view",
+            media: {
+              $type: "app.bsky.embed.images#view",
+              images: [{
+                thumb: "https://cdn.bsky.app/img/thumb.jpg",
+                fullsize: "https://cdn.bsky.app/img/full.jpg",
+                alt: "a tabby cat",
+              }],
+            },
+            record: {
+              $type: "app.bsky.embed.record#view",
+              record: {
+                $type: "app.bsky.embed.record#viewRecord",
+                uri: "at://did:plc:bob/app.bsky.feed.post/xyz789",
+                author: { handle: "bob.bsky.social", displayName: "Bob" },
+                value: { text: "The quoted thought" },
+              },
+            },
+          },
+        },
+        replies: [],
+      },
+    };
+  }
+
+  function mockThread() {
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://public.api.bsky.app")
+      .intercept({ path: /\/xrpc\/app\.bsky\.feed\.getPostThread/ })
+      .reply(200, JSON.stringify(threadFixture()), {
+        headers: { "Content-Type": "application/json" },
+      });
+  }
+
+  it("resolves a bsky.app post URL with image and quoted-post embeds", async () => {
+    const store = getStore();
+    mockThread();
+
+    const result = JSON.parse(await store.resolve("https://bsky.app/profile/alice.bsky.social/post/abc123"));
+    expect(result.source).toBe("bluesky");
+    expect(result.content).toContain("**Alice** (@alice.bsky.social)");
+    expect(result.content).toContain("Hello world");
+    // Image embed path surfaced with alt text
+    expect(result.content).toContain("[image: https://cdn.bsky.app/img/full.jpg — a tabby cat]");
+    // Quoted post surfaced as a blockquote
+    expect(result.content).toContain("[quoting **Bob** (@bob.bsky.social)]");
+    expect(result.content).toContain("> The quoted thought");
+    expect(result.metadata.at_uri).toBe("at://alice.bsky.social/app.bsky.feed.post/abc123");
+
+    fetchMock.deactivate();
+  });
+
+  it("resolves a raw at:// post URI with a DID authority", async () => {
+    const store = getStore();
+    mockThread();
+
+    const result = JSON.parse(await store.resolve("at://did:plc:alice/app.bsky.feed.post/abc123"));
+    expect(result.source).toBe("bluesky");
+    expect(result.content).toContain("Hello world");
+    expect(result.metadata.authority).toBe("did:plc:alice");
+    expect(result.metadata.at_uri).toBe("at://did:plc:alice/app.bsky.feed.post/abc123");
+
+    fetchMock.deactivate();
+  });
+
+  it("rejects at:// URIs that are not Bluesky posts", async () => {
+    const store = getStore();
+    const result = JSON.parse(await store.resolve("at://did:plc:alice/app.bsky.actor.profile/self"));
+    expect(result.error).toBe(true);
+    expect(result.message).toContain("No adapter matched");
+  });
+
+  it("limits reply depth via ?depth=N and passes it through to the API", async () => {
+    const store = getStore();
+    // Nested reply chain: level 1 → level 2 → level 3
+    const deep = {
+      thread: {
+        $type: "app.bsky.feed.defs#threadViewPost",
+        post: {
+          author: { handle: "alice.bsky.social", displayName: "Alice" },
+          record: { text: "root post", createdAt: "2026-01-01T00:00:00.000Z" },
+        },
+        replies: [{
+          post: { author: { handle: "r1.bsky.social" }, record: { text: "reply level 1" } },
+          replies: [{
+            post: { author: { handle: "r2.bsky.social" }, record: { text: "reply level 2" } },
+            replies: [{
+              post: { author: { handle: "r3.bsky.social" }, record: { text: "reply level 3" } },
+            }],
+          }],
+        }],
+      },
+    };
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://public.api.bsky.app")
+      .intercept({ path: /getPostThread.*depth=2(&|$)/ })
+      .reply(200, JSON.stringify(deep), { headers: { "Content-Type": "application/json" } });
+
+    const result = JSON.parse(await store.resolve("at://did:plc:alice/app.bsky.feed.post/abc123?depth=2"));
+    expect(result.source).toBe("bluesky");
+    expect(result.metadata.depth).toBe(2);
+    expect(result.content).toContain("reply level 1");
+    expect(result.content).toContain("reply level 2");
+    // Beyond the requested depth — omitted
+    expect(result.content).not.toContain("reply level 3");
+
+    fetchMock.deactivate();
+  });
+
+  it("clamps an over-large ?depth to the maximum", async () => {
+    const store = getStore();
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://public.api.bsky.app")
+      .intercept({ path: /getPostThread.*depth=100(&|$)/ })
+      .reply(200, JSON.stringify({ thread: { post: { author: { handle: "a.bsky.social" }, record: { text: "hi" } } } }), {
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const result = JSON.parse(await store.resolve("https://bsky.app/profile/a.bsky.social/post/abc123?depth=999"));
+    expect(result.metadata.depth).toBe(100);
+
+    fetchMock.deactivate();
+  });
+});
+
 // === Entry Sharing ===
 
 describe("Sharing", () => {

@@ -144,7 +144,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       "resolve",
       toolDesc("resolve"),
       {
-        uri: z.string().describe(`A ${URI_SCHEME}:// URI, or an https:// URL to fetch web content. Examples: ${URI_SCHEME}://entry/notes/1, https://bsky.app/profile/user/post/abc`),
+        uri: z.string().describe(`A ${URI_SCHEME}:// URI, an https:// URL, or an at:// Bluesky at-uri to fetch web content. Examples: ${URI_SCHEME}://entry/notes/1, https://bsky.app/profile/user/post/abc, at://did:plc:xyz/app.bsky.feed.post/abc`),
       },
       async ({ uri: resolveUri }) => {
         const result = await hive.resolve(resolveUri);

@@ -14,8 +14,10 @@ export interface WebContext {
 
 interface WebAdapter {
   name: string;
-  match: (url: URL) => boolean;
-  fetch: (url: URL, env: Env) => Promise<{ content: string; metadata?: Record<string, unknown> }>;
+  // Matchers operate on the raw URI string, not a parsed URL — at:// URIs with
+  // DID authorities (at://did:plc:.../...) are rejected by the WHATWG URL parser.
+  match: (rawUrl: string) => boolean;
+  fetch: (rawUrl: string, env: Env) => Promise<{ content: string; metadata?: Record<string, unknown> }>;
   ttl: number; // seconds
 }
 
@@ -23,7 +25,7 @@ interface WebAdapter {
 
 const WEB_ADAPTERS: WebAdapter[] = [
   { name: "bluesky", match: isBlueskyPost, fetch: fetchBlueskyThread, ttl: 3600 },
-  { name: "browser-rendering", match: () => true, fetch: fetchViaMarkdown, ttl: 86400 },
+  { name: "browser-rendering", match: isHttpUrl, fetch: fetchViaMarkdown, ttl: 86400 },
 ];
 
 // === Public API ===
@@ -32,15 +34,19 @@ export async function resolveWeb(
   ctx: WebContext,
   rawUrl: string,
 ): Promise<{ content: string; url: string; source: string; cached: boolean; stale?: boolean; metadata?: Record<string, unknown> }> {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Invalid URL" } };
-  }
+  // Scheme validation. at:// (Bluesky AT Protocol) is handled as a raw string —
+  // the WHATWG URL parser rejects DID authorities (at://did:plc:.../...).
+  if (!rawUrl.startsWith("at://")) {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Invalid URL" } };
+    }
 
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Only http:// and https:// URLs are supported" } };
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Only http://, https://, and at:// URIs are supported" } };
+    }
   }
 
   // Check cache first
@@ -56,14 +62,14 @@ export async function resolveWeb(
   }
 
   // Find matching adapter
-  const adapter = WEB_ADAPTERS.find(a => a.match(parsed));
+  const adapter = WEB_ADAPTERS.find(a => a.match(rawUrl));
   if (!adapter) {
     return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "No adapter matched" } };
   }
 
   // Fetch via adapter
   try {
-    const result = await adapter.fetch(parsed, ctx.env);
+    const result = await adapter.fetch(rawUrl, ctx.env);
     const expiresAt = new Date(Date.now() + adapter.ttl * 1000).toISOString();
 
     // Write to cache (archive old entry if exists)
@@ -100,19 +106,70 @@ export async function resolveWeb(
 
 // === Bluesky adapter ===
 
-function isBlueskyPost(url: URL): boolean {
-  return url.hostname === "bsky.app" && /^\/profile\/[^/]+\/post\/[^/]+$/.test(url.pathname);
+const BSKY_POST_AT_URI = /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/?#]+)$/;
+const BSKY_APP_POST_PATH = /^\/profile\/([^/]+)\/post\/([^/]+)$/;
+
+// Reply-tree depth (levels of nested replies to fetch + render). Agents tune
+// this via a ?depth=N query param to pull whole conversations and subtrees.
+const DEFAULT_DEPTH = 6;
+const MAX_DEPTH = 100; // AT Protocol allows up to 1000; cap for response size
+
+/**
+ * Resolve a Bluesky post reference from either a bsky.app web URL or a raw
+ * at:// post URI, plus an optional ?depth=N for reply-tree depth. Both forms
+ * reduce to an AT Protocol at-uri, which getPostThread accepts directly.
+ * Returns null for non-post references.
+ */
+function blueskyPost(rawUrl: string): { atUri: string; authority: string; rkey: string; depth: number } | null {
+  const [base, queryString] = splitQuery(rawUrl);
+  const depth = parseDepth(queryString);
+
+  // at://{did-or-handle}/app.bsky.feed.post/{rkey}  (URL parser rejects DID authorities)
+  const direct = base.match(BSKY_POST_AT_URI);
+  if (direct) {
+    return { atUri: base, authority: direct[1], rkey: direct[2], depth };
+  }
+
+  // https://bsky.app/profile/{handle-or-did}/post/{rkey}
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (url.hostname !== "bsky.app") return null;
+  const m = url.pathname.match(BSKY_APP_POST_PATH);
+  if (!m) return null;
+  const authority = decodeURIComponent(m[1]);
+  return { atUri: `at://${authority}/app.bsky.feed.post/${m[2]}`, authority, rkey: m[2], depth };
 }
 
-async function fetchBlueskyThread(url: URL, _env: Env): Promise<{ content: string; metadata?: Record<string, unknown> }> {
-  // https://bsky.app/profile/{handle}/post/{rkey}
-  // → GET https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread?uri=at://{handle}/app.bsky.feed.post/{rkey}&depth=10
-  const parts = url.pathname.split("/");
-  const handle = parts[2]; // /profile/{handle}/post/{rkey}
-  const rkey = parts[4];
+/** Split a URI into [base, queryString] without a URL parse (DID authorities break it). */
+function splitQuery(rawUrl: string): [string, string | undefined] {
+  const i = rawUrl.indexOf("?");
+  return i === -1 ? [rawUrl, undefined] : [rawUrl.slice(0, i), rawUrl.slice(i + 1)];
+}
 
-  const atUri = `at://${handle}/app.bsky.feed.post/${rkey}`;
-  const apiUrl = `https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread?uri=${encodeURIComponent(atUri)}&depth=10`;
+/** Parse ?depth=N, clamped to [0, MAX_DEPTH]; falls back to DEFAULT_DEPTH. */
+function parseDepth(queryString: string | undefined): number {
+  if (!queryString) return DEFAULT_DEPTH;
+  const raw = new URLSearchParams(queryString).get("depth");
+  if (raw === null) return DEFAULT_DEPTH;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_DEPTH;
+  return Math.min(Math.floor(n), MAX_DEPTH);
+}
+
+function isBlueskyPost(rawUrl: string): boolean {
+  return blueskyPost(rawUrl) !== null;
+}
+
+async function fetchBlueskyThread(rawUrl: string, _env: Env): Promise<{ content: string; metadata?: Record<string, unknown> }> {
+  const ref = blueskyPost(rawUrl);
+  if (!ref) throw new Error("Not a Bluesky post reference");
+  const { atUri, authority, rkey, depth } = ref;
+
+  const apiUrl = `https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread?uri=${encodeURIComponent(atUri)}&depth=${depth}`;
 
   const response = await fetch(apiUrl, {
     headers: { "Accept": "application/json" },
@@ -123,21 +180,22 @@ async function fetchBlueskyThread(url: URL, _env: Env): Promise<{ content: strin
   }
 
   const data = await response.json() as any;
-  const content = flattenThread(data.thread);
+  const content = flattenThread(data.thread, depth);
 
   return {
     content,
     metadata: {
-      handle,
+      authority,
       rkey,
       at_uri: atUri,
+      depth,
       reply_count: countReplies(data.thread),
     },
   };
 }
 
-/** Flatten a Bluesky thread to readable text: parents first, then replies. */
-function flattenThread(thread: any): string {
+/** Flatten a Bluesky thread to readable text: parents first, then replies (to maxDepth levels). */
+function flattenThread(thread: any, maxDepth: number): string {
   const lines: string[] = [];
 
   // Walk parents (oldest first)
@@ -156,10 +214,10 @@ function flattenThread(thread: any): string {
     lines.push(formatPost(thread.post, "root"));
   }
 
-  // Replies (depth-first, limited)
+  // Replies (depth-first, to the requested depth)
   if (thread.replies?.length) {
     for (const reply of thread.replies) {
-      flattenReplies(reply, lines, 1, 3); // max depth 3
+      flattenReplies(reply, lines, 1, maxDepth);
     }
   }
 
@@ -174,7 +232,69 @@ function formatPost(post: any, role: string): string {
   const timestamp = createdAt ? new Date(createdAt).toLocaleString() : "";
 
   const prefix = role === "parent" ? "[parent] " : role === "reply" ? "  > " : "";
-  return `${prefix}**${author}** (@${handle}) — ${timestamp}\n${prefix}${text}`;
+  const lines = [`${prefix}**${author}** (@${handle}) — ${timestamp}`, `${prefix}${text}`];
+  lines.push(...formatEmbed(post.embed, prefix));
+  return lines.join("\n");
+}
+
+/**
+ * Render a hydrated embed view (app.bsky.embed.*#view) as text lines.
+ * Surfaces image CDN paths, quoted posts, external links, and video so they
+ * survive flattening and become recall-able via prime.
+ */
+function formatEmbed(embed: any, prefix: string): string[] {
+  if (!embed?.$type) return [];
+  switch (embed.$type) {
+    case "app.bsky.embed.images#view":
+      return (embed.images || []).map((img: any) =>
+        `${prefix}[image: ${img.fullsize || img.thumb || ""}${img.alt ? ` — ${img.alt}` : ""}]`
+      );
+    case "app.bsky.embed.video#view":
+      return [`${prefix}[video: ${embed.playlist || embed.thumbnail || embed.cid || ""}${embed.alt ? ` — ${embed.alt}` : ""}]`];
+    case "app.bsky.embed.external#view": {
+      const ext = embed.external || {};
+      return [`${prefix}[link: ${ext.uri || ""}${ext.title ? ` — ${ext.title}` : ""}]`];
+    }
+    case "app.bsky.embed.record#view":
+      return formatQuotedRecord(embed.record, prefix);
+    case "app.bsky.embed.recordWithMedia#view":
+      return [
+        ...formatEmbed(embed.media, prefix),
+        ...formatQuotedRecord(embed.record?.record, prefix),
+      ];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Render a quoted record (app.bsky.embed.record#viewRecord) as a blockquote,
+ * including any media nested inside the quoted post. Degraded states
+ * (not-found / blocked / detached) are noted rather than dropped.
+ */
+function formatQuotedRecord(rec: any, prefix: string): string[] {
+  if (!rec?.$type) return [];
+  switch (rec.$type) {
+    case "app.bsky.embed.record#viewNotFound":
+      return [`${prefix}[quoted post not found]`];
+    case "app.bsky.embed.record#viewBlocked":
+      return [`${prefix}[quoted post blocked]`];
+    case "app.bsky.embed.record#viewDetached":
+      return [`${prefix}[quoted post removed by author]`];
+    case "app.bsky.embed.record#viewRecord": {
+      const author = rec.author?.displayName || rec.author?.handle || "Unknown";
+      const handle = rec.author?.handle || "";
+      const text = rec.value?.text || "";
+      const lines = [`${prefix}[quoting **${author}** (@${handle})]`];
+      for (const line of text.split("\n")) lines.push(`${prefix}> ${line}`);
+      // Media nested inside the quoted post (images, links, video)
+      for (const e of rec.embeds || []) lines.push(...formatEmbed(e, `${prefix}> `));
+      return lines;
+    }
+    default:
+      // Feeds, lists, starter packs, labelers quoted by reference
+      return [`${prefix}[quoted ${String(rec.$type).replace(/^app\.bsky\.[\w.]+#/, "")}]`];
+  }
 }
 
 function flattenReplies(node: any, lines: string[], depth: number, maxDepth: number): void {
@@ -199,7 +319,11 @@ function countReplies(thread: any): number {
 
 // === Browser Rendering adapter ===
 
-async function fetchViaMarkdown(url: URL, env: Env): Promise<{ content: string; metadata?: Record<string, unknown> }> {
+function isHttpUrl(rawUrl: string): boolean {
+  return rawUrl.startsWith("https://") || rawUrl.startsWith("http://");
+}
+
+async function fetchViaMarkdown(rawUrl: string, env: Env): Promise<{ content: string; metadata?: Record<string, unknown> }> {
   const accountId = env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = env.CLOUDFLARE_API_TOKEN;
 
@@ -214,7 +338,7 @@ async function fetchViaMarkdown(url: URL, env: Env): Promise<{ content: string; 
       "Authorization": `Bearer ${apiToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ url: url.href }),
+    body: JSON.stringify({ url: rawUrl }),
   });
 
   if (!response.ok) {

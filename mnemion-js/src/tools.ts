@@ -66,7 +66,7 @@ Valid URIs:
 - ${uri("mutation/{pattern}")} — mutations filtered to one pattern
 
 Web URLs: use this to help the user read web pages and social threads. Pass any https:// URL to fetch and cache the content.
-- Bluesky threads (bsky.app/profile/*/post/*) are fetched via AT Protocol API — no scraping needed.
+- Bluesky threads (bsky.app/profile/*/post/* or at://*/app.bsky.feed.post/* at-uris) are fetched via AT Protocol API — no scraping needed. Quoted posts, image embeds (with alt text), external links, and video are surfaced inline. Append ?depth=N (0-100, default 6) to control how many levels of nested replies/subtrees are returned — raise it to pull a whole conversation.
 - Other URLs use Cloudflare Browser Rendering (requires CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN secrets).
 - Cached content appears in prime results for future recall.
 - Stale cache returned if re-fetch fails.

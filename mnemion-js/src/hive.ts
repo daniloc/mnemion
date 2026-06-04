@@ -416,8 +416,8 @@ export class HiveDO extends DurableObject {
   // === URI resolution ===
 
   async resolve(input: string): Promise<string> {
-    // https:// and http:// URLs → web resolution
-    if (input.startsWith("https://") || input.startsWith("http://")) {
+    // https://, http://, and at:// (Bluesky AT Protocol) URIs → web resolution
+    if (input.startsWith("https://") || input.startsWith("http://") || input.startsWith("at://")) {
       return this.resolveWeb(input);
     }
 
