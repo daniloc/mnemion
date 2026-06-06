@@ -102,6 +102,8 @@ Agent-defined HTTP endpoints, configured as entries:
 
 **Federation**: `resolve` recognizes foreign URIs by a dot in the first path segment (hostname). `mnemion://other.hive.dev/entry/axioms/7` → `GET https://other.hive.dev/o/entry/axioms/7`. Private access via `?token=<auth_code>` → Bearer header. Public responses edge-cached. No federation protocol — sovereign hives, voluntary connections.
 
+Federation is gated by a consent allow-list (`_federation_hosts` kernel pattern): `resolve` refuses any cross-hive URI — and never sends a token — unless the target host has an active entry there. Loopback/private/link-local/internal hosts (incl. cloud metadata) are blocked outright and can't be allow-listed (`isBlockedFederationHost` in kernel.ts). Adding a host is consent-gated at the MCP `mutate` layer (confirmation round-trip, also blocked inside batches), so an agent acting on untrusted content can't silently leak the owner's token to an attacker host.
+
 ### Entry sharing
 
 Entry-level visibility via the `_shared` kernel pattern. Controlled through `propose_change` with `set_sharing` type:

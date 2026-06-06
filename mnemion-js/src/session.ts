@@ -20,6 +20,16 @@ function toolDesc(name: string): string {
   return TOOLS.find(t => t.name === name)!.description;
 }
 
+// Patterns whose create/update must pass an explicit confirmation round-trip
+// before the agent can commit — the human-consent boundary. Keyed by pattern,
+// valued by the message shown on the first (unconfirmed) call.
+const CONSENT_GATED: Record<string, string> = {
+  _system_docs:
+    "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
+  _federation_hosts:
+    "Adding a federation host is a standing grant: resolve() will send this hive's access tokens to that host whenever it fetches a mnemion:// URI there. Only proceed if the human explicitly approved federating with this host. Call mutate again with the same arguments to proceed.",
+};
+
 // === SessionDO: MCP protocol handler, proxies data to HiveDO ===
 
 export class SessionDO extends McpAgent<Env, unknown, AuthProps> {
@@ -388,6 +398,16 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
               content: [{ type: "text" as const, text: "For batch operations, data must be an array of {pattern, operation, data} items." }],
             };
           }
+          // Consent-gated patterns can't ride along in a batch — that would skip
+          // the confirmation round-trip. Force them through a single mutate.
+          const gated = batchData.find((op: any) =>
+            op && CONSENT_GATED[op.pattern] && (op.operation === "create" || op.operation === "update"));
+          if (gated) {
+            return {
+              isError: true as const,
+              content: [{ type: "text" as const, text: `"${gated.pattern}" requires explicit confirmation and cannot be modified inside a batch. Submit it as a single mutate.` }],
+            };
+          }
           const result = await hive.batchMutate(JSON.stringify(batchData));
           const parsed = JSON.parse(result);
           if (parsed.error) {
@@ -421,9 +441,11 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           };
         }
 
-        // Confirmation gate for system docs
-        if (pattern === "_system_docs" && (resolvedOp === "update" || resolvedOp === "create")) {
-          const confirmKey = `_system_docs_confirmed:${JSON.stringify(singleData)}`;
+        // Confirmation gate for consent-boundary patterns (system docs,
+        // federation allow-list). First call returns confirmation_required;
+        // the agent must re-issue the identical call to commit.
+        if (CONSENT_GATED[pattern] && (resolvedOp === "update" || resolvedOp === "create")) {
+          const confirmKey = `consent:${pattern}:${JSON.stringify(singleData)}`;
           const alreadyConfirmed = this.confirmed.has(confirmKey);
 
           if (!alreadyConfirmed) {
@@ -433,7 +455,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
                 type: "text" as const,
                 text: JSON.stringify({
                   confirmation_required: true,
-                  message: "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
+                  message: CONSENT_GATED[pattern],
                   pattern,
                   operation: resolvedOp,
                   data: singleData,

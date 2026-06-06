@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
-import { IMMUTABLE, expandShortcut } from "./kernel";
+import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
 import * as cred from "./credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
@@ -40,34 +40,6 @@ export interface IndexFacetEntry {
 
 // === Constants ===
 
-/**
- * Block federation targets that point at loopback, private, link-local, or
- * internal-only hosts. Defense against SSRF when a federated URI is influenced
- * by untrusted content (e.g. an agent acting on a prompt-injected document).
- */
-function isBlockedFederationHost(host: string): boolean {
-  // Strip an optional :port, and IPv6 brackets.
-  const bare = host.replace(/^\[/, "").replace(/\](:\d+)?$/, "").split(":")[0].toLowerCase();
-
-  if (bare === "localhost" || bare.endsWith(".localhost")) return true;
-  if (bare.endsWith(".local") || bare.endsWith(".internal") || bare.endsWith(".lan")) return true;
-
-  // IPv6 loopback / unique-local / link-local
-  if (bare === "::1" || bare.startsWith("fc") || bare.startsWith("fd") || bare.startsWith("fe80")) return true;
-
-  // IPv4 literals in non-public ranges
-  const m = bare.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])];
-    if (a === 0 || a === 10 || a === 127) return true;            // this-network, private, loopback
-    if (a === 169 && b === 254) return true;                       // link-local incl. 169.254.169.254 metadata
-    if (a === 172 && b >= 16 && b <= 31) return true;              // private
-    if (a === 192 && b === 168) return true;                       // private
-    if (a === 100 && b >= 64 && b <= 127) return true;             // CGNAT
-  }
-
-  return false;
-}
 
 // === Hive: per-user data storage ===
 
@@ -531,6 +503,17 @@ export class HiveDO extends DurableObject {
       return this.errorJson(`Refusing to federate with non-public host: ${host}`);
     }
 
+    // Consent boundary: only federate with hosts the human has explicitly
+    // approved (entries in _federation_hosts). This is what stops an agent —
+    // possibly acting on untrusted content — from sending this hive's access
+    // token (?token=) to an arbitrary attacker-controlled host.
+    if (!this.isFederationHostAllowed(host)) {
+      return this.errorJson(
+        `Host "${normalizeHost(host)}" is not on this hive's federation allow-list, so resolve will not contact it (and will not send any token). ` +
+        `If the human approves federating with it, add it: mutate(pattern: "_federation_hosts", data: {host: "${normalizeHost(host)}"}).`
+      );
+    }
+
     const url = `https://${host}/o/${cleanPath}`;
 
     const headers: Record<string, string> = {};
@@ -880,6 +863,18 @@ export class HiveDO extends DurableObject {
       charter,
       guidance: meta.guidance,
     };
+  }
+
+  /** True if `host` has been explicitly approved for federation (active _federation_hosts row). */
+  private isFederationHostAllowed(host: string): boolean {
+    const norm = normalizeHost(host);
+    try {
+      return this.db.exec(
+        `SELECT 1 FROM "_federation_hosts" WHERE host = ? AND archived_at IS NULL LIMIT 1`, norm
+      ).toArray().length > 0;
+    } catch {
+      return false;
+    }
   }
 
   private patternExists(name: string): boolean {

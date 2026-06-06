@@ -164,6 +164,21 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 
+  _federation_hosts(data) {
+    if (!data.host || typeof data.host !== "string")
+      return { error: true, message: "host is required for _federation_hosts (e.g. \"other.hive.dev\")" };
+    const host = normalizeHost(data.host as string);
+    if (!host) return { error: true, message: "host is required for _federation_hosts" };
+    if (/\s/.test(host) || host.includes("/"))
+      return { error: true, message: `Invalid federation host "${data.host}"` };
+    if (!host.includes("."))
+      return { error: true, message: `Federation host "${host}" must be a fully-qualified domain — federation is recognized by a dot in the host segment.` };
+    if (isBlockedFederationHost(host))
+      return { error: true, message: `Cannot add non-public host "${host}" to the federation allow-list (loopback/private/link-local/internal hosts are never federatable).` };
+    data.host = host;
+    return data;
+  },
+
   _shared(data, ctx) {
     if (!data.source_pattern) return { error: true, message: "source_pattern is required for _shared" };
     if (data.source_id == null) return { error: true, message: "source_id is required for _shared" };
@@ -192,6 +207,43 @@ export const SHORTCUTS: Record<string, Shortcut> = {
 /** Expand a shortcut name to pattern + operation, or return null if not a shortcut. */
 export function expandShortcut(name: string): Shortcut | null {
   return SHORTCUTS[name] ?? null;
+}
+
+// === Federation host validation ===
+
+/** Normalize a federation host: lowercase, strip scheme and any path. */
+export function normalizeHost(raw: string): string {
+  return raw.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/\/.*$/, "");
+}
+
+/**
+ * True if a federation target points at a loopback, private, link-local, or
+ * internal-only host. Such hosts can never be added to the allow-list and are
+ * refused at resolve time — defense against SSRF and against an agent acting on
+ * prompt-injected content probing internal infrastructure or cloud metadata.
+ */
+export function isBlockedFederationHost(host: string): boolean {
+  // Strip an optional :port and IPv6 brackets.
+  const bare = host.replace(/^\[/, "").replace(/\](:\d+)?$/, "").split(":")[0].toLowerCase();
+
+  if (bare === "localhost" || bare.endsWith(".localhost")) return true;
+  if (bare.endsWith(".local") || bare.endsWith(".internal") || bare.endsWith(".lan")) return true;
+
+  // IPv6 loopback / unique-local / link-local
+  if (bare === "::1" || bare.startsWith("fc") || bare.startsWith("fd") || bare.startsWith("fe80")) return true;
+
+  // IPv4 literals in non-public ranges
+  const m = bare.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = Number(m[1]), b = Number(m[2]);
+    if (a === 0 || a === 10 || a === 127) return true;   // this-network, private, loopback
+    if (a === 169 && b === 254) return true;             // link-local incl. 169.254.169.254 metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;    // private
+    if (a === 192 && b === 168) return true;             // private
+    if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT
+  }
+
+  return false;
 }
 
 // === Scope matching ===

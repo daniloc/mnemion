@@ -36,6 +36,15 @@ async function createEntry(store: DurableObjectStub<HiveDO>, pattern: string, da
   return JSON.parse(result);
 }
 
+// Helper: approve a host for federation (the consent gate lives at the MCP
+// tool layer; HiveDO RPC writes the allow-list row directly).
+async function allowFederation(store: DurableObjectStub<HiveDO>, host: string) {
+  const result = await store.mutate("_federation_hosts", "create", JSON.stringify({ host }));
+  const parsed = JSON.parse(result);
+  if (parsed.error) throw new Error(parsed.message);
+  return parsed;
+}
+
 // === Index & Schema ===
 
 describe("Index", () => {
@@ -669,6 +678,7 @@ describe("Resolve", () => {
 
   it("resolves foreign URI over HTTP", async () => {
     const store = getStore();
+    await allowFederation(store, "other.hive.dev");
     fetchMock.activate();
     fetchMock.disableNetConnect();
     fetchMock.get("https://other.hive.dev")
@@ -688,6 +698,7 @@ describe("Resolve", () => {
 
   it("passes token as Bearer header for private access", async () => {
     const store = getStore();
+    await allowFederation(store, "private.hive.dev");
     fetchMock.activate();
     fetchMock.disableNetConnect();
     fetchMock.get("https://private.hive.dev")
@@ -704,8 +715,50 @@ describe("Resolve", () => {
     fetchMock.deactivate();
   });
 
+  it("refuses to federate with a host not on the allow-list (no fetch, no token leak)", async () => {
+    const store = getStore();
+    // Net is disabled and no interceptor is registered: if resolve tried to
+    // fetch, it would throw. A clean allow-list refusal must not touch the net.
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+
+    const result = JSON.parse(await store.resolve("mnemion://unapproved.hive.dev/records/secrets/1?token=supersecret"));
+    expect(result.error).toBe(true);
+    expect(result.message).toContain("allow-list");
+    expect(result.message).not.toContain("supersecret");
+
+    fetchMock.deactivate();
+  });
+
+  it("refuses to federate with internal/link-local hosts even if somehow allow-listed", async () => {
+    const store = getStore();
+    // The kernel hook rejects adding a non-public host to the allow-list…
+    const added = JSON.parse(await store.mutate("_federation_hosts", "create", JSON.stringify({ host: "169.254.169.254" })));
+    expect(added.error).toBe(true);
+
+    // …and resolve refuses it regardless.
+    const result = JSON.parse(await store.resolve("mnemion://169.254.169.254/o/whatever"));
+    expect(result.error).toBe(true);
+  });
+
+  it("normalizes federation hosts and matches case-insensitively", async () => {
+    const store = getStore();
+    await allowFederation(store, "MixedCase.Hive.Dev");
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://mixedcase.hive.dev")
+      .intercept({ path: "/o/records/axioms/1" })
+      .reply(200, JSON.stringify({ id: 1 }), { headers: { "Content-Type": "application/json" } });
+
+    const result = JSON.parse(await store.resolve("mnemion://mixedcase.hive.dev/records/axioms/1"));
+    expect(result.federated).toBe(true);
+
+    fetchMock.deactivate();
+  });
+
   it("returns error for 404 from foreign hive", async () => {
     const store = getStore();
+    await allowFederation(store, "other.hive.dev");
     fetchMock.activate();
     fetchMock.disableNetConnect();
     fetchMock.get("https://other.hive.dev")
@@ -721,6 +774,7 @@ describe("Resolve", () => {
 
   it("returns error for 401 from foreign hive", async () => {
     const store = getStore();
+    await allowFederation(store, "locked.hive.dev");
     fetchMock.activate();
     fetchMock.disableNetConnect();
     fetchMock.get("https://locked.hive.dev")
