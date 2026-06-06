@@ -81,8 +81,10 @@ function facetToDDL(a: any): string {
   if (a.required) col += " NOT NULL";
   if (a.default_value != null) {
     col += typeof a.default_value === "string"
-      ? ` DEFAULT '${a.default_value}'`
-      : ` DEFAULT ${a.default_value}`;
+      // Escape single quotes — default_value is owner-supplied and interpolated
+      // into DDL (identifiers/literals can't be bound in CREATE/ALTER TABLE).
+      ? ` DEFAULT '${a.default_value.replace(/'/g, "''")}'`
+      : ` DEFAULT ${Number(a.default_value)}`;
   }
   if (a.links) col += ` REFERENCES "${a.links.pattern}"("${a.links.facet || 'id'}")`;
   return col;

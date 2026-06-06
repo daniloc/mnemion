@@ -1,5 +1,5 @@
 import type { RouteHandler } from "../router";
-import { createSessionCookie } from "../router";
+import { createSessionCookie, timingSafeEqual } from "../router";
 import { PRODUCT_NAME } from "../constants";
 
 // Passkey module loaded lazily to avoid tslib issues in test environments
@@ -110,7 +110,7 @@ export const authVerify: RouteHandler = async (ctx) => {
 
   // Try master secret first, then one-time auth code
   let authenticated = false;
-  if (ctx.env.MNEMION_SECRET && secret === ctx.env.MNEMION_SECRET) {
+  if (ctx.env.MNEMION_SECRET && await timingSafeEqual(secret, ctx.env.MNEMION_SECRET)) {
     authenticated = true;
   } else {
     authenticated = await ctx.hive.consumeAuthCode(secret);
@@ -132,7 +132,7 @@ export const authVerify: RouteHandler = async (ctx) => {
 
 export const setupPage: RouteHandler = async (ctx) => {
   const token = ctx.url.searchParams.get("token");
-  if (token !== ctx.env.MNEMION_SECRET) {
+  if (!token || !(await timingSafeEqual(token, ctx.env.MNEMION_SECRET))) {
     return new Response("Invalid or missing token", { status: 403 });
   }
   return new Response((await passkey()).setupPage(token), {
@@ -142,7 +142,7 @@ export const setupPage: RouteHandler = async (ctx) => {
 
 export const setupBegin: RouteHandler = async (ctx) => {
   const { token } = (await ctx.request.json()) as { token: string };
-  if (token !== ctx.env.MNEMION_SECRET) {
+  if (!token || !(await timingSafeEqual(token, ctx.env.MNEMION_SECRET))) {
     return Response.json({ error: "Invalid token" }, { status: 403 });
   }
 
@@ -153,7 +153,7 @@ export const setupBegin: RouteHandler = async (ctx) => {
 
 export const setupComplete: RouteHandler = async (ctx) => {
   const { token, credential } = (await ctx.request.json()) as { token: string; credential: any };
-  if (token !== ctx.env.MNEMION_SECRET) {
+  if (!token || !(await timingSafeEqual(token, ctx.env.MNEMION_SECRET))) {
     return Response.json({ error: "Invalid token" }, { status: 403 });
   }
 
@@ -319,8 +319,23 @@ function sessionLoginPage(returnTo: string, hasPasskey: boolean): string {
 </html>`;
 }
 
+/**
+ * Restrict a post-login redirect target to a same-origin path. Rejects
+ * absolute URLs (open redirect) and anything containing characters that
+ * could break out of the JS string / <script> context when embedded in the
+ * login page (reflected XSS). Falls back to "/".
+ */
+function safeReturnPath(raw: string | null): string {
+  if (!raw) return "/";
+  // Must be a root-relative path, not a scheme-relative "//evil.com" URL,
+  // and must not contain quote/angle-bracket/backslash characters.
+  if (!raw.startsWith("/") || raw.startsWith("//")) return "/";
+  if (/[<>'"\\]/.test(raw)) return "/";
+  return raw;
+}
+
 export const loginPage: RouteHandler = async (ctx) => {
-  const returnTo = ctx.url.searchParams.get("return") || "/";
+  const returnTo = safeReturnPath(ctx.url.searchParams.get("return"));
   const hasPasskey = await ctx.hive.hasPasskey();
   return new Response(sessionLoginPage(returnTo, hasPasskey), {
     headers: { "Content-Type": "text/html" },
@@ -360,7 +375,7 @@ export const loginComplete: RouteHandler = async (ctx) => {
     await ctx.hive.updatePasskeyCounter(newCounter);
 
     const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host);
-    const safePath = returnTo.startsWith("/") ? returnTo : "/";
+    const safePath = safeReturnPath(returnTo);
     return new Response(JSON.stringify({ redirectTo: safePath }), {
       headers: {
         "Content-Type": "application/json",
@@ -376,7 +391,7 @@ export const loginVerify: RouteHandler = async (ctx) => {
   const { secret, returnTo } = (await ctx.request.json()) as { secret: string; returnTo: string };
 
   let authenticated = false;
-  if (ctx.env.MNEMION_SECRET && secret === ctx.env.MNEMION_SECRET) {
+  if (ctx.env.MNEMION_SECRET && await timingSafeEqual(secret, ctx.env.MNEMION_SECRET)) {
     authenticated = true;
   } else {
     authenticated = await ctx.hive.consumeAuthCode(secret);
@@ -387,7 +402,7 @@ export const loginVerify: RouteHandler = async (ctx) => {
   }
 
   const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host);
-  const safePath = returnTo.startsWith("/") ? returnTo : "/";
+  const safePath = safeReturnPath(returnTo);
   return new Response(JSON.stringify({ redirectTo: safePath }), {
     headers: {
       "Content-Type": "application/json",

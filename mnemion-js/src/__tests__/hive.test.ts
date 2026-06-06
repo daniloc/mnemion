@@ -996,6 +996,28 @@ describe("Sharing", () => {
     const shared = JSON.parse(await store.getSharedEntry("revis", created.entry.id));
     expect(shared.visibility).toBe("unlisted");
   });
+
+  it("does not allow SQL injection via the pattern name to exfiltrate unshared data", async () => {
+    const store = getStore();
+    // Create a private pattern with a secret and never share it.
+    await createPattern(store, "injsecret", [{ name: "v", type: "text" }]);
+    const created = await createEntry(store, "injsecret", { v: "top-secret-value" });
+
+    // Classic identifier-escape payload: close the quoted table name and turn
+    // the sharing JOIN into a LEFT JOIN so rows return without a _shared row.
+    const payload = `injsecret" e LEFT JOIN "_shared`;
+    const result = JSON.parse(await store.getSharedEntry(payload, created.entry.id));
+    expect(result.found).toBe(false);
+  });
+
+  it("rejects access-token exfiltration via crafted pattern name", async () => {
+    const store = getStore();
+    // _access_tokens is a kernel table; it must never be reachable here, even
+    // with an injection payload, regardless of how the JOIN is rewritten.
+    const payload = `_access_tokens" e LEFT JOIN "_shared`;
+    const result = JSON.parse(await store.getSharedEntry(payload, 1));
+    expect(result.found).toBe(false);
+  });
 });
 
 // === System Docs ===

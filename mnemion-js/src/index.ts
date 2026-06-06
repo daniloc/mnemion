@@ -38,7 +38,7 @@ const routes: Route[] = [
   { method: Method.POST, pattern: "/login/verify",         auth: Auth.CONFIGURED, handler: loginVerify },
 
   // HTTP I/O
-  { method: Method.GET,  pattern: "/o/entry/:pattern/:id", handler: serveSharedEntry },
+  { method: Method.GET,  pattern: "/o/entry/:pattern/:id", where: { id: /^\d+$/ }, handler: serveSharedEntry },
   { method: Method.GET,  pattern: "/o/:path",              handler: serveOutput },
   { method: Method.POST, pattern: "/i/:path",              handler: receiveInput },
   { method: Method.POST, pattern: "/upload/:token",        where: { token: /^[a-fA-F0-9]+$/ }, handler: upload },
@@ -81,7 +81,9 @@ export default new OAuthProvider({
   scopesSupported: ["read", "write"],
 
   async resolveExternalToken({ token, env }) {
-    if (!/^[a-f0-9]{32}$/.test(token)) return null;
+    // Tokens are generated via SQLite hex(randomblob(16)) → 32 uppercase hex
+    // chars. Accept either case so a valid wildcard token actually validates.
+    if (!/^[a-fA-F0-9]{32}$/.test(token)) return null;
 
     const storeId = (env as any).MNEMION_HIVE.idFromName("user:owner");
     const store = (env as any).MNEMION_HIVE.get(storeId) as DurableObjectStub<HiveDO>;

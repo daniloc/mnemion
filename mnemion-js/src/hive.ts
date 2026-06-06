@@ -40,6 +40,34 @@ export interface IndexFacetEntry {
 
 // === Constants ===
 
+/**
+ * Block federation targets that point at loopback, private, link-local, or
+ * internal-only hosts. Defense against SSRF when a federated URI is influenced
+ * by untrusted content (e.g. an agent acting on a prompt-injected document).
+ */
+function isBlockedFederationHost(host: string): boolean {
+  // Strip an optional :port, and IPv6 brackets.
+  const bare = host.replace(/^\[/, "").replace(/\](:\d+)?$/, "").split(":")[0].toLowerCase();
+
+  if (bare === "localhost" || bare.endsWith(".localhost")) return true;
+  if (bare.endsWith(".local") || bare.endsWith(".internal") || bare.endsWith(".lan")) return true;
+
+  // IPv6 loopback / unique-local / link-local
+  if (bare === "::1" || bare.startsWith("fc") || bare.startsWith("fd") || bare.startsWith("fe80")) return true;
+
+  // IPv4 literals in non-public ranges
+  const m = bare.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 0 || a === 10 || a === 127) return true;            // this-network, private, loopback
+    if (a === 169 && b === 254) return true;                       // link-local incl. 169.254.169.254 metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;              // private
+    if (a === 192 && b === 168) return true;                       // private
+    if (a === 100 && b >= 64 && b <= 127) return true;             // CGNAT
+  }
+
+  return false;
+}
 
 // === Hive: per-user data storage ===
 
@@ -344,6 +372,15 @@ export class HiveDO extends DurableObject {
     const constraints = accessToken.constraints ? JSON.parse(accessToken.constraints) : null;
     if (!constraints) return this.errorJson("Upload token missing constraints");
 
+    // target_pattern / target_facet are interpolated as SQL identifiers below.
+    // They were validated when the token was created, but re-check here so a
+    // malformed/legacy constraint can never break out of the identifier quoting.
+    const IDENT_RE = /^[a-z_][a-z0-9_-]*$/;
+    if (typeof constraints.target_pattern !== "string" || !IDENT_RE.test(constraints.target_pattern) || !this.patternExists(constraints.target_pattern))
+      return this.errorJson("Upload token has an invalid target pattern");
+    if (typeof constraints.target_facet !== "string" || !IDENT_RE.test(constraints.target_facet))
+      return this.errorJson("Upload token has an invalid target facet");
+
     const contentBytes = new TextEncoder().encode(content).length;
     if (contentBytes > data.LIMITS.ENTRY_BYTES)
       return this.errorJson(`Content too large: ${Math.round(contentBytes / 1024)}KB exceeds the 1MB limit`);
@@ -485,6 +522,13 @@ export class HiveDO extends DurableObject {
 
     if (!cleanPath) {
       return this.errorJson(`Foreign URI ${uri(host + "/")} requires a path after the host`);
+    }
+
+    // SSRF guard: refuse to fetch loopback / private / link-local / internal
+    // targets. Federation is for sovereign public hives; an attacker-influenced
+    // URI must not be able to probe internal infrastructure or cloud metadata.
+    if (isBlockedFederationHost(host)) {
+      return this.errorJson(`Refusing to federate with non-public host: ${host}`);
     }
 
     const url = `https://${host}/o/${cleanPath}`;
@@ -922,6 +966,12 @@ export class HiveDO extends DurableObject {
   // === HTTP I/O ===
 
   async getSharedEntry(pattern: string, id: number): Promise<string> {
+    // Pattern is interpolated as a SQL identifier below — it MUST be validated
+    // against the real pattern list first. This route is public and
+    // unauthenticated; without this guard a crafted :pattern breaks out of the
+    // identifier quoting and exfiltrates arbitrary tables by id (tokens, etc).
+    if (!this.patternExists(pattern)) return JSON.stringify({ found: false });
+    if (!Number.isInteger(id)) return JSON.stringify({ found: false });
     try {
       // Single JOIN: check sharing + fetch entry in one query
       const rows = this.db.exec(

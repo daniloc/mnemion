@@ -47,6 +47,25 @@ export interface Route {
 
 // === Helpers ===
 
+/**
+ * Constant-time string comparison. Hashes both inputs to fixed-length digests
+ * and compares with a branch-free XOR accumulator, so timing does not leak the
+ * length or content of the expected value. Use for any comparison against the
+ * master secret or an HMAC signature.
+ */
+export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [ha, hb] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const va = new Uint8Array(ha);
+  const vb = new Uint8Array(hb);
+  let diff = 0;
+  for (let i = 0; i < va.length; i++) diff |= va[i] ^ vb[i];
+  return diff === 0;
+}
+
 export function extractBasicPassword(request: Request): string | null {
   const auth = request.headers.get("Authorization");
   if (!auth?.startsWith("Basic ")) return null;
@@ -92,7 +111,7 @@ async function validateSession(request: Request, secret: string): Promise<boolea
   const age = Math.floor(Date.now() / 1000) - parseInt(ts);
   if (isNaN(age) || age < 0 || age > SESSION_MAX_AGE) return false;
   const expected = await hmacSign(secret, `session:${ts}`);
-  return sig === expected;
+  return timingSafeEqual(sig, expected);
 }
 
 // === Router ===
@@ -142,7 +161,7 @@ export function createRouter(routes: Route[]) {
       if (auth === Auth.SECRET) {
         if (!env.MNEMION_SECRET) continue;
         const password = extractBasicPassword(request);
-        if (password !== env.MNEMION_SECRET) {
+        if (!password || !(await timingSafeEqual(password, env.MNEMION_SECRET))) {
           return new Response("Master password required", {
             status: 401,
             headers: { "WWW-Authenticate": `Basic realm="${PRODUCT_NAME}"` },

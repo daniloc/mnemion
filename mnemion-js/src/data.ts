@@ -23,6 +23,16 @@ export interface DataContext {
 
 const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]);
 
+// Columns that always exist on a pattern table regardless of declared facets.
+// Used to validate user-supplied identifiers (facets list, sort field) before
+// they're interpolated into SQL — identifiers can't be bound, so they must be
+// confirmed real to prevent injection via the quoting escape.
+const KERNEL_SELECTABLE = new Set(["id", "version", "created_at", "updated_at", "archived_at"]);
+
+function isValidColumn(ctx: DataContext, pattern: string, name: string): boolean {
+  return KERNEL_SELECTABLE.has(name) || ctx.facetMeta(pattern, name) != null;
+}
+
 const LIMITS = {
   ENTRY_BYTES: 1_048_576,  // 1 MB per entry
   QUERY_ROWS: 1_000,       // max rows a single query can return
@@ -124,7 +134,11 @@ export function query(
   let sql = `SELECT`;
 
   if (facets) {
-    const requested = facets.split(",").map((f) => f.trim());
+    const requested = facets.split(",").map((f) => f.trim()).filter((f) => f.length > 0);
+    for (const f of requested) {
+      if (!isValidColumn(ctx, patternName, f))
+        return errorJson(`Unknown facet "${f}" on "${patternName}".${suggestFacet(f, patternName, ctx)}`);
+    }
     if (!requested.includes("id")) requested.unshift("id");
     sql += ` ${requested.map((f) => `"${f}"`).join(", ")}`;
   } else {
@@ -147,6 +161,8 @@ export function query(
   if (sortField) {
     const desc = sortField.startsWith("-");
     const col = desc ? sortField.slice(1) : sortField;
+    if (!isValidColumn(ctx, patternName, col))
+      return errorJson(`Cannot sort by unknown facet "${col}" on "${patternName}".${suggestFacet(col, patternName, ctx)}`);
     sql += ` ORDER BY "${col}" ${desc ? "DESC" : "ASC"}`;
   }
 
