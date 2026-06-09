@@ -1,5 +1,5 @@
 import type { RouteHandler } from "../router";
-import { createSessionCookie, timingSafeEqual } from "../router";
+import { createSessionCookie, revokeAllSessions, timingSafeEqual } from "../router";
 import { PRODUCT_NAME } from "../constants";
 
 // Passkey module loaded lazily to avoid tslib issues in test environments
@@ -147,21 +147,28 @@ export const setupBegin: RouteHandler = async (ctx) => {
   }
 
   const { options, challenge } = await (await passkey()).beginRegistration(ctx.request);
-  await ctx.env.OAUTH_KV.put("passkey_challenge:registration", challenge, { expirationTtl: 300 });
-  return Response.json(options);
+  // Per-attempt challenge id so concurrent/overlapping flows don't clobber a
+  // shared key, and the challenge is bound to this specific attempt.
+  const cid = crypto.randomUUID();
+  await ctx.env.OAUTH_KV.put(`passkey_challenge:reg:${cid}`, challenge, { expirationTtl: 300 });
+  return Response.json({ options, cid });
 };
 
 export const setupComplete: RouteHandler = async (ctx) => {
-  const { token, credential } = (await ctx.request.json()) as { token: string; credential: any };
+  const { token, credential, cid } = (await ctx.request.json()) as { token: string; credential: any; cid: string };
   if (!token || !(await timingSafeEqual(token, ctx.env.MNEMION_SECRET))) {
     return Response.json({ error: "Invalid token" }, { status: 403 });
   }
+  if (!cid || !/^[a-f0-9-]{36}$/.test(cid)) {
+    return Response.json({ error: "Invalid challenge id" }, { status: 400 });
+  }
 
-  const challenge = await ctx.env.OAUTH_KV.get("passkey_challenge:registration");
+  const challengeKey = `passkey_challenge:reg:${cid}`;
+  const challenge = await ctx.env.OAUTH_KV.get(challengeKey);
   if (!challenge) {
     return Response.json({ error: "Challenge expired" }, { status: 400 });
   }
-  await ctx.env.OAUTH_KV.delete("passkey_challenge:registration");
+  await ctx.env.OAUTH_KV.delete(challengeKey);
 
   try {
     const stored = await (await passkey()).completeRegistration(ctx.request, credential, challenge);
@@ -273,14 +280,14 @@ function sessionLoginPage(returnTo: string, hasPasskey: boolean): string {
           headers: { 'Content-Type': 'application/json' },
         });
         if (!beginRes.ok) throw new Error('Failed to start authentication');
-        const options = await beginRes.json();
+        const { options, cid } = await beginRes.json();
 
         const assertion = await startAuthentication({ optionsJSON: options });
 
         const completeRes = await fetch('/login/complete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ assertion, returnTo }),
+          body: JSON.stringify({ assertion, returnTo, cid }),
         });
         const result = await completeRes.json();
         if (result.redirectTo) {
@@ -349,18 +356,23 @@ export const loginBegin: RouteHandler = async (ctx) => {
   }
 
   const { options, challenge } = await (await passkey()).beginAuthentication(ctx.request, storedPasskey);
-  await ctx.env.OAUTH_KV.put("passkey_challenge:session", challenge, { expirationTtl: 300 });
-  return Response.json(options);
+  const cid = crypto.randomUUID();
+  await ctx.env.OAUTH_KV.put(`passkey_challenge:login:${cid}`, challenge, { expirationTtl: 300 });
+  return Response.json({ options, cid });
 };
 
 export const loginComplete: RouteHandler = async (ctx) => {
-  const { assertion, returnTo } = (await ctx.request.json()) as { assertion: any; returnTo: string };
+  const { assertion, returnTo, cid } = (await ctx.request.json()) as { assertion: any; returnTo: string; cid: string };
 
-  const challenge = await ctx.env.OAUTH_KV.get("passkey_challenge:session");
+  if (!cid || !/^[a-f0-9-]{36}$/.test(cid)) {
+    return Response.json({ error: "Invalid challenge id" }, { status: 400 });
+  }
+  const challengeKey = `passkey_challenge:login:${cid}`;
+  const challenge = await ctx.env.OAUTH_KV.get(challengeKey);
   if (!challenge) {
     return Response.json({ error: "Challenge expired" }, { status: 400 });
   }
-  await ctx.env.OAUTH_KV.delete("passkey_challenge:session");
+  await ctx.env.OAUTH_KV.delete(challengeKey);
 
   const storedPasskey = await ctx.hive.getPasskey();
   if (!storedPasskey) {
@@ -374,7 +386,7 @@ export const loginComplete: RouteHandler = async (ctx) => {
     }
     await ctx.hive.updatePasskeyCounter(newCounter);
 
-    const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host);
+    const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host, ctx.env.OAUTH_KV);
     const safePath = safeReturnPath(returnTo);
     return new Response(JSON.stringify({ redirectTo: safePath }), {
       headers: {
@@ -401,7 +413,7 @@ export const loginVerify: RouteHandler = async (ctx) => {
     return Response.json({ error: "Invalid secret or code" }, { status: 401 });
   }
 
-  const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host);
+  const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host, ctx.env.OAUTH_KV);
   const safePath = safeReturnPath(returnTo);
   return new Response(JSON.stringify({ redirectTo: safePath }), {
     headers: {
@@ -409,4 +421,12 @@ export const loginVerify: RouteHandler = async (ctx) => {
       "Set-Cookie": cookie,
     },
   });
+};
+
+// POST /sessions/revoke — invalidate ALL browser sessions (Auth.SECRET gated).
+// Bumps the session epoch so every issued cookie stops validating, without
+// rotating MNEMION_SECRET. Use after a suspected session-cookie compromise.
+export const revokeSessions: RouteHandler = async (ctx) => {
+  await revokeAllSessions(ctx.env.OAUTH_KV);
+  return Response.json({ ok: true, message: "All sessions revoked. Existing cookies are now invalid (propagation up to ~60s)." });
 };

@@ -3,7 +3,7 @@
 // Pure functions that take a DataContext. HiveDO keeps thin RPC wrappers
 // that add broadcast and transaction concerns.
 
-import { applyKernelRules, type KernelContext } from "./kernel";
+import { applyKernelRules, INTERNAL_WRITE_PROTECTED, type KernelContext } from "./kernel";
 import { uri } from "./constants";
 
 // === Types ===
@@ -196,6 +196,12 @@ function parseFilter(expr: string): { clause: string; bindings: string[] } | nul
 export function executeMutate(ctx: DataContext, patternName: string, operation: string, data: any): any {
   if (!ctx.patternExists(patternName))
     return { error: true, message: `Pattern "${patternName}" does not exist.${suggestPattern(patternName, ctx)}` };
+
+  // System-managed caches/audit logs are never agent-writable (e.g. _web_cache
+  // poisoning → resolve() serving planted content). Internal writers use direct
+  // SQL, not this path.
+  if (INTERNAL_WRITE_PROTECTED.has(patternName))
+    return { error: true, message: `"${patternName}" is managed by the system and cannot be modified directly.` };
 
   // Kernel rules (immutable fields, create hooks)
   const kernelCtx: KernelContext = {

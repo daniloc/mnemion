@@ -198,14 +198,14 @@ export function setupPage(token: string): string {
         if (!beginRes.ok) {
           throw new Error((await beginRes.json()).error || 'Failed to start registration');
         }
-        const options = await beginRes.json();
+        const { options, cid } = await beginRes.json();
 
         const credential = await startRegistration({ optionsJSON: options });
 
         const completeRes = await fetch('/setup/complete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token, credential }),
+          body: JSON.stringify({ token, credential, cid }),
         });
         const result = await completeRes.json();
         if (result.ok) {

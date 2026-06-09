@@ -4,7 +4,7 @@ import { HiveDO } from "./hive";
 import { Method, Auth, createRouter, type Route, type Env } from "./router";
 
 // Auth
-import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify } from "./routes/auth";
+import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify, revokeSessions } from "./routes/auth";
 // I/O
 import { serveSharedEntry, serveOutput, receiveInput, upload, exportPattern } from "./routes/io";
 // Marketplace
@@ -36,6 +36,7 @@ const routes: Route[] = [
   { method: Method.POST, pattern: "/login/begin",          auth: Auth.CONFIGURED, handler: loginBegin },
   { method: Method.POST, pattern: "/login/complete",       auth: Auth.CONFIGURED, handler: loginComplete },
   { method: Method.POST, pattern: "/login/verify",         auth: Auth.CONFIGURED, handler: loginVerify },
+  { method: Method.POST, pattern: "/sessions/revoke",      auth: Auth.SECRET, handler: revokeSessions },
 
   // HTTP I/O
   { method: Method.GET,  pattern: "/o/entry/:pattern/:id", where: { id: /^\d+$/ }, handler: serveSharedEntry },

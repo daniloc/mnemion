@@ -13,6 +13,21 @@ export interface KernelContext {
 type HookResult = Record<string, unknown> | { error: true; message: string };
 type CreateHook = (data: Record<string, unknown>, ctx: KernelContext) => HookResult;
 
+// === Internal patterns — written only by the system, never via agent mutate ===
+//
+// These are caches/audit logs maintained by internal code (direct SQL), not part
+// of the agent API. Letting an agent mutate them is dangerous: e.g. planting a
+// _web_cache row would make resolve() serve attacker-chosen content as a trusted
+// cache hit (and embed it into prime recall). Legitimate writers bypass the
+// mutate path, so this denylist costs them nothing.
+export const INTERNAL_WRITE_PROTECTED = new Set<string>([
+  "_web_cache",
+  "_fragment_access_log",
+  "_mutation_log",
+  "_schema_history",
+  "_pending_changes",
+]);
+
 // === Immutable fields — rejected on any operation ===
 
 export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = {
