@@ -201,6 +201,36 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 
+  _publications(data, ctx) {
+    if (!data.path || typeof data.path !== "string" || !(data.path as string).trim())
+      return { error: true, message: "path is required for _publications (served at GET /p/{path})" };
+    data.path = (data.path as string).trim().replace(/^\/+/, "");
+    if (!data.source_pattern || typeof data.source_pattern !== "string")
+      return { error: true, message: "source_pattern is required for _publications" };
+    if ((data.source_pattern as string).startsWith("_"))
+      return { error: true, message: `Kernel pattern "${data.source_pattern}" cannot be published — publications project user patterns only.` };
+    if (!ctx.patternExists(data.source_pattern as string))
+      return { error: true, message: `Pattern "${data.source_pattern}" does not exist` };
+    if (!data.format || !["html", "rss", "json", "markdown"].includes(data.format as string))
+      return { error: true, message: `format is required for _publications. Use "html", "rss", "json", or "markdown".` };
+    if (data.filters != null) {
+      try {
+        const parsed = JSON.parse(data.filters as string);
+        if (!Array.isArray(parsed) || parsed.some((f) => typeof f !== "string"))
+          return { error: true, message: 'filters must be a JSON array of filter strings, e.g. ["status=done"]' };
+      } catch {
+        return { error: true, message: "filters must be valid JSON (an array of filter strings)" };
+      }
+    }
+    if (data.limit != null && (typeof data.limit !== "number" || !(data.limit > 0)))
+      return { error: true, message: "limit must be a positive number" };
+    const vis = (data.visibility as string) || "public";
+    if (!["public", "unlisted", "private"].includes(vis))
+      return { error: true, message: `Invalid visibility "${vis}". Use "public", "unlisted", or "private".` };
+    data.visibility = vis;
+    return data;
+  },
+
   _maintenance_passes(data) {
     if (!data.summary || typeof data.summary !== "string" || !(data.summary as string).trim())
       return { error: true, message: "summary is required — record what was reviewed and changed in this maintenance pass" };

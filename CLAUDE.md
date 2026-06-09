@@ -14,7 +14,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/index.ts         Route table + OAuthProvider config (~60 lines)
   src/router.ts        Declarative router: types, enums, pattern matching, dispatch
   src/routes/auth.ts   /authorize, /auth/verify, passkey setup & authentication
-  src/routes/io.ts     /o/entry/:pattern/:id shared entries, /o/:path egress, /i/:path ingress, /upload/:token
+  src/routes/io.ts     /o/entry/:pattern/:id shared entries, /o/:path egress, /p/:path publications, /i/:path ingress, /upload/:token
   src/routes/marketplace.ts  Token management, git endpoints (composes query + git adapter)
   src/routes/dev.ts    Dev-only seed routes (Auth.DEV gated, inert in production)
   src/routes/canvas.ts /canvas SSR page + /api/canvases, /api/canvas (list/save tldraw snapshots)
@@ -24,6 +24,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/data.ts          Query engine, mutation engine (CRUD), cross-pattern search
   src/evolution.ts     Schema evolution: CHANGE_TYPES declaration table, propose/apply/revert
   src/prime.ts         Auto-associative priming: Workers AI embeddings + Vectorize KNN
+  src/publications.ts  Publication renderers: live pattern data → HTML/RSS/JSON/markdown, template seam
   src/web.ts           Web URL resolution adapter dispatch (Bluesky, browser-rendering); _web_cache
   src/tools.ts         Tool metadata SSOT — feeds session.ts MCP registration and /api/tools
   src/credentials.ts   Passkey CRUD, access token validation
@@ -99,6 +100,7 @@ Tool metadata is centralized in `src/tools.ts` (SSOT for `session.ts` MCP regist
 Agent-defined HTTP endpoints, configured as entries:
 - **Shared entries** (`_shared`): `GET /o/entry/{pattern}/{id}` — serve entries marked public or unlisted
 - **Egress** (`_outputs`): `GET /o/{path}` — serve agent-constructed content at arbitrary paths
+- **Publications** (`_publications`): `GET /p/{path}` — live pattern projections rendered at request time (never stored). Formats: html (default styles + owner `css` override), rss, json, markdown (YAML frontmatter). Source query reuses the data.ts query engine (filters/facets/sort/limit pass through); superseded entries excluded by default. Per-entry `template` seam: `{{facet}}` + `{{_label}}`/`{{_uri}}`/`{{_id}}`/`{{_updated_at}}` — template text raw, substituted values HTML-escaped in html/rss. Source must be a user pattern (kernel patterns never publishable). Creation is consent-gated at the MCP layer like `_shared`. ETag = max(publication, served entries) `updated_at`; public responses edge-cached 60s.
 - **Ingress** (`_inputs`): `POST /i/{path}` — accept inbound data, create entries in target patterns with optional transform DSL
 
 **Federation**: `resolve` recognizes foreign URIs by a dot in the first path segment (hostname). `mnemion://other.hive.dev/entry/axioms/7` → `GET https://other.hive.dev/o/entry/axioms/7`. Private access via `?token=<auth_code>` → Bearer header. Public responses edge-cached. No federation protocol — sovereign hives, voluntary connections.
@@ -138,6 +140,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `_access_tokens` — unified scoped access tokens
 - `_shared` — entry-level sharing for HTTP access
 - `_outputs` / `_inputs` — HTTP I/O endpoint definitions
+- `_publications` — declarative outbound projections served at `/p/{path}`; rendering is always derived, never stored
 - `_system_docs` — agent orientation docs (seeded from `src/system-docs/*.md`)
 - `_web_cache` — adapter-fetched web content (Bluesky threads, browser-rendered markdown), TTL'd per adapter
 - `_canvases` — tldraw document snapshots for the Canvas spatial-thinking UI (full document state in the `snapshot` facet — do not modify directly; mutate via canvas tools/UI). Entry-type shapes inside the snapshot store **only references** (`{type: 'entry', pattern, entryId, x, y, w, h}`) — display label and facet preview are hydrated at render time from the live entry. Do not denormalize entry data into the snapshot; it goes stale.

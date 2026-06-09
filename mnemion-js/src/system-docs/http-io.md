@@ -28,6 +28,41 @@ The content is now available at `GET /o/hello`.
 ### Freeing a path
 Archive the entry. The path becomes available for a new entry immediately.
 
+## Publications: `_publications`
+
+Where `_outputs` serves static content you wrote, a publication serves a **live projection of a pattern** — the query runs at request time, so the page is never stale. This is the hive's publication surface: status pages, feeds, reading lists, public knowledge bases.
+
+```
+mutate _publications create {
+  "path": "now",
+  "title": "What I'm working on",
+  "source_pattern": "tasks",
+  "filters": "[\"status=in-progress\"]",
+  "format": "html"
+}
+```
+
+The projection is now served at `GET /p/now`, re-derived from current entries on every request (edge-cached ~60s when public).
+
+**Publishing requires explicit human approval** — creating a publication serves every current AND future entry the query matches. The mutate call requires a confirmation round-trip.
+
+### Facets
+- `path` (required) — URL path segment, unique among active publications
+- `source_pattern` (required) — pattern to project; user patterns only (kernel patterns are never publishable)
+- `format` (required) — `html`, `rss`, `json`, or `markdown` (markdown ships YAML frontmatter: title, path, source_pattern, generated_at, count)
+- `title` — page/feed title (defaults to path)
+- `filters` — JSON array of query filter strings, e.g. `["status=done", "title~urgent"]`
+- `facets` — comma-separated projection (default: all)
+- `sort` — sort facet, `-` prefix for descending (default `-updated_at`)
+- `limit` — max entries (default 50)
+- `template` — per-entry template seam: `{{facet}}` placeholders plus `{{_label}}`, `{{_uri}}`, `{{_id}}`, `{{_updated_at}}`. Template text passes through raw (write markup if you like); substituted values are HTML-escaped in html/rss output. No conditionals or loops.
+- `css` — appended after the default styles in html output (the override seam)
+- `visibility` — `public` (default), `unlisted` (requires bearer token with `read:publication:{path}` scope), or `private` (staged, not served)
+- `include_superseded` — publications exclude superseded entries by default; set true to include them
+
+### Current truth by default
+Entries targeted by an active `supersedes` link are dropped from publications unless `include_superseded` is set — public projections show what's current, not what was replaced.
+
 ## Ingress: `_inputs`
 
 Create an entry in `_inputs` to accept POST data and automatically create entries in a target pattern.
@@ -78,9 +113,10 @@ The mapping value is a JSON object where keys are target facet names and values 
 
 ## Path reuse
 
-Archiving an `_outputs` or `_inputs` entry frees its path for reuse. Active (non-archived) paths must be unique.
+Archiving an `_outputs`, `_inputs`, or `_publications` entry frees its path for reuse. Active (non-archived) paths must be unique within each kind.
 
 ## Use cases
 
-- **Egress**: status pages, JSON APIs, public content, badge endpoints
+- **Publications**: now pages, RSS feeds from any pattern, public reading lists, knowledge bases, dashboards — anything that should track live data
+- **Egress**: static content, badge endpoints, hand-built pages
 - **Ingress**: GitHub webhooks, form submissions, IoT data, inter-service messaging

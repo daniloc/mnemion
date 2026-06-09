@@ -7,6 +7,7 @@ import * as cred from "./credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
 import * as priming from "./prime";
+import * as pubs from "./publications";
 import * as web from "./web";
 
 // === Types ===
@@ -1217,6 +1218,72 @@ export class HiveDO extends DurableObject {
     } catch {
       return JSON.stringify({ found: false });
     }
+  }
+
+  async resolvePublication(path: string): Promise<string> {
+    let pub: any;
+    try {
+      const rows = this.db.exec(
+        `SELECT * FROM "_publications" WHERE path = ? AND archived_at IS NULL`, path
+      ).toArray() as any[];
+      if (rows.length === 0) return JSON.stringify({ found: false });
+      pub = rows[0];
+    } catch {
+      return JSON.stringify({ found: false });
+    }
+
+    // private = staged, not served (route layer never sees it)
+    if (pub.visibility === "private") return JSON.stringify({ found: false });
+    if (!this.patternExists(pub.source_pattern)) return JSON.stringify({ found: false });
+
+    // Live projection: run the stored query against current truth
+    const queryRaw = data.query(
+      this.dataCtx(), pub.source_pattern,
+      pub.filters || "", pub.facets || "", pub.sort || "-updated_at",
+      pub.limit || 50, false,
+    );
+    const queryResult = JSON.parse(queryRaw);
+    if (queryResult.error) return JSON.stringify({ found: false });
+    let entries = queryResult.entries as Record<string, unknown>[];
+
+    // Publications project current truth: superseded entries drop out unless opted in
+    if (!pub.include_superseded && entries.length > 0) {
+      try {
+        const ids = entries.map((e) => e.id);
+        const placeholders = ids.map(() => "?").join(",");
+        const superseded = new Set(
+          this.db.exec(
+            `SELECT target_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id IN (${placeholders})`,
+            pub.source_pattern, ...ids
+          ).toArray().map((r: any) => r.target_id)
+        );
+        entries = entries.filter((e) => !superseded.has(e.id));
+      } catch { /* _links may not exist */ }
+    }
+
+    const facetMeta = this.db.exec(
+      "SELECT name, type FROM _fields WHERE object_name = ? ORDER BY id", pub.source_pattern
+    ).toArray() as { name: string; type: string }[];
+
+    const rendered = pubs.renderPublication(pub, entries, {
+      facets: facetMeta,
+      host: this.currentHost(),
+    });
+
+    // ETag source: content changes when the publication config OR any served entry changes
+    let latest = pub.updated_at as string;
+    for (const e of entries) {
+      const u = e.updated_at as string | undefined;
+      if (u && u > latest) latest = u;
+    }
+
+    return JSON.stringify({
+      found: true,
+      visibility: pub.visibility,
+      body: rendered.body,
+      content_type: rendered.contentType,
+      updated_at: latest,
+    });
   }
 
   async resolveOutput(path: string): Promise<string> {

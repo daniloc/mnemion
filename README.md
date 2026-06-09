@@ -85,10 +85,11 @@ A hive that only accumulates eventually whispers stale things back. Mnemion coun
 
 ### HTTP I/O and federation
 
-Patterns can grow HTTP endpoints. Three kinds of agent-defined I/O, all expressed as entries:
+Patterns can grow HTTP endpoints. Four kinds of agent-defined I/O, all expressed as entries:
 
+- **Publications** (`_publications`) — the hive's publication surface. An entry declares a path, a source query, and a transport (**HTML, RSS, JSON, or Markdown with YAML frontmatter**); `GET /p/{path}` renders **live pattern data at request time** — nothing rendered is ever stored, so the page can't go stale. HTML ships opinionated defaults (semantic markup, light/dark, no JS) with two seams: a per-entry `{{facet}}` template (values escaped, template text raw) and a `css` override appended after the defaults. Superseded entries are excluded by default — public projections show current truth. Creation is consent-gated like sharing.
 - **Shared entries** (`_shared`) — flip an entry to `public` and it becomes readable at `/o/entry/{pattern}/{id}`, edge-cached. Flip to `unlisted` and it's readable by anyone with an auth-code token.
-- **Egress** (`_outputs`) — agent-constructed responses at arbitrary `/o/{path}` URLs.
+- **Egress** (`_outputs`) — agent-constructed static responses at arbitrary `/o/{path}` URLs.
 - **Ingress** (`_inputs`) — `POST /i/{path}` endpoints accept inbound data and create entries in target patterns, with an optional declarative transform DSL to map incoming fields.
 
 **Federation** is a property of `resolve`: any URI whose first path segment contains a dot is treated as a foreign hostname. `mnemion://other.hive.dev/entry/axioms/7` becomes a GET to `https://other.hive.dev/o/entry/axioms/7`. Private cross-hive access is granted via `?token=<code>` (auth code → Bearer header). No federation protocol — sovereign hives, voluntary connections, edge-cached public responses.

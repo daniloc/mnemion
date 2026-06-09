@@ -80,6 +80,46 @@ export const serveOutput: RouteHandler = async (ctx) => {
   });
 };
 
+// === Publications: GET /p/:path — render live pattern data via _publications ===
+
+export const servePublication: RouteHandler = async (ctx) => {
+  const raw = await ctx.hive.resolvePublication(ctx.params.path);
+  const result = JSON.parse(raw);
+
+  if (!result.found) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  if (result.visibility !== "public") {
+    // Positive allow-list: serve without auth ONLY when explicitly public.
+    // Unlisted requires a valid access token; with no secret configured we
+    // cannot authenticate one, so refuse rather than serving non-public content.
+    if (!ctx.env.MNEMION_SECRET) {
+      return new Response("Not found", { status: 404 });
+    }
+    const authHeader = ctx.request.headers.get("Authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!token || !(await ctx.hive.validateAccessToken(token, `read:publication:${ctx.params.path}`))) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+  }
+
+  // ETag derives from max(publication.updated_at, latest served entry) — content
+  // changes bust the cache even though nothing rendered is ever stored.
+  const etag = `"${new Date(result.updated_at).getTime()}"`;
+  if (ctx.request.headers.get("If-None-Match") === etag) {
+    return new Response(null, { status: 304 });
+  }
+
+  return new Response(result.body, {
+    headers: {
+      "Content-Type": result.content_type,
+      "ETag": etag,
+      "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
+    },
+  });
+};
+
 // === Ingress: POST /i/:path — create entries via _inputs ===
 
 export const receiveInput: RouteHandler = async (ctx) => {
