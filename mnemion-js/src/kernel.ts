@@ -338,6 +338,7 @@ function isBlockedIPv6Bytes(b: number[]): boolean {
   if (b[0] === 0 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b &&   // NAT64 64:ff9b::/96
       b.slice(4, 12).every((x) => x === 0))
     return isPrivateIPv4(b[12], b[13]);
+  if (b[0] === 0x20 && b[1] === 0x02) return isPrivateIPv4(b[2], b[3]);  // 6to4 2002::/16 wrapping a private v4
   return false;
 }
 
@@ -361,6 +362,10 @@ export function isBlockedFederationHost(host: string): boolean {
   } catch {
     return true; // not a parseable host -> refuse
   }
+
+  // Strip a single trailing dot — "localhost." / "box.local." are the FQDN-root
+  // form and resolve identically to the dotless name.
+  if (hostname.endsWith(".")) hostname = hostname.slice(0, -1);
 
   if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
   if (hostname.endsWith(".local") || hostname.endsWith(".internal") || hostname.endsWith(".lan")) return true;

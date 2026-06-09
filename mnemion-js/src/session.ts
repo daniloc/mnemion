@@ -436,9 +436,11 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
             };
           }
           // Consent-gated patterns can't ride along in a batch — that would skip
-          // the confirmation round-trip. Force them through a single mutate.
+          // the confirmation round-trip (and patch would also skip validation).
+          // Force any escalating change through a single mutate; only archive
+          // (removal/de-escalation) is allowed inside a batch.
           const gated = batchData.find((op: any) =>
-            op && CONSENT_GATED[op.pattern] && (op.operation === "create" || op.operation === "update"));
+            op && CONSENT_GATED[op.pattern] && op.operation !== "archive");
           if (gated) {
             return {
               isError: true as const,
@@ -479,28 +481,44 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         }
 
         // Confirmation gate for consent-boundary patterns (system docs,
-        // federation allow-list). First call returns confirmation_required;
-        // the agent must re-issue the identical call to commit.
-        if (CONSENT_GATED[pattern] && (resolvedOp === "update" || resolvedOp === "create")) {
-          const confirmKey = `consent:${pattern}:${JSON.stringify(singleData)}`;
-          const alreadyConfirmed = this.confirmed.has(confirmKey);
-
-          if (!alreadyConfirmed) {
-            this.confirmed.add(confirmKey);
+        // federation allow-list, entry sharing).
+        if (CONSENT_GATED[pattern]) {
+          // patch is rejected outright: it edits a text facet directly, skipping
+          // the kernel validation hooks (e.g. isBlockedFederationHost) AND the
+          // confirmation round-trip — an agent could patch _federation_hosts.host
+          // from an approved host to an attacker host and leak the token. These
+          // patterns must go through create/update.
+          if (resolvedOp === "patch") {
             return {
-              content: [{
-                type: "text" as const,
-                text: JSON.stringify({
-                  confirmation_required: true,
-                  message: CONSENT_GATED[pattern],
-                  pattern,
-                  operation: resolvedOp,
-                  data: singleData,
-                }, null, 2),
-              }],
+              isError: true as const,
+              content: [{ type: "text" as const, text: `"${pattern}" cannot be modified with patch (it would bypass validation and confirmation). Use create or update.` }],
             };
           }
-          this.confirmed.delete(confirmKey);
+          // Escalating ops (create/update/unarchive) require a round-trip; the
+          // first call returns confirmation_required and the agent must re-issue
+          // the identical call to commit. archive (removal) is de-escalation and
+          // is allowed without one.
+          if (resolvedOp === "create" || resolvedOp === "update" || resolvedOp === "unarchive") {
+            const confirmKey = `consent:${pattern}:${resolvedOp}:${JSON.stringify(singleData)}`;
+            const alreadyConfirmed = this.confirmed.has(confirmKey);
+
+            if (!alreadyConfirmed) {
+              this.confirmed.add(confirmKey);
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    confirmation_required: true,
+                    message: CONSENT_GATED[pattern],
+                    pattern,
+                    operation: resolvedOp,
+                    data: singleData,
+                  }, null, 2),
+                }],
+              };
+            }
+            this.confirmed.delete(confirmKey);
+          }
         }
 
         const result = await hive.mutate(pattern, resolvedOp, JSON.stringify(singleData));
