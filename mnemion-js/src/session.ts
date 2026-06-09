@@ -77,6 +77,20 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       (this.server as any)._instructions = briefing + base;
     }
 
+    // === Inject maintenance status into instructions ===
+    // (Also rides the prime response — web clients often never read instructions.)
+    try {
+      const status = JSON.parse(await hive.getMaintenanceStatus()) as {
+        days_since_last_pass: number | null; interval_days: number; overdue: boolean;
+      };
+      if (status.overdue) {
+        const age = status.days_since_last_pass != null ? `${status.days_since_last_pass} days ago` : "never";
+        const section = `=== Maintenance ===\nLast memory maintenance pass: ${age} (interval: ${status.interval_days} days). Consider offering the owner a cleanup pass: review ${uri("stale")}, propose supersessions, archives, and memory policies, apply what they ratify, then record the pass in _maintenance_passes. See ${uri("_system/memory-maintenance")}.\n\n`;
+        const base = (this.server as any)._instructions ?? "";
+        (this.server as any)._instructions = section + base;
+      }
+    } catch { /* best-effort */ }
+
     // === Resources (stable, cacheable, subscribable) ===
 
     this.server.resource(
@@ -132,6 +146,18 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     );
 
     this.server.resource(
+      "stale",
+      uri("stale"),
+      { description: "Entries past their staleness horizon — neither updated nor recalled recently. Read-only review surface for maintenance passes.", mimeType: "application/json" },
+      async (u) => {
+        const result = await hive.getStaleEntries();
+        return {
+          contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
+        };
+      }
+    );
+
+    this.server.resource(
       "entry",
       new ResourceTemplate(uri("entry/{pattern}/{id}"), {
         list: undefined, // Entries are too numerous to enumerate
@@ -179,7 +205,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       {
         description: z.string().describe("Natural language description of the change"),
         change: z.object({
-          type: z.enum(["create_pattern", "add_facet", "set_sharing", "set_options", "set_doctrine", "archive_pattern", "unarchive_pattern"]).describe("Type of structural change"),
+          type: z.enum(["create_pattern", "add_facet", "set_sharing", "set_options", "set_doctrine", "set_memory_policy", "archive_pattern", "unarchive_pattern"]).describe("Type of structural change"),
           pattern_name: z.string().optional().describe("Target pattern name"),
           pattern_description: z.string().optional().describe("Purpose of the pattern (for create_pattern)"),
           doctrine: z.string().optional().describe("How this pattern should be used — required for create_pattern"),
@@ -198,6 +224,11 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           options: z.array(z.string()).optional().describe("Allowed values (for set_options)"),
           entry_id: z.number().optional().describe("Entry ID (for set_sharing)"),
           visibility: z.enum(["public", "unlisted", "private"]).optional().describe("Sharing visibility (for set_sharing)"),
+          policy: z.object({
+            half_life_days: z.number().positive().nullable().optional().describe("Decay half-life in days for prime recall; null = no decay (default)"),
+            conflict_check: z.enum(["annotate", "off"]).optional().describe("Write-time semantic overlap advisory on create (default: annotate)"),
+            exclusive_facets: z.array(z.string()).optional().describe("Facets where only one active entry per value should exist — duplicates get a supersession advisory"),
+          }).nullable().optional().describe("Memory policy (for set_memory_policy; null clears the policy)"),
         }),
       },
       async ({ description, change }) => {

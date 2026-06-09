@@ -23,6 +23,7 @@ type CreateHook = (data: Record<string, unknown>, ctx: KernelContext) => HookRes
 export const INTERNAL_WRITE_PROTECTED = new Set<string>([
   "_web_cache",
   "_fragment_access_log",
+  "_entry_access_log",
   "_mutation_log",
   "_schema_history",
   "_pending_changes",
@@ -197,6 +198,12 @@ const ON_CREATE: Record<string, CreateHook> = {
     if (isBlockedFederationHost(host))
       return { error: true, message: `Cannot add non-public host "${host}" to the federation allow-list (loopback/private/link-local/internal hosts are never federatable).` };
     data.host = host;
+    return data;
+  },
+
+  _maintenance_passes(data) {
+    if (!data.summary || typeof data.summary !== "string" || !(data.summary as string).trim())
+      return { error: true, message: "summary is required — record what was reviewed and changed in this maintenance pass" };
     return data;
   },
 

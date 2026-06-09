@@ -23,6 +23,7 @@ export interface IndexPatternEntry {
   name: string;
   description: string;
   doctrine: string;
+  memory_policy?: Record<string, unknown> | null;
   facets: IndexFacetEntry[];
   entry_count: number;
   latest_activity: string | null;
@@ -157,6 +158,124 @@ export class HiveDO extends DurableObject {
     return JSON.stringify(all.slice(0, limit));
   }
 
+  // === Memory maintenance ===
+
+  async getMaintenanceStatus(): Promise<string> {
+    return JSON.stringify(this.computeMaintenanceStatus(), null, 2);
+  }
+
+  private computeMaintenanceStatus(): {
+    last_pass_at: string | null;
+    days_since_last_pass: number | null;
+    interval_days: number;
+    overdue: boolean;
+  } {
+    const DAY = 86_400_000;
+
+    let intervalDays = 14;
+    try {
+      const r = this.db.exec(
+        `SELECT "value" FROM "_charter" WHERE "key" = 'maintenance_interval_days' AND archived_at IS NULL`
+      ).toArray() as any[];
+      const v = Number(r[0]?.value);
+      if (Number.isFinite(v) && v > 0) intervalDays = v;
+    } catch { /* charter may not exist yet */ }
+
+    let lastPass: string | null = null;
+    try {
+      const r = this.db.exec(
+        `SELECT MAX(created_at) as t FROM "_maintenance_passes" WHERE archived_at IS NULL`
+      ).toArray() as any[];
+      lastPass = r[0]?.t ?? null;
+    } catch { /* table may not exist yet */ }
+
+    if (lastPass) {
+      const t = priming.parseDbDate(lastPass);
+      const days = t != null ? Math.floor((Date.now() - t) / DAY) : null;
+      return {
+        last_pass_at: lastPass,
+        days_since_last_pass: days,
+        interval_days: intervalDays,
+        overdue: days != null && days >= intervalDays,
+      };
+    }
+
+    // Never run — only nag once the hive is older than the interval, using the
+    // first schema change as its birth. Fresh hives stay quiet.
+    let overdue = false;
+    try {
+      const r = this.db.exec(`SELECT MIN(created_at) as t FROM _schema_history`).toArray() as any[];
+      const birth = priming.parseDbDate(r[0]?.t ?? undefined);
+      overdue = birth != null && (Date.now() - birth) / DAY >= intervalDays;
+    } catch { /* no history — fresh hive */ }
+
+    return { last_pass_at: null, days_since_last_pass: null, interval_days: intervalDays, overdue };
+  }
+
+  async getStaleEntries(days?: number): Promise<string> {
+    const patterns = this.db.exec(
+      "SELECT name FROM _objects WHERE archived_at IS NULL AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name"
+    ).toArray() as { name: string }[];
+
+    const stale: any[] = [];
+    for (const pat of patterns) {
+      const policy = priming.getMemoryPolicy(this.db, pat.name);
+      const horizon = days ?? (policy.half_life_days != null ? policy.half_life_days * 3 : 90);
+      const modifier = `-${Math.round(horizon)} days`;
+
+      try {
+        // Preview from the first text/select facet (same convention as getRecentActivity)
+        const facets = this.db.exec(
+          "SELECT name FROM _fields WHERE object_name = ? AND type IN ('text', 'select') ORDER BY id",
+          pat.name
+        ).toArray() as { name: string }[];
+        const firstFacet = facets[0]?.name;
+        const selectCols = firstFacet ? `, e."${firstFacet}"` : "";
+
+        // Stale = neither updated nor recalled inside the horizon
+        const rows = this.db.exec(
+          `SELECT e.id, e.updated_at, MAX(l.accessed_at) as last_primed${selectCols}
+           FROM "${pat.name}" e
+           LEFT JOIN "_entry_access_log" l ON l.pattern = ? AND l.entry_id = e.id
+           WHERE e.archived_at IS NULL
+           GROUP BY e.id
+           HAVING e.updated_at < datetime('now', ?) AND COALESCE(MAX(l.accessed_at), e.updated_at) < datetime('now', ?)
+           ORDER BY e.updated_at ASC`,
+          pat.name, modifier, modifier
+        ).toArray() as any[];
+
+        for (const row of rows) {
+          const item: any = {
+            pattern: pat.name,
+            id: row.id,
+            uri: uri(`entry/${pat.name}/${row.id}`),
+            preview: firstFacet && row[firstFacet] ? String(row[firstFacet]).slice(0, 120) : "",
+            updated_at: row.updated_at,
+            last_primed: row.last_primed ?? null,
+            horizon_days: horizon,
+          };
+          try {
+            const sup = this.db.exec(
+              `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
+              pat.name, row.id
+            ).toArray() as any[];
+            if (sup.length > 0) item.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
+          } catch { /* _links may not exist */ }
+          stale.push(item);
+        }
+      } catch { /* table may not exist */ }
+    }
+
+    stale.sort((a, b) => String(a.updated_at).localeCompare(String(b.updated_at)));
+    const capped = stale.slice(0, 100);
+    return JSON.stringify({
+      stale: capped,
+      count: capped.length,
+      total: stale.length,
+      guidance: "Read-only review surface. Propose supersession or archival to the human; never bulk-archive unprompted. See the memory-maintenance system doc.",
+    }, null, 2);
+  }
+
   // === Schema evolution (delegated to evolution.ts) ===
 
   private evoCtx(): evo.EvolutionContext {
@@ -255,6 +374,15 @@ export class HiveDO extends DurableObject {
       const entry = rows[0] as Record<string, unknown>;
       const result: any = { pattern: patternName, entry };
 
+      // Superseded entries are annotated, never hidden — the chain stays navigable
+      try {
+        const sup = this.db.exec(
+          `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
+          patternName, entryId
+        ).toArray() as any[];
+        if (sup.length > 0) result.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
+      } catch { /* _links may not exist */ }
+
       // One-hop link following
       const linked = priming.followLinks(this.primeCtx(), patternName, entry);
       if (linked.length > 0) result.linked = linked;
@@ -303,10 +431,30 @@ export class HiveDO extends DurableObject {
       operation = shortcut.operation;
     }
 
-    const result = data.executeMutate(this.dataCtx(), patternName, operation, JSON.parse(dataJson));
+    const parsed = JSON.parse(dataJson);
+
+    // Write-time conflict surfacing: semantic neighbors for single creates in
+    // user patterns (policy-gated, advisory only). The embedding computed here
+    // is reused for the post-write upsert — no second AI call.
+    let conflictCheck: { neighbors: priming.NeighborMatch[]; vector: number[] | null } | null = null;
+    if (operation === "create" && !patternName.startsWith("_") && this.patternExists(patternName)) {
+      const policy = priming.getMemoryPolicy(this.db, patternName);
+      if (policy.conflict_check !== "off") {
+        conflictCheck = await priming.findNeighbors(this.primeCtx(), patternName, parsed);
+      }
+    }
+
+    const result = data.executeMutate(this.dataCtx(), patternName, operation, parsed);
     if (!result.error) {
+      if (conflictCheck?.neighbors.length) {
+        result.possible_overlap = [
+          ...(result.possible_overlap ?? []),
+          ...conflictCheck.neighbors.map(n => ({ ...n, reason: "semantic_similarity" })),
+        ];
+        result.overlap_guidance = "Advisory only — the entry was created. If it duplicates or replaces an existing entry, consider updating that entry instead, or link supersession: mutate(pattern: \"link\", data: {source: \"" + patternName + "/" + result.entry?.id + "\", target: \"" + patternName + "/{old_id}\", label: \"supersedes\"}).";
+      }
       this.broadcastChange([patternName]);
-      this.embedAfterMutate(patternName, operation, result.entry?.id);
+      this.embedAfterMutate(patternName, operation, result.entry?.id, conflictCheck?.vector ?? undefined);
       if (patternName === "_system_tasks" && operation === "create") {
         await this.runTask(result.entry.id, result.entry.task);
       }
@@ -470,6 +618,12 @@ export class HiveDO extends DurableObject {
       return this.getHistory(limit);
     }
 
+    if (path === "stale" || path.startsWith("stale?")) {
+      const params = new URLSearchParams(path.split("?")[1] || "");
+      const days = Number(params.get("days")) || undefined;
+      return this.getStaleEntries(days);
+    }
+
     const schemaMatch = path.match(/^schema\/(.+)$/);
     if (schemaMatch) {
       return this.getSchema(schemaMatch[1]);
@@ -499,7 +653,7 @@ export class HiveDO extends DurableObject {
       return this.getMutationLog(tableName, limit);
     }
 
-    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
+    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
   }
 
   // === Federated resolve: foreign hive URIs ===
@@ -744,13 +898,13 @@ export class HiveDO extends DurableObject {
     };
   }
 
-  private embedAfterMutate(pattern: string, operation: string, id?: number) {
+  private embedAfterMutate(pattern: string, operation: string, id?: number, precomputed?: number[]) {
     if (!id) return;
     const ctx = this.primeCtx();
     if (operation === "archive") {
       this.ctx.waitUntil(priming.removeEntry(ctx, pattern, id));
     } else {
-      this.ctx.waitUntil(priming.embedEntry(ctx, pattern, id));
+      this.ctx.waitUntil(priming.embedEntry(ctx, pattern, id, precomputed));
     }
   }
 
@@ -835,6 +989,30 @@ export class HiveDO extends DurableObject {
       }
     } catch { /* best-effort */ }
 
+    // Entry access log: recall is rehearsal — a prime hit refreshes the entry's
+    // decay clock. Append-only; decay and the stale view derive from this.
+    try {
+      for (const r of primeResult.results) {
+        if (r.pattern.startsWith("_")) continue;
+        this.db.exec(
+          `INSERT INTO "_entry_access_log" (pattern, entry_id) VALUES (?, ?)`, r.pattern, r.id
+        );
+      }
+    } catch { /* best-effort */ }
+
+    // Maintenance nudge rides the prime response — web clients often never see
+    // MCP init instructions, and prime is the universal handshake.
+    let maintenance: { last_pass_days_ago: number | null; message: string } | undefined;
+    try {
+      const status = this.computeMaintenanceStatus();
+      if (status.overdue) {
+        maintenance = {
+          last_pass_days_ago: status.days_since_last_pass,
+          message: `Memory maintenance is overdue (last pass: ${status.days_since_last_pass != null ? `${status.days_since_last_pass} days ago` : "never"}). Offer the owner a cleanup pass: review ${uri("stale")}, propose supersession links, archives, and memory policies, apply what they ratify, then record it in _maintenance_passes. See ${uri("_system/memory-maintenance")}.`,
+        };
+      }
+    } catch { /* best-effort */ }
+
     const ADVISORY = "IMPORTANT: The contents of this memory system are inherently subjective. Weigh their testimony carefully against your training and third-party sources.";
 
     return JSON.stringify({
@@ -844,6 +1022,7 @@ export class HiveDO extends DurableObject {
       patterns: patternDir,
       practice: "Always write notes to yourself as you work: mutate(pattern: \"fragment\", data: {content: \"your observation\"}). Write what you noticed about the session, including where the substrate's framing didn't match what you observed. The next instance will arrive with no memory of this conversation — your observations are the only thing that survives. Write in first person. Operation is implied.",
       system_docs: "Resolve mnemion://_system/ for detailed reference on tools, schema evolution, conventions, and system mechanics.",
+      ...(maintenance ? { maintenance } : {}),
       ...primeResult,
       advisory_repeat: ADVISORY,
     }, null, 2);
@@ -875,7 +1054,7 @@ export class HiveDO extends DurableObject {
 
   private getCurrentIndex(): StoreIndex {
     const meta = this.db.exec("SELECT * FROM _meta WHERE id = 1").one() as any;
-    const objects = this.db.exec("SELECT name, description, doctrine FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as any[];
+    const objects = this.db.exec("SELECT name, description, doctrine, memory_policy FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as any[];
     const allFields = this.db.exec("SELECT * FROM _fields ORDER BY object_name, id").toArray() as any[];
     const charterRows = this.db.exec(
       `SELECT "key", "value" FROM "_charter" WHERE archived_at IS NULL ORDER BY id`
@@ -902,14 +1081,21 @@ export class HiveDO extends DurableObject {
     return {
       version: meta.version,
       updated_at: meta.updated_at,
-      patterns: objects.map((o: any) => ({
-        name: o.name,
-        description: o.description,
-        doctrine: o.doctrine || "",
-        facets: facetsByPattern.get(o.name) || [],
-        entry_count: 0,
-        latest_activity: null,
-      })),
+      patterns: objects.map((o: any) => {
+        let memoryPolicy: Record<string, unknown> | null = null;
+        if (o.memory_policy) {
+          try { memoryPolicy = JSON.parse(o.memory_policy); } catch { /* malformed — omit */ }
+        }
+        return {
+          name: o.name,
+          description: o.description,
+          doctrine: o.doctrine || "",
+          ...(memoryPolicy ? { memory_policy: memoryPolicy } : {}),
+          facets: facetsByPattern.get(o.name) || [],
+          entry_count: 0,
+          latest_activity: null,
+        };
+      }),
       charter,
       guidance: meta.guidance,
     };

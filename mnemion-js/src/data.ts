@@ -4,6 +4,7 @@
 // that add broadcast and transaction concerns.
 
 import { applyKernelRules, INTERNAL_WRITE_PROTECTED, type KernelContext } from "./kernel";
+import { getMemoryPolicy } from "./prime";
 import { uri } from "./constants";
 
 // === Types ===
@@ -233,6 +234,29 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   try {
     switch (operation) {
       case "create": {
+        // Exclusive-facet advisory (memory policy): the pattern declares this
+        // facet single-valued-per-value, and an active entry already holds it.
+        // Checked before the insert so the advisory never matches the new row.
+        let overlap: { pattern: string; id: number; uri: string; reason: string; facet: string }[] | undefined;
+        if (!patternName.startsWith("_")) {
+          const policy = getMemoryPolicy(ctx.db, patternName);
+          for (const facet of policy.exclusive_facets) {
+            const val = data[facet];
+            if (val == null || val === "") continue;
+            if (!ctx.facetMeta(patternName, facet)) continue;
+            const existing = ctx.db.exec(
+              `SELECT id FROM "${patternName}" WHERE "${facet}" = ? AND archived_at IS NULL LIMIT 3`, val
+            ).toArray() as { id: number }[];
+            for (const e of existing) {
+              (overlap ??= []).push({
+                pattern: patternName, id: e.id,
+                uri: uri(`entry/${patternName}/${e.id}`),
+                reason: "exclusive_facet", facet,
+              });
+            }
+          }
+        }
+
         const fields = Object.keys(data).filter((k) => !KERNEL_COLUMNS.has(k));
         const cols = fields.map((f) => `"${f}"`).join(", ");
         const placeholders = fields.map(() => "?").join(", ");
@@ -240,7 +264,12 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
         ctx.db.exec(`INSERT INTO "${patternName}" (${cols}) VALUES (${placeholders})`, ...values);
         const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = last_insert_rowid()`).one();
-        return { operation: "create", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${(row as any).id}`) };
+        const result: any = { operation: "create", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${(row as any).id}`) };
+        if (overlap?.length) {
+          result.possible_overlap = overlap;
+          result.overlap_guidance = `Advisory only — the entry was created. These facets are declared exclusive in this pattern's memory policy; if the new entry replaces one of them, link supersession: mutate(pattern: "link", data: {source: "${patternName}/${(row as any).id}", target: "${patternName}/{old_id}", label: "supersedes"}).`;
+        }
+        return result;
       }
 
       case "update": {

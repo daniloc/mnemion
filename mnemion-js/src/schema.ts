@@ -18,6 +18,7 @@ import indexGuideRaw from "./system-docs/index-guide.md";
 import remoteAccessRaw from "./system-docs/remote-access.md";
 import httpIoRaw from "./system-docs/http-io.md";
 import capabilitiesRaw from "./system-docs/capabilities.md";
+import memoryMaintenanceRaw from "./system-docs/memory-maintenance.md";
 
 // === System doc parsing ===
 
@@ -50,6 +51,7 @@ function generateToolsDoc(): string {
 const SYSTEM_DOCS_SEED = [
   schemaEvolutionRaw, skillsRaw, conventionsRaw,
   indexGuideRaw, remoteAccessRaw, httpIoRaw, capabilitiesRaw,
+  memoryMaintenanceRaw,
 ].map(parseDocFile);
 
 // === Kernel table declarations ===
@@ -310,6 +312,45 @@ Scopes:
     ],
   },
   {
+    name: "_entry_access_log",
+    description: "Append-only log of prime hits per user-pattern entry. Decay freshness (last_touch) and stale detection are derived from this log plus updated_at — recall is rehearsal. GC'd after 90 days.",
+    doctrine: "Do not write directly. Each prime call that surfaces a user-pattern entry appends a row here. Decay and the stale view query this log; nothing else should.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_entry_access_log" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "pattern" TEXT NOT NULL,
+      "entry_id" INTEGER NOT NULL,
+      "accessed_at" TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE INDEX IF NOT EXISTS "_entry_access_log_entry" ON "_entry_access_log" ("pattern", "entry_id")`,
+    ],
+    facets: [
+      { name: "pattern", type: "text", required: true },
+      { name: "entry_id", type: "integer", required: true },
+      { name: "accessed_at", type: "datetime", required: false },
+    ],
+  },
+  {
+    name: "_maintenance_passes",
+    description: "Record of memory maintenance passes — reviewing stale entries, proposing supersessions and archives, ratifying memory policies. 'Days since last pass' is derived from the latest row and announced to connecting agents.",
+    doctrine: "Create an entry AFTER completing a maintenance pass with the human: review the stale view, propose supersessions/archives/policies, apply what the human ratifies, then record a summary here. See the memory-maintenance system doc for the full protocol.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_maintenance_passes" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "summary" TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    facets: [
+      { name: "summary", type: "text", required: true },
+    ],
+  },
+  {
     name: "_long_term_fragments",
     description: "Durable working memory. Fragments promoted automatically from _short_term_fragments after surfacing in 3+ prime calls — proof of recurring relevance. Garbage collected after 6 months.",
     doctrine: "Do not write directly. Fragments are promoted here automatically when they prove their value by surfacing repeatedly in prime results. These are the observations that turned out to matter.",
@@ -566,6 +607,15 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     db.exec(`DELETE FROM _fields WHERE object_name = '_short_term_fragments' AND name = 'access_count'`);
   } catch {}
 
+  // --- v11: add memory_policy column to _objects (per-pattern decay/conflict policy) ---
+
+  try {
+    const objCols3 = db.exec(`PRAGMA table_info("_objects")`).toArray() as any[];
+    if (!objCols3.some((c: any) => c.name === "memory_policy")) {
+      db.exec(`ALTER TABLE "_objects" ADD COLUMN "memory_policy" TEXT`);
+    }
+  } catch {}
+
   // --- GC: expire short-term fragments older than 30 days ---
 
   try {
@@ -578,6 +628,14 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     // Log entries don't outlive the fragments they describe
     db.exec(
       `DELETE FROM "_fragment_access_log" WHERE accessed_at < datetime('now', '-30 days')`
+    );
+  } catch {}
+
+  // --- GC: entry access log rows older than 90 days (decay's freshness horizon) ---
+
+  try {
+    db.exec(
+      `DELETE FROM "_entry_access_log" WHERE accessed_at < datetime('now', '-90 days')`
     );
   } catch {}
 
@@ -783,7 +841,7 @@ function verifyFieldsIntegrity(db: any): void {
 // Tables that mutate too often to be worth auditing — high-frequency append-only
 // logs whose change history is the data itself. Auditing them would just churn
 // the bounded _mutation_log and evict useful entries.
-const AUDIT_EXEMPT = new Set(["_fragment_access_log"]);
+const AUDIT_EXEMPT = new Set(["_fragment_access_log", "_entry_access_log"]);
 
 export function ensureAuditTriggers(db: any, tableName: string): void {
   if (AUDIT_EXEMPT.has(tableName)) return;

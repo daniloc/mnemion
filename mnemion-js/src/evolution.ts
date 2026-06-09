@@ -265,6 +265,48 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     },
   },
 
+  set_memory_policy: {
+    validate(change, ctx, preview) {
+      if (!change.pattern_name) return "pattern_name is required for set_memory_policy";
+      if (!ctx.patternExists(change.pattern_name))
+        return `Pattern "${change.pattern_name}" does not exist`;
+      if (change.pattern_name.startsWith("_"))
+        return `Memory policy applies to user patterns, not kernel pattern "${change.pattern_name}"`;
+      const p = change.policy;
+      if (p === null) return null; // explicit clear
+      if (!p || typeof p !== "object" || Array.isArray(p))
+        return "policy is required for set_memory_policy: {half_life_days?, conflict_check?, exclusive_facets?} (or null to clear)";
+      const KNOWN = new Set(["half_life_days", "conflict_check", "exclusive_facets"]);
+      for (const key of Object.keys(p)) {
+        if (!KNOWN.has(key)) return `Unknown policy field "${key}". Valid: half_life_days, conflict_check, exclusive_facets`;
+      }
+      if (p.half_life_days != null && (typeof p.half_life_days !== "number" || !(p.half_life_days > 0)))
+        return "half_life_days must be a positive number of days, or null for no decay";
+      if (p.conflict_check != null && !["annotate", "off"].includes(p.conflict_check))
+        return `Invalid conflict_check "${p.conflict_check}". Use "annotate" or "off".`;
+      if (p.exclusive_facets != null) {
+        if (!Array.isArray(p.exclusive_facets) || p.exclusive_facets.some((f: unknown) => typeof f !== "string"))
+          return "exclusive_facets must be an array of facet names";
+        const pat = preview.patterns.find((x) => x.name === change.pattern_name);
+        for (const f of p.exclusive_facets) {
+          if (!pat?.facets.some((x) => x.name === f))
+            return `exclusive_facets names facet "${f}" which does not exist on "${change.pattern_name}"`;
+        }
+      }
+      return null;
+    },
+    preview(change, preview) {
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      if (pat) pat.memory_policy = change.policy ?? null;
+    },
+    apply(change, { db }) {
+      db.exec(
+        "UPDATE _objects SET memory_policy = ? WHERE name = ?",
+        change.policy ? JSON.stringify(change.policy) : null, change.pattern_name
+      );
+    },
+  },
+
   archive_pattern: {
     validate(change, ctx) {
       if (!change.pattern_name) return "pattern_name is required for archive_pattern";
