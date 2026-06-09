@@ -28,6 +28,8 @@ const CONSENT_GATED: Record<string, string> = {
     "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
   _federation_hosts:
     "Adding a federation host is a standing grant: resolve() will send this hive's access tokens to that host whenever it fetches a mnemion:// URI there. Only proceed if the human explicitly approved federating with this host. Call mutate again with the same arguments to proceed.",
+  _shared:
+    "Sharing an entry publishes it over HTTP at /o/entry/{pattern}/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this entry. Call mutate again with the same arguments to proceed.",
 };
 
 // === SessionDO: MCP protocol handler, proxies data to HiveDO ===
@@ -269,11 +271,15 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         if (specJson) {
           let spec: any = null;
           try { spec = JSON.parse(specJson); } catch { /* not gated if unparseable */ }
-          if (spec && spec.type === "set_sharing" && spec.visibility && spec.visibility !== "private") {
+          // evolution.ts defaults an omitted visibility to "public", so treat a
+          // missing visibility as public here too — otherwise an unconfirmed
+          // publish slips through.
+          const effectiveVis = spec?.visibility ?? "public";
+          if (spec && spec.type === "set_sharing" && effectiveVis !== "private") {
             const confirmKey = `sharing:${change_id}`;
             if (!this.confirmed.has(confirmKey)) {
               this.confirmed.add(confirmKey);
-              const exposure = spec.visibility === "public"
+              const exposure = effectiveVis === "public"
                 ? "readable by anyone (and edge-cached)"
                 : "readable by anyone holding an access token";
               return {
@@ -281,7 +287,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
                   type: "text" as const,
                   text: JSON.stringify({
                     confirmation_required: true,
-                    message: `Applying this change makes ${spec.pattern_name ?? "this entry"}#${spec.entry_id ?? "?"} ${spec.visibility} — ${exposure} over HTTP. Only proceed if the human approved publishing this entry. Call apply_change again with the same change_id to proceed.`,
+                    message: `Applying this change makes ${spec.pattern_name ?? "this entry"}#${spec.entry_id ?? "?"} ${effectiveVis} — ${exposure} over HTTP. Only proceed if the human approved publishing this entry. Call apply_change again with the same change_id to proceed.`,
                     change_id,
                   }, null, 2),
                 }],

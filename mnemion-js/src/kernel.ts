@@ -84,7 +84,10 @@ const ON_CREATE: Record<string, CreateHook> = {
   _outputs(data) {
     if (!data.path) return { error: true, message: "path is required for _outputs" };
     data.mime_type = data.mime_type || "text/plain";
-    data.visibility = data.visibility || "public";
+    const vis = (data.visibility as string) || "public";
+    if (!["public", "unlisted", "private"].includes(vis))
+      return { error: true, message: `Invalid visibility "${vis}". Use "public", "unlisted", or "private".` };
+    data.visibility = vis;
     return data;
   },
 
@@ -100,7 +103,10 @@ const ON_CREATE: Record<string, CreateHook> = {
     }
     if (data.body_facet && !ctx.facetMeta(data.target_pattern as string, data.body_facet as string))
       return { error: true, message: `Facet "${data.body_facet}" does not exist on "${data.target_pattern}"` };
-    data.visibility = data.visibility || "public";
+    const vis = (data.visibility as string) || "public";
+    if (!["public", "unlisted", "private"].includes(vis))
+      return { error: true, message: `Invalid visibility "${vis}". Use "public", "unlisted", or "private".` };
+    data.visibility = vis;
     return data;
   },
 
@@ -216,93 +222,143 @@ export function normalizeHost(raw: string): string {
   return raw.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/\/.*$/, "");
 }
 
+/** True if an IPv4 address (by its high two octets) is in a non-public range. */
+function isPrivateIPv4(a: number, b: number): boolean {
+  if (a === 0 || a === 10 || a === 127) return true;   // this-network, private, loopback
+  if (a === 169 && b === 254) return true;             // link-local incl. 169.254.169.254 metadata
+  if (a === 172 && b >= 16 && b <= 31) return true;    // private
+  if (a === 192 && b === 168) return true;             // private
+  if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT
+  return false;
+}
+
+/**
+ * Parse an IPv4 literal in any inet_aton form (dotted 1-4 parts in decimal/octal/
+ * hex, or a single integer) to its high two octets. Returns null when the string
+ * is not an all-numeric IP literal (i.e. it is a hostname). WHATWG URL already
+ * normalizes these to dotted-decimal, but we do not rely on that.
+ */
+function parseIPv4Literal(h: string): { a: number; b: number } | null {
+  if (h.includes(":")) return null;
+  const parts = h.split(".");
+  if (parts.length === 0 || parts.length > 4) return null;
+  const nums: number[] = [];
+  for (const p of parts) {
+    if (p === "") return null;
+    let n: number;
+    if (/^0x[0-9a-f]+$/i.test(p)) n = parseInt(p, 16);
+    else if (/^0[0-7]+$/.test(p)) n = parseInt(p, 8);
+    else if (/^[0-9]+$/.test(p)) n = parseInt(p, 10);
+    else return null; // not numeric -> hostname, not an IP literal
+    if (!Number.isFinite(n) || n < 0) return null;
+    nums.push(n);
+  }
+  let value: number;
+  if (nums.length === 1) value = nums[0];
+  else if (nums.length === 2) value = (nums[0] << 24) | (nums[1] & 0xffffff);
+  else if (nums.length === 3) value = (nums[0] << 24) | ((nums[1] & 0xff) << 16) | (nums[2] & 0xffff);
+  else value = (nums[0] << 24) | (nums[1] << 16) | (nums[2] << 8) | nums[3];
+  value = value >>> 0;
+  return { a: (value >>> 24) & 0xff, b: (value >>> 16) & 0xff };
+}
+
+/**
+ * Expand an IPv6 literal (brackets already stripped, optional zone id) to its 16
+ * bytes, handling :: compression and a trailing embedded IPv4 (::ffff:1.2.3.4 /
+ * ::1.2.3.4). Returns null for anything that is not a well-formed IPv6 literal.
+ */
+function parseIPv6Literal(str: string): number[] | null {
+  let s = str.toLowerCase().split("%")[0]; // strip zone id (fe80::1%eth0)
+  if (s.length === 0) return null;
+  // Embedded IPv4 in the trailing 32 bits -> rewrite as two hextets.
+  const lastColon = s.lastIndexOf(":");
+  const tail = s.slice(lastColon + 1);
+  if (tail.includes(".")) {
+    const v4 = tail.split(".");
+    if (v4.length !== 4) return null;
+    const o: number[] = [];
+    for (const part of v4) {
+      if (!/^\d{1,3}$/.test(part)) return null;
+      const n = Number(part);
+      if (n > 255) return null;
+      o.push(n);
+    }
+    s = s.slice(0, lastColon + 1) +
+      (((o[0] << 8) | o[1]).toString(16)) + ":" + (((o[2] << 8) | o[3]).toString(16));
+  }
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const hasGap = halves.length === 2;
+  const back = hasGap ? (halves[1] ? halves[1].split(":") : []) : [];
+  let hextets: string[];
+  if (hasGap) {
+    const missing = 8 - head.length - back.length;
+    if (missing < 1) return null; // :: must stand for at least one zero group
+    hextets = [...head, ...Array(missing).fill("0"), ...back];
+  } else {
+    hextets = head;
+  }
+  if (hextets.length !== 8) return null;
+  const bytes: number[] = [];
+  for (const h of hextets) {
+    if (!/^[0-9a-f]{1,4}$/.test(h)) return null;
+    const n = parseInt(h, 16);
+    bytes.push((n >> 8) & 0xff, n & 0xff);
+  }
+  return bytes;
+}
+
+/** True if a 16-byte IPv6 address is loopback/unspecified/ULA/link-local, or an
+ *  embedded (mapped/compatible/NAT64) private IPv4. */
+function isBlockedIPv6Bytes(b: number[]): boolean {
+  const firstZero = (n: number) => b.slice(0, n).every((x) => x === 0);
+  if (firstZero(15) && (b[15] === 0 || b[15] === 1)) return true;        // :: and ::1
+  if ((b[0] & 0xfe) === 0xfc) return true;                               // ULA fc00::/7
+  if (b[0] === 0xfe && (b[1] & 0xc0) === 0x80) return true;              // link-local fe80::/10
+  if (b[0] === 0xfe && (b[1] & 0xc0) === 0xc0) return true;              // site-local fec0::/10 (deprecated)
+  if (firstZero(10) && b[10] === 0xff && b[11] === 0xff)                 // IPv4-mapped ::ffff:0:0/96
+    return isPrivateIPv4(b[12], b[13]);
+  if (firstZero(12)) return isPrivateIPv4(b[12], b[13]);                 // IPv4-compatible ::/96 (deprecated)
+  if (b[0] === 0 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b &&   // NAT64 64:ff9b::/96
+      b.slice(4, 12).every((x) => x === 0))
+    return isPrivateIPv4(b[12], b[13]);
+  return false;
+}
+
 /**
  * True if a federation target points at a loopback, private, link-local, or
  * internal-only host. Such hosts can never be added to the allow-list and are
- * refused at resolve time — defense against SSRF and against an agent acting on
+ * refused at resolve time - defense against SSRF and against an agent acting on
  * prompt-injected content probing internal infrastructure or cloud metadata.
+ *
+ * The host is normalized through the same URL parser fetch() uses, so the check
+ * operates on the exact host the network stack will contact (handles userinfo,
+ * ports, IPv4 in any base, IPv6 brackets, case). Anything unparseable as a host
+ * fails closed (blocked). A public hostname whose DNS resolves to a private IP
+ * cannot be caught here (no DNS API on Workers); that residual is covered by the
+ * federation consent allow-list and per-hop redirect re-validation.
  */
 export function isBlockedFederationHost(host: string): boolean {
-  // Determine whether an IPv4 address (four octets) is in a non-public range.
-  const isPrivateIPv4 = (a: number, b: number): boolean => {
-    if (a === 0 || a === 10 || a === 127) return true;   // this-network, private, loopback
-    if (a === 169 && b === 254) return true;             // link-local incl. 169.254.169.254 metadata
-    if (a === 172 && b >= 16 && b <= 31) return true;    // private
-    if (a === 192 && b === 168) return true;             // private
-    if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT
-    return false;
-  };
+  let hostname: string;
+  try {
+    hostname = new URL(`https://${host}`).hostname.toLowerCase();
+  } catch {
+    return true; // not a parseable host -> refuse
+  }
 
-  // Detect whether a bare host is an IPv6 literal in a non-public range. Handles
-  // expanded forms (0:0:...:1), IPv4-mapped (::ffff:127.0.0.1 / ::ffff:7f00:1),
-  // and the unspecified address (:: / empty after bracket strip).
-  const isBlockedIPv6 = (h: string): boolean => {
-    if (!h.includes(":")) return false;
-    const zoneless = h.split("%")[0]; // strip zone id (fe80::1%eth0)
-    if (zoneless === "" || zoneless === "::") return true;            // unspecified
-    if (zoneless === "::1") return true;                              // loopback
-    // Expanded loopback / unspecified (0:0:0:0:0:0:0:1, 0000:...:0)
-    const groups = zoneless.split(":").filter((g) => g !== "");
-    if (groups.length > 0 && groups.every((g) => /^0+$/.test(g))) return true;
-    if (/^0+:0+:0+:0+:0+:0+:0+:0*1$/.test(zoneless)) return true;
-    if (zoneless.startsWith("fc") || zoneless.startsWith("fd")) return true;  // unique-local
-    if (zoneless.startsWith("fe8") || zoneless.startsWith("fe9") ||
-        zoneless.startsWith("fea") || zoneless.startsWith("feb")) return true; // link-local
-    if (zoneless.startsWith("fec") || zoneless.startsWith("fed") ||
-        zoneless.startsWith("fee") || zoneless.startsWith("fef")) return true; // site-local (deprecated)
-    // IPv4-mapped, dotted form (::ffff:127.0.0.1)
-    const mapped = zoneless.match(/::ffff:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/i);
-    if (mapped && isPrivateIPv4(Number(mapped[1]), Number(mapped[2]))) return true;
-    // IPv4-mapped, hextet form (::ffff:7f00:1 == 127.0.0.1)
-    const mappedHex = zoneless.match(/::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-    if (mappedHex) {
-      const hi = parseInt(mappedHex[1], 16);
-      if (isPrivateIPv4((hi >>> 8) & 0xff, hi & 0xff)) return true;
-    }
-    return false;
-  };
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
+  if (hostname.endsWith(".local") || hostname.endsWith(".internal") || hostname.endsWith(".lan")) return true;
 
-  // Parse a host segment that may be an IPv4 literal in decimal, octal, or hex —
-  // in dotted (1-4 part) or single-integer form — to its 32-bit value. Returns
-  // null if it is not an integer/IP literal. This catches 2130706433,
-  // 0x7f000001, 0177.0.0.1, 127.1, etc., all of which resolve to private ranges
-  // but evade a naive dotted-quad regex.
-  const parseIPv4 = (h: string): { a: number; b: number } | null => {
-    const parts = h.split(".");
-    if (parts.length === 0 || parts.length > 4) return null;
-    const nums: number[] = [];
-    for (const p of parts) {
-      if (p === "") return null;
-      let n: number;
-      if (/^0x[0-9a-f]+$/i.test(p)) n = parseInt(p, 16);
-      else if (/^0[0-7]+$/.test(p)) n = parseInt(p, 8);
-      else if (/^[0-9]+$/.test(p)) n = parseInt(p, 10);
-      else return null; // not numeric → hostname, not an IP literal
-      if (!Number.isFinite(n) || n < 0) return null;
-      nums.push(n);
-    }
-    // Collapse to a 32-bit address per inet_aton semantics, then take octets.
-    let value: number;
-    if (nums.length === 1) value = nums[0];
-    else if (nums.length === 2) value = (nums[0] << 24) | (nums[1] & 0xffffff);
-    else if (nums.length === 3) value = (nums[0] << 24) | ((nums[1] & 0xff) << 16) | (nums[2] & 0xffff);
-    else value = (nums[0] << 24) | (nums[1] << 16) | (nums[2] << 8) | nums[3];
-    value = value >>> 0;
-    return { a: (value >>> 24) & 0xff, b: (value >>> 16) & 0xff };
-  };
+  // IPv6 literal - WHATWG keeps the brackets on .hostname
+  if (hostname.startsWith("[") && hostname.endsWith("]")) {
+    const bytes = parseIPv6Literal(hostname.slice(1, -1));
+    if (!bytes) return true; // malformed IPv6 literal -> refuse
+    return isBlockedIPv6Bytes(bytes);
+  }
 
-  // Strip an optional :port and IPv6 brackets.
-  const isBracketed = host.startsWith("[");
-  const bare = host.replace(/^\[/, "").replace(/\](:\d+)?$/, "").replace(/\.$/, "").split(isBracketed ? " " : ":")[0].toLowerCase();
-
-  if (bare === "localhost" || bare.endsWith(".localhost")) return true;
-  if (bare.endsWith(".local") || bare.endsWith(".internal") || bare.endsWith(".lan")) return true;
-
-  // IPv6 literals (bracketed or bare)
-  if (isBlockedIPv6(bare)) return true;
-
-  // IPv4 literals in any base / part-count
-  const v4 = parseIPv4(bare);
+  // IPv4 literal in any base
+  const v4 = parseIPv4Literal(hostname);
   if (v4 && isPrivateIPv4(v4.a, v4.b)) return true;
 
   return false;

@@ -11,10 +11,11 @@ export const serveSharedEntry: RouteHandler = async (ctx) => {
     return new Response("Not found", { status: 404 });
   }
 
-  if (result.visibility === "unlisted") {
-    // Fail closed: an unlisted entry requires a valid access token. If no secret
-    // is configured (dev mode) we cannot authenticate one, so refuse rather than
-    // silently serving non-public content.
+  if (result.visibility !== "public") {
+    // Positive allow-list: serve without auth ONLY when explicitly public.
+    // Anything else (unlisted, or any unexpected value) requires a valid access
+    // token. If no secret is configured (dev mode) we cannot authenticate one,
+    // so refuse rather than silently serving non-public content.
     if (!ctx.env.MNEMION_SECRET) {
       return new Response("Not found", { status: 404 });
     }
@@ -51,9 +52,10 @@ export const serveOutput: RouteHandler = async (ctx) => {
     return new Response("Not found", { status: 404 });
   }
 
-  if (result.visibility === "private") {
-    // Fail closed: a private output requires a valid access token. Without a
-    // configured secret we cannot authenticate, so refuse.
+  if (result.visibility !== "public") {
+    // Positive allow-list: serve without auth ONLY when explicitly public.
+    // Unlisted (anyone-with-token) and any unexpected value require a valid
+    // access token; with no secret configured we cannot authenticate, so refuse.
     if (!ctx.env.MNEMION_SECRET) {
       return new Response("Not found", { status: 404 });
     }
@@ -88,10 +90,10 @@ export const receiveInput: RouteHandler = async (ctx) => {
     return new Response("Not found", { status: 404 });
   }
 
-  if (vis.visibility === "private") {
-    // Fail closed: a private ingress endpoint requires a valid access token.
-    // Without a configured secret we cannot authenticate, so refuse the write
-    // rather than accepting unauthenticated input.
+  if (vis.visibility !== "public") {
+    // Positive allow-list: accept unauthenticated writes ONLY when the endpoint
+    // is explicitly public. Anything else requires a valid access token; with no
+    // secret configured we cannot authenticate, so refuse the write.
     if (!ctx.env.MNEMION_SECRET) {
       return new Response("Not found", { status: 404 });
     }
