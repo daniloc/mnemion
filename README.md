@@ -24,8 +24,8 @@ Seven MCP tools, scoped to act on entries of any shape:
 
 | Tool | What it's for |
 |------|---------------|
-| `prime` | Auto-associative recall. Pass the current conversational focus as 1–3 natural sentences; get back the most relevant entries across all patterns ranked by semantic similarity, plus their one-hop links. Embedding-based — descriptive language beats keyword lists. |
-| `mutate` | All writes. Create, update, patch (edit text in place without resending the whole facet), archive, unarchive. Batchable up to 100 ops atomically. Supports optimistic locking via version field for concurrent-surface safety. |
+| `prime` | Auto-associative recall. Pass the current conversational focus as 1–3 natural sentences; get back the most relevant entries across all patterns ranked by semantic similarity, plus their one-hop links. Relevance is weighted at read time: superseded entries are demoted and annotated, and patterns with a memory-policy half-life decay when neither updated nor recalled. Embedding-based — descriptive language beats keyword lists. |
+| `mutate` | All writes. Create, update, patch (edit text in place without resending the whole facet), archive, unarchive. Batchable up to 100 ops atomically. Supports optimistic locking via version field for concurrent-surface safety. Creating an entry that semantically overlaps an existing one (or duplicates an exclusive facet) returns a `possible_overlap` advisory — never a block. |
 | `query` | Filtered, sorted, paginated reads from a single pattern. Operators: `= != > < >= <= ~ |=`. The `|=` operator does IN-list lookups (`id|=1,3,7`) for batched multi-id reads. `count_only` mode for fast counts. |
 | `search` | Cross-pattern FTS over all text facets. Use when you don't know which pattern holds the answer. |
 | `resolve` | Read anything by URI. Supports `mnemion://` URIs, federated cross-hive URIs (e.g. `mnemion://other.hive.dev/entry/axioms/7`), and `https://` URLs — the last fetches and caches web pages and Bluesky threads so they're available to future `prime` recalls. |
@@ -42,7 +42,8 @@ MCP resources are stable, cacheable, subscribable URIs that agents read for orie
 - `mnemion://schema/{pattern}` — facet definitions for a pattern.
 - `mnemion://entry/{pattern}/{id}` — a single entry.
 - `mnemion://history` — schema change log.
-- `mnemion://_system/{slug}` — agent-facing system docs (tools, schema-evolution, skills, conventions).
+- `mnemion://stale` — entries past their staleness horizon (neither updated nor recalled recently); the review surface for maintenance passes. Supports `?days=N`.
+- `mnemion://_system/{slug}` — agent-facing system docs (tools, schema-evolution, skills, conventions, memory-maintenance).
 
 After `apply_change`, the server emits `notifications/tools/list_changed` so long-lived clients re-read.
 
@@ -54,6 +55,7 @@ Creating a pattern, adding a facet, archiving an old pattern — all happen mid-
 - `add_facet` — extend an existing pattern
 - `set_sharing` — toggle an entry's HTTP visibility (public / unlisted / private)
 - `set_options` / `set_doctrine` — per-pattern config and prose guidance
+- `set_memory_policy` — per-pattern recall hygiene: `{half_life_days, conflict_check, exclusive_facets}`
 - `archive_pattern` / `unarchive_pattern`
 
 Mistakes are recoverable. `apply_change` with `revert_history_id` restores the full hive state to before any change in the schema log.
@@ -64,7 +66,22 @@ Mistakes are recoverable. `apply_change` with `revert_history_id` restores the f
 
 The result: agents don't need to know what to ask for. They describe the moment; the hive surfaces what's near it.
 
-Short-term hits are logged to `_fragment_access_log`. Repeated retrieval promotes a fragment to `_long_term_fragments` — the count is derived from the log, never stored separately.
+Raw similarity isn't the whole ranking. Relevance is weighted at read time, derived fresh from stored truth:
+
+- **Supersession** — an entry targeted by an active `supersedes` link is demoted (×0.3) and annotated with `superseded_by`. Current truth outranks replaced truth, but the chain stays navigable — nothing is hidden.
+- **Decay** — in patterns whose memory policy sets a half-life, relevance is multiplied by `0.5^(age / half_life)`, floored so old-but-relevant can still surface. Age counts from the entry's *last touch*: the later of its last update and its last prime hit (recall is rehearsal — being remembered keeps an entry fresh). Patterns without a policy never decay.
+
+Short-term hits are logged to `_fragment_access_log`. Repeated retrieval promotes a fragment to `_long_term_fragments` — the count is derived from the log, never stored separately. User-pattern hits are logged to `_entry_access_log`, which feeds decay and the stale view.
+
+### Memory maintenance
+
+A hive that only accumulates eventually whispers stale things back. Mnemion counters contradiction and staleness with owner-ratified, read-time-derived mechanisms — nothing auto-deletes:
+
+- **Supersession links** record that one entry replaced another (`mutate(pattern: "link", data: {source, target, label: "supersedes"})`).
+- **Write-time overlap advisories** surface near-duplicates at create time so the contradiction is caught when it's born, not when it's recalled.
+- **Per-pattern memory policy** (`set_memory_policy`) makes decay and conflict behavior owner-tunable — journals fade fast, axioms never. Agents are taught to *propose* policies as patterns reveal their nature; the owner ratifies.
+- **`mnemion://stale`** lists entries past their staleness horizon for review.
+- **Maintenance passes** are recorded in `_maintenance_passes`; "days since last pass" (default interval 14 days, charter-overridable) is announced to connecting agents in MCP instructions *and* in prime responses, with a prompt to offer the owner a cleanup pass.
 
 ### HTTP I/O and federation
 
@@ -107,7 +124,7 @@ A single Cloudflare Worker hosts everything. Two Durable Objects: **SessionDO** 
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22+ (required by Wrangler 4)
 - A Cloudflare account (Wrangler will prompt for browser login on first use)
 - `openssl` (preinstalled on macOS and most Linux distros)
 

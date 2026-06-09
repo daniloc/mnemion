@@ -80,16 +80,17 @@ Mnemion uses biological vocabulary at every layer — API parameters, URIs, JSON
 - `mnemion://schema/{pattern_name}` — facet definitions for a pattern
 - `mnemion://history` — schema evolution history (supports `?limit=N`)
 - `mnemion://entry/{pattern}/{id}` — individual entry by URI
+- `mnemion://stale` — entries past their staleness horizon (supports `?days=N`); review surface for maintenance passes
 
 ### Tools (7 total)
 
 Tool metadata is centralized in `src/tools.ts` (SSOT for `session.ts` MCP registration + `/api/tools` frontend):
 
-- `prime` — auto-associative recall: pass conversational context, get semantically-nearest entries + one-hop links. Workers AI embeds entries on write, Vectorize indexes them, prime queries KNN.
+- `prime` — auto-associative recall: pass conversational context, get semantically-nearest entries + one-hop links. Workers AI embeds entries on write, Vectorize indexes them, prime queries KNN. Relevance is weighted at read time: superseded entries demoted ×0.3 + annotated `superseded_by`; patterns with a memory-policy half-life decay by `0.5^(age/half_life)` where age runs from the later of `updated_at` and the last prime hit (`_entry_access_log` — recall is rehearsal). `raw_similarity` is kept alongside weighted `relevance`. A `maintenance` field appears when a cleanup pass is overdue.
 - `resolve` — read anything by `mnemion://` URI, including federated cross-hive URIs and `mnemion://web/<https-url>` for adapter-cached web fetches (escape hatch for platforms without resource support)
 - `query` — filtered, sorted, paginated reads (supports `count_only` mode). Filter operators: `= != > < >= <= ~` (LIKE) and `|=` (IN, comma-separated values — e.g. `id|=1,3,7` for batched multi-id lookups)
 - `search` — cross-pattern full-text search across text facets
-- `mutate` — create, update, or archive entries
+- `mutate` — create, update, or archive entries. Single creates in user patterns run a policy-gated write-time conflict check (synchronous embed + KNN ≥0.80 same-pattern; the vector is reused for the post-write upsert) and return `possible_overlap` advisories; exclusive-facet duplicates advise via cheap SQL (batch included). Advisory only — never blocks.
 - `propose_change` — propose schema evolution (preview, no commit)
 - `apply_change` — commit proposed change (fires resource update notifications)
 
@@ -103,6 +104,17 @@ Agent-defined HTTP endpoints, configured as entries:
 **Federation**: `resolve` recognizes foreign URIs by a dot in the first path segment (hostname). `mnemion://other.hive.dev/entry/axioms/7` → `GET https://other.hive.dev/o/entry/axioms/7`. Private access via `?token=<auth_code>` → Bearer header. Public responses edge-cached. No federation protocol — sovereign hives, voluntary connections.
 
 Federation is gated by a consent allow-list (`_federation_hosts` kernel pattern): `resolve` refuses any cross-hive URI — and never sends a token — unless the target host has an active entry there. Loopback/private/link-local/internal hosts (incl. cloud metadata) are blocked outright and can't be allow-listed (`isBlockedFederationHost` in kernel.ts). Adding a host is consent-gated at the MCP `mutate` layer (confirmation round-trip, also blocked inside batches), so an agent acting on untrusted content can't silently leak the owner's token to an attacker host.
+
+### Memory maintenance (contradiction management + decay)
+
+All read-time-derived, owner-ratified, never auto-deleting:
+
+- **Supersession**: a `supersedes`-labeled `_links` row (source supersedes target). Prime demotes + annotates; entry resolution and the stale view annotate `superseded_by`. Entries are never hidden.
+- **Memory policy**: `memory_policy` JSON column on `_objects` (beside `doctrine`), set via the `set_memory_policy` change type. Shape: `{half_life_days?: number|null, conflict_check?: "annotate"|"off", exclusive_facets?: string[]}`. Defaults when unset: conflict check on, decay off. Surfaced per-pattern in the index. Kernel patterns can't carry policy.
+- **Decay**: `decayMultiplier` in prime.ts — `max(0.05, 0.5^(age/half_life))`, ranking only, never data. `_entry_access_log` records prime hits on user-pattern entries.
+- **Stale view**: `mnemion://stale` — per-pattern horizon of 3× half-life (90 days without a policy).
+- **Maintenance passes**: `_maintenance_passes` kernel pattern. Days-since derived from the latest row; interval from charter key `maintenance_interval_days` (default 14). Overdue status injected into MCP init instructions (session.ts) AND the prime response (web clients never see init instructions).
+- Agent protocol lives in `src/system-docs/memory-maintenance.md`.
 
 ### Entry sharing
 
@@ -130,6 +142,8 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `_web_cache` — adapter-fetched web content (Bluesky threads, browser-rendered markdown), TTL'd per adapter
 - `_canvases` — tldraw document snapshots for the Canvas spatial-thinking UI (full document state in the `snapshot` facet — do not modify directly; mutate via canvas tools/UI). Entry-type shapes inside the snapshot store **only references** (`{type: 'entry', pattern, entryId, x, y, w, h}`) — display label and facet preview are hydrated at render time from the live entry. Do not denormalize entry data into the snapshot; it goes stale.
 - `_fragment_access_log` — append-only log of prime hits per short-term fragment. Promotion to `_long_term_fragments` is COUNT(*)-derived from this log, not a stored counter. GC'd alongside fragments. Audit-exempt (high-frequency append-only).
+- `_entry_access_log` — append-only log of prime hits per user-pattern entry. Feeds decay (`last_touch`) and the stale view. Audit-exempt, write-protected, GC'd at 90 days.
+- `_maintenance_passes` — record of completed memory-maintenance passes; days-since-last-pass is derived from the latest row, never stored.
 
 ## Tech stack
 
