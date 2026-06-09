@@ -513,6 +513,12 @@ export class HiveDO extends DurableObject {
     const IDENT_RE = /^[a-z_][a-z0-9_-]*$/;
     if (typeof constraints.target_pattern !== "string" || !IDENT_RE.test(constraints.target_pattern) || !this.patternExists(constraints.target_pattern))
       return this.errorJson("Upload token has an invalid target pattern");
+    // Uploads write user patterns only. consumeUpload uses raw UPDATE (not
+    // executeMutate), so it must enforce the kernel/internal-write boundary
+    // itself — this catches any token minted before the create-hook guard, and
+    // closes the _web_cache / _system_docs poisoning path directly.
+    if (constraints.target_pattern.startsWith("_"))
+      return this.errorJson("Upload token has an invalid target pattern");
     if (typeof constraints.target_facet !== "string" || !IDENT_RE.test(constraints.target_facet))
       return this.errorJson("Upload token has an invalid target facet");
 

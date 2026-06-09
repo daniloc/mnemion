@@ -1,4 +1,4 @@
-import { env, fetchMock } from "cloudflare:test";
+import { env, fetchMock, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import type { HiveDO } from "../hive";
 
@@ -1262,6 +1262,114 @@ describe("Access Tokens", () => {
     // Wildcard scope
     const star = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ label: "star" })));
     expect(await store.validateAccessToken(star.entry.token, "anything")).toBe(true);
+  });
+});
+
+// === Kernel-target write boundary (exfiltration hardening) ===
+//
+// Ingress and upload reach the data layer outside the MCP tool layer, so they
+// must enforce the user-pattern boundary themselves: kernel/_-prefixed patterns
+// are never valid ingress or upload targets. This blocks publishing private
+// entries via _shared and poisoning _web_cache / _system_docs.
+
+describe("kernel-target write boundary", () => {
+  it("refuses upload tokens targeting kernel patterns at mint time", async () => {
+    const store = getStore();
+    for (const target of ["_web_cache", "_system_docs", "_shared"]) {
+      const result = JSON.parse(
+        await store.mutate("_access_tokens", "create", JSON.stringify({
+          scope: "upload",
+          constraints: JSON.stringify({ target_pattern: target, target_id: 1, target_facet: "content" }),
+        }))
+      );
+      expect(result.error).toBe(true);
+      expect(result.message).toMatch(/kernel pattern/);
+    }
+  });
+
+  it("refuses upload at consume time even if a token names a kernel pattern", async () => {
+    // Defense in depth: simulate a pre-fix token by writing the row directly,
+    // then confirm consumeUpload still refuses (it uses raw UPDATE, not executeMutate).
+    const store = getStore();
+    let token = "";
+    await runInDurableObject(store, async (_i, state) => {
+      token = "deadbeefdeadbeefdeadbeefdeadbeef";
+      state.storage.sql.exec(
+        `INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'upload', ?, 1)`,
+        token, JSON.stringify({ target_pattern: "_web_cache", target_id: 1, target_facet: "content", mode: "replace" })
+      );
+    });
+    const result = JSON.parse(await store.consumeUpload(token, "poisoned"));
+    expect(result.error).toBe(true);
+    expect(result.message).toMatch(/invalid target pattern/);
+  });
+
+  it("refuses ingress endpoints targeting kernel patterns", async () => {
+    const store = getStore();
+    for (const target of ["_shared", "_publications", "_system_docs"]) {
+      const result = JSON.parse(
+        await store.mutate("_inputs", "create", JSON.stringify({ path: `hook-${target}`, target_pattern: target }))
+      );
+      expect(result.error).toBe(true);
+      expect(result.message).toMatch(/kernel pattern/);
+    }
+  });
+
+  it("still allows ingress and upload to user patterns", async () => {
+    const store = getStore();
+    await createPattern(store, "events", [{ name: "body", type: "text" }]);
+    const ingress = JSON.parse(await store.mutate("_inputs", "create", JSON.stringify({ path: "ok-hook", target_pattern: "events", body_facet: "body" })));
+    expect(ingress.error).toBeUndefined();
+
+    const entry = await createEntry(store, "events", { body: "x" });
+    const token = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({
+      scope: "upload",
+      constraints: JSON.stringify({ target_pattern: "events", target_id: entry.entry.id, target_facet: "body" }),
+    })));
+    expect(token.error).toBeUndefined();
+  });
+});
+
+// === Linked-facet identifier validation ===
+
+describe("linked facet validation", () => {
+  it("rejects a foreign-key facet name that is not a valid identifier", async () => {
+    const store = getStore();
+    await createPattern(store, "goals2", [{ name: "title", type: "text", required: true }]);
+    const result = JSON.parse(await store.proposeChange(
+      "malformed link facet",
+      JSON.stringify({
+        type: "create_pattern",
+        pattern_name: "tasks2",
+        pattern_description: "x",
+        doctrine: "x",
+        facets: [
+          { name: "title", type: "text", required: true },
+          { name: "goal", type: "integer", links: { pattern: "goals2", facet: 'id") --' } },
+        ],
+      })
+    ));
+    expect(result.error).toBe(true);
+    expect(result.message).toMatch(/Linked facet/);
+  });
+
+  it("accepts a valid linked facet", async () => {
+    const store = getStore();
+    await createPattern(store, "goals3", [{ name: "title", type: "text", required: true }]);
+    const result = JSON.parse(await store.proposeChange(
+      "valid link",
+      JSON.stringify({
+        type: "create_pattern",
+        pattern_name: "tasks3",
+        pattern_description: "x",
+        doctrine: "x",
+        facets: [
+          { name: "title", type: "text", required: true },
+          { name: "goal", type: "integer", links: { pattern: "goals3", facet: "id" } },
+        ],
+      })
+    ));
+    expect(result.error).toBeUndefined();
   });
 });
 

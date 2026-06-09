@@ -61,6 +61,8 @@ const ON_CREATE: Record<string, CreateHook> = {
       const c = constraints as Record<string, unknown>;
       if (!c.target_pattern || c.target_id == null || !c.target_facet)
         return { error: true, message: "upload constraints require target_pattern, target_id, and target_facet" };
+      if ((c.target_pattern as string).startsWith("_"))
+        return { error: true, message: `Upload tokens cannot target kernel pattern "${c.target_pattern}" — uploads write user patterns only.` };
       if (!ctx.patternExists(c.target_pattern as string))
         return { error: true, message: `Target pattern "${c.target_pattern}" does not exist` };
       if (!ctx.entryExists(c.target_pattern as string, c.target_id as number))
@@ -110,6 +112,8 @@ const ON_CREATE: Record<string, CreateHook> = {
   _inputs(data, ctx) {
     if (!data.path) return { error: true, message: "path is required for _inputs" };
     if (!data.target_pattern) return { error: true, message: "target_pattern is required for _inputs" };
+    if ((data.target_pattern as string).startsWith("_"))
+      return { error: true, message: `Ingress cannot target kernel pattern "${data.target_pattern}" — inputs write user patterns only.` };
     if (!ctx.patternExists(data.target_pattern as string))
       return { error: true, message: `Target pattern "${data.target_pattern}" does not exist` };
     if (data.facet_mapping && typeof data.facet_mapping === "string") {

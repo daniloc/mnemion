@@ -58,6 +58,12 @@ function validateFacets(
       return `Facet "${a.name}" already exists on the pattern`;
     if (a.links && !ctx.patternExists(a.links.pattern))
       return `Linked pattern "${a.links.pattern}" does not exist`;
+    // links.facet is interpolated into REFERENCES "..."("...") DDL — validate it
+    // the same as any other identifier so it can't break out of the quoting.
+    if (a.links?.facet) {
+      const facetErr = validateName("Linked facet", a.links.facet);
+      if (facetErr) return facetErr;
+    }
     if (a.type === "select" && (!Array.isArray(a.options) || a.options.length === 0))
       return `Facet "${a.name}" is type select but has no options`;
     if (a.type !== "select" && a.options)
