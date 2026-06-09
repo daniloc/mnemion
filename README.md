@@ -94,6 +94,28 @@ Patterns can grow HTTP endpoints. Four kinds of agent-defined I/O, all expressed
 
 **Federation** is a property of `resolve`: any URI whose first path segment contains a dot is treated as a foreign hostname. `mnemion://other.hive.dev/entry/axioms/7` becomes a GET to `https://other.hive.dev/o/entry/axioms/7`. Private cross-hive access is granted via `?token=<code>` (auth code → Bearer header). No federation protocol — sovereign hives, voluntary connections, edge-cached public responses.
 
+### Publishing: the publication surface
+
+Mnemion is knowledge management, not just memory — and some knowledge is most useful shared. Federation handles hive→hive sharing (machine to machine); **publications** handle hive→people. A `_publications` entry declares a path, a source query, and a transport, and the worker renders **live pattern data at request time** at `GET /p/{path}`. Nothing rendered is ever stored, so a published page can never go stale relative to its underlying entries.
+
+```
+mutate _publications create {
+  "path": "now",
+  "title": "What I'm working on",
+  "source_pattern": "tasks",
+  "filters": "[\"status=in-progress\"]",
+  "format": "html"
+}
+```
+
+- **Four opinionated transports**: `html` (semantic single-page, system fonts, light/dark, no JS), `rss` (RSS 2.0 with RFC-822 dates and `mnemion://` guids), `json` (a `{title, count, entries}` envelope), and `markdown` (with **YAML frontmatter** — title, path, source_pattern, generated_at, count — so it drops straight into static-site pipelines and agent ingestion).
+- **Two seams on the HTML output**: a per-entry `{{facet}}` template (plus `{{_label}}`, `{{_uri}}`, `{{_id}}`, `{{_updated_at}}` — template text passes through raw, substituted values are HTML-escaped) and a `css` facet appended after the default styles.
+- **Current truth by default**: entries demoted by a `supersedes` link are excluded unless `include_superseded` is set — public projections show what's current, not what was replaced.
+- **Consent-gated**: creating a publication serves every current and future entry its query matches, so the `mutate` requires an explicit confirmation round-trip. Source must be a user pattern — kernel patterns (tokens, sharing config, etc.) are never publishable.
+- **Visibility**: `public` (edge-cached ~60s) / `unlisted` (requires a bearer token with `read:publication:{path}` scope) / `private` (staged, not served).
+
+Where `_outputs` serves static content you wrote, a publication is a *live projection* — the difference between a snapshot and a window.
+
 ### Web URL adapters
 
 `resolve` accepts `https://` URLs too. Bluesky threads are fetched via the AT Protocol API (no scraping). Anything else goes through Cloudflare Browser Rendering. Results are cached per-adapter with TTLs in `_web_cache`, and the cached content participates in `prime`'s embedding index — so web pages an agent reads today surface in tomorrow's recalls.
