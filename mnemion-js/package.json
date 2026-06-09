@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.3.0",
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "1.26.0",
     "@simplewebauthn/server": "^13.2.3",
     "agents": "^0.7.5",
     "fflate": "^0.8.2",

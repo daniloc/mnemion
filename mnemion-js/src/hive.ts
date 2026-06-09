@@ -171,6 +171,20 @@ export class HiveDO extends DurableObject {
     return evo.proposeChange(description, changeJson, this.evoCtx(), () => this.getCurrentIndex());
   }
 
+  // Peek at a pending change's spec without applying it — lets the SessionDO
+  // decide whether the change needs a consent round-trip (e.g. set_sharing to a
+  // non-private visibility, which publishes an entry over HTTP).
+  async getPendingChange(changeId: string): Promise<string | null> {
+    try {
+      const rows = this.db.exec(
+        "SELECT change_spec FROM _pending_changes WHERE id = ?", changeId
+      ).toArray() as any[];
+      return rows.length > 0 ? (rows[0].change_spec as string) : null;
+    } catch {
+      return null;
+    }
+  }
+
   async applyChange(changeId: string): Promise<string> {
     return evo.applyChange(
       changeId, this.evoCtx(), () => this.getCurrentIndex(),
@@ -376,7 +390,10 @@ export class HiveDO extends DurableObject {
         } catch { /* No version column — fine */ }
       }
     } catch (err: any) {
-      return this.errorJson(`Upload write failed: ${err.message}`);
+      // Don't echo the raw SQLite error to the (low-trust) upload caller — it can
+      // leak column names, constraints, and internal table structure.
+      console.error("Upload write failed:", err?.message);
+      return this.errorJson("Upload write failed");
     }
 
     cred.consumeToken(this.db, accessToken.id);
@@ -514,15 +531,48 @@ export class HiveDO extends DurableObject {
       );
     }
 
-    const url = `https://${host}/o/${cleanPath}`;
+    // Build the fetch URL from the SAME normalized host we authorized above —
+    // never the raw segment — so "what we approved" and "what we contact" can't
+    // diverge.
+    let currentUrl = `https://${normalizeHost(host)}/o/${cleanPath}`;
 
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
+    // Manual redirect handling. The host block + consent allow-list are only
+    // meaningful if every hop is re-validated: with the default redirect:"follow"
+    // a compromised or redirecting peer could bounce us to 169.254.169.254 /
+    // loopback (SSRF) or carry the owner's token to an un-approved host. We
+    // follow at most MAX_REDIRECTS hops, re-checking the block list AND the
+    // allow-list on each, and only send the token to allow-listed hosts.
+    const MAX_REDIRECTS = 3;
 
     try {
-      const response = await fetch(url, { headers });
+      let response: Response;
+      for (let hop = 0; ; hop++) {
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        response = await fetch(currentUrl, { headers, redirect: "manual" });
+
+        const location = response.headers.get("Location");
+        if (response.status >= 300 && response.status < 400 && location) {
+          if (hop >= MAX_REDIRECTS) {
+            return this.errorJson(`Foreign hive ${host} exceeded the redirect limit for: ${cleanPath}`);
+          }
+          let next: URL;
+          try {
+            next = new URL(location, currentUrl);
+          } catch {
+            return this.errorJson(`Foreign hive ${host} returned an invalid redirect for: ${cleanPath}`);
+          }
+          if (next.protocol !== "https:") {
+            return this.errorJson(`Refusing to follow non-https redirect from ${host} (token not sent).`);
+          }
+          if (isBlockedFederationHost(next.host) || !this.isFederationHostAllowed(next.host)) {
+            return this.errorJson(`Refusing to follow redirect from ${host} to non-allow-listed host ${next.host} (token not sent).`);
+          }
+          currentUrl = next.toString();
+          continue;
+        }
+        break;
+      }
 
       if (!response.ok) {
         const status = response.status;

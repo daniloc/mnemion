@@ -4,6 +4,7 @@
 // embeds for prime recall. Pure functions with context injected.
 
 import type { Env } from "./router";
+import { isBlockedFederationHost } from "./kernel";
 
 // === Types ===
 
@@ -46,6 +47,15 @@ export async function resolveWeb(
 
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
       return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Only http://, https://, and at:// URIs are supported" } };
+    }
+
+    // SSRF guard: refuse to fetch loopback / private / link-local / internal
+    // targets (incl. cloud metadata). The federation path enforces this for
+    // mnemion:// URIs; the web-resolution path must too, or it becomes an
+    // unguarded fetch primitive whose responses get cached and embedded into
+    // prime recall.
+    if (isBlockedFederationHost(parsed.host)) {
+      return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Refusing to fetch non-public host" } };
     }
   }
 

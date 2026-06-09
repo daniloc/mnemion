@@ -260,6 +260,37 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           };
         }
 
+        // Consent boundary: publishing an entry (set_sharing to public/unlisted)
+        // exposes private data over HTTP at /o/entry/{pattern}/{id}. Like adding
+        // a federation host, this must pass an explicit confirmation round-trip
+        // so an agent acting on prompt-injected content can't silently exfiltrate
+        // the owner's memory by flipping an entry's visibility.
+        const specJson = await hive.getPendingChange(change_id);
+        if (specJson) {
+          let spec: any = null;
+          try { spec = JSON.parse(specJson); } catch { /* not gated if unparseable */ }
+          if (spec && spec.type === "set_sharing" && spec.visibility && spec.visibility !== "private") {
+            const confirmKey = `sharing:${change_id}`;
+            if (!this.confirmed.has(confirmKey)) {
+              this.confirmed.add(confirmKey);
+              const exposure = spec.visibility === "public"
+                ? "readable by anyone (and edge-cached)"
+                : "readable by anyone holding an access token";
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    confirmation_required: true,
+                    message: `Applying this change makes ${spec.pattern_name ?? "this entry"}#${spec.entry_id ?? "?"} ${spec.visibility} — ${exposure} over HTTP. Only proceed if the human approved publishing this entry. Call apply_change again with the same change_id to proceed.`,
+                    change_id,
+                  }, null, 2),
+                }],
+              };
+            }
+            this.confirmed.delete(confirmKey);
+          }
+        }
+
         const result = await hive.applyChange(change_id);
         const parsed = JSON.parse(result);
         if (parsed.error) {

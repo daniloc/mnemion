@@ -41,7 +41,10 @@ export async function beginRegistration(request: Request) {
     attestationType: "none",
     authenticatorSelection: {
       residentKey: "preferred",
-      userVerification: "preferred",
+      // Require user verification (biometric/PIN). The passkey gates the entire
+      // OAuth grant and browser session, so it must be a true second factor, not
+      // mere possession of an unlocked device.
+      userVerification: "required",
     },
   });
 
@@ -61,7 +64,7 @@ export async function completeRegistration(
     expectedChallenge,
     expectedOrigin: origin,
     expectedRPID: rpID,
-    requireUserVerification: false,
+    requireUserVerification: true,
   });
 
   if (!verification.verified || !verification.registrationInfo) {
@@ -97,7 +100,7 @@ export async function beginAuthentication(
       id: stored.credential_id,
       transports,
     }],
-    userVerification: "preferred",
+    userVerification: "required",
   });
 
   return { options, challenge: options.challenge };
@@ -126,7 +129,7 @@ export async function completeAuthentication(
     expectedChallenge,
     expectedOrigin: origin,
     expectedRPID: rpID,
-    requireUserVerification: false,
+    requireUserVerification: true,
     credential: {
       id: stored.credential_id,
       publicKey: keyBytes,
@@ -134,6 +137,13 @@ export async function completeAuthentication(
       transports,
     },
   });
+
+  // A verified assertion that carries no authenticationInfo is anomalous —
+  // treat it as a failure rather than silently preserving the old counter, which
+  // would mask a missing/regressed signature counter (clone-detection signal).
+  if (verification.verified && !verification.authenticationInfo) {
+    return { verified: false, newCounter: stored.counter };
+  }
 
   return {
     verified: verification.verified,
@@ -204,7 +214,12 @@ export function setupPage(token: string): string {
           throw new Error(result.error || 'Verification failed');
         }
       } catch (err) {
-        status.innerHTML = '<span class="err">' + (err.message || 'Registration failed') + '</span>';
+        // Use textContent, not innerHTML — err.message can originate from a
+        // server-supplied error string and must not be rendered as markup.
+        const span = document.createElement('span');
+        span.className = 'err';
+        span.textContent = err.message || 'Registration failed';
+        status.replaceChildren(span);
         btn.disabled = false;
       }
     });

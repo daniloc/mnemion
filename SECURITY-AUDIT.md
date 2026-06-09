@@ -15,31 +15,55 @@ conditions.
 
 ## Severity summary
 
-| # | Severity | Finding | Location |
-|---|----------|---------|----------|
-| H1 | High | SSRF + token leak via redirect-following in federated `resolve` | `hive.ts:525` |
-| H2 | High | `isBlockedFederationHost` bypassable (DNS→private, octal/hex/decimal IPv4, IPv6 forms) | `kernel.ts:225` |
-| H3 | High | `set_sharing → public/unlisted` has **no** consent gate (confused-deputy data exfil) | `session.ts:216`, `evolution.ts` |
-| H4 | High | Stored XSS via SSR `__PROPS__` JSON `</script>` breakout | `pages/entry-server.ts:23` |
-| H5 | High | WebAuthn user verification not enforced (passkey ≠ true 2FA) | `passkey.ts:44,64,100,129` |
-| H6 | High* | Fail-**open** auth on reads/writes when `MNEMION_SECRET` unset | `routes/io.ts:14,48,80` |
-| M1 | Medium | Web-fetch adapter path has no SSRF guard; `http://` allowed | `web.ts:33-50` |
-| M2 | Medium | WebSocket `/ws` (and `/api/*`) no Origin/CSRF check → live private-data leak | `routes/pages.ts:79` |
-| M3 | Medium | MCP SDK version drift: 1.29.0 top-level vs 1.26.0 bundled by `agents` | `package.json` |
-| M4 | Medium | Passkey signature-counter clone detection effectively a no-op | `passkey.ts:124-141` |
-| M5 | Medium | Session cookie: no session id, no revocation (24h theft window) | `router.ts:94-115` |
-| M6 | Medium | Raw SQLite error strings returned to upload/ingress callers | `hive.ts:378` |
-| M7 | Medium | `_web_cache` poisonable via direct agent `mutate` | `web.ts:53`, `kernel.ts` |
-| M8 | Medium | Single passkey challenge under fixed KV keys (challenge-binding hygiene) | `routes/auth.ts:150,352` |
-| L1 | Low | `/marketplace/token` GET returns full token secrets in list | `routes/marketplace.ts:91` |
-| L2 | Low | Access tokens stored plaintext; lookup not constant-time | `schema.ts:88`, `credentials.ts:44` |
-| L3 | Low | `innerHTML` with server-supplied `err.message` | `passkey.ts:207` |
-| L4 | Low | `~`/LIKE does not escape `%`/`_` (over-match, not injection) | `data.ts:184` |
-| L5 | Low | No `Vary: Authorization` on token-gated responses | `routes/io.ts:33,65` |
-| L6 | Low | Secret reused as both auth + session-HMAC key (no HKDF separation) | `router.ts:94,113` |
-| L7 | Low | No rate limiting on auth/token endpoints (mitigated by 128-bit entropy) | — |
+Status legend: ✅ fixed in this branch · ⏳ open (recommendation).
+
+| # | Severity | Status | Finding | Location |
+|---|----------|--------|---------|----------|
+| H1 | High | ✅ | SSRF + token leak via redirect-following in federated `resolve` | `hive.ts:525` |
+| H2 | High | ✅ | `isBlockedFederationHost` bypassable (octal/hex/decimal IPv4, IPv6 forms) | `kernel.ts:225` |
+| H3 | High | ✅ | `set_sharing → public/unlisted` has **no** consent gate (confused-deputy data exfil) | `session.ts:216`, `evolution.ts` |
+| H4 | High | ✅ | Stored XSS via SSR `__PROPS__` JSON `</script>` breakout | `pages/entry-server.ts:23` |
+| H5 | High | ✅ | WebAuthn user verification not enforced (passkey ≠ true 2FA) | `passkey.ts:44,64,100,129` |
+| H6 | High* | ✅ | Fail-**open** auth on reads/writes when `MNEMION_SECRET` unset | `routes/io.ts:14,48,80` |
+| M1 | Medium | ✅ | Web-fetch adapter path has no SSRF guard; `http://` allowed | `web.ts:33-50` |
+| M2 | Medium | ✅ | WebSocket `/ws` no Origin check → live private-data leak | `routes/pages.ts:79` |
+| M3 | Medium | ✅ | MCP SDK version drift: 1.29.0 top-level vs 1.26.0 bundled by `agents` | `package.json` |
+| M4 | Medium | ✅ | Passkey signature-counter clone detection effectively a no-op | `passkey.ts:124-141` |
+| M5 | Medium | ⏳ | Session cookie: no session id, no revocation (24h theft window) | `router.ts:94-115` |
+| M6 | Medium | ✅ | Raw SQLite error strings returned to upload/ingress callers | `hive.ts:378` |
+| M7 | Medium | ⏳ | `_web_cache` poisonable via direct agent `mutate` | `web.ts:53`, `kernel.ts` |
+| M8 | Medium | ⏳ | Single passkey challenge under fixed KV keys (challenge-binding hygiene) | `routes/auth.ts:150,352` |
+| L1 | Low | ✅ | `/marketplace/token` GET returns full token secrets in list | `routes/marketplace.ts:91` |
+| L2 | Low | ⏳ | Access tokens stored plaintext; lookup not constant-time | `schema.ts:88`, `credentials.ts:44` |
+| L3 | Low | ✅ | `innerHTML` with server-supplied `err.message` | `passkey.ts:207` |
+| L4 | Low | ⏳ | `~`/LIKE does not escape `%`/`_` (over-match, not injection) | `data.ts:184` |
+| L5 | Low | ⏳ | No `Vary: Authorization` on token-gated responses | `routes/io.ts:33,65` |
+| L6 | Low | ⏳ | Secret reused as both auth + session-HMAC key (no HKDF separation) | `router.ts:94,113` |
+| L7 | Low | ⏳ | No rate limiting on auth/token endpoints (mitigated by 128-bit entropy) | — |
 
 \* H6 is conditional on a secretless internet-reachable deployment, but the failure is silent.
+
+### Residual risk on H2 (DNS-rebinding / DNS-to-private)
+
+The hardened block list now rejects loopback/private/link-local/CGNAT/metadata in
+dotted-decimal, single-integer, octal, and hex IPv4, plus loopback/unspecified/
+ULA/link-local/site-local and IPv4-mapped (dotted **and** hextet) IPv6. What it
+**cannot** catch by string inspection is a *public hostname that resolves to a
+private IP* (DNS rebinding) — Workers exposes no DNS-resolution API to validate
+the resolved address. This residual is mitigated by: (a) the federation consent
+allow-list (the human must approve the host first), and (b) the new per-hop
+redirect re-validation (a malicious peer can't bounce to an internal IP literal).
+Closing it fully needs egress-level controls (Cloudflare outbound restrictions).
+
+### Remaining open items (recommendations, not fixed here)
+
+M5/M8 (session + challenge identity) are design changes best done together with a
+small server-side session/challenge store. M7 (`_web_cache` write exposure)
+requires deciding whether `_web_cache` should be agent-writable at all. L2/L4/L5/
+L6/L7 are hardening. Separately, `npm audit` reports advisories in transitive
+**dev** dependencies (vitest, wrangler/miniflare→undici/ws) plus a Svelte SSR-XSS
+advisory; review and apply `npm audit fix` against the build/test gate in a
+dedicated change (not bundled here to avoid destabilising the toolchain).
 
 ---
 

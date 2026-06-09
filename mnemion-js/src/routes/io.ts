@@ -11,7 +11,13 @@ export const serveSharedEntry: RouteHandler = async (ctx) => {
     return new Response("Not found", { status: 404 });
   }
 
-  if (result.visibility === "unlisted" && ctx.env.MNEMION_SECRET) {
+  if (result.visibility === "unlisted") {
+    // Fail closed: an unlisted entry requires a valid access token. If no secret
+    // is configured (dev mode) we cannot authenticate one, so refuse rather than
+    // silently serving non-public content.
+    if (!ctx.env.MNEMION_SECRET) {
+      return new Response("Not found", { status: 404 });
+    }
     const authHeader = ctx.request.headers.get("Authorization");
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
     const scope = `read:entry:${ctx.params.pattern}:${ctx.params.id}`;
@@ -45,7 +51,12 @@ export const serveOutput: RouteHandler = async (ctx) => {
     return new Response("Not found", { status: 404 });
   }
 
-  if (result.visibility === "private" && ctx.env.MNEMION_SECRET) {
+  if (result.visibility === "private") {
+    // Fail closed: a private output requires a valid access token. Without a
+    // configured secret we cannot authenticate, so refuse.
+    if (!ctx.env.MNEMION_SECRET) {
+      return new Response("Not found", { status: 404 });
+    }
     const authHeader = ctx.request.headers.get("Authorization");
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
     if (!token || !(await ctx.hive.validateAccessToken(token, `read:output:${ctx.params.path}`))) {
@@ -77,7 +88,13 @@ export const receiveInput: RouteHandler = async (ctx) => {
     return new Response("Not found", { status: 404 });
   }
 
-  if (vis.visibility === "private" && ctx.env.MNEMION_SECRET) {
+  if (vis.visibility === "private") {
+    // Fail closed: a private ingress endpoint requires a valid access token.
+    // Without a configured secret we cannot authenticate, so refuse the write
+    // rather than accepting unauthenticated input.
+    if (!ctx.env.MNEMION_SECRET) {
+      return new Response("Not found", { status: 404 });
+    }
     const authHeader = ctx.request.headers.get("Authorization");
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
     if (!token || !(await ctx.hive.validateAccessToken(token, `write:input:${ctx.params.path}`))) {
