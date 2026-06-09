@@ -55,8 +55,6 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     },
   );
 
-  private confirmed = new Set<string>();
-
   private getHive(): DurableObjectStub<HiveDO> {
     const userId = this.props?.userId ?? "anonymous";
     const id = this.env.MNEMION_HIVE.idFromName(`user:${userId}`);
@@ -259,8 +257,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         // Revert mode
         if (revert_history_id != null) {
           const confirmKey = `revert:${revert_history_id}`;
-          if (!this.confirmed.has(confirmKey)) {
-            this.confirmed.add(confirmKey);
+          if (!(await hive.checkAndArmConsent(confirmKey))) {
             return {
               content: [{
                 type: "text" as const,
@@ -272,7 +269,6 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
               }],
             };
           }
-          this.confirmed.delete(confirmKey);
 
           const result = await hive.revertChange(revert_history_id);
           const parsed = JSON.parse(result);
@@ -310,8 +306,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           const effectiveVis = spec?.visibility ?? "public";
           if (spec && spec.type === "set_sharing" && effectiveVis !== "private") {
             const confirmKey = `sharing:${change_id}`;
-            if (!this.confirmed.has(confirmKey)) {
-              this.confirmed.add(confirmKey);
+            if (!(await hive.checkAndArmConsent(confirmKey))) {
               const exposure = effectiveVis === "public"
                 ? "readable by anyone (and edge-cached)"
                 : "readable by anyone holding an access token";
@@ -326,7 +321,6 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
                 }],
               };
             }
-            this.confirmed.delete(confirmKey);
           }
         }
 
@@ -533,10 +527,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           // is allowed without one.
           if (resolvedOp === "create" || resolvedOp === "update" || resolvedOp === "unarchive") {
             const confirmKey = `consent:${pattern}:${resolvedOp}:${JSON.stringify(singleData)}`;
-            const alreadyConfirmed = this.confirmed.has(confirmKey);
-
-            if (!alreadyConfirmed) {
-              this.confirmed.add(confirmKey);
+            if (!(await hive.checkAndArmConsent(confirmKey))) {
               return {
                 content: [{
                   type: "text" as const,
@@ -550,7 +541,6 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
                 }],
               };
             }
-            this.confirmed.delete(confirmKey);
           }
         }
 

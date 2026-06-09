@@ -1,6 +1,7 @@
 // Publications: declarative outbound projections rendered from live data.
+// Also: the durable consent round-trip (checkAndArmConsent) that gates them.
 
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../hive";
 import { escapeHtml, renderTemplate } from "../publications";
@@ -238,6 +239,29 @@ describe("resolvePublication", () => {
     const result = JSON.parse(await store.resolvePublication("secret"));
     expect(result.found).toBe(true);
     expect(result.visibility).toBe("unlisted");
+  });
+
+  it("survives session churn: consent arms durably, confirms on re-issue, consumes on use", async () => {
+    const store = getStore();
+    const key = "consent:_publications:create:{\"path\":\"x\"}";
+
+    // First call arms and refuses — the confirmation_required leg
+    expect(await store.checkAndArmConsent(key)).toBe(false);
+    // Re-issue (any session — state lives in the DO, not SessionDO memory) confirms
+    expect(await store.checkAndArmConsent(key)).toBe(true);
+    // Consumed on use: a third call starts a fresh round-trip
+    expect(await store.checkAndArmConsent(key)).toBe(false);
+
+    // Distinct keys don't cross-confirm
+    expect(await store.checkAndArmConsent("consent:other")).toBe(false);
+
+    // Expired arms don't confirm
+    await runInDurableObject(store, async (_i, state) => {
+      state.storage.sql.exec(
+        `UPDATE _pending_consent SET expires_at = datetime('now', '-1 minute') WHERE key = ?`, key
+      );
+    });
+    expect(await store.checkAndArmConsent(key)).toBe(false);
   });
 
   it("returns found:false for unknown paths and tracks updated_at for caching", async () => {

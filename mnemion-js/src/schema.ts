@@ -549,6 +549,14 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
 
+  // Armed consent round-trips. Durable (not SessionDO memory) because
+  // sessionless MCP clients land every tool call on a fresh session — an
+  // in-memory set can never complete the confirm-by-reissuing handshake.
+  db.exec(`CREATE TABLE IF NOT EXISTS _pending_consent (
+    key TEXT PRIMARY KEY,
+    expires_at TEXT NOT NULL
+  )`);
+
   db.exec(`CREATE TABLE IF NOT EXISTS _passkeys (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     credential_id TEXT NOT NULL,
@@ -670,6 +678,12 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     db.exec(
       `DELETE FROM "_fragment_access_log" WHERE accessed_at < datetime('now', '-30 days')`
     );
+  } catch {}
+
+  // --- GC: expired consent arms ---
+
+  try {
+    db.exec(`DELETE FROM _pending_consent WHERE expires_at < datetime('now')`);
   } catch {}
 
   // --- GC: entry access log rows older than 90 days (decay's freshness horizon) ---

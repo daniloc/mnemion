@@ -1138,6 +1138,35 @@ export class HiveDO extends DurableObject {
     ).toArray().length === 0;
   }
 
+  // === Consent round-trips ===
+
+  /** Two-phase consent that survives session churn. First call with a key arms
+   *  it (10-minute TTL) and returns false — the caller should surface the
+   *  confirmation message. Re-issuing the same key while armed consumes it and
+   *  returns true — the caller proceeds. Durable in DO storage because
+   *  sessionless MCP clients land every call on a fresh SessionDO, where an
+   *  in-memory set can never complete the handshake. The consent signal is the
+   *  deliberate re-issue of identical arguments; the TTL bounds how long an
+   *  armed confirmation can wait. Fails closed: storage errors never confirm. */
+  async checkAndArmConsent(key: string): Promise<boolean> {
+    try {
+      this.db.exec(`DELETE FROM _pending_consent WHERE expires_at < datetime('now')`);
+      const armed = this.db.exec(
+        `SELECT 1 FROM _pending_consent WHERE key = ?`, key
+      ).toArray().length > 0;
+      if (armed) {
+        this.db.exec(`DELETE FROM _pending_consent WHERE key = ?`, key);
+        return true;
+      }
+      this.db.exec(
+        `INSERT OR REPLACE INTO _pending_consent ("key", expires_at) VALUES (?, datetime('now', '+10 minutes'))`, key
+      );
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   // === Credentials (delegated to credentials.ts) ===
 
   async hasPasskey(): Promise<boolean> { return cred.hasPasskey(this.db); }
