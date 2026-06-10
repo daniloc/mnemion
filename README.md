@@ -88,7 +88,7 @@ A hive that only accumulates eventually whispers stale things back. Mnemion coun
 Patterns can grow HTTP endpoints. Five kinds of agent-defined I/O, all expressed as entries:
 
 - **Publications** (`_publications`) — the hive's publication surface. An entry declares a path, a source query, and a transport (**HTML, RSS, JSON, or Markdown with YAML frontmatter**); `GET /p/{path}` renders **live pattern data at request time** — nothing rendered is ever stored, so the page can't go stale. HTML ships opinionated defaults (semantic markup, light/dark, no JS) with two seams: a per-entry `{{facet}}` template (values escaped, template text raw) and a `css` override appended after the defaults. Superseded entries are excluded by default — public projections show current truth. Creation is consent-gated like sharing.
-- **Documents** (`_documents`) — an R2-backed file store. A `_documents` entry holds agent-defined metadata (title, description, tags, visibility); the bytes live in R2, never in the hive. Creating an entry returns a single-use `upload_url`; you `POST` the file (≤25 MB) and it's served at `GET /f/{id}`, gated by the entry's visibility. The metadata is the evolvable knowledge layer; the file is immutable truth it points at — references, not copies, the same discipline as the canvas. Archiving the entry deletes the blob. Making a file non-private is consent-gated.
+- **Documents** (`_documents`) — an R2-backed file store (**optional — requires R2; see below**). A `_documents` entry holds agent-defined metadata (title, description, tags, visibility); the bytes live in R2, never in the hive. Creating an entry returns a single-use `upload_url`; you `POST` the file (≤25 MB) and it's served at `GET /f/{id}`, gated by the entry's visibility. The metadata is the evolvable knowledge layer; the file is immutable truth it points at — references, not copies, the same discipline as the canvas. Archiving the entry deletes the blob. Making a file non-private is consent-gated.
 - **Shared entries** (`_shared`) — flip an entry to `public` and it becomes readable at `/o/entry/{pattern}/{id}`, edge-cached. Flip to `unlisted` and it's readable by anyone with an auth-code token.
 - **Egress** (`_outputs`) — agent-constructed static responses at arbitrary `/o/{path}` URLs.
 - **Ingress** (`_inputs`) — `POST /i/{path}` endpoints accept inbound data and create entries in target patterns, with an optional declarative transform DSL to map incoming fields.
@@ -116,6 +116,20 @@ mutate _publications create {
 - **Visibility**: `public` (edge-cached ~60s) / `unlisted` (requires a bearer token with `read:publication:{path}` scope) / `private` (staged, not served).
 
 Where `_outputs` serves static content you wrote, a publication is a *live projection* — the difference between a snapshot and a window.
+
+### Document storage requires R2 (optional)
+
+The document store is the one capability with an external dependency: **Cloudflare R2**, which is off by default on new accounts. **Mnemion runs fully without it** — every other capability (memory, prime, query, search, publications, sharing, ingress, federation, the web UI) works with no R2. Only `/f` file upload and serving are unavailable until you turn R2 on.
+
+To enable it:
+
+1. **Enable R2** in the Cloudflare dashboard → **Storage & databases → R2** (adds a payment method; usage stays in R2's free tier — 10 GB, $0 egress).
+2. `npx wrangler r2 bucket create mnemion-documents`
+3. Uncomment the `[[r2_buckets]]` block in [`mnemion-js/wrangler.toml`](mnemion-js/wrangler.toml) and redeploy.
+
+The binding ships **commented out** because a binding to a non-existent bucket fails deploy — that's what keeps Mnemion deployable on a fresh account. Until you enable it, creating a `_documents` entry still succeeds (and returns a note that uploads are unavailable); `POST /f` returns `503`.
+
+**Search story — metadata yes, contents not yet.** A document's metadata (title, description, tags) is a normal entry: it's covered by `search` (cross-pattern full-text) and surfaces in `prime` like anything else. The file's *contents* are **not** extracted or indexed — a PDF's body text is opaque to search and recall. Bridging that is the planned text-extraction seam: on upload, pull text from text/PDF files into a facet so it joins both the FTS index and the embedding index. Until then, give documents good titles/tags and link them to text entries so they're reachable through their neighbors.
 
 ### Web URL adapters
 

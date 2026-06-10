@@ -172,6 +172,12 @@ export const upload: RouteHandler = async (ctx) => {
 // === Document upload: POST /f/:token — stream a file to R2 ===
 
 export const uploadDocument: RouteHandler = async (ctx) => {
+  if (!ctx.env.DOCUMENTS) {
+    return Response.json(
+      { error: true, message: "File storage is not enabled on this instance (no R2 bucket bound)." },
+      { status: 503 }
+    );
+  }
   const body = await ctx.request.arrayBuffer();
   if (body.byteLength > DOCUMENT_BYTES) {
     return Response.json(
@@ -201,6 +207,9 @@ export const uploadDocument: RouteHandler = async (ctx) => {
 // === Document serve: GET /f/:id — stream a file from R2, gated by visibility ===
 
 export const serveDocument: RouteHandler = async (ctx) => {
+  if (!ctx.env.DOCUMENTS) {
+    return new Response("Not found", { status: 404 });
+  }
   const id = Number(ctx.params.id);
   const raw = await ctx.hive.resolveDocument(id);
   const doc = JSON.parse(raw);

@@ -99,6 +99,30 @@ describe("consumeDocumentUpload", () => {
   });
 });
 
+// === Graceful degradation without R2 ===
+// The test env has no DOCUMENTS binding (R2 is optional and ships commented out),
+// so this also confirms the whole suite runs with R2 absent.
+
+describe("without R2 enabled", () => {
+  it("still creates a document entry and notes that uploads are unavailable", async () => {
+    const store = getStore();
+    const r = await createDoc(store, { title: "no-r2" });
+    expect(r.error).toBeUndefined();
+    expect(r.entry.id).toBeTypeOf("number");
+    expect(r.documents_note).toMatch(/not enabled/i);
+  });
+
+  it("returns 503 from POST /f and 404 from GET /f when R2 is absent", async () => {
+    const { SELF } = await import("cloudflare:test");
+    const up = await SELF.fetch("https://test.local/f/deadbeefdeadbeefdeadbeefdeadbeef", {
+      method: "POST", body: new Uint8Array([1, 2, 3]),
+    });
+    expect(up.status).toBe(503);
+    const get = await SELF.fetch("https://test.local/f/1");
+    expect(get.status).toBe(404);
+  });
+});
+
 // === Resolve + archive (metadata path, no R2) ===
 
 describe("resolveDocument", () => {

@@ -167,7 +167,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `OAUTH_KV` — OAuth token storage
 - `AI` — Workers AI for embeddings
 - `VECTORIZE` — Vectorize index for prime KNN
-- `DOCUMENTS` — R2 bucket for document blobs (`mnemion-documents`; bytes for the `_documents` store)
+- `DOCUMENTS` — R2 bucket for document blobs (`mnemion-documents`; bytes for the `_documents` store). **Optional**: ships commented out in `wrangler.toml` (a binding to a non-existent bucket fails deploy), and `Env.DOCUMENTS` is optional. Mnemion runs fully without R2 — only `/f` upload/serve degrade (create returns a `documents_note`; `POST /f` → 503). Enable via dashboard → Storage & databases → R2, create the bucket, uncomment the block. Document *contents* are not yet indexed for search/prime (metadata is); text extraction is the future seam.
 
 ### Environments
 

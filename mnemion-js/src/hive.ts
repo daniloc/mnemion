@@ -479,9 +479,14 @@ export class HiveDO extends DurableObject {
           result.upload_token = tok.entry.token;
           result.upload_url = `https://${this.currentHost()}/f/${tok.entry.token}`;
         }
+        // Minting the token is pure DB; the bytes need R2. If it isn't enabled,
+        // say so plainly rather than handing back an upload_url that 503s.
+        if (!this.env.DOCUMENTS) {
+          result.documents_note = "File storage (R2) is not enabled on this instance — the metadata entry was created, but uploading bytes to upload_url will fail until R2 is enabled. Everything else works without it.";
+        }
       }
       // Archiving a document frees its R2 object — the metadata and the blob die together.
-      if (archivedDocKey) {
+      if (archivedDocKey && this.env.DOCUMENTS) {
         this.ctx.waitUntil(this.env.DOCUMENTS.delete(archivedDocKey).catch(() => {}));
       }
     }
