@@ -32,7 +32,24 @@ const CONSENT_GATED: Record<string, string> = {
     "Sharing an entry publishes it over HTTP at /o/entry/{pattern}/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this entry. Call mutate again with the same arguments to proceed.",
   _publications:
     "A publication serves LIVE query results over HTTP at /p/{path} — every current and future entry the query matches (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human explicitly approved publishing this data. Call mutate again with the same arguments to proceed.",
+  _documents:
+    "Making this document non-private serves its file over HTTP at /f/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this file. Call mutate again with the same arguments to proceed.",
 };
+
+// Whether a write to a consent-gated pattern actually needs the round-trip.
+// Most gated patterns always do; _documents only when it exposes a file
+// (non-private visibility) — creating/uploading a private document is benign.
+// patch can't be inspected for its resulting visibility, so it always trips
+// (and is rejected outright on the single path).
+function consentRequired(pattern: string, operation: string | undefined, dataObj: any): boolean {
+  if (!CONSENT_GATED[pattern]) return false;
+  if (pattern === "_documents") {
+    if (operation === "patch") return true;
+    const vis = dataObj?.visibility;
+    return vis === "public" || vis === "unlisted";
+  }
+  return true;
+}
 
 // === SessionDO: MCP protocol handler, proxies data to HiveDO ===
 
@@ -467,7 +484,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           // Force any escalating change through a single mutate; only archive
           // (removal/de-escalation) is allowed inside a batch.
           const gated = batchData.find((op: any) =>
-            op && CONSENT_GATED[op.pattern] && op.operation !== "archive");
+            op && consentRequired(op.pattern, op.operation, op.data) && op.operation !== "archive");
           if (gated) {
             return {
               isError: true as const,
@@ -525,7 +542,8 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           // first call returns confirmation_required and the agent must re-issue
           // the identical call to commit. archive (removal) is de-escalation and
           // is allowed without one.
-          if (resolvedOp === "create" || resolvedOp === "update" || resolvedOp === "unarchive") {
+          if ((resolvedOp === "create" || resolvedOp === "update" || resolvedOp === "unarchive")
+              && consentRequired(pattern, resolvedOp, singleData)) {
             const confirmKey = `consent:${pattern}:${resolvedOp}:${JSON.stringify(singleData)}`;
             if (!(await hive.checkAndArmConsent(confirmKey))) {
               return {

@@ -35,6 +35,12 @@ binding = "AI"
 binding = "VECTORIZE"
 index_name = "mnemion-vectors"
 
+# R2 bucket for document blobs (the bytes; metadata lives in the _documents pattern).
+# `npm run setup` finds-or-creates this bucket on your account.
+[[r2_buckets]]
+binding = "DOCUMENTS"
+bucket_name = "mnemion-documents"
+
 # Migration: rename old class, add new ones
 [[migrations]]
 tag = "v1"
@@ -73,6 +79,10 @@ class_name = "SessionDO"
 [[env.test.durable_objects.bindings]]
 name = "MNEMION_HIVE"
 class_name = "HiveDO"
+
+[[env.test.r2_buckets]]
+binding = "DOCUMENTS"
+bucket_name = "mnemion-test-documents"
 
 [[env.test.migrations]]
 tag = "v1"

@@ -36,6 +36,8 @@ Overlap advisories: creating an entry that is semantically very similar to an ex
 
 Large content: to write content too large for MCP parameters, create an _access_tokens entry with {scope: "upload", constraints: {target_pattern, target_id, target_facet, mode}}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP. Resolve ${uri("_system/instance")} for the full upload URL.
 
+Files (PDF/image/binary): create a _documents entry {title, description?, tags?} — the response carries a single-use upload_url; POST the file bytes there (up to 25 MB, stored in R2). Served at /f/{id}; visibility defaults to private (making it public/unlisted is consent-gated). See ${uri("_system/http-io")}.
+
 Entries limited to ~1 MB each.`,
     when: "Any write. Batch multiple writes into one call for atomicity.",
   },

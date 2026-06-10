@@ -63,6 +63,39 @@ The projection is now served at `GET /p/now`, re-derived from current entries on
 ### Current truth by default
 Entries targeted by an active `supersedes` link are dropped from publications unless `include_superseded` is set — public projections show what's current, not what was replaced.
 
+## Documents: `_documents`
+
+A document is a file whose **bytes live in R2**, with a `_documents` entry holding the metadata. Use it for PDFs, images, and anything binary or larger than the 1 MB entry limit. The entry is the evolvable knowledge layer; the file is immutable truth it points at — link documents to other entries like any pattern.
+
+Two-step upload:
+
+```
+mutate _documents create { "title": "Q3 report", "description": "...", "tags": "finance,2026" }
+```
+
+The create response includes a single-use `upload_url`. POST the file bytes there:
+
+```
+curl -X POST --data-binary @report.pdf -H "Content-Type: application/pdf" <upload_url>
+```
+
+The file is now stored and served at `GET /f/{id}`.
+
+### Facets
+- `title` (required) — display name; used as the download filename
+- `description`, `tags` — your metadata, free-form
+- `visibility` — `private` (default, not served), `unlisted` (token), or `public`
+- `content_type`, `size`, `r2_key`, `stored_at` — **system-managed**; filled on upload, never set them yourself
+
+### Upload tokens
+Creating a document auto-mints a `document`-scoped access token bound to that entry — single-use, 15-minute TTL, returned as `upload_url`. Tokens are only mintable through an authenticated `mutate`, so only you can authorize a file write. Upload tokens can never target a kernel pattern.
+
+### Serving and visibility
+`GET /f/{id}` streams the file with its stored `Content-Type`. Add `?download=1` for an attachment disposition. Visibility gates access exactly like shared entries: `private` → 404, `unlisted` → requires a bearer token with `read:document:{id}` scope, `public` → open and edge-cached. **Making a document non-private is consent-gated** — creating/uploading a private file is friction-free; publishing one requires a confirmation round-trip.
+
+### Lifecycle
+Files cap at 25 MB. Archiving a document entry deletes both the metadata and the R2 object. Documents don't yet surface in `prime` (text extraction is a future capability) — link them to text entries so they're reachable through their neighbors.
+
 ## Ingress: `_inputs`
 
 Create an entry in `_inputs` to accept POST data and automatically create entries in a target pattern.

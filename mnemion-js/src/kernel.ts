@@ -36,6 +36,10 @@ export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = 
     fields: ["default_content"],
     message: "default_content is immutable. It preserves the original seed for recovery.",
   },
+  _documents: {
+    fields: ["r2_key", "size", "stored_at"],
+    message: "r2_key, size, and stored_at are managed by the system on upload — they cannot be set via mutate.",
+  },
 };
 
 // === Create hooks — validate + transform before INSERT ===
@@ -77,6 +81,27 @@ const ON_CREATE: Record<string, CreateHook> = {
         return { error: true, message: `Invalid mode "${c.mode}". Use "replace" or "append".` };
       data.constraints = JSON.stringify(c);
       // Upload tokens: 15-min TTL, single-use
+      data.expires_at = data.expires_at || new Date(Date.now() + 15 * 60_000).toISOString();
+      data.single_use = 1;
+    }
+
+    // Document-upload scope: binds a single-use token to a _documents entry.
+    // Bytes go to R2 via POST /f/{token}; the entry records the result.
+    if (scope === "document" || scope.startsWith("document:")) {
+      let constraints = data.constraints;
+      if (typeof constraints === "string") {
+        try { constraints = JSON.parse(constraints); } catch {
+          return { error: true, message: "constraints must be valid JSON" };
+        }
+      }
+      if (!constraints || typeof constraints !== "object")
+        return { error: true, message: "document scope requires constraints: {document_id}" };
+      const c = constraints as Record<string, unknown>;
+      if (c.document_id == null)
+        return { error: true, message: "document constraints require document_id" };
+      if (!ctx.entryExists("_documents", c.document_id as number))
+        return { error: true, message: `Document ${c.document_id} not found` };
+      data.constraints = JSON.stringify({ document_id: c.document_id });
       data.expires_at = data.expires_at || new Date(Date.now() + 15 * 60_000).toISOString();
       data.single_use = 1;
     }
@@ -231,6 +256,17 @@ const ON_CREATE: Record<string, CreateHook> = {
     const vis = (data.visibility as string) || "public";
     if (!["public", "unlisted", "private"].includes(vis))
       return { error: true, message: `Invalid visibility "${vis}". Use "public", "unlisted", or "private".` };
+    data.visibility = vis;
+    return data;
+  },
+
+  _documents(data) {
+    if (!data.title || typeof data.title !== "string" || !(data.title as string).trim())
+      return { error: true, message: "title is required for _documents" };
+    // r2_key/size/stored_at are IMMUTABLE (system-managed on upload) — see IMMUTABLE above.
+    const vis = (data.visibility as string) || "private";
+    if (!["private", "unlisted", "public"].includes(vis))
+      return { error: true, message: `Invalid visibility "${vis}". Use "private", "unlisted", or "public".` };
     data.visibility = vis;
     return data;
   },

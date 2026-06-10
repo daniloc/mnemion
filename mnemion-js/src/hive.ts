@@ -445,6 +445,15 @@ export class HiveDO extends DurableObject {
       }
     }
 
+    // Capture a document's R2 key before archiving so we can free the blob after.
+    let archivedDocKey: string | null = null;
+    if (patternName === "_documents" && operation === "archive" && parsed.id != null) {
+      try {
+        const r = this.db.exec(`SELECT r2_key FROM "_documents" WHERE id = ?`, parsed.id).toArray() as any[];
+        archivedDocKey = r[0]?.r2_key ?? null;
+      } catch { /* best-effort */ }
+    }
+
     const result = data.executeMutate(this.dataCtx(), patternName, operation, parsed);
     if (!result.error) {
       if (conflictCheck?.neighbors.length) {
@@ -459,8 +468,69 @@ export class HiveDO extends DurableObject {
       if (patternName === "_system_tasks" && operation === "create") {
         await this.runTask(result.entry.id, result.entry.task);
       }
+      // A new document entry is born with its single-use upload ticket — the
+      // bytes are POSTed to upload_url, which records r2_key/size on the entry.
+      if (patternName === "_documents" && operation === "create" && result.entry && !result.entry.r2_key) {
+        const tok = data.executeMutate(this.dataCtx(), "_access_tokens", "create", {
+          scope: "document", label: `upload:document:${result.entry.id}`,
+          constraints: JSON.stringify({ document_id: result.entry.id }),
+        });
+        if (!tok.error && tok.entry?.token) {
+          result.upload_token = tok.entry.token;
+          result.upload_url = `https://${this.currentHost()}/f/${tok.entry.token}`;
+        }
+      }
+      // Archiving a document frees its R2 object — the metadata and the blob die together.
+      if (archivedDocKey) {
+        this.ctx.waitUntil(this.env.DOCUMENTS.delete(archivedDocKey).catch(() => {}));
+      }
     }
     return JSON.stringify(result, null, 2);
+  }
+
+  // === Document store (R2-backed blobs) ===
+
+  /** Record a completed upload: bind the R2 key + metadata to the document entry
+   *  and burn the single-use token. The route has already streamed the bytes to
+   *  R2; on any failure here it deletes that orphaned object. */
+  async consumeDocumentUpload(token: string, r2Key: string, contentType: string, size: number): Promise<string> {
+    const accessToken = cred.findAccessToken(this.db, token);
+    if (!accessToken) return this.errorJson("Invalid or expired upload token");
+    if (!cred.scopeMatches(accessToken.scope, "document")) return this.errorJson("Token does not have document scope");
+
+    let documentId: number;
+    try {
+      documentId = JSON.parse(accessToken.constraints ?? "{}").document_id;
+    } catch { return this.errorJson("Upload token has invalid constraints"); }
+    if (documentId == null) return this.errorJson("Upload token missing document_id");
+
+    const rows = this.db.exec(
+      `SELECT id FROM "_documents" WHERE id = ? AND archived_at IS NULL`, documentId
+    ).toArray();
+    if (rows.length === 0) return this.errorJson("Document not found");
+
+    this.db.exec(
+      `UPDATE "_documents" SET r2_key = ?, "size" = ?, content_type = ?, stored_at = datetime('now'), updated_at = datetime('now'), version = version + 1 WHERE id = ?`,
+      r2Key, size, contentType, documentId
+    );
+    cred.consumeToken(this.db, accessToken.id);
+    this.broadcastChange(["_documents"]);
+
+    const entry = this.db.exec(`SELECT * FROM "_documents" WHERE id = ?`, documentId).one();
+    return JSON.stringify({ uploaded: true, id: documentId, bytes: size, content_type: contentType, entry });
+  }
+
+  /** Resolve a document for serving. Returns found:false until bytes exist. */
+  async resolveDocument(id: number): Promise<string> {
+    try {
+      const rows = this.db.exec(
+        `SELECT title, visibility, r2_key, content_type, stored_at FROM "_documents" WHERE id = ? AND archived_at IS NULL`, id
+      ).toArray() as any[];
+      if (rows.length === 0 || !rows[0].r2_key) return JSON.stringify({ found: false });
+      return JSON.stringify({ found: true, ...rows[0] });
+    } catch {
+      return JSON.stringify({ found: false });
+    }
   }
 
   async batchMutate(operationsJson: string): Promise<string> {

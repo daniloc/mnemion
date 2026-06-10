@@ -7,6 +7,7 @@ export interface Env {
   OAUTH_KV: KVNamespace;
   MNEMION_HIVE: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace;
+  DOCUMENTS: R2Bucket;
   MNEMION_SECRET: string;
   WORKER_HOST?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;

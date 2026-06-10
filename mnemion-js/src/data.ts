@@ -35,9 +35,10 @@ function isValidColumn(ctx: DataContext, pattern: string, name: string): boolean
 }
 
 const LIMITS = {
-  ENTRY_BYTES: 1_048_576,  // 1 MB per entry
-  QUERY_ROWS: 1_000,       // max rows a single query can return
-  BATCH_OPS: 100,          // max operations in a single batch mutate
+  ENTRY_BYTES: 1_048_576,       // 1 MB per entry
+  DOCUMENT_BYTES: 26_214_400,   // 25 MB per uploaded document (R2-backed)
+  QUERY_ROWS: 1_000,            // max rows a single query can return
+  BATCH_OPS: 100,               // max operations in a single batch mutate
 };
 
 export { LIMITS };

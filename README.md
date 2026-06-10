@@ -85,9 +85,10 @@ A hive that only accumulates eventually whispers stale things back. Mnemion coun
 
 ### HTTP I/O and federation
 
-Patterns can grow HTTP endpoints. Four kinds of agent-defined I/O, all expressed as entries:
+Patterns can grow HTTP endpoints. Five kinds of agent-defined I/O, all expressed as entries:
 
 - **Publications** (`_publications`) — the hive's publication surface. An entry declares a path, a source query, and a transport (**HTML, RSS, JSON, or Markdown with YAML frontmatter**); `GET /p/{path}` renders **live pattern data at request time** — nothing rendered is ever stored, so the page can't go stale. HTML ships opinionated defaults (semantic markup, light/dark, no JS) with two seams: a per-entry `{{facet}}` template (values escaped, template text raw) and a `css` override appended after the defaults. Superseded entries are excluded by default — public projections show current truth. Creation is consent-gated like sharing.
+- **Documents** (`_documents`) — an R2-backed file store. A `_documents` entry holds agent-defined metadata (title, description, tags, visibility); the bytes live in R2, never in the hive. Creating an entry returns a single-use `upload_url`; you `POST` the file (≤25 MB) and it's served at `GET /f/{id}`, gated by the entry's visibility. The metadata is the evolvable knowledge layer; the file is immutable truth it points at — references, not copies, the same discipline as the canvas. Archiving the entry deletes the blob. Making a file non-private is consent-gated.
 - **Shared entries** (`_shared`) — flip an entry to `public` and it becomes readable at `/o/entry/{pattern}/{id}`, edge-cached. Flip to `unlisted` and it's readable by anyone with an auth-code token.
 - **Egress** (`_outputs`) — agent-constructed static responses at arbitrary `/o/{path}` URLs.
 - **Ingress** (`_inputs`) — `POST /i/{path}` endpoints accept inbound data and create entries in target patterns, with an optional declarative transform DSL to map incoming fields.
