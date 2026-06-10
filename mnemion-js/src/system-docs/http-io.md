@@ -67,7 +67,7 @@ Entries targeted by an active `supersedes` link are dropped from publications un
 
 A document is a file whose **bytes live in R2**, with a `_documents` entry holding the metadata. Use it for PDFs, images, and anything binary or larger than the 1 MB entry limit. The entry is the evolvable knowledge layer; the file is immutable truth it points at — link documents to other entries like any pattern.
 
-> **Requires R2.** File storage depends on Cloudflare R2, which is optional. If it isn't enabled on this instance, creating a `_documents` entry still works but the response carries a `documents_note` saying uploads are unavailable, and `POST /f` returns 503. Everything else in Mnemion works without R2.
+> **Requires R2.** File storage depends on Cloudflare R2, which is optional. If it isn't enabled on this instance, creating a `_documents` entry still works but the response carries a `documents_note` saying uploads are unavailable, and `POST /f` returns 503 — and the index marks `_documents` as `unavailable`. To enable it, tell the human: turn on R2 (dashboard → Storage & databases → R2), then run `npm run enable-documents` and redeploy. Everything else in Mnemion works without R2.
 
 > **Search:** a document's metadata (title, description, tags) is searchable via `search` and surfaces in `prime` like any entry — but the file's *contents* are not yet extracted or indexed. Give documents descriptive titles/tags and link them to text entries so they're findable through their neighbors.
 

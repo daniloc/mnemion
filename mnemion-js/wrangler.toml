@@ -39,9 +39,8 @@ index_name = "mnemion-vectors"
 # OPTIONAL — the document store. Mnemion runs fully without it; only file
 # upload/serve (/f) is unavailable until enabled. To turn it on:
 #   1. Enable R2 on your account: Cloudflare dashboard → Storage & databases → R2.
-#   2. Create the bucket:  npx wrangler r2 bucket create mnemion-documents
-#   3. Uncomment the block below and redeploy.
-# (Once uncommented, `npm run setup` find-or-creates the bucket for you.)
+#   2. Run `npm run enable-documents` — creates the bucket and uncomments the
+#      block below for you. Then `npm run deploy`.
 # A binding to a non-existent bucket fails deploy, so it ships commented
 # out by default — that's what keeps Mnemion deployable without R2.
 # [[r2_buckets]]

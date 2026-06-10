@@ -9,6 +9,7 @@ import { TOOLS } from "./tools";
 
 interface Env {
   MNEMION_HIVE: DurableObjectNamespace<HiveDO>;
+  DOCUMENTS?: R2Bucket;  // optional — present only when R2 is enabled + bound
 }
 
 interface AuthProps {
@@ -107,6 +108,15 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         (this.server as any)._instructions = section + base;
       }
     } catch { /* best-effort */ }
+
+    // === Capability status: document storage needs R2 ===
+    // When R2 isn't enabled, _documents entries can be created but file upload
+    // fails — surface that up front so the agent can flag it to the human.
+    if (!this.env.DOCUMENTS) {
+      const section = `=== Document storage unavailable ===\nCloudflare R2 is not enabled on this instance, so the document store (the _documents pattern and /f file endpoints) cannot store files — creating a _documents entry works, but uploads fail. If the human wants to store files (PDFs, images), tell them: enable R2 in the Cloudflare dashboard (Storage & databases → R2), then run \`npm run enable-documents\` and redeploy. Everything else works without R2.\n\n`;
+      const base = (this.server as any)._instructions ?? "";
+      (this.server as any)._instructions = section + base;
+    }
 
     // === Resources (stable, cacheable, subscribable) ===
 

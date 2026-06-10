@@ -123,11 +123,11 @@ The document store is the one capability with an external dependency: **Cloudfla
 
 To enable it:
 
-1. **Enable R2** in the Cloudflare dashboard → **Storage & databases → R2** (adds a payment method; usage stays in R2's free tier — 10 GB, $0 egress).
-2. `npx wrangler r2 bucket create mnemion-documents`
-3. Uncomment the `[[r2_buckets]]` block in [`mnemion-js/wrangler.toml`](mnemion-js/wrangler.toml) and redeploy.
+1. **Enable R2** in the Cloudflare dashboard → **Storage & databases → R2** (a one-time account toggle; adds a payment method, but usage stays in R2's free tier — 10 GB, $0 egress). This is the only manual step — no CLI can flip an account-level toggle.
+2. `npm run enable-documents` — creates the bucket and wires the binding for you.
+3. `npm run deploy`.
 
-The binding ships **commented out** because a binding to a non-existent bucket fails deploy — that's what keeps Mnemion deployable on a fresh account. Until you enable it, creating a `_documents` entry still succeeds (and returns a note that uploads are unavailable); `POST /f` returns `503`.
+The binding ships **commented out** because a binding to a non-existent bucket fails deploy — that's what keeps Mnemion deployable on a fresh account. `npm run enable-documents` uncomments it after the bucket exists (and tells you to enable R2 first if you haven't). Until then, creating a `_documents` entry still succeeds (and returns a note that uploads are unavailable), `POST /f` returns `503`, and connecting agents are told document storage is off so they can flag it to you.
 
 **Search story — metadata yes, contents not yet.** A document's metadata (title, description, tags) is a normal entry: it's covered by `search` (cross-pattern full-text) and surfaces in `prime` like anything else. The file's *contents* are **not** extracted or indexed — a PDF's body text is opaque to search and recall. Bridging that is the planned text-extraction seam: on upload, pull text from text/PDF files into a facet so it joins both the FTS index and the embedding index. Until then, give documents good titles/tags and link them to text entries so they're reachable through their neighbors.
 

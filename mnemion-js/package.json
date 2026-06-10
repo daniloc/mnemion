@@ -10,7 +10,8 @@
     "types": "wrangler types",
     "test": "vitest run",
     "test:watch": "vitest",
-    "setup": "bash scripts/setup.sh"
+    "setup": "bash scripts/setup.sh",
+    "enable-documents": "bash scripts/enable-documents.sh"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.3.0",

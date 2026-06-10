@@ -25,6 +25,7 @@ export interface IndexPatternEntry {
   description: string;
   doctrine: string;
   memory_policy?: Record<string, unknown> | null;
+  unavailable?: string;
   facets: IndexFacetEntry[];
   entry_count: number;
   latest_activity: string | null;
@@ -70,6 +71,13 @@ export class HiveDO extends DurableObject {
 
   async getIndex(): Promise<string> {
     const index = this.getCurrentIndex();
+
+    // Flag the document store when R2 isn't enabled, so agents reading the
+    // index know files can't be stored (and can tell the human how to enable it).
+    if (!this.env.DOCUMENTS) {
+      const docs = index.patterns.find((p) => p.name === "_documents");
+      if (docs) docs.unavailable = "Cloudflare R2 is not enabled on this instance — _documents entries can be created but file upload/serve is unavailable. To enable: turn on R2 (dashboard → Storage & databases → R2), then run `npm run enable-documents` and redeploy.";
+    }
 
     // Enrich with live entry counts and latest activity
     for (const pat of index.patterns) {
