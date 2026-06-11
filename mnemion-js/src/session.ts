@@ -210,10 +210,12 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       toolDesc("resolve"),
       {
         uri: z.string().describe(`A ${URI_SCHEME}:// URI, an https:// URL, or an at:// Bluesky at-uri to fetch web content. Examples: ${URI_SCHEME}://entry/notes/1, https://bsky.app/profile/user/post/abc, at://did:plc:xyz/app.bsky.feed.post/abc`),
-        retain: z.boolean().optional().describe("For web URLs only: true pins the cached snapshot for indefinite retention (always served, never re-fetched or GC'd); false releases it back to normal TTL. Omit to leave retention unchanged."),
+        // Some clients (e.g. Claude.ai) stringify booleans — accept "true"/"false" too.
+        retain: z.union([z.boolean(), z.enum(["true", "false"])]).optional().describe("For web URLs only: true pins the cached snapshot for indefinite retention (always served, never re-fetched or GC'd); false releases it back to normal TTL. Omit to leave retention unchanged."),
       },
       async ({ uri: resolveUri, retain }) => {
-        const result = await hive.resolve(resolveUri, retain);
+        const retainNorm = retain === undefined ? undefined : (retain === true || retain === "true");
+        const result = await hive.resolve(resolveUri, retainNorm);
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {
