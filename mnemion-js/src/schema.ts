@@ -449,8 +449,8 @@ Scopes:
   },
   {
     name: "_web_cache",
-    description: "Cached web content fetched via resolve(). Entries are automatically created when resolving https:// URLs. Cached content expires based on the source adapter's TTL.",
-    doctrine: "Managed automatically by the web resolution system. Do not create entries directly — use resolve with an https:// URL instead.",
+    description: "Cached web content fetched via resolve(). Entries are automatically created when resolving https:// URLs. Cached content expires based on the source adapter's TTL, unless pinned for indefinite retention via resolve(retain: true).",
+    doctrine: "Managed automatically by the web resolution system. Do not create entries directly — use resolve with an https:// URL instead. To keep a resolved snapshot forever (never re-fetched, never GC'd), resolve it with retain: true; resolve with retain: false to release it.",
     ddl: `CREATE TABLE IF NOT EXISTS "_web_cache" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "url" TEXT NOT NULL,
@@ -459,6 +459,7 @@ Scopes:
       "metadata" TEXT,
       "fetched_at" TEXT NOT NULL DEFAULT (datetime('now')),
       "expires_at" TEXT NOT NULL,
+      "pinned" INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       archived_at TEXT,
@@ -474,6 +475,7 @@ Scopes:
       { name: "metadata", type: "text", required: false },
       { name: "fetched_at", type: "datetime", required: false },
       { name: "expires_at", type: "datetime", required: true },
+      { name: "pinned", type: "boolean", required: false },
     ],
   },
   {
@@ -699,6 +701,15 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   } catch {}
 
+  // --- v13: add pinned column to _web_cache (existing tables need ALTER) ---
+
+  try {
+    const wcCols = db.exec(`PRAGMA table_info("_web_cache")`).toArray() as any[];
+    if (wcCols.length && !wcCols.some((c: any) => c.name === "pinned")) {
+      db.exec(`ALTER TABLE "_web_cache" ADD COLUMN "pinned" INTEGER NOT NULL DEFAULT 0`);
+    }
+  } catch {}
+
   // --- v12: add extraction columns to _documents (existing tables need ALTER) ---
 
   try {
@@ -740,7 +751,7 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 
   try {
     db.exec(
-      `DELETE FROM "_web_cache" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days')`
+      `DELETE FROM "_web_cache" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days') AND pinned = 0`
     );
   } catch {}
 

@@ -40,7 +40,8 @@ const WEB_ADAPTERS: WebAdapter[] = [
 export async function resolveWeb(
   ctx: WebContext,
   rawUrl: string,
-): Promise<{ content: string; url: string; source: string; cached: boolean; stale?: boolean; metadata?: Record<string, unknown> }> {
+  retain?: boolean,
+): Promise<{ content: string; url: string; source: string; cached: boolean; stale?: boolean; pinned?: boolean; metadata?: Record<string, unknown> }> {
   // Scheme validation. at:// (Bluesky AT Protocol) is handled as a raw string —
   // the WHATWG URL parser rejects DID authorities (at://did:plc:.../...).
   if (!rawUrl.startsWith("at://")) {
@@ -65,14 +66,17 @@ export async function resolveWeb(
     }
   }
 
-  // Check cache first
+  // Check cache first. A pinned entry is a frozen snapshot — always served,
+  // never re-fetched, never GC'd — until explicitly unpinned (retain: false).
   const cached = findCachedEntry(ctx.db, rawUrl);
-  if (cached && !isExpired(cached.expires_at)) {
+  if (cached && (cached.pinned || !isExpired(cached.expires_at))) {
+    if (retain !== undefined) setPinned(ctx.db, rawUrl, retain);
     return {
       content: cached.content,
       url: rawUrl,
       source: cached.source_adapter,
       cached: true,
+      pinned: retain ?? !!cached.pinned,
       metadata: cached.metadata ? JSON.parse(cached.metadata) : undefined,
     };
   }
@@ -105,12 +109,14 @@ export async function resolveWeb(
 
     // Write to cache (archive old entry if exists)
     writeCacheEntry(ctx.db, rawUrl, result.content, adapter.name, expiresAt, result.metadata);
+    if (retain) setPinned(ctx.db, rawUrl, true);
 
     return {
       content: result.content,
       url: rawUrl,
       source: adapter.name,
       cached: false,
+      pinned: !!retain,
       metadata: result.metadata,
     };
   } catch (err: any) {
@@ -401,6 +407,18 @@ interface CachedEntry {
   metadata: string | null;
   fetched_at: string;
   expires_at: string;
+  pinned: number;
+}
+
+/** Mark (or unmark) a cached URL for indefinite retention — system-managed,
+ *  driven only by resolve(retain), keeping _web_cache fully write-protected. */
+function setPinned(db: any, url: string, pinned: boolean): void {
+  try {
+    db.exec(
+      `UPDATE "_web_cache" SET pinned = ?, updated_at = datetime('now') WHERE url = ? AND archived_at IS NULL`,
+      pinned ? 1 : 0, url
+    );
+  } catch { /* best-effort */ }
 }
 
 function findCachedEntry(db: any, url: string): CachedEntry | null {

@@ -76,7 +76,8 @@ Web URLs: use this to help the user read web pages and social threads. Pass any 
 - Bluesky threads (bsky.app/profile/*/post/* or at://*/app.bsky.feed.post/* at-uris) are fetched via AT Protocol API — no scraping needed. Quoted posts, image embeds (with alt text), external links, and video are surfaced inline. Append ?depth=N (0-100, default 6) to control how many levels of nested replies/subtrees are returned — raise it to pull a whole conversation.
 - Other URLs use Cloudflare Browser Rendering (requires CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN secrets).
 - Cached content appears in prime results for future recall.
-- Stale cache returned if re-fetch fails.
+- Stale cache returned if re-fetch fails (a re-fetch that comes back empty never overwrites a good snapshot).
+- Retention: pass retain: true to pin a resolved snapshot indefinitely — always served, never re-fetched or garbage-collected — until you resolve it again with retain: false. Otherwise content is served from cache until its TTL, then re-fetched on next access.
 
 Federation: use this to help the user access content on other hives.
 - ${URI_SCHEME}://host.example.com/path → GET https://host.example.com/o/path

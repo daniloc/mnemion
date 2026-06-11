@@ -706,8 +706,8 @@ export class HiveDO extends DurableObject {
     return { env: this.env as any, db: this.db };
   }
 
-  private async resolveWeb(url: string): Promise<string> {
-    const result = await web.resolveWeb(this.webCtx(), url);
+  private async resolveWeb(url: string, retain?: boolean): Promise<string> {
+    const result = await web.resolveWeb(this.webCtx(), url, retain);
 
     if (result.metadata?.error) {
       return this.errorJson(result.metadata.message as string);
@@ -730,10 +730,11 @@ export class HiveDO extends DurableObject {
 
   // === URI resolution ===
 
-  async resolve(input: string): Promise<string> {
-    // https://, http://, and at:// (Bluesky AT Protocol) URIs → web resolution
+  async resolve(input: string, retain?: boolean): Promise<string> {
+    // https://, http://, and at:// (Bluesky AT Protocol) URIs → web resolution.
+    // retain pins/unpins the cached snapshot; it's ignored for non-web URIs.
     if (input.startsWith("https://") || input.startsWith("http://") || input.startsWith("at://")) {
-      return this.resolveWeb(input);
+      return this.resolveWeb(input, retain);
     }
 
     const match = input.match(new RegExp(`^${URI_SCHEME}://(.+)$`));

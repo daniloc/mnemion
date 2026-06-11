@@ -1373,6 +1373,85 @@ describe("linked facet validation", () => {
   });
 });
 
+// === Web cache retention (pinning) ===
+
+describe("web cache pinning", () => {
+  const URL = "https://bsky.app/profile/alice.bsky.social/post/abc123";
+
+  function mockThread() {
+    const fixture = {
+      thread: {
+        $type: "app.bsky.feed.defs#threadViewPost",
+        post: {
+          uri: "at://did:plc:alice/app.bsky.feed.post/abc123",
+          author: { handle: "alice.bsky.social", displayName: "Alice" },
+          record: { text: "Pinned thread content", createdAt: "2026-01-01T00:00:00.000Z" },
+        },
+        replies: [],
+      },
+    };
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://public.api.bsky.app")
+      .intercept({ path: /\/xrpc\/app\.bsky\.feed\.getPostThread/ })
+      .reply(200, JSON.stringify(fixture), { headers: { "Content-Type": "application/json" } });
+  }
+
+  async function cacheRow(store: DurableObjectStub<HiveDO>) {
+    return await runInDurableObject(store, async (_i, state) =>
+      state.storage.sql.exec(`SELECT pinned, expires_at FROM "_web_cache" WHERE url = ? AND archived_at IS NULL`, URL).toArray()[0] as any
+    );
+  }
+  async function expire(store: DurableObjectStub<HiveDO>) {
+    await runInDurableObject(store, async (_i, state) => {
+      state.storage.sql.exec(`UPDATE "_web_cache" SET expires_at = datetime('now','-1 day') WHERE url = ? AND archived_at IS NULL`, URL);
+    });
+  }
+
+  it("pins a resolved snapshot and serves it frozen past its TTL without re-fetching", async () => {
+    const store = getStore();
+    mockThread();
+
+    // resolve with retain → fresh fetch, pinned
+    const first = JSON.parse(await store.resolve(URL, true));
+    expect(first.content).toContain("Pinned thread content");
+    expect(first.pinned).toBe(true);
+    expect((await cacheRow(store)).pinned).toBe(1);
+
+    // Backdate past TTL; the one-shot mock is now spent, so any re-fetch would
+    // fail. A pinned hit serves from cache WITHOUT attempting a fetch — proven
+    // by pinned:true and the absence of the stale-fallback flag.
+    await expire(store);
+    const second = JSON.parse(await store.resolve(URL));
+    expect(second.cached).toBe(true);
+    expect(second.pinned).toBe(true);
+    expect(second.stale).toBeUndefined();
+    expect(second.content).toContain("Pinned thread content");
+
+    fetchMock.deactivate();
+  });
+
+  it("releases the pin with retain:false", async () => {
+    const store = getStore();
+    mockThread();
+    await store.resolve(URL, true);
+    expect((await cacheRow(store)).pinned).toBe(1);
+
+    const released = JSON.parse(await store.resolve(URL, false));
+    expect(released.pinned).toBe(false);
+    expect((await cacheRow(store)).pinned).toBe(0);
+
+    fetchMock.deactivate();
+  });
+
+  it("keeps _web_cache write-protected against agent mutate", async () => {
+    const store = getStore();
+    const r = JSON.parse(await store.mutate("_web_cache", "update", JSON.stringify({ id: 1, pinned: 1 })));
+    expect(r.error).toBe(true);
+    expect(r.message).toMatch(/managed by the system/);
+  });
+});
+
 // === Mutation Audit Log ===
 
 describe("Mutation Audit Log", () => {
