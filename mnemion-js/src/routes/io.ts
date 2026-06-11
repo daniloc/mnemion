@@ -1,5 +1,6 @@
 import type { RouteHandler } from "../router";
 import { zipSync, strToU8 } from "fflate";
+import { extractionPlan, decodeText, capText } from "../extract";
 
 const DOCUMENT_BYTES = 26_214_400; // 25 MB — mirrors data.LIMITS.DOCUMENT_BYTES
 
@@ -201,6 +202,21 @@ export const uploadDocument: RouteHandler = async (ctx) => {
     await ctx.env.DOCUMENTS.delete(key).catch(() => {});
     return Response.json(parsed, { status: 400 });
   }
+
+  // Text extraction → the extracted_text facet → search + prime. Text-family is
+  // cheap (decode the bytes we already hold) and recorded inline. PDF is heavier
+  // and runs off the response path inside the DO (which has waitUntil; the route
+  // ctx does not). Best-effort: failures land as a status, never failing upload.
+  const id = parsed.id as number;
+  const plan = extractionPlan(contentType);
+  if (plan === "text") {
+    await ctx.hive.recordExtraction(id, capText(decodeText(body)), "done");
+  } else if (plan === "pdf") {
+    await ctx.hive.extractDocument(id);
+  } else {
+    await ctx.hive.recordExtraction(id, "", "unsupported");
+  }
+
   return Response.json(parsed, { status: 201 });
 };
 

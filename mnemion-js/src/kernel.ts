@@ -37,8 +37,8 @@ export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = 
     message: "default_content is immutable. It preserves the original seed for recovery.",
   },
   _documents: {
-    fields: ["r2_key", "size", "stored_at"],
-    message: "r2_key, size, and stored_at are managed by the system on upload — they cannot be set via mutate.",
+    fields: ["r2_key", "size", "stored_at", "extracted_text", "extraction_status"],
+    message: "r2_key, size, stored_at, extracted_text, and extraction_status are managed by the system on upload/extraction — they cannot be set via mutate.",
   },
 };
 

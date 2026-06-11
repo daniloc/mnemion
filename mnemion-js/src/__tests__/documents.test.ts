@@ -11,6 +11,13 @@ import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../hive";
 
+// Whether the test runtime has an R2 binding (depends on whether [[r2_buckets]]
+// is active in wrangler.toml — commented out by default/CI, uncommented locally
+// once documents are enabled). The no-R2 degradation suite only makes sense when
+// the binding is absent; the with-R2 byte round-trip is verified live (it can't
+// run here — vitest's isolatedStorage is incompatible with R2 writes).
+const R2_PRESENT = !!(env as any).DOCUMENTS;
+
 function getStore(): DurableObjectStub<HiveDO> {
   const id = env.MNEMION_HIVE.idFromName("user:test");
   return env.MNEMION_HIVE.get(id);
@@ -100,10 +107,11 @@ describe("consumeDocumentUpload", () => {
 });
 
 // === Graceful degradation without R2 ===
-// The test env has no DOCUMENTS binding (R2 is optional and ships commented out),
-// so this also confirms the whole suite runs with R2 absent.
+// Runs only when the binding is absent (default/CI). Skipped locally once R2 is
+// enabled — the degradation path is what we're asserting, and it can't exist
+// while DOCUMENTS is bound.
 
-describe("without R2 enabled", () => {
+describe.skipIf(R2_PRESENT)("without R2 enabled", () => {
   it("still creates a document entry and notes that uploads are unavailable", async () => {
     const store = getStore();
     const r = await createDoc(store, { title: "no-r2" });

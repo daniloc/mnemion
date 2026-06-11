@@ -69,7 +69,7 @@ A document is a file whose **bytes live in R2**, with a `_documents` entry holdi
 
 > **Requires R2.** File storage depends on Cloudflare R2, which is optional. If it isn't enabled on this instance, creating a `_documents` entry still works but the response carries a `documents_note` saying uploads are unavailable, and `POST /f` returns 503 — and the index marks `_documents` as `unavailable`. To enable it, tell the human: turn on R2 (dashboard → Storage & databases → R2), then run `npm run enable-documents` and redeploy. Everything else in Mnemion works without R2.
 
-> **Search:** a document's metadata (title, description, tags) is searchable via `search` and surfaces in `prime` like any entry — but the file's *contents* are not yet extracted or indexed. Give documents descriptive titles/tags and link them to text entries so they're findable through their neighbors.
+> **Search:** on upload, text is extracted into the `extracted_text` facet — text files inline, PDFs in the background — so document **contents** (not just title/description/tags) are searchable via `search` and recallable via `prime`. `extraction_status` reports `done`/`pending`/`failed`/`unsupported`. Image-only/scanned PDFs and binary formats extract nothing (status `unsupported`/`empty`); give those descriptive titles/tags.
 
 Two-step upload:
 

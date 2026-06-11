@@ -24,9 +24,15 @@ interface WebAdapter {
 
 // === Adapter dispatch table ===
 
+// TTL = how long a cached copy is served before resolve re-fetches on next
+// access. Resolved content is reference memory that feeds prime, so it's worth
+// keeping fresh-enough for a long time rather than churning: social threads
+// mostly settle within a day, rendered pages change rarely. Retention is
+// separate — cached content is never evicted while active (only superseded
+// duplicates are GC'd, in schema.ts), so resolved content persists as memory.
 const WEB_ADAPTERS: WebAdapter[] = [
-  { name: "bluesky", match: isBlueskyPost, fetch: fetchBlueskyThread, ttl: 3600 },
-  { name: "browser-rendering", match: isHttpUrl, fetch: fetchViaMarkdown, ttl: 86400 },
+  { name: "bluesky", match: isBlueskyPost, fetch: fetchBlueskyThread, ttl: 86400 },        // 24h
+  { name: "browser-rendering", match: isHttpUrl, fetch: fetchViaMarkdown, ttl: 2592000 },  // 30d
 ];
 
 // === Public API ===
@@ -80,6 +86,21 @@ export async function resolveWeb(
   // Fetch via adapter
   try {
     const result = await adapter.fetch(rawUrl, ctx.env);
+
+    // Snapshot protection: a re-fetch that comes back empty (page changed,
+    // paywalled, transient blank) must not overwrite a good cached copy. Treat
+    // resolved content as memory — keep the snapshot rather than degrade it.
+    if ((!result.content || !result.content.trim()) && cached) {
+      return {
+        content: cached.content,
+        url: rawUrl,
+        source: cached.source_adapter,
+        cached: true,
+        stale: true,
+        metadata: cached.metadata ? JSON.parse(cached.metadata) : undefined,
+      };
+    }
+
     const expiresAt = new Date(Date.now() + adapter.ttl * 1000).toISOString();
 
     // Write to cache (archive old entry if exists)

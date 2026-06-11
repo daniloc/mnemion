@@ -236,7 +236,7 @@ export async function prime(
     filtered = filtered.filter((m: any) => allowed.has(m.metadata?.pattern));
   } else {
     // Default: exclude kernel patterns (system noise) but keep working memory
-    const KERNEL_INCLUDE = new Set(["_short_term_fragments", "_long_term_fragments"]);
+    const KERNEL_INCLUDE = new Set(["_short_term_fragments", "_long_term_fragments", "_documents"]);
     filtered = filtered.filter((m: any) => {
       const p = m.metadata?.pattern as string;
       return p && (!p.startsWith("_") || KERNEL_INCLUDE.has(p));

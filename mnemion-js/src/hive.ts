@@ -9,6 +9,7 @@ import * as data from "./data";
 import * as priming from "./prime";
 import * as pubs from "./publications";
 import * as web from "./web";
+import { capText, extractPdfText } from "./extract";
 
 // === Types ===
 
@@ -531,6 +532,56 @@ export class HiveDO extends DurableObject {
 
     const entry = this.db.exec(`SELECT * FROM "_documents" WHERE id = ?`, documentId).one();
     return JSON.stringify({ uploaded: true, id: documentId, bytes: size, content_type: contentType, entry });
+  }
+
+  /** Record extracted text + status on a document, then re-embed so the text
+   *  joins prime recall (search already covers the facet). Called by the upload
+   *  route after it pulls text from the bytes (inline for text, async for PDF). */
+  async recordExtraction(documentId: number, text: string, status: string): Promise<string> {
+    try {
+      const rows = this.db.exec(
+        `SELECT id FROM "_documents" WHERE id = ? AND archived_at IS NULL`, documentId
+      ).toArray();
+      if (rows.length === 0) return this.errorJson("Document not found");
+
+      this.db.exec(
+        `UPDATE "_documents" SET extracted_text = ?, extraction_status = ?, updated_at = datetime('now'), version = version + 1 WHERE id = ?`,
+        text || null, status, documentId
+      );
+      this.broadcastChange(["_documents"]);
+      // Re-embed with the extracted text included (buildEmbedText reads text facets).
+      this.ctx.waitUntil(priming.embedEntry(this.primeCtx(), "_documents", documentId));
+      return JSON.stringify({ recorded: true, id: documentId, status, chars: (text || "").length });
+    } catch (err: any) {
+      return this.errorJson(`Failed to record extraction: ${err.message}`);
+    }
+  }
+
+  /** Schedule async PDF text extraction inside the DO (which has a real
+   *  waitUntil — the route ctx does not). Marks pending, then reads the blob
+   *  back from R2, extracts, and records. Returns immediately; the work
+   *  outlives the RPC via ctx.waitUntil. Best-effort: failures land as status. */
+  async extractDocument(id: number): Promise<string> {
+    const rows = this.db.exec(
+      `SELECT r2_key FROM "_documents" WHERE id = ? AND archived_at IS NULL`, id
+    ).toArray() as any[];
+    if (rows.length === 0 || !rows[0].r2_key) return this.errorJson("Document not found or not uploaded");
+    const r2Key = rows[0].r2_key as string;
+
+    this.db.exec(`UPDATE "_documents" SET extraction_status = 'pending', updated_at = datetime('now') WHERE id = ?`, id);
+
+    this.ctx.waitUntil((async () => {
+      try {
+        const obj = this.env.DOCUMENTS ? await this.env.DOCUMENTS.get(r2Key) : null;
+        if (!obj) { await this.recordExtraction(id, "", "failed"); return; }
+        const text = capText(await extractPdfText(await obj.arrayBuffer()));
+        await this.recordExtraction(id, text, text.trim() ? "done" : "empty");
+      } catch {
+        await this.recordExtraction(id, "", "failed");
+      }
+    })());
+
+    return JSON.stringify({ scheduled: true, id });
   }
 
   /** Resolve a document for serving. Returns found:false until bytes exist. */

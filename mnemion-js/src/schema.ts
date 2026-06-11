@@ -377,8 +377,8 @@ Scopes:
   },
   {
     name: "_documents",
-    description: "Document store. Each entry is metadata for a file whose bytes live in R2 (never in the hive). Two-step upload: create the entry (the response carries a single-use upload_url), then POST the file to it. Served at GET /f/{id}, gated by the entry's visibility. Bytes are immutable; the metadata is the evolvable knowledge layer that points at them — link documents to other entries like any pattern.",
-    doctrine: "Create a document entry with at least a title (plus optional description, tags); the create response includes a single-use upload_url and token — POST the file bytes there to store them in R2. The r2_key, size, content_type, and stored_at facets are filled by the system on upload — never set them yourself. visibility defaults to private (not served); set it to unlisted (token-gated) or public ONLY when the human approves publishing the file — that flip is consent-gated. Archive an entry to delete both the metadata and the R2 object. Files do not yet participate in prime recall (text extraction is a future capability); link documents to text entries so they surface through their neighbors.",
+    description: "Document store. Each entry is metadata for a file whose bytes live in R2 (never in the hive). Two-step upload: create the entry (the response carries a single-use upload_url), then POST the file to it. Served at GET /f/{id}, gated by the entry's visibility. On upload, text is extracted into extracted_text so document contents are searchable (search) and recallable (prime). Bytes are immutable; the metadata is the evolvable knowledge layer that points at them — link documents to other entries like any pattern.",
+    doctrine: "Create a document entry with at least a title (plus optional description, tags); the create response includes a single-use upload_url and token — POST the file bytes there to store them in R2. The r2_key, size, content_type, stored_at, extracted_text, and extraction_status facets are filled by the system on upload — never set them yourself. On upload, text is extracted (text files inline, PDFs in the background) into extracted_text, which makes document CONTENTS searchable via search and recallable via prime; extraction_status reports done/pending/failed/unsupported. visibility defaults to private (not served); set it to unlisted (token-gated) or public ONLY when the human approves publishing the file — that flip is consent-gated. Archive an entry to delete both the metadata and the R2 object.",
     ddl: `CREATE TABLE IF NOT EXISTS "_documents" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "title" TEXT NOT NULL,
@@ -388,6 +388,8 @@ Scopes:
       "size" INTEGER,
       "r2_key" TEXT,
       "stored_at" TEXT,
+      "extracted_text" TEXT,
+      "extraction_status" TEXT,
       "visibility" TEXT NOT NULL DEFAULT 'private',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -402,6 +404,8 @@ Scopes:
       { name: "size", type: "integer", required: false },
       { name: "r2_key", type: "text", required: false },
       { name: "stored_at", type: "datetime", required: false },
+      { name: "extracted_text", type: "text", required: false },
+      { name: "extraction_status", type: "text", required: false },
       { name: "visibility", type: "text", required: false },
     ],
   },
@@ -695,6 +699,20 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   } catch {}
 
+  // --- v12: add extraction columns to _documents (existing tables need ALTER) ---
+
+  try {
+    const docCols = db.exec(`PRAGMA table_info("_documents")`).toArray() as any[];
+    if (docCols.length) {
+      if (!docCols.some((c: any) => c.name === "extracted_text")) {
+        db.exec(`ALTER TABLE "_documents" ADD COLUMN "extracted_text" TEXT`);
+      }
+      if (!docCols.some((c: any) => c.name === "extraction_status")) {
+        db.exec(`ALTER TABLE "_documents" ADD COLUMN "extraction_status" TEXT`);
+      }
+    }
+  } catch {}
+
   // --- GC: expire short-term fragments older than 30 days ---
 
   try {
@@ -714,6 +732,16 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 
   try {
     db.exec(`DELETE FROM _pending_consent WHERE expires_at < datetime('now')`);
+  } catch {}
+
+  // --- GC: superseded web-cache rows (a re-fetch archives the old row and
+  // inserts a fresh one). Only these duplicates are evicted — active cached
+  // content is retained indefinitely as durable memory, never deleted on TTL. ---
+
+  try {
+    db.exec(
+      `DELETE FROM "_web_cache" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days')`
+    );
   } catch {}
 
   // --- GC: entry access log rows older than 90 days (decay's freshness horizon) ---
