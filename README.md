@@ -1,8 +1,10 @@
 # Mnemion
 
-Persistent, evolving shared memory between a human and their AI agents. MCP server on Cloudflare Workers.
+Persistent, evolving shared knowledge management between a human and their AI agents.
 
-Every conversation with an AI agent starts cold. Mnemion gives each session access to a shared substrate — read, write, search, and reshape — so context from yesterday's Claude.ai chat, this morning's Claude Code run, and tomorrow's API agent all share the same memory.
+MCP and HTTP server on Cloudflare Workers.
+
+Every conversation with an AI agent starts cold. Mnemion gives each session access to a shared history of thinking and problem solving — read, write, search, and reshape — so context from yesterday's Claude.ai chat, this morning's Claude Code run, and tomorrow's API agent all share the same memory.
 
 See [`CLAUDE.md`](CLAUDE.md) for architecture and internals.
 
