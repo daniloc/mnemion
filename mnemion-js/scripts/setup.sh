@@ -18,7 +18,11 @@ CURRENT_KV_ID=$(awk '
   /^\[/ { in_kv=0 }
   in_kv && /^id *= *"/ { match($0, /"[^"]+"/); print substr($0, RSTART+1, RLENGTH-2); exit }
 ' wrangler.toml)
-EXPECTED_KV_TITLE="${WORKER_NAME}-OAUTH_KV"
+# wrangler titles the namespace after the binding name (OAUTH_KV), NOT
+# "${WORKER_NAME}-OAUTH_KV" — match what `wrangler kv namespace create OAUTH_KV`
+# actually produces, otherwise find-or-create never matches and the create fails
+# on "already exists".
+EXPECTED_KV_TITLE="OAUTH_KV"
 
 # === KV namespace: find-or-create, patch wrangler.toml ===
 echo "Checking KV namespace ${EXPECTED_KV_TITLE}..."
@@ -106,6 +110,14 @@ SECRET=$(openssl rand -hex 32)
 echo ""
 echo "Setting master secret..."
 printf '%s' "$SECRET" | npx wrangler secret put MNEMION_SECRET 2>&1 | grep -v "^$"
+
+# === Build page bundles ===
+# The worker imports compiled SSR/client bundles from dist/** (see [[rules]] in
+# wrangler.toml). They must exist before `wrangler deploy`, or the deploy fails on
+# unresolved imports. `npm run deploy` builds them; setup deploys directly, so do it here.
+echo ""
+echo "Building page bundles..."
+npm run build:pages
 
 # === Deploy ===
 echo ""
