@@ -14,7 +14,7 @@ WORKER_HOST = "your-worker.workers.dev"
 # `npm run setup` finds-or-creates this namespace on your account and patches the id in.
 [[kv_namespaces]]
 binding = "OAUTH_KV"
-id = "REPLACE_ME"
+id = "4835a97bf420489eb48af03129663f97"
 
 # Session DO (McpAgent, one per MCP session)
 [[durable_objects.bindings]]
@@ -76,7 +76,7 @@ WORKER_HOST = "your-test-worker.workers.dev"
 
 [[env.test.kv_namespaces]]
 binding = "OAUTH_KV"
-id = "REPLACE_ME"
+id = "3ea8800016ec455d8b3b661e4d2e4ec6"
 
 [[env.test.durable_objects.bindings]]
 name = "MCP_OBJECT"
