@@ -137,6 +137,25 @@ The binding ships **commented out** because a binding to a non-existent bucket f
 
 `resolve` accepts `https://` URLs too. Bluesky threads are fetched via the AT Protocol API (no scraping). Anything else goes through Cloudflare Browser Rendering. Results are cached per-adapter with TTLs in `_web_cache`, and the cached content participates in `prime`'s embedding index — so web pages an agent reads today surface in tomorrow's recalls.
 
+### Skills distribution (plugin marketplace)
+
+Mnemion can serve itself as a Claude Code **plugin marketplace** — and, true to the rest of the system, skills are just entries. Two patterns carry it: `_plugins` (a named package with a semver `version`, a `visibility`, and optional `claude_md` / `settings_json` / `mcp_json`) and `_skills` (a `skill_md` body plus frontmatter fields, linked to a plugin via `plugin_id`). Create both through normal schema evolution the first time you need them, then author skills with `mutate` — no git repo, no static files, no build step.
+
+The marketplace is **emergent**, not a stored artifact. `GET /marketplace.git/*` reads `_plugins` / `_skills` through the same `query` RPC any agent uses and projects them through a git adapter (`src/git.ts`) into a Smart-HTTP packfile on every request. Claude Code clones it like any other marketplace repo:
+
+```
+# Public — unauthenticated, serves only fully-public plugins
+/plugin marketplace add https://<host>/marketplace/public
+
+# Private — Basic auth with a marketplace-scoped token, serves everything
+/plugin marketplace add https://mnemion:<token>@<host>/marketplace.git
+```
+
+- **Split serving by visibility.** The public endpoint lists a plugin only if *every* skill in it is public — one private skill hides the whole plugin, so there's no partial exposure. The private endpoint serves all visibility levels and is gated by an `_access_tokens` entry with `marketplace` scope, optionally constrained to specific plugin names.
+- **Versioning works through the `version` facet.** Each `_plugins` entry carries a semver `version`, and it flows verbatim into both `.claude-plugin/marketplace.json` (per plugin) and that plugin's `plugin.json` — the two files Claude Code's auto-update compares to decide whether to pull. Bump `version` when you change a skill and clients pick up the new `skill_md` on next startup. The bump is **manual** (agent- or human-driven via `mutate`); the worker does not auto-increment — auto-versioning is a deliberately deferred question (see [`project-docs/active/skill-delivery.md`](project-docs/active/skill-delivery.md)), since auto-bumping on every typo would push an update to every client.
+
+Because a skill's `skill_md` is just a record, a skill can teach an agent how to use *this* hive — stored in Mnemion, served by Mnemion, operating on Mnemion. Agent-facing reference: `mnemion://_system/skills`.
+
 ### The web UI
 
 Mnemion serves Svelte-based pages directly from the worker (no SvelteKit — Svelte as a component framework only):
