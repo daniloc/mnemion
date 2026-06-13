@@ -390,6 +390,27 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
 
 // === Generic dispatchers ===
 
+// A change touches one pattern (or one entry within one). Returning the whole
+// index + charter on every propose/apply is a multi-thousand-token drain that's
+// ~95% irrelevant to the change — and the charter's epistemic_caution block
+// alone dominates it. Return only what's needed to confirm the change looks
+// right; agents that want the full picture resolve mnemion://index.
+function focusedPreview(change: any, index: StoreIndex): Record<string, unknown> {
+  const name = change.pattern_name;
+  switch (change.type) {
+    case "set_sharing":
+      return { pattern_name: name, entry_id: change.entry_id, visibility: change.visibility ?? "public" };
+    case "archive_pattern":
+      return { pattern_name: name, archived: true };
+    case "unarchive_pattern":
+      return { pattern_name: name, unarchived: true };
+    default: {
+      const pat = name ? index.patterns.find((p) => p.name === name) : undefined;
+      return pat ? { pattern: pat } : { pattern_name: name ?? null };
+    }
+  }
+}
+
 export function proposeChange(
   description: string,
   changeJson: string,
@@ -414,7 +435,11 @@ export function proposeChange(
   );
 
   return JSON.stringify({
-    change_id: changeId, description, preview_index: preview,
+    change_id: changeId,
+    description,
+    change_type: change.type,
+    version: preview.version,
+    preview: focusedPreview(change, preview),
     message: "Change proposed. Call apply_change with this change_id to commit.",
   }, null, 2);
 }
@@ -461,8 +486,14 @@ export async function applyChange(
 
     broadcastChange(["_schema"]);
 
+    const freshIndex = getCurrentIndex();
     return JSON.stringify({
-      applied: true, description: pending.description, index: getCurrentIndex(),
+      applied: true,
+      description: pending.description,
+      change_type: change.type,
+      pattern_name: change.pattern_name ?? null,
+      version: freshIndex.version,
+      preview: focusedPreview(change, freshIndex),
     }, null, 2);
   } catch (err: any) {
     return errorJson(`Failed to apply change: ${err.message}`);

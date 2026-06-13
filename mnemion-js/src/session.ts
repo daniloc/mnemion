@@ -369,10 +369,10 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         try {
           await this.server.server.sendResourceUpdated({ uri: uri("index") });
           await this.server.server.sendResourceUpdated({ uri: uri("history") });
-          if (parsed.index?.patterns) {
-            for (const pat of parsed.index.patterns) {
-              await this.server.server.sendResourceUpdated({ uri: uri(`schema/${pat.name}`) });
-            }
+          // A change targets one pattern — notify just its schema resource
+          // (the apply result no longer carries the full index).
+          if (parsed.pattern_name) {
+            await this.server.server.sendResourceUpdated({ uri: uri(`schema/${parsed.pattern_name}`) });
           }
         } catch {
           // Client may not support subscriptions — notifications are best-effort
