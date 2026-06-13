@@ -9,7 +9,7 @@ Persistent, evolving shared memory between a human and their AI agents. MCP serv
 ## Project structure
 
 ```
-project-docs/active/   Design documents (the "why" and "what")
+project-docs/archive/  Historical design documents (pre-implementation, "Cambium"-era)
 mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/index.ts         Route table + OAuthProvider config (~60 lines)
   src/router.ts        Declarative router: types, enums, pattern matching, dispatch

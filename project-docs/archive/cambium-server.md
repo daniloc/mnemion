@@ -1,3 +1,5 @@
+> **Archived design document.** Written before implementation, under the project's earlier name *Cambium* (now **Mnemion**). Kept for design rationale only — for current behavior, see the [README](../../README.md) and [CLAUDE.md](../../CLAUDE.md). Where this doc and the shipped code disagree, the code is authoritative.
+
 # Cambium
 
 ## Unified memory between agent surfaces and the humans who work with them

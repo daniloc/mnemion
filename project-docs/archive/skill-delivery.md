@@ -1,3 +1,5 @@
+> **Archived design document.** Written before implementation, under the project's earlier name *Cambium* (now **Mnemion**). Kept for design rationale only — for current behavior, see the skills-distribution section of the [README](../../README.md) and `mnemion://_system/skills`. The shipped marketplace is git-only (`/marketplace.git`, `/marketplace/public`); the plain-HTTP split routes and several open questions described below were not built as written. Where this doc and the code disagree, the code is authoritative.
+
 # Cambium Skills
 
 ## Skills as schema objects, served as a live marketplace
