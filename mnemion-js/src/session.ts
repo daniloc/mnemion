@@ -235,9 +235,10 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       {
         description: z.string().describe("Natural language description of the change"),
         change: z.object({
-          type: z.enum(["create_pattern", "add_facet", "set_sharing", "set_options", "set_doctrine", "set_memory_policy", "archive_pattern", "unarchive_pattern"]).describe("Type of structural change"),
+          type: z.enum(["create_pattern", "add_facet", "set_sharing", "set_options", "set_doctrine", "set_memory_policy", "set_class", "archive_pattern", "unarchive_pattern"]).describe("Type of structural change"),
           pattern_name: z.string().optional().describe("Target pattern name"),
           pattern_description: z.string().optional().describe("Purpose of the pattern (for create_pattern)"),
+          pattern_class: z.enum(["knowledge", "dataset"]).optional().describe('Pattern class (for create_pattern/set_class). "knowledge" (default): prose recalled by meaning via prime. "dataset": structured records with enforced types, aggregated by query — excluded from prime/decay/stale.'),
           doctrine: z.string().optional().describe("How this pattern should be used — required for create_pattern"),
           facets: z.array(z.object({
             name: z.string(),
@@ -390,18 +391,26 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         pattern: z.string().describe("Pattern name to query"),
         filter: z.array(z.string()).optional().describe("Filter expressions: facet=value, facet>value, facet~text (contains)"),
         facets: z.string().optional().describe("Comma-separated facet names to return (default: all)"),
-        sort: z.string().optional().describe("Facet to sort by. Prefix with - for descending (e.g. -created_at)"),
+        sort: z.string().optional().describe("Facet to sort by, or an aggregate output name. Prefix with - for descending (e.g. -created_at)"),
         limit: z.number().optional().describe("Max entries to return (default: 100)"),
         count_only: z.boolean().optional().describe("If true, return only the count matching the filters, not the entries"),
+        group_by: z.string().optional().describe('Aggregate: comma-separated facets to group by. Bucket a datetime facet with "facet:unit" where unit is day|week|month|year (e.g. "created_at:month").'),
+        aggregate: z.array(z.object({
+          fn: z.enum(["count", "sum", "avg", "min", "max"]),
+          facet: z.string().optional().describe("Facet to aggregate (omit for count → COUNT(*))"),
+          as: z.string().optional().describe("Output name for this measure (default: fn or fn_facet)"),
+        })).optional().describe("Aggregate measures computed over the rows. Combine with group_by, e.g. [{fn:'sum',facet:'amount'},{fn:'avg',facet:'amount'}]. Either group_by or aggregate switches query into aggregation mode."),
       },
-      async ({ pattern, filter, facets, sort, limit, count_only }) => {
+      async ({ pattern, filter, facets, sort, limit, count_only, group_by, aggregate }) => {
         const result = await hive.query(
           pattern,
           filter ? JSON.stringify(filter) : "",
           facets ?? "",
           sort ?? "",
           limit ?? 100,
-          count_only ?? false
+          count_only ?? false,
+          group_by ?? "",
+          aggregate ? JSON.stringify(aggregate) : ""
         );
         const parsed = JSON.parse(result);
         if (parsed.error) {

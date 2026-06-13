@@ -43,13 +43,18 @@ Entries limited to ~1 MB each.`,
   },
   {
     name: "query",
-    description: `Use this to help the user find specific entries. Read from a pattern with filtering, facet projection, sorting, and limits (max 1,000 rows). Use count_only for efficient counts without fetching entries.
+    description: `Use this to help the user find specific entries, or to analyze a dataset by computing over its rows. Read from a pattern with filtering, facet projection, sorting, and limits (max 1,000 rows). Use count_only for efficient counts without fetching entries.
 
 Filter syntax: each filter is "field<op>value". Operators: = != > < >= <= ~ |=
 - = != > < >= <= : standard comparisons
 - ~ : LIKE substring match (e.g. title~urgent)
-- |= : in any of (e.g. id|=1,3,7) — comma-separated values, useful for batched lookups`,
-    when: "Reading entries with specific filters. Checking counts without fetching data. Use id|=1,2,3 for batched multi-id lookups.",
+- |= : in any of (e.g. id|=1,3,7) — comma-separated values, useful for batched lookups
+
+Aggregation (the analysis verb — compute over rows instead of fetching them): pass group_by and/or aggregate.
+- group_by: comma-separated facets. Bucket a datetime facet by calendar period with "facet:unit" (unit = day|week|month|year), e.g. group_by: "created_at:month".
+- aggregate: array of {fn, facet?, as?} where fn is count|sum|avg|min|max. count without a facet is COUNT(*).
+- Example: group_by "category" with aggregate [{fn:"sum",facet:"amount",as:"total"}] returns one row per category with its total. Filters apply before grouping; sort accepts any output name.`,
+    when: "Reading entries with specific filters. Checking counts. Aggregating a dataset (totals/averages/counts, grouped or time-bucketed). Use id|=1,2,3 for batched multi-id lookups.",
   },
   {
     name: "search",
@@ -89,9 +94,11 @@ Federation: use this to help the user access content on other hives.
     name: "propose_change",
     description: `Use this to help the user evolve the structure of their hive. Propose a structural change — validates and returns a preview without committing.
 
-Supports: create_pattern (with facets), add_facet (to existing pattern), set_sharing (entry-level HTTP visibility), set_options, set_doctrine, set_memory_policy, archive_pattern, unarchive_pattern.
+Supports: create_pattern (with facets), add_facet (to existing pattern), set_sharing (entry-level HTTP visibility), set_options, set_doctrine, set_memory_policy, set_class, archive_pattern, unarchive_pattern.
 Facets can declare foreign key links to other patterns via the links parameter.
 Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 facets per pattern.
+
+pattern_class (create_pattern / set_class): "knowledge" is the default — prose recalled by meaning, the texture prime, decay, and supersession are built for. Choose "dataset" for structured records meant to be aggregated by query (measurements, logs, expenses, survey responses, time-series). Dataset patterns enforce facet types and required fields on write (a number facet rejects "banana"), and opt out of the memory machinery: they're not embedded, never surface in prime, and never appear in the stale view. Use set_class to convert an existing pattern (affects future writes and recall; existing rows are untouched).
 
 set_sharing: use this to help the user control HTTP access to individual entries at /o/entry/{pattern}/{id}.
 - "public": openly readable, edge-cached
