@@ -40,6 +40,29 @@ const SUPERSEDED_DEMOTION = 0.3; // explicit owner intent — always applied
 const DECAY_FLOOR = 0.05; // old-but-relevant can still surface
 export const CONFLICT_SIMILARITY = 0.8; // same-pattern KNN threshold for possible_overlap
 
+// === Pattern class ===
+
+/** A pattern's class: "knowledge" (default — recalled by meaning) or "dataset"
+ *  (structured records aggregated by computation, exempt from the memory machinery). */
+export function getPatternClass(db: any, pattern: string): "knowledge" | "dataset" {
+  try {
+    const rows = db.exec("SELECT pattern_class FROM _objects WHERE name = ?", pattern).toArray() as any[];
+    return rows[0]?.pattern_class === "dataset" ? "dataset" : "knowledge";
+  } catch {
+    return "knowledge";
+  }
+}
+
+/** All dataset-class pattern names. Used to keep records out of semantic recall. */
+function datasetPatterns(db: any): Set<string> {
+  try {
+    const rows = db.exec("SELECT name FROM _objects WHERE pattern_class = 'dataset'").toArray() as any[];
+    return new Set(rows.map((r: any) => r.name as string));
+  } catch {
+    return new Set();
+  }
+}
+
 // === Memory policy ===
 
 /** Read a pattern's memory policy from _objects, applying opinionated defaults. */
@@ -228,8 +251,12 @@ export async function prime(
 
   if (!matches?.matches?.length) return { results: [], count: 0 };
 
-  // Filter results
-  let filtered = matches.matches;
+  // Filter results. Dataset-class patterns are excluded either way — they hold
+  // records aggregated by query, not memory recalled by meaning, and surfacing
+  // their near-identical rows would only drown out knowledge. (They're also not
+  // embedded on write, so this only matters for a pattern flipped after the fact.)
+  const datasets = datasetPatterns(ctx.db);
+  let filtered = matches.matches.filter((m: any) => !datasets.has(m.metadata?.pattern));
   if (patterns?.length) {
     // Explicit pattern filter — include exactly what was requested
     const allowed = new Set(patterns);

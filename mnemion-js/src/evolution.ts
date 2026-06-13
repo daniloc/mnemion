@@ -33,6 +33,8 @@ const LIMITS = {
 
 const NAME_RE = /^[a-z_][a-z0-9_-]*$/;
 
+const PATTERN_CLASSES = new Set(["knowledge", "dataset"]);
+
 function validateName(kind: string, name: string): string | null {
   if (!name || name.length > LIMITS.NAME_MAX_LEN)
     return `${kind} name must be 1–${LIMITS.NAME_MAX_LEN} characters, got ${name?.length ?? 0}`;
@@ -129,6 +131,8 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         return `Too many facets: ${change.facets.length} exceeds limit of ${LIMITS.FACETS_PER_PATTERN}`;
       if (ctx.patternExists(change.pattern_name))
         return `Pattern "${change.pattern_name}" already exists`;
+      if (change.pattern_class != null && !PATTERN_CLASSES.has(change.pattern_class))
+        return `Invalid pattern_class "${change.pattern_class}". Use "knowledge" (default) or "dataset".`;
       return validateFacets(change.facets, ctx);
     },
     preview(change, preview) {
@@ -136,6 +140,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         name: change.pattern_name,
         description: change.pattern_description || "",
         doctrine: change.doctrine,
+        ...(change.pattern_class === "dataset" ? { pattern_class: "dataset" } : {}),
         facets: change.facets.map(facetToIndexEntry),
         entry_count: 0,
         latest_activity: null,
@@ -155,10 +160,40 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         ${colDefs.join(",\n        ")},
         ${kernelCols.join(",\n        ")}
       )`);
-      db.exec("INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?)",
-        change.pattern_name, change.pattern_description || "", change.doctrine);
+      db.exec("INSERT INTO _objects (name, description, doctrine, pattern_class) VALUES (?, ?, ?, ?)",
+        change.pattern_name, change.pattern_description || "", change.doctrine,
+        change.pattern_class === "dataset" ? "dataset" : "knowledge");
       registerFacets(db, change.pattern_name, change.facets);
       ensureAuditTriggers(db, change.pattern_name);
+    },
+  },
+
+  set_class: {
+    validate(change, ctx) {
+      if (!change.pattern_name) return "pattern_name is required for set_class";
+      if (!ctx.patternExists(change.pattern_name))
+        return `Pattern "${change.pattern_name}" does not exist`;
+      if (change.pattern_name.startsWith("_"))
+        return `Pattern class applies to user patterns, not kernel pattern "${change.pattern_name}"`;
+      if (!PATTERN_CLASSES.has(change.pattern_class))
+        return `Invalid pattern_class "${change.pattern_class}". Use "knowledge" or "dataset".`;
+      return null;
+    },
+    preview(change, preview) {
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      if (pat) {
+        if (change.pattern_class === "dataset") pat.pattern_class = "dataset";
+        else delete pat.pattern_class;
+      }
+    },
+    // Affects future writes (validation) and recall (prime exclusion). Existing
+    // rows are untouched; vectors already written linger until re-embedded or
+    // archived — acceptable, prime filters dataset patterns at read time too.
+    apply(change, { db }) {
+      db.exec(
+        "UPDATE _objects SET pattern_class = ? WHERE name = ?",
+        change.pattern_class, change.pattern_name
+      );
     },
   },
 

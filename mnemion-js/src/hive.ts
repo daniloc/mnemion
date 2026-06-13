@@ -25,6 +25,7 @@ export interface IndexPatternEntry {
   name: string;
   description: string;
   doctrine: string;
+  pattern_class?: "knowledge" | "dataset";
   memory_policy?: Record<string, unknown> | null;
   unavailable?: string;
   facets: IndexFacetEntry[];
@@ -229,6 +230,9 @@ export class HiveDO extends DurableObject {
 
     const stale: any[] = [];
     for (const pat of patterns) {
+      // Dataset patterns don't go stale — a recorded observation is history, not
+      // memory awaiting review. Skip them in the maintenance surface.
+      if (this.patternClass(pat.name) === "dataset") continue;
       const policy = priming.getMemoryPolicy(this.db, pat.name);
       const horizon = days ?? (policy.half_life_days != null ? policy.half_life_days * 3 : 90);
       const modifier = `-${Math.round(horizon)} days`;
@@ -337,8 +341,8 @@ export class HiveDO extends DurableObject {
       return this.errorJson(`Pattern "${patternName}" does not exist`);
 
     const objRow = this.db.exec(
-      "SELECT name, description FROM _objects WHERE name = ?", patternName
-    ).one() as { name: string; description: string };
+      "SELECT name, description, pattern_class FROM _objects WHERE name = ?", patternName
+    ).one() as { name: string; description: string; pattern_class: string };
 
     const fields = this.db.exec(
       "SELECT name, type, required, default_value, references_object FROM _fields WHERE object_name = ? ORDER BY id",
@@ -348,6 +352,7 @@ export class HiveDO extends DurableObject {
     return JSON.stringify({
       pattern: objRow.name,
       description: objRow.description,
+      pattern_class: objRow.pattern_class === "dataset" ? "dataset" : "knowledge",
       facets: fields.map((f: any) => {
         const facet: any = {
           name: f.name,
@@ -426,11 +431,17 @@ export class HiveDO extends DurableObject {
         if (rows[0].options) meta.options = JSON.parse(rows[0].options);
         return meta;
       },
+      patternClass: (name) => this.patternClass(name),
     };
   }
 
-  async query(patternName: string, filterJson: string, facets: string, sortField: string, limit: number, countOnly: boolean): Promise<string> {
-    return data.query(this.dataCtx(), patternName, filterJson, facets, sortField, limit, countOnly);
+  /** A pattern's class: "dataset" (structured records) or "knowledge" (default). */
+  private patternClass(name: string): "knowledge" | "dataset" {
+    return priming.getPatternClass(this.db, name);
+  }
+
+  async query(patternName: string, filterJson: string, facets: string, sortField: string, limit: number, countOnly: boolean, groupBy: string = "", aggregateJson: string = ""): Promise<string> {
+    return data.query(this.dataCtx(), patternName, filterJson, facets, sortField, limit, countOnly, groupBy, aggregateJson);
   }
 
   async mutate(patternName: string, operation: string, dataJson: string): Promise<string> {
@@ -447,7 +458,8 @@ export class HiveDO extends DurableObject {
     // user patterns (policy-gated, advisory only). The embedding computed here
     // is reused for the post-write upsert — no second AI call.
     let conflictCheck: { neighbors: priming.NeighborMatch[]; vector: number[] | null } | null = null;
-    if (operation === "create" && !patternName.startsWith("_") && this.patternExists(patternName)) {
+    if (operation === "create" && !patternName.startsWith("_") && this.patternExists(patternName)
+        && this.patternClass(patternName) !== "dataset") {
       const policy = priming.getMemoryPolicy(this.db, patternName);
       if (policy.conflict_check !== "off") {
         conflictCheck = await priming.findNeighbors(this.primeCtx(), patternName, parsed);
@@ -1046,6 +1058,8 @@ export class HiveDO extends DurableObject {
     if (operation === "archive") {
       this.ctx.waitUntil(priming.removeEntry(ctx, pattern, id));
     } else {
+      // Dataset patterns are records, not memory — never embedded for recall.
+      if (this.patternClass(pattern) === "dataset") return;
       this.ctx.waitUntil(priming.embedEntry(ctx, pattern, id, precomputed));
     }
   }
@@ -1196,7 +1210,7 @@ export class HiveDO extends DurableObject {
 
   private getCurrentIndex(): StoreIndex {
     const meta = this.db.exec("SELECT * FROM _meta WHERE id = 1").one() as any;
-    const objects = this.db.exec("SELECT name, description, doctrine, memory_policy FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as any[];
+    const objects = this.db.exec("SELECT name, description, doctrine, memory_policy, pattern_class FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as any[];
     const allFields = this.db.exec("SELECT * FROM _fields ORDER BY object_name, id").toArray() as any[];
     const charterRows = this.db.exec(
       `SELECT "key", "value" FROM "_charter" WHERE archived_at IS NULL ORDER BY id`
@@ -1232,6 +1246,7 @@ export class HiveDO extends DurableObject {
           name: o.name,
           description: o.description,
           doctrine: o.doctrine || "",
+          ...(o.pattern_class === "dataset" ? { pattern_class: "dataset" as const } : {}),
           ...(memoryPolicy ? { memory_policy: memoryPolicy } : {}),
           facets: facetsByPattern.get(o.name) || [],
           entry_count: 0,

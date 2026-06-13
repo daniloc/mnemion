@@ -701,6 +701,20 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   } catch {}
 
+  // --- v14: add pattern_class to _objects (knowledge vs dataset) ---
+  //
+  // A pattern is either "knowledge" (the default — prose recalled by meaning,
+  // the texture prime/decay/supersession are tuned for) or "dataset" (structured
+  // records aggregated by computation). Dataset patterns opt out of the memory
+  // machinery (embed/prime/stale) and opt in to strict write-time validation.
+
+  try {
+    const objCols4 = db.exec(`PRAGMA table_info("_objects")`).toArray() as any[];
+    if (!objCols4.some((c: any) => c.name === "pattern_class")) {
+      db.exec(`ALTER TABLE "_objects" ADD COLUMN "pattern_class" TEXT NOT NULL DEFAULT 'knowledge'`);
+    }
+  } catch {}
+
   // --- v13: add pinned column to _web_cache (existing tables need ALTER) ---
 
   try {
