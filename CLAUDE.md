@@ -13,7 +13,7 @@ project-docs/active/   Design documents (the "why" and "what")
 mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/index.ts         Route table + OAuthProvider config (~60 lines)
   src/router.ts        Declarative router: types, enums, pattern matching, dispatch
-  src/routes/auth.ts   /authorize, /auth/verify, passkey setup & authentication
+  src/routes/auth.ts   /authorize, /auth/verify, passkey setup & authentication, /invite/:token approval
   src/routes/io.ts     /o/entry/:pattern/:id shared entries, /o/:path egress, /p/:path publications, /f/:token|:id documents, /i/:path ingress, /upload/:token
   src/routes/marketplace.ts  Token management, git endpoints (composes query + git adapter)
   src/routes/dev.ts    Dev-only seed routes (Auth.DEV gated, inert in production)
@@ -76,7 +76,7 @@ Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the wo
 One hive, several people. Hive identity (which Durable Object) is decoupled from actor identity (which person): `HIVE_ID` (`src/constants.ts`, literal `"user:owner"` — a rename for clarity, not a re-key) names the single store every member authenticates into; the authenticated member's label rides in the OAuth session props as `actor`, separate from `hiveId`. Design doc: `project-docs/active/shared-hive.md`.
 
 - **Members** (`_members` kernel pattern): the roster. `label` (immutable handle, the join key for passkeys/tokens), `display_name`, `role` (`owner`|`member`), `status` (`active`|`suspended`). The `owner` member is seeded on boot and reserved. Creating a member is consent-gated at the MCP layer (it grants standing access to the whole hive).
-- **Invite flow**: (1) create the `_members` row with `label` + `display_name` (the inviting agent names them); (2) mint a `register`-scoped access token with `member: "<label>"` (forced single-use, consent-gated — minting it is what grants registration); (3) give the invitee its `/setup?token=...` URL, where they register their own passkey, bound to that member. The setup endpoints accept either the master secret (owner bootstrap) or a `register` token (invitee).
+- **Invite flow**: (1) create the `_members` row with `label` + `display_name` (the inviting agent names them); (2) mint a `register`-scoped access token with `member: "<label>"` (forced single-use; the hook refuses `owner` and any non-active-roster member); (3) the token is minted **inert** — an existing member must approve it in person at `/invite/{token}` via passkey (master-secret fallback) before it works; (4) once approved, give the invitee its `/setup?token=...` URL, where they register their own passkey, bound to that member. The setup endpoints accept either the master secret (owner bootstrap) or an **approved** `register` token (invitee). The passkey approval — not the agent-satisfiable mutate round-trip — is the real human-consent gate: `approved_at` is IMMUTABLE on the mutate path and set only by the approval endpoint, so an agent acting on injected content can mint an invite but never activate it.
 - **Revocation**: suspend (`status: suspended`) or archive a member → their passkey logins and tokens stop resolving; also archive their `_access_tokens` rows. The global session epoch (`/sessions/revoke`) remains the all-at-once panic button.
 - **Attribution** (per-entry `created_by`/`updated_by`) is the deliberate **Phase 2** follow-up — not yet implemented. Phase 1 establishes distinct identities and per-member revocation; the actor is resolved and carried in props but not yet written onto entries.
 
@@ -142,7 +142,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `read` — read any shared entry or output (matches `read:entry:axioms:7`)
 - `upload` — write via `/upload/{token}` (constraints JSON: `{target_pattern, target_id, target_facet, mode}`)
 - `marketplace` — private marketplace git access (constraints JSON: `{plugins: [...]}`)
-- `register` — one-time passkey-registration link for inviting a member (constraints JSON: `{member}`; forced single-use). Not usable as an API token (doesn't match `*`); only the `/setup` flow accepts it.
+- `register` — one-time passkey-registration link for inviting a member (constraints JSON: `{member}`; forced single-use). Minted **inert**; requires a member's passkey approval at `/invite/{token}` (sets `approved_at`) before `/setup` accepts it. Not usable as an API token (doesn't match `*`); rejects `owner` and non-roster members.
 
 ### Internal tables
 

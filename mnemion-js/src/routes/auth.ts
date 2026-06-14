@@ -210,6 +210,200 @@ export const setupComplete: RouteHandler = async (ctx) => {
   }
 };
 
+// === Invite approval (human-present passkey gate for member invites) ===
+//
+// Minting a register token is no longer enough to let someone register a passkey
+// — the token is inert until a current member approves it here, in person, with
+// their passkey (master-secret fallback for the bootstrap case). This defeats an
+// agent acting on injected content that mints an invite and exfiltrates the URL:
+// the attacker still can't activate it without a real member's authenticator.
+// The agent-satisfiable mutate round-trip can't clear this gate.
+
+function inviteApprovalPage(token: string, displayName: string, hasPasskey: boolean): string {
+  const safeName = displayName.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c] as string));
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${PRODUCT_NAME} — Approve invite</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 80px auto; padding: 0 20px; }
+    h1 { font-size: 1.4em; }
+    p { color: #555; line-height: 1.5; }
+    .who { font-weight: 600; color: #111; }
+    button { display: block; width: 100%; padding: 12px; margin: 8px 0; font-size: 1em;
+      border: 1px solid #111; border-radius: 6px; cursor: pointer; background: #111; color: #fff; }
+    button:hover { background: #333; }
+    button:disabled { background: #999; border-color: #999; cursor: default; }
+    input { display: block; width: 100%; padding: 10px; margin: 8px 0; font-size: 1em;
+      border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+    .divider { text-align: center; color: #999; margin: 16px 0; font-size: 0.9em; }
+    #secret-form { display: ${hasPasskey ? "none" : "block"}; }
+    #toggle { background: none; color: #555; border: none; text-decoration: underline;
+      cursor: pointer; font-size: 0.9em; padding: 4px; width: auto; display: ${hasPasskey ? "inline" : "none"}; }
+    #passkey-btn { display: ${hasPasskey ? "block" : "none"}; }
+    #passkey-divider { display: ${hasPasskey ? "block" : "none"}; }
+    .ok { color: #080; } .err { color: #c00; }
+    code { background: #f3f3f3; padding: 2px 5px; border-radius: 4px; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h1>Approve invite</h1>
+  <p>Approve a new member for this ${PRODUCT_NAME} hive: <span class="who">${safeName}</span>. Approving grants them standing read/write access to everything in the hive. Authenticate to confirm it's you.</p>
+  <button id="passkey-btn">Approve with passkey</button>
+  <div id="passkey-divider" class="divider">or</div>
+  <button id="toggle">Use master secret instead</button>
+  <form id="secret-form">
+    <input type="password" id="secret" placeholder="Master secret" autofocus />
+    <button type="submit">Approve</button>
+  </form>
+  <div id="status"></div>
+  <script type="module">
+    import { startAuthentication } from 'https://esm.sh/@simplewebauthn/browser@13';
+    const token = ${JSON.stringify(token)};
+    const status = document.getElementById('status');
+    const passkeyBtn = document.getElementById('passkey-btn');
+
+    function done(result) {
+      if (result && result.ok) {
+        const setupUrl = location.origin + result.setupPath;
+        status.innerHTML = '<p class="ok">Invite approved.</p><p>Send this one-time setup link to the invitee:</p><p><code>' + setupUrl + '</code></p>';
+        passkeyBtn.disabled = true;
+        document.getElementById('secret-form').style.display = 'none';
+        document.getElementById('toggle').style.display = 'none';
+        document.getElementById('passkey-divider').style.display = 'none';
+        return true;
+      }
+      return false;
+    }
+
+    passkeyBtn.addEventListener('click', async () => {
+      passkeyBtn.disabled = true;
+      status.textContent = '';
+      try {
+        const beginRes = await fetch('/invite/' + token + '/begin', { method: 'POST' });
+        if (!beginRes.ok) throw new Error('Failed to start authentication');
+        const options = await beginRes.json();
+        const assertion = await startAuthentication({ optionsJSON: options });
+        const completeRes = await fetch('/invite/' + token + '/complete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assertion }),
+        });
+        const result = await completeRes.json();
+        if (!done(result)) throw new Error(result.error || 'Approval failed');
+      } catch (err) {
+        const span = document.createElement('span');
+        span.className = 'err'; span.textContent = err.message || 'Approval failed';
+        status.replaceChildren(span);
+        passkeyBtn.disabled = false;
+      }
+    });
+
+    document.getElementById('toggle').addEventListener('click', () => {
+      document.getElementById('secret-form').style.display = 'block';
+      document.getElementById('toggle').style.display = 'none';
+    });
+
+    document.getElementById('secret-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const secret = document.getElementById('secret').value;
+      try {
+        const res = await fetch('/invite/' + token + '/complete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ secret }),
+        });
+        const result = await res.json();
+        if (!done(result)) throw new Error(result.error || 'Approval failed');
+      } catch (err) {
+        const span = document.createElement('span');
+        span.className = 'err'; span.textContent = err.message || 'Approval failed';
+        status.replaceChildren(span);
+      }
+    });
+  </script>
+</body>
+</html>`;
+}
+
+export const invitePage: RouteHandler = async (ctx) => {
+  const info = await ctx.hive.getRegisterToken(ctx.params.token);
+  if (!info) {
+    return new Response("Invalid, expired, or already-used invite.", { status: 404 });
+  }
+  if (info.approved) {
+    return new Response("This invite has already been approved.", { status: 409 });
+  }
+  const hasPasskey = await ctx.hive.hasPasskey();
+  return new Response(inviteApprovalPage(ctx.params.token, info.userDisplayName, hasPasskey), {
+    headers: { "Content-Type": "text/html" },
+  });
+};
+
+export const inviteBegin: RouteHandler = async (ctx) => {
+  // Only proceed for a genuine, unapproved invite token.
+  const info = await ctx.hive.getRegisterToken(ctx.params.token);
+  if (!info || info.approved) {
+    return Response.json({ error: "Invalid or already-approved invite" }, { status: 404 });
+  }
+  const storedPasskeys = await ctx.hive.getPasskeys();
+  if (storedPasskeys.length === 0) {
+    // No passkeys registered yet — approval must use the master-secret fallback.
+    return Response.json({ error: "No passkey registered; use the master secret" }, { status: 404 });
+  }
+  const { options, challenge } = await (await passkey()).beginAuthentication(ctx.request, storedPasskeys);
+  await ctx.env.OAUTH_KV.put(`invite_challenge:${ctx.params.token}`, challenge, { expirationTtl: 300 });
+  return Response.json(options);
+};
+
+export const inviteComplete: RouteHandler = async (ctx) => {
+  const token = ctx.params.token;
+  const info = await ctx.hive.getRegisterToken(token);
+  if (!info || info.approved) {
+    return Response.json({ error: "Invalid or already-approved invite" }, { status: 404 });
+  }
+  const body = (await ctx.request.json()) as { assertion?: any; secret?: string };
+
+  // Path A: master-secret approval (bootstrap / no-passkey fallback). Only a
+  // human with the deploy secret can use this — agents never hold it.
+  if (body.secret != null) {
+    if (!ctx.env.MNEMION_SECRET || !(await timingSafeEqual(body.secret, ctx.env.MNEMION_SECRET))) {
+      return Response.json({ error: "Invalid secret" }, { status: 401 });
+    }
+    const approved = await ctx.hive.approveRegisterToken(token);
+    if (!approved) return Response.json({ error: "Invalid invite" }, { status: 404 });
+    return Response.json({ ok: true, setupPath: `/setup?token=${encodeURIComponent(token)}` });
+  }
+
+  // Path B: passkey approval. The asserted credential must belong to an active
+  // member (the owner sentinel counts). This is the human-presence proof.
+  const challenge = await ctx.env.OAUTH_KV.get(`invite_challenge:${token}`);
+  if (!challenge) {
+    return Response.json({ error: "Challenge expired" }, { status: 400 });
+  }
+  await ctx.env.OAUTH_KV.delete(`invite_challenge:${token}`);
+
+  const storedPasskeys = await ctx.hive.getPasskeys();
+  if (storedPasskeys.length === 0) {
+    return Response.json({ error: "No passkey registered" }, { status: 404 });
+  }
+  try {
+    const { verified, credentialId } = await (await passkey()).completeAuthentication(ctx.request, body.assertion, challenge, storedPasskeys);
+    if (!verified) {
+      return Response.json({ error: "Passkey verification failed" }, { status: 401 });
+    }
+    const approver = await actorForCredential(ctx, credentialId);
+    if (!approver) {
+      return Response.json({ error: "Only an active member can approve invites" }, { status: 403 });
+    }
+    const approved = await ctx.hive.approveRegisterToken(token);
+    if (!approved) return Response.json({ error: "Invalid invite" }, { status: 404 });
+    return Response.json({ ok: true, setupPath: `/setup?token=${encodeURIComponent(token)}` });
+  } catch (err: any) {
+    return Response.json({ error: err.message }, { status: 401 });
+  }
+};
+
 export const passkeyBegin: RouteHandler = async (ctx) => {
   const { authStateId } = (await ctx.request.json()) as { authStateId: string };
 

@@ -1339,6 +1339,8 @@ export class HiveDO extends DurableObject {
   }
   async isMemberActive(member: string) { return cred.isMemberActive(this.db, member); }
   async resolveRegisterToken(token: string) { return cred.resolveRegisterToken(this.db, token); }
+  async getRegisterToken(token: string) { return cred.getRegisterToken(this.db, token); }
+  async approveRegisterToken(token: string) { return cred.approveRegisterToken(this.db, token); }
   async consumeAccessToken(id: number) { cred.consumeToken(this.db, id); }
   async validateAuthCode(code: string) { return cred.validateAuthCode(this.db, code); }
   async consumeAuthCode(code: string) { return cred.consumeAuthCode(this.db, code); }

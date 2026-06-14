@@ -5,7 +5,7 @@ import { HIVE_ID } from "./constants";
 import { Method, Auth, createRouter, type Route, type Env } from "./router";
 
 // Auth
-import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify, revokeSessions } from "./routes/auth";
+import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify, revokeSessions, invitePage, inviteBegin, inviteComplete } from "./routes/auth";
 // I/O
 import { serveSharedEntry, serveOutput, servePublication, receiveInput, upload, uploadDocument, serveDocument, exportPattern } from "./routes/io";
 // Marketplace
@@ -31,6 +31,11 @@ const routes: Route[] = [
   { method: Method.POST, pattern: "/setup/complete",       auth: Auth.CONFIGURED, handler: setupComplete },
   { method: Method.POST, pattern: "/auth/passkey/begin",   handler: passkeyBegin },
   { method: Method.POST, pattern: "/auth/passkey/complete", handler: passkeyComplete },
+
+  // Invite approval (human passkey gate before a register token can be used)
+  { method: Method.GET,  pattern: "/invite/:token",          auth: Auth.CONFIGURED, where: { token: /^[a-fA-F0-9]+$/ }, handler: invitePage },
+  { method: Method.POST, pattern: "/invite/:token/begin",    auth: Auth.CONFIGURED, where: { token: /^[a-fA-F0-9]+$/ }, handler: inviteBegin },
+  { method: Method.POST, pattern: "/invite/:token/complete", auth: Auth.CONFIGURED, where: { token: /^[a-fA-F0-9]+$/ }, handler: inviteComplete },
 
   // Session login (for browser pages)
   { method: Method.GET,  pattern: "/login",                auth: Auth.CONFIGURED, handler: loginPage },

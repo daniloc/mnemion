@@ -129,13 +129,14 @@ export function isMemberActive(db: DB, member: string): boolean {
 }
 
 /**
- * Resolve a passkey-registration ("register" scoped) setup token to the member
- * it provisions, with display fields for the WebAuthn ceremony. Does not consume
- * the token — completion consumes it via consumeToken. Returns null for any
- * token that isn't a valid register token.
+ * Validate a "register"-scoped setup token down to the member it provisions,
+ * with display fields for the WebAuthn ceremony. Enforces the invariants that
+ * don't depend on approval: register scope, never the owner, and an active
+ * non-archived roster member. Returns null otherwise. Does NOT check approval —
+ * callers layer that on (see getRegisterToken / resolveRegisterToken).
  */
-export function resolveRegisterToken(db: DB, token: string): {
-  id: number; member: string; userName: string; userDisplayName: string;
+function validateRegisterToken(db: DB, token: string): {
+  row: any; member: string; userName: string; userDisplayName: string;
 } | null {
   const row = findAccessToken(db, token);
   if (!row) return null;
@@ -150,20 +151,57 @@ export function resolveRegisterToken(db: DB, token: string): {
   // Robust gate (independent of how `member`/constraints got their value — the
   // create hook validates at mint time, but an update could tamper with them):
   // the owner is never provisionable via an invite, and the target must be an
-  // active, non-archived roster member. This is the last line before a passkey
-  // is bound, so it must not trust the token's stored member blindly.
+  // active, non-archived roster member.
   if (member === OWNER_ACTOR) return null;
   const m = db.exec(
     `SELECT label, display_name FROM "_members" WHERE label = ? AND status = 'active' AND archived_at IS NULL`,
     member
   ).toArray()[0] as any;
   if (!m) return null;
-  return {
-    id: row.id,
-    member,
-    userName: m.label,
-    userDisplayName: m.display_name || member,
-  };
+  return { row, member, userName: m.label, userDisplayName: m.display_name || member };
+}
+
+/**
+ * Register-token info for the approval page (does not require approval). Returns
+ * the member + display fields and whether it has already been approved.
+ */
+export function getRegisterToken(db: DB, token: string): {
+  id: number; member: string; userName: string; userDisplayName: string; approved: boolean;
+} | null {
+  const v = validateRegisterToken(db, token);
+  if (!v) return null;
+  return { id: v.row.id, member: v.member, userName: v.userName, userDisplayName: v.userDisplayName, approved: !!v.row.approved_at };
+}
+
+/**
+ * Resolve a register token for the /setup flow. Adds the human-approval gate on
+ * top of validateRegisterToken: an invite is inert until a member approves it
+ * via passkey at /invite/{token}. This is the last line before a passkey is
+ * bound, so an unapproved (or tampered) token must not pass.
+ */
+export function resolveRegisterToken(db: DB, token: string): {
+  id: number; member: string; userName: string; userDisplayName: string;
+} | null {
+  const v = validateRegisterToken(db, token);
+  if (!v) return null;
+  if (!v.row.approved_at) return null;
+  return { id: v.row.id, member: v.member, userName: v.userName, userDisplayName: v.userDisplayName };
+}
+
+/**
+ * Mark a register token approved (human-present passkey approval). Validates the
+ * same invariants, then stamps approved_at via raw SQL — approved_at is IMMUTABLE
+ * on the mutate path, so this is the only way it can be set. Returns the member
+ * approved, or null if the token is invalid / not a register token.
+ */
+export function approveRegisterToken(db: DB, token: string): { member: string } | null {
+  const v = validateRegisterToken(db, token);
+  if (!v) return null;
+  db.exec(
+    `UPDATE "_access_tokens" SET approved_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+    v.row.id
+  );
+  return { member: v.member };
 }
 
 /** Validate a token without consuming it (for reusable Bearer sessions). */

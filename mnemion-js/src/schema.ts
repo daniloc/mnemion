@@ -98,6 +98,7 @@ Set "member" to attribute a token to a specific member of the hive (the person w
       "expires_at" TEXT,
       "single_use" INTEGER NOT NULL DEFAULT 0,
       "consumed_at" TEXT,
+      "approved_at" TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       archived_at TEXT,
@@ -112,6 +113,7 @@ Set "member" to attribute a token to a specific member of the hive (the person w
       { name: "expires_at", type: "datetime", required: false },
       { name: "single_use", type: "boolean", required: false },
       { name: "consumed_at", type: "datetime", required: false },
+      { name: "approved_at", type: "datetime", required: false },
     ],
   },
   {
@@ -809,11 +811,15 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   } catch {}
 
-  // _access_tokens gains a member column (which person holds the token).
+  // _access_tokens gains a member column (which person holds the token) and an
+  // approved_at column (human passkey-approval gate for register/invite tokens).
   try {
     const atCols = db.exec(`PRAGMA table_info("_access_tokens")`).toArray() as any[];
     if (atCols.length && !atCols.some((c: any) => c.name === "member")) {
       db.exec(`ALTER TABLE "_access_tokens" ADD COLUMN "member" TEXT`);
+    }
+    if (atCols.length && !atCols.some((c: any) => c.name === "approved_at")) {
+      db.exec(`ALTER TABLE "_access_tokens" ADD COLUMN "approved_at" TEXT`);
     }
   } catch {}
 

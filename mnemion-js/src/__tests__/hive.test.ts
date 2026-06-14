@@ -1561,17 +1561,52 @@ describe("Shared hive — register tokens (invite)", () => {
     expect(tok.error).toBe(true);
   });
 
-  it("resolves a register token to its member's setup identity, and not as an API token", async () => {
+  it("is inert until approved, then resolves to the member's setup identity (never as an API token)", async () => {
     const store = getStore();
     await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
     const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+
+    // Before approval: the approval page can see it, but /setup refuses it.
+    const info = await store.getRegisterToken(tok.entry.token);
+    expect(info!.approved).toBe(false);
+    expect(info!.userDisplayName).toBe("Sam");
+    expect(await store.resolveRegisterToken(tok.entry.token)).toBeNull();
+
+    // After a member approves: /setup resolves it.
+    const approved = await store.approveRegisterToken(tok.entry.token);
+    expect(approved!.member).toBe("partner");
     const resolved = await store.resolveRegisterToken(tok.entry.token);
     expect(resolved).not.toBeNull();
     expect(resolved!.member).toBe("partner");
     expect(resolved!.userName).toBe("partner");
-    expect(resolved!.userDisplayName).toBe("Sam");
-    // A register token must not grant API access.
+
+    // A register token must not grant API access, approved or not.
     expect(await store.resolveTokenActor(tok.entry.token, "*")).toBeNull();
+  });
+
+  it("never approves an invite for the owner or a non-roster member", async () => {
+    const store = getStore();
+    // Craft a register token pointing at owner via raw write (bypassing the hook).
+    let ownerTok = "", ghostTok = "";
+    await runInDurableObject(store, async (_i, state) => {
+      ownerTok = "abad1deaabad1deaabad1deaabad1dea";
+      ghostTok = "decafbaddecafbaddecafbaddecafbad";
+      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`, ownerTok, JSON.stringify({ member: "owner" }));
+      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`, ghostTok, JSON.stringify({ member: "ghost" }));
+    });
+    expect(await store.approveRegisterToken(ownerTok)).toBeNull();
+    expect(await store.approveRegisterToken(ghostTok)).toBeNull();
+  });
+
+  it("treats approved_at as system-managed (not settable via mutate)", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+    // An agent trying to self-approve by writing approved_at must be refused.
+    const attempt = JSON.parse(await store.mutate("_access_tokens", "update", JSON.stringify({ id: tok.entry.id, version: tok.entry.version, approved_at: "2099-01-01" })));
+    expect(attempt.error).toBe(true);
+    // And the token is still inert.
+    expect(await store.resolveRegisterToken(tok.entry.token)).toBeNull();
   });
 
   // Privilege-escalation guards: an invite link must never be able to register

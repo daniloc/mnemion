@@ -46,6 +46,10 @@ export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = 
     fields: ["label"],
     message: "A member's label is immutable — it's the stable handle that passkeys, tokens, and attribution reference. Correct display_name instead, or re-invite under a new label.",
   },
+  _access_tokens: {
+    fields: ["approved_at", "consumed_at"],
+    message: "approved_at and consumed_at are system-managed (passkey approval / single-use consumption) and cannot be set via mutate.",
+  },
 };
 
 // === Create hooks — validate + transform before INSERT ===

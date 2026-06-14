@@ -42,8 +42,13 @@ const CONSENT_GATED: Record<string, string> = {
     "Making this document non-private serves its file over HTTP at /f/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this file. Call mutate again with the same arguments to proceed.",
   _members:
     "Adding a member grants another person standing access to this shared hive — everything in it becomes readable and writable by them. Only proceed if the human explicitly chose to share this hive with this person. Call mutate again with the same arguments to proceed.",
+  // _access_tokens stays gated so patch is rejected (it could otherwise set the
+  // system-managed approved_at/consumed_at), but register-token creation is NOT
+  // gated by the re-issue round-trip — that gate is agent-satisfiable, so invite
+  // tokens are instead minted INERT and require a real member's passkey approval
+  // at /invite/{token} before they work. See consentRequired below.
   _access_tokens:
-    "Creating a passkey-registration token mints a one-time setup link: whoever opens it can register their own passkey and gain member access to this hive. Only proceed if the human is deliberately inviting this person. Call mutate again with the same arguments to proceed.",
+    "This token cannot be modified with patch.",
 };
 
 // Whether a write to a consent-gated pattern actually needs the round-trip.
@@ -58,13 +63,12 @@ function consentRequired(pattern: string, operation: string | undefined, dataObj
     const vis = dataObj?.visibility;
     return vis === "public" || vis === "unlisted";
   }
-  // Most token creation is benign and ungated — only a passkey-registration
-  // ("register" scoped) token is a standing grant of member access, so only that
-  // trips the round-trip. (patch is force-tripped upstream for any gated pattern.)
-  if (pattern === "_access_tokens") {
-    if (operation === "patch") return true;
-    return dataObj?.scope === "register";
-  }
+  // Token creation never trips the re-issue round-trip: ordinary tokens are
+  // benign, and register/invite tokens are minted inert and gated by an
+  // out-of-band passkey approval at /invite/{token} instead (a stronger,
+  // human-present gate that an injected agent can't satisfy). patch is still
+  // force-rejected upstream for any gated pattern, protecting approved_at.
+  if (pattern === "_access_tokens") return false;
   return true;
 }
 
@@ -608,6 +612,16 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           return {
             isError: true as const,
             content: [{ type: "text" as const, text: parsed.message }],
+          };
+        }
+        // A freshly minted invite (register token) is inert until a current
+        // member approves it in person with their passkey. Tell the agent to
+        // route the human through approval rather than handing /setup directly.
+        if (pattern === "_access_tokens" && resolvedOp === "create"
+            && parsed.entry?.scope === "register" && parsed.entry?.token) {
+          parsed.invite_approval = `This invite is INERT until an existing member approves it in person. Send a current member to /invite/${parsed.entry.token} to approve via passkey — only then does the invitee's /setup link work. Prepend this hive's host (see ${uri("_system/instance")}). Do not hand out /setup before approval; it will be refused.`;
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
           };
         }
         return {
