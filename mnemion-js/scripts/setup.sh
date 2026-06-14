@@ -84,6 +84,23 @@ else
   npx wrangler vectorize create "$VEC_NAME" --dimensions=768 --metric=cosine
 fi
 
+# === R2 bucket: find-or-create ===
+R2_NAME=$(awk '
+  /^\[\[r2_buckets\]\]/ { in_r2=1; next }
+  /^\[/ { in_r2=0 }
+  in_r2 && /^bucket_name *= *"/ { match($0, /"[^"]+"/); print substr($0, RSTART+1, RLENGTH-2); exit }
+' wrangler.toml)
+
+if [ -n "$R2_NAME" ]; then
+  echo "Checking R2 bucket ${R2_NAME}..."
+  if npx wrangler r2 bucket info "$R2_NAME" >/dev/null 2>&1; then
+    echo "  Already exists."
+  else
+    echo "  Creating..."
+    npx wrangler r2 bucket create "$R2_NAME"
+  fi
+fi
+
 # === Master secret ===
 SECRET=$(openssl rand -hex 32)
 echo ""

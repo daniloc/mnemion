@@ -18,6 +18,7 @@ import indexGuideRaw from "./system-docs/index-guide.md";
 import remoteAccessRaw from "./system-docs/remote-access.md";
 import httpIoRaw from "./system-docs/http-io.md";
 import capabilitiesRaw from "./system-docs/capabilities.md";
+import memoryMaintenanceRaw from "./system-docs/memory-maintenance.md";
 
 // === System doc parsing ===
 
@@ -50,6 +51,7 @@ function generateToolsDoc(): string {
 const SYSTEM_DOCS_SEED = [
   schemaEvolutionRaw, skillsRaw, conventionsRaw,
   indexGuideRaw, remoteAccessRaw, httpIoRaw, capabilitiesRaw,
+  memoryMaintenanceRaw,
 ].map(parseDocFile);
 
 // === Kernel table declarations ===
@@ -81,17 +83,22 @@ Scopes:
 - read:entry:{pattern}:{id} — read a specific shared entry
 - read:output:{path} — read a specific output
 - upload — write via POST /upload/{token} (constraints: {target_pattern, target_id, target_facet, mode})
-- marketplace — private marketplace git access (constraints: {plugins: [...]})`,
+- marketplace — private marketplace git access (constraints: {plugins: [...]})
+- register — one-time passkey-registration link for inviting a member (constraints: {member}; forced single-use). The holder of the /setup?token=... URL registers a passkey for that member.
+
+Set "member" to attribute a token to a specific member of the hive (the person who holds it); leave it unset for owner/headless tokens.`,
     doctrine: "Create tokens only when the human requests external access. Use the narrowest scope possible. Never create wildcard tokens without explicit instruction.",
     ddl: `CREATE TABLE IF NOT EXISTS "_access_tokens" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
       "label" TEXT,
+      "member" TEXT,
       "scope" TEXT NOT NULL DEFAULT '*',
       "constraints" TEXT,
       "expires_at" TEXT,
       "single_use" INTEGER NOT NULL DEFAULT 0,
       "consumed_at" TEXT,
+      "approved_at" TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       archived_at TEXT,
@@ -100,11 +107,40 @@ Scopes:
     facets: [
       { name: "token", type: "text", required: false },
       { name: "label", type: "text", required: false },
+      { name: "member", type: "text", required: false },
       { name: "scope", type: "text", required: false },
       { name: "constraints", type: "text", required: false },
       { name: "expires_at", type: "datetime", required: false },
       { name: "single_use", type: "boolean", required: false },
       { name: "consumed_at", type: "datetime", required: false },
+      { name: "approved_at", type: "datetime", required: false },
+    ],
+  },
+  {
+    name: "_members",
+    description: `The roster of people who share this hive. Each member is a distinct person who authenticates as themselves (their own passkey or access tokens) but reads and writes the same shared store. "label" is the stable, immutable handle everything else references (passkeys, tokens, attribution); "display_name" is the human name shown in the UI. The "owner" member is the hive's founder.
+
+Adding a member is a two-step invite: (1) create the member here with label + display_name (the inviting agent names them), then (2) mint a single-use "register"-scoped access token with constraints {"member": "<label>"} and give the invitee its /setup?token=... URL, where they register their own passkey. Suspend a member (status: suspended) or archive them to revoke access; also archive their tokens and they can no longer authenticate.`,
+    doctrine: "Only add a member when the human explicitly chooses to share this hive with that person — it grants them full read/write access to everything. Set both label and display_name at invite time. label is immutable; correct a typo'd display_name with update, but a wrong label means re-inviting.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_members" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "label" TEXT NOT NULL,
+      "display_name" TEXT,
+      "role" TEXT NOT NULL DEFAULT 'member',
+      "status" TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_members_label_active" ON "_members" ("label") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "label", type: "text", required: true },
+      { name: "display_name", type: "text", required: false },
+      { name: "role", type: "select", required: false, options: ["owner", "member"] },
+      { name: "status", type: "select", required: false, options: ["active", "suspended"] },
     ],
   },
   {
@@ -201,6 +237,47 @@ Scopes:
       { name: "body_facet", type: "text", required: false },
       { name: "facet_mapping", type: "text", required: false },
       { name: "visibility", type: "text", required: false },
+    ],
+  },
+  {
+    name: "_publications",
+    description: "Declarative outbound projections — the hive's publication surface. Each entry declares a path, a source query, and a transport; GET /p/{path} renders LIVE pattern data at request time (never stored). Formats: html, rss, json, markdown (YAML frontmatter). Superseded entries are excluded by default — publications project current truth.",
+    doctrine: "Publishing serves live query results over HTTP — only create when the human explicitly approves making that data public. Default to unlisted over public when in doubt. The template facet is a per-entry seam: {{facet}} placeholders plus {{_label}}, {{_uri}}, {{_id}}, {{_updated_at}}; substituted values are HTML-escaped in html/rss output, template text passes through raw. The css facet appends owner styles after the defaults in html output. Set visibility to private to stage without serving. Source must be a user pattern — kernel patterns are never publishable.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_publications" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "path" TEXT NOT NULL,
+      "title" TEXT,
+      "source_pattern" TEXT NOT NULL,
+      "filters" TEXT,
+      "facets" TEXT,
+      "sort" TEXT NOT NULL DEFAULT '-updated_at',
+      "limit" INTEGER NOT NULL DEFAULT 50,
+      "format" TEXT NOT NULL,
+      "template" TEXT,
+      "css" TEXT,
+      "visibility" TEXT NOT NULL DEFAULT 'public',
+      "include_superseded" INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_publications_path_active" ON "_publications" ("path") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "path", type: "text", required: true },
+      { name: "title", type: "text", required: false },
+      { name: "source_pattern", type: "text", required: true },
+      { name: "filters", type: "text", required: false },
+      { name: "facets", type: "text", required: false },
+      { name: "sort", type: "text", required: false },
+      { name: "limit", type: "integer", required: false },
+      { name: "format", type: "select", required: true, options: ["html", "rss", "json", "markdown"] },
+      { name: "template", type: "text", required: false },
+      { name: "css", type: "text", required: false },
+      { name: "visibility", type: "text", required: false },
+      { name: "include_superseded", type: "boolean", required: false },
     ],
   },
   {
@@ -310,6 +387,79 @@ Scopes:
     ],
   },
   {
+    name: "_entry_access_log",
+    description: "Append-only log of prime hits per user-pattern entry. Decay freshness (last_touch) and stale detection are derived from this log plus updated_at — recall is rehearsal. GC'd after 90 days.",
+    doctrine: "Do not write directly. Each prime call that surfaces a user-pattern entry appends a row here. Decay and the stale view query this log; nothing else should.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_entry_access_log" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "pattern" TEXT NOT NULL,
+      "entry_id" INTEGER NOT NULL,
+      "accessed_at" TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE INDEX IF NOT EXISTS "_entry_access_log_entry" ON "_entry_access_log" ("pattern", "entry_id")`,
+    ],
+    facets: [
+      { name: "pattern", type: "text", required: true },
+      { name: "entry_id", type: "integer", required: true },
+      { name: "accessed_at", type: "datetime", required: false },
+    ],
+  },
+  {
+    name: "_documents",
+    description: "Document store. Each entry is metadata for a file whose bytes live in R2 (never in the hive). Two-step upload: create the entry (the response carries a single-use upload_url), then POST the file to it. Served at GET /f/{id}, gated by the entry's visibility. On upload, text is extracted into extracted_text so document contents are searchable (search) and recallable (prime). Bytes are immutable; the metadata is the evolvable knowledge layer that points at them — link documents to other entries like any pattern.",
+    doctrine: "Create a document entry with at least a title (plus optional description, tags); the create response includes a single-use upload_url and token — POST the file bytes there to store them in R2. The r2_key, size, content_type, stored_at, extracted_text, and extraction_status facets are filled by the system on upload — never set them yourself. On upload, text is extracted (text files inline, PDFs in the background) into extracted_text, which makes document CONTENTS searchable via search and recallable via prime; extraction_status reports done/pending/failed/unsupported. visibility defaults to private (not served); set it to unlisted (token-gated) or public ONLY when the human approves publishing the file — that flip is consent-gated. Archive an entry to delete both the metadata and the R2 object.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_documents" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "title" TEXT NOT NULL,
+      "description" TEXT,
+      "tags" TEXT,
+      "content_type" TEXT,
+      "size" INTEGER,
+      "r2_key" TEXT,
+      "stored_at" TEXT,
+      "extracted_text" TEXT,
+      "extraction_status" TEXT,
+      "visibility" TEXT NOT NULL DEFAULT 'private',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    facets: [
+      { name: "title", type: "text", required: true },
+      { name: "description", type: "text", required: false },
+      { name: "tags", type: "text", required: false },
+      { name: "content_type", type: "text", required: false },
+      { name: "size", type: "integer", required: false },
+      { name: "r2_key", type: "text", required: false },
+      { name: "stored_at", type: "datetime", required: false },
+      { name: "extracted_text", type: "text", required: false },
+      { name: "extraction_status", type: "text", required: false },
+      { name: "visibility", type: "text", required: false },
+    ],
+  },
+  {
+    name: "_maintenance_passes",
+    description: "Record of memory maintenance passes — reviewing stale entries, proposing supersessions and archives, ratifying memory policies. 'Days since last pass' is derived from the latest row and announced to connecting agents.",
+    doctrine: "Create an entry AFTER completing a maintenance pass with the human: review the stale view, propose supersessions/archives/policies, apply what the human ratifies, then record a summary here. See the memory-maintenance system doc for the full protocol.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_maintenance_passes" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "summary" TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    facets: [
+      { name: "summary", type: "text", required: true },
+    ],
+  },
+  {
     name: "_long_term_fragments",
     description: "Durable working memory. Fragments promoted automatically from _short_term_fragments after surfacing in 3+ prime calls — proof of recurring relevance. Garbage collected after 6 months.",
     doctrine: "Do not write directly. Fragments are promoted here automatically when they prove their value by surfacing repeatedly in prime results. These are the observations that turned out to matter.",
@@ -333,8 +483,8 @@ Scopes:
   },
   {
     name: "_web_cache",
-    description: "Cached web content fetched via resolve(). Entries are automatically created when resolving https:// URLs. Cached content expires based on the source adapter's TTL.",
-    doctrine: "Managed automatically by the web resolution system. Do not create entries directly — use resolve with an https:// URL instead.",
+    description: "Cached web content fetched via resolve(). Entries are automatically created when resolving https:// URLs. Cached content expires based on the source adapter's TTL, unless pinned for indefinite retention via resolve(retain: true).",
+    doctrine: "Managed automatically by the web resolution system. Do not create entries directly — use resolve with an https:// URL instead. To keep a resolved snapshot forever (never re-fetched, never GC'd), resolve it with retain: true; resolve with retain: false to release it.",
     ddl: `CREATE TABLE IF NOT EXISTS "_web_cache" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "url" TEXT NOT NULL,
@@ -343,6 +493,7 @@ Scopes:
       "metadata" TEXT,
       "fetched_at" TEXT NOT NULL DEFAULT (datetime('now')),
       "expires_at" TEXT NOT NULL,
+      "pinned" INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       archived_at TEXT,
@@ -358,6 +509,7 @@ Scopes:
       { name: "metadata", type: "text", required: false },
       { name: "fetched_at", type: "datetime", required: false },
       { name: "expires_at", type: "datetime", required: true },
+      { name: "pinned", type: "boolean", required: false },
     ],
   },
   {
@@ -467,8 +619,19 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
 
+  // Armed consent round-trips. Durable (not SessionDO memory) because
+  // sessionless MCP clients land every tool call on a fresh session — an
+  // in-memory set can never complete the confirm-by-reissuing handshake.
+  db.exec(`CREATE TABLE IF NOT EXISTS _pending_consent (
+    key TEXT PRIMARY KEY,
+    expires_at TEXT NOT NULL
+  )`);
+
+  // One passkey per member (member = NULL for the bootstrap owner credential).
+  // Several members each register their own credential, so this holds many rows.
   db.exec(`CREATE TABLE IF NOT EXISTS _passkeys (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member TEXT,
     credential_id TEXT NOT NULL,
     public_key TEXT NOT NULL,
     counter INTEGER NOT NULL DEFAULT 0,
@@ -566,6 +729,100 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     db.exec(`DELETE FROM _fields WHERE object_name = '_short_term_fragments' AND name = 'access_count'`);
   } catch {}
 
+  // --- v11: add memory_policy column to _objects (per-pattern decay/conflict policy) ---
+
+  try {
+    const objCols3 = db.exec(`PRAGMA table_info("_objects")`).toArray() as any[];
+    if (!objCols3.some((c: any) => c.name === "memory_policy")) {
+      db.exec(`ALTER TABLE "_objects" ADD COLUMN "memory_policy" TEXT`);
+    }
+  } catch {}
+
+  // --- v14: add pattern_class to _objects (knowledge vs dataset) ---
+  //
+  // A pattern is either "knowledge" (the default — prose recalled by meaning,
+  // the texture prime/decay/supersession are tuned for) or "dataset" (structured
+  // records aggregated by computation). Dataset patterns opt out of the memory
+  // machinery (embed/prime/stale) and opt in to strict write-time validation.
+
+  try {
+    const objCols4 = db.exec(`PRAGMA table_info("_objects")`).toArray() as any[];
+    if (!objCols4.some((c: any) => c.name === "pattern_class")) {
+      db.exec(`ALTER TABLE "_objects" ADD COLUMN "pattern_class" TEXT NOT NULL DEFAULT 'knowledge'`);
+    }
+  } catch {}
+
+  // --- v13: add pinned column to _web_cache (existing tables need ALTER) ---
+
+  try {
+    const wcCols = db.exec(`PRAGMA table_info("_web_cache")`).toArray() as any[];
+    if (wcCols.length && !wcCols.some((c: any) => c.name === "pinned")) {
+      db.exec(`ALTER TABLE "_web_cache" ADD COLUMN "pinned" INTEGER NOT NULL DEFAULT 0`);
+    }
+  } catch {}
+
+  // --- v12: add extraction columns to _documents (existing tables need ALTER) ---
+
+  try {
+    const docCols = db.exec(`PRAGMA table_info("_documents")`).toArray() as any[];
+    if (docCols.length) {
+      if (!docCols.some((c: any) => c.name === "extracted_text")) {
+        db.exec(`ALTER TABLE "_documents" ADD COLUMN "extracted_text" TEXT`);
+      }
+      if (!docCols.some((c: any) => c.name === "extraction_status")) {
+        db.exec(`ALTER TABLE "_documents" ADD COLUMN "extraction_status" TEXT`);
+      }
+    }
+  } catch {}
+
+  // --- v15: shared hive — multi-member passkeys + token/member attribution ---
+  //
+  // Pre-shared-hive _passkeys was a singleton (PK CHECK (id = 1)); a shared hive
+  // needs one passkey per member, so rebuild the table without the constraint and
+  // carry the existing owner credential over as a member-less (NULL) row. SQLite
+  // can't drop a CHECK via ALTER, so rebuild via rename/copy/drop.
+
+  try {
+    const pkSqlRows = db.exec(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '_passkeys'`
+    ).toArray() as any[];
+    const pkSql = pkSqlRows[0]?.sql ?? "";
+    if (/CHECK\s*\(\s*id\s*=\s*1\s*\)/i.test(pkSql)) {
+      db.exec(`ALTER TABLE _passkeys RENAME TO _passkeys_old`);
+      db.exec(`CREATE TABLE _passkeys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member TEXT,
+        credential_id TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        counter INTEGER NOT NULL DEFAULT 0,
+        transports TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+      db.exec(`INSERT INTO _passkeys (id, member, credential_id, public_key, counter, transports, created_at)
+        SELECT id, NULL, credential_id, public_key, counter, transports, created_at FROM _passkeys_old`);
+      db.exec(`DROP TABLE _passkeys_old`);
+    } else {
+      // Table already constraint-free (fresh install or prior migration) — just
+      // ensure the member column exists.
+      const pkCols = db.exec(`PRAGMA table_info("_passkeys")`).toArray() as any[];
+      if (pkCols.length && !pkCols.some((c: any) => c.name === "member")) {
+        db.exec(`ALTER TABLE _passkeys ADD COLUMN "member" TEXT`);
+      }
+    }
+  } catch {}
+
+  // _access_tokens gains a member column (which person holds the token) and an
+  // approved_at column (human passkey-approval gate for register/invite tokens).
+  try {
+    const atCols = db.exec(`PRAGMA table_info("_access_tokens")`).toArray() as any[];
+    if (atCols.length && !atCols.some((c: any) => c.name === "member")) {
+      db.exec(`ALTER TABLE "_access_tokens" ADD COLUMN "member" TEXT`);
+    }
+    if (atCols.length && !atCols.some((c: any) => c.name === "approved_at")) {
+      db.exec(`ALTER TABLE "_access_tokens" ADD COLUMN "approved_at" TEXT`);
+    }
+  } catch {}
+
   // --- GC: expire short-term fragments older than 30 days ---
 
   try {
@@ -578,6 +835,30 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     // Log entries don't outlive the fragments they describe
     db.exec(
       `DELETE FROM "_fragment_access_log" WHERE accessed_at < datetime('now', '-30 days')`
+    );
+  } catch {}
+
+  // --- GC: expired consent arms ---
+
+  try {
+    db.exec(`DELETE FROM _pending_consent WHERE expires_at < datetime('now')`);
+  } catch {}
+
+  // --- GC: superseded web-cache rows (a re-fetch archives the old row and
+  // inserts a fresh one). Only these duplicates are evicted — active cached
+  // content is retained indefinitely as durable memory, never deleted on TTL. ---
+
+  try {
+    db.exec(
+      `DELETE FROM "_web_cache" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days') AND pinned = 0`
+    );
+  } catch {}
+
+  // --- GC: entry access log rows older than 90 days (decay's freshness horizon) ---
+
+  try {
+    db.exec(
+      `DELETE FROM "_entry_access_log" WHERE accessed_at < datetime('now', '-90 days')`
     );
   } catch {}
 
@@ -684,6 +965,23 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   }
 
+  // --- Seed the owner member ---
+  //
+  // Every hive has an "owner" — the founder, and the actor that the bootstrap
+  // passkey and master-secret logins resolve to. Seed the roster row so the
+  // owner appears alongside any invited members.
+  try {
+    const hasOwner = db.exec(
+      `SELECT 1 FROM "_members" WHERE label = 'owner' AND archived_at IS NULL`
+    ).toArray().length > 0;
+    if (!hasOwner) {
+      db.exec(
+        `INSERT INTO "_members" (label, display_name, role, status) VALUES ('owner', ?, 'owner', 'active')`,
+        `${PRODUCT_NAME} Owner`
+      );
+    }
+  } catch {}
+
   // --- Audit triggers for all registered objects ---
 
   const allObjects = db.exec("SELECT name FROM _objects").toArray() as any[];
@@ -783,7 +1081,7 @@ function verifyFieldsIntegrity(db: any): void {
 // Tables that mutate too often to be worth auditing — high-frequency append-only
 // logs whose change history is the data itself. Auditing them would just churn
 // the bounded _mutation_log and evict useful entries.
-const AUDIT_EXEMPT = new Set(["_fragment_access_log"]);
+const AUDIT_EXEMPT = new Set(["_fragment_access_log", "_entry_access_log"]);
 
 export function ensureAuditTriggers(db: any, tableName: string): void {
   if (AUDIT_EXEMPT.has(tableName)) return;

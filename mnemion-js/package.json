@@ -10,17 +10,19 @@
     "types": "wrangler types",
     "test": "vitest run",
     "test:watch": "vitest",
-    "setup": "bash scripts/setup.sh"
+    "setup": "bash scripts/setup.sh",
+    "enable-documents": "bash scripts/enable-documents.sh"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.3.0",
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "1.26.0",
     "@simplewebauthn/server": "^13.2.3",
     "agents": "^0.7.5",
     "fflate": "^0.8.2",
     "konva": "^10.2.3",
     "svelte": "^5.53.10",
     "svelte-konva": "^1.0.1",
+    "unpdf": "^1.6.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {

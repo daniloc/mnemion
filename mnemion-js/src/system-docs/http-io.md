@@ -28,6 +28,78 @@ The content is now available at `GET /o/hello`.
 ### Freeing a path
 Archive the entry. The path becomes available for a new entry immediately.
 
+## Publications: `_publications`
+
+Where `_outputs` serves static content you wrote, a publication serves a **live projection of a pattern** — the query runs at request time, so the page is never stale. This is the hive's publication surface: status pages, feeds, reading lists, public knowledge bases.
+
+```
+mutate _publications create {
+  "path": "now",
+  "title": "What I'm working on",
+  "source_pattern": "tasks",
+  "filters": "[\"status=in-progress\"]",
+  "format": "html"
+}
+```
+
+The projection is now served at `GET /p/now`, re-derived from current entries on every request (edge-cached ~60s when public).
+
+**Publishing requires explicit human approval** — creating a publication serves every current AND future entry the query matches. The mutate call requires a confirmation round-trip.
+
+### Facets
+- `path` (required) — URL path segment, unique among active publications
+- `source_pattern` (required) — pattern to project; user patterns only (kernel patterns are never publishable)
+- `format` (required) — `html`, `rss`, `json`, or `markdown` (markdown ships YAML frontmatter: title, path, source_pattern, generated_at, count)
+- `title` — page/feed title (defaults to path)
+- `filters` — JSON array of query filter strings, e.g. `["status=done", "title~urgent"]`
+- `facets` — comma-separated projection (default: all)
+- `sort` — sort facet, `-` prefix for descending (default `-updated_at`)
+- `limit` — max entries (default 50)
+- `template` — per-entry template seam: `{{facet}}` placeholders plus `{{_label}}`, `{{_uri}}`, `{{_id}}`, `{{_updated_at}}`. Template text passes through raw (write markup if you like); substituted values are HTML-escaped in html/rss output. No conditionals or loops.
+- `css` — appended after the default styles in html output (the override seam)
+- `visibility` — `public` (default), `unlisted` (requires bearer token with `read:publication:{path}` scope), or `private` (staged, not served)
+- `include_superseded` — publications exclude superseded entries by default; set true to include them
+
+### Current truth by default
+Entries targeted by an active `supersedes` link are dropped from publications unless `include_superseded` is set — public projections show what's current, not what was replaced.
+
+## Documents: `_documents`
+
+A document is a file whose **bytes live in R2**, with a `_documents` entry holding the metadata. Use it for PDFs, images, and anything binary or larger than the 1 MB entry limit. The entry is the evolvable knowledge layer; the file is immutable truth it points at — link documents to other entries like any pattern.
+
+> **Requires R2.** File storage depends on Cloudflare R2, which is optional. If it isn't enabled on this instance, creating a `_documents` entry still works but the response carries a `documents_note` saying uploads are unavailable, and `POST /f` returns 503 — and the index marks `_documents` as `unavailable`. To enable it, tell the human: turn on R2 (dashboard → Storage & databases → R2), then run `npm run enable-documents` and redeploy. Everything else in Mnemion works without R2.
+
+> **Search:** on upload, text is extracted into the `extracted_text` facet — text files inline, PDFs in the background — so document **contents** (not just title/description/tags) are searchable via `search` and recallable via `prime`. `extraction_status` reports `done`/`pending`/`failed`/`unsupported`. Image-only/scanned PDFs and binary formats extract nothing (status `unsupported`/`empty`); give those descriptive titles/tags.
+
+Two-step upload:
+
+```
+mutate _documents create { "title": "Q3 report", "description": "...", "tags": "finance,2026" }
+```
+
+The create response includes a single-use `upload_url`. POST the file bytes there:
+
+```
+curl -X POST --data-binary @report.pdf -H "Content-Type: application/pdf" <upload_url>
+```
+
+The file is now stored and served at `GET /f/{id}`.
+
+### Facets
+- `title` (required) — display name; used as the download filename
+- `description`, `tags` — your metadata, free-form
+- `visibility` — `private` (default, not served), `unlisted` (token), or `public`
+- `content_type`, `size`, `r2_key`, `stored_at` — **system-managed**; filled on upload, never set them yourself
+
+### Upload tokens
+Creating a document auto-mints a `document`-scoped access token bound to that entry — single-use, 15-minute TTL, returned as `upload_url`. Tokens are only mintable through an authenticated `mutate`, so only you can authorize a file write. Upload tokens can never target a kernel pattern.
+
+### Serving and visibility
+`GET /f/{id}` streams the file with its stored `Content-Type`. Add `?download=1` for an attachment disposition. Visibility gates access exactly like shared entries: `private` → 404, `unlisted` → requires a bearer token with `read:document:{id}` scope, `public` → open and edge-cached. **Making a document non-private is consent-gated** — creating/uploading a private file is friction-free; publishing one requires a confirmation round-trip.
+
+### Lifecycle
+Files cap at 25 MB. Archiving a document entry deletes both the metadata and the R2 object. Documents don't yet surface in `prime` (text extraction is a future capability) — link them to text entries so they're reachable through their neighbors.
+
 ## Ingress: `_inputs`
 
 Create an entry in `_inputs` to accept POST data and automatically create entries in a target pattern.
@@ -78,9 +150,10 @@ The mapping value is a JSON object where keys are target facet names and values 
 
 ## Path reuse
 
-Archiving an `_outputs` or `_inputs` entry frees its path for reuse. Active (non-archived) paths must be unique.
+Archiving an `_outputs`, `_inputs`, or `_publications` entry frees its path for reuse. Active (non-archived) paths must be unique within each kind.
 
 ## Use cases
 
-- **Egress**: status pages, JSON APIs, public content, badge endpoints
+- **Publications**: now pages, RSS feeds from any pattern, public reading lists, knowledge bases, dashboards — anything that should track live data
+- **Egress**: static content, badge endpoints, hand-built pages
 - **Ingress**: GitHub webhooks, form submissions, IoT data, inter-service messaging

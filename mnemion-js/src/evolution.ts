@@ -33,6 +33,8 @@ const LIMITS = {
 
 const NAME_RE = /^[a-z_][a-z0-9_-]*$/;
 
+const PATTERN_CLASSES = new Set(["knowledge", "dataset"]);
+
 function validateName(kind: string, name: string): string | null {
   if (!name || name.length > LIMITS.NAME_MAX_LEN)
     return `${kind} name must be 1–${LIMITS.NAME_MAX_LEN} characters, got ${name?.length ?? 0}`;
@@ -58,6 +60,12 @@ function validateFacets(
       return `Facet "${a.name}" already exists on the pattern`;
     if (a.links && !ctx.patternExists(a.links.pattern))
       return `Linked pattern "${a.links.pattern}" does not exist`;
+    // links.facet is interpolated into REFERENCES "..."("...") DDL — validate it
+    // the same as any other identifier so it can't break out of the quoting.
+    if (a.links?.facet) {
+      const facetErr = validateName("Linked facet", a.links.facet);
+      if (facetErr) return facetErr;
+    }
     if (a.type === "select" && (!Array.isArray(a.options) || a.options.length === 0))
       return `Facet "${a.name}" is type select but has no options`;
     if (a.type !== "select" && a.options)
@@ -123,6 +131,8 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         return `Too many facets: ${change.facets.length} exceeds limit of ${LIMITS.FACETS_PER_PATTERN}`;
       if (ctx.patternExists(change.pattern_name))
         return `Pattern "${change.pattern_name}" already exists`;
+      if (change.pattern_class != null && !PATTERN_CLASSES.has(change.pattern_class))
+        return `Invalid pattern_class "${change.pattern_class}". Use "knowledge" (default) or "dataset".`;
       return validateFacets(change.facets, ctx);
     },
     preview(change, preview) {
@@ -130,6 +140,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         name: change.pattern_name,
         description: change.pattern_description || "",
         doctrine: change.doctrine,
+        ...(change.pattern_class === "dataset" ? { pattern_class: "dataset" } : {}),
         facets: change.facets.map(facetToIndexEntry),
         entry_count: 0,
         latest_activity: null,
@@ -149,10 +160,40 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         ${colDefs.join(",\n        ")},
         ${kernelCols.join(",\n        ")}
       )`);
-      db.exec("INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?)",
-        change.pattern_name, change.pattern_description || "", change.doctrine);
+      db.exec("INSERT INTO _objects (name, description, doctrine, pattern_class) VALUES (?, ?, ?, ?)",
+        change.pattern_name, change.pattern_description || "", change.doctrine,
+        change.pattern_class === "dataset" ? "dataset" : "knowledge");
       registerFacets(db, change.pattern_name, change.facets);
       ensureAuditTriggers(db, change.pattern_name);
+    },
+  },
+
+  set_class: {
+    validate(change, ctx) {
+      if (!change.pattern_name) return "pattern_name is required for set_class";
+      if (!ctx.patternExists(change.pattern_name))
+        return `Pattern "${change.pattern_name}" does not exist`;
+      if (change.pattern_name.startsWith("_"))
+        return `Pattern class applies to user patterns, not kernel pattern "${change.pattern_name}"`;
+      if (!PATTERN_CLASSES.has(change.pattern_class))
+        return `Invalid pattern_class "${change.pattern_class}". Use "knowledge" or "dataset".`;
+      return null;
+    },
+    preview(change, preview) {
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      if (pat) {
+        if (change.pattern_class === "dataset") pat.pattern_class = "dataset";
+        else delete pat.pattern_class;
+      }
+    },
+    // Affects future writes (validation) and recall (prime exclusion). Existing
+    // rows are untouched; vectors already written linger until re-embedded or
+    // archived — acceptable, prime filters dataset patterns at read time too.
+    apply(change, { db }) {
+      db.exec(
+        "UPDATE _objects SET pattern_class = ? WHERE name = ?",
+        change.pattern_class, change.pattern_name
+      );
     },
   },
 
@@ -265,6 +306,48 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     },
   },
 
+  set_memory_policy: {
+    validate(change, ctx, preview) {
+      if (!change.pattern_name) return "pattern_name is required for set_memory_policy";
+      if (!ctx.patternExists(change.pattern_name))
+        return `Pattern "${change.pattern_name}" does not exist`;
+      if (change.pattern_name.startsWith("_"))
+        return `Memory policy applies to user patterns, not kernel pattern "${change.pattern_name}"`;
+      const p = change.policy;
+      if (p === null) return null; // explicit clear
+      if (!p || typeof p !== "object" || Array.isArray(p))
+        return "policy is required for set_memory_policy: {half_life_days?, conflict_check?, exclusive_facets?} (or null to clear)";
+      const KNOWN = new Set(["half_life_days", "conflict_check", "exclusive_facets"]);
+      for (const key of Object.keys(p)) {
+        if (!KNOWN.has(key)) return `Unknown policy field "${key}". Valid: half_life_days, conflict_check, exclusive_facets`;
+      }
+      if (p.half_life_days != null && (typeof p.half_life_days !== "number" || !(p.half_life_days > 0)))
+        return "half_life_days must be a positive number of days, or null for no decay";
+      if (p.conflict_check != null && !["annotate", "off"].includes(p.conflict_check))
+        return `Invalid conflict_check "${p.conflict_check}". Use "annotate" or "off".`;
+      if (p.exclusive_facets != null) {
+        if (!Array.isArray(p.exclusive_facets) || p.exclusive_facets.some((f: unknown) => typeof f !== "string"))
+          return "exclusive_facets must be an array of facet names";
+        const pat = preview.patterns.find((x) => x.name === change.pattern_name);
+        for (const f of p.exclusive_facets) {
+          if (!pat?.facets.some((x) => x.name === f))
+            return `exclusive_facets names facet "${f}" which does not exist on "${change.pattern_name}"`;
+        }
+      }
+      return null;
+    },
+    preview(change, preview) {
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      if (pat) pat.memory_policy = change.policy ?? null;
+    },
+    apply(change, { db }) {
+      db.exec(
+        "UPDATE _objects SET memory_policy = ? WHERE name = ?",
+        change.policy ? JSON.stringify(change.policy) : null, change.pattern_name
+      );
+    },
+  },
+
   archive_pattern: {
     validate(change, ctx) {
       if (!change.pattern_name) return "pattern_name is required for archive_pattern";
@@ -307,6 +390,78 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
 
 // === Generic dispatchers ===
 
+// A change touches one pattern (or one entry within one). Returning the whole
+// index + charter on every propose/apply is a multi-thousand-token drain that's
+// ~95% irrelevant to the change — and the charter's epistemic_caution block
+// alone dominates it. Return only what's needed to confirm the change looks
+// right; agents that want the full picture resolve mnemion://index.
+//
+// The exception is downstream impact: a destructive change (archiving a pattern)
+// can leave references elsewhere dangling. Minimalism that hides a broken
+// reference is worse than the bloat, so we surface the affected set — the target
+// plus what the change actually breaks. That's a targeted inbound-reference
+// query, not a re-serialization of the hive.
+function focusedPreview(change: any, index: StoreIndex, ctx: EvolutionContext): Record<string, unknown> {
+  const name = change.pattern_name;
+  switch (change.type) {
+    case "set_sharing":
+      return { pattern_name: name, entry_id: change.entry_id, visibility: change.visibility ?? "public" };
+    case "archive_pattern": {
+      const impact = referenceImpact(ctx, name);
+      return { pattern_name: name, archived: true, ...(impact ? { impact } : {}) };
+    }
+    case "unarchive_pattern":
+      return { pattern_name: name, unarchived: true };
+    default: {
+      const pat = name ? index.patterns.find((p) => p.name === name) : undefined;
+      return pat ? { pattern: pat } : { pattern_name: name ?? null };
+    }
+  }
+}
+
+// References from elsewhere that point INTO `patternName` — active `_links` whose
+// target is one of its entries, and foreign-key facets on other patterns that
+// reference it. After the pattern is archived these dangle (the entries become
+// unreachable), so the propose/apply return flags them. Self-references are
+// excluded: they're archived together with the pattern, not orphaned.
+function referenceImpact(ctx: EvolutionContext, patternName: string): Record<string, unknown> | null {
+  if (!patternName) return null;
+  const CAP = 25;
+  let links: { source_pattern: string; source_id: number; label: string | null }[] = [];
+  let facets: { object_name: string; name: string }[] = [];
+  try {
+    links = ctx.db.exec(
+      `SELECT source_pattern, source_id, label FROM "_links"
+       WHERE target_pattern = ? AND source_pattern != ? AND archived_at IS NULL
+       ORDER BY source_pattern, source_id`,
+      patternName, patternName
+    ).toArray() as any[];
+  } catch { /* _links may not exist yet */ }
+  try {
+    facets = ctx.db.exec(
+      `SELECT object_name, name FROM _fields WHERE references_object = ? AND object_name != ?`,
+      patternName, patternName
+    ).toArray() as any[];
+  } catch { /* best-effort */ }
+
+  if (links.length === 0 && facets.length === 0) return null;
+
+  return {
+    dangling_reference_count: links.length,
+    ...(links.length ? {
+      dangling_references: links.slice(0, CAP).map((l) => ({
+        from: `${l.source_pattern}/${l.source_id}`,
+        uri: uri(`entry/${l.source_pattern}/${l.source_id}`),
+        ...(l.label ? { label: l.label } : {}),
+      })),
+    } : {}),
+    ...(links.length > CAP ? { dangling_references_truncated: links.length - CAP } : {}),
+    ...(facets.length ? { referencing_facets: facets.map((f) => `${f.object_name}.${f.name}`) } : {}),
+    warning: `Archiving "${patternName}" leaves ${links.length} reference(s) from other entries pointing at now-unreachable entries${facets.length ? ` and ${facets.length} foreign-key facet(s) referencing it` : ""}. Re-point or archive those, or reconsider the archive.`,
+  };
+}
+
+
 export function proposeChange(
   description: string,
   changeJson: string,
@@ -331,7 +486,11 @@ export function proposeChange(
   );
 
   return JSON.stringify({
-    change_id: changeId, description, preview_index: preview,
+    change_id: changeId,
+    description,
+    change_type: change.type,
+    version: preview.version,
+    preview: focusedPreview(change, preview, ctx),
     message: "Change proposed. Call apply_change with this change_id to commit.",
   }, null, 2);
 }
@@ -378,8 +537,14 @@ export async function applyChange(
 
     broadcastChange(["_schema"]);
 
+    const freshIndex = getCurrentIndex();
     return JSON.stringify({
-      applied: true, description: pending.description, index: getCurrentIndex(),
+      applied: true,
+      description: pending.description,
+      change_type: change.type,
+      pattern_name: change.pattern_name ?? null,
+      version: freshIndex.version,
+      preview: focusedPreview(change, freshIndex, ctx),
     }, null, 2);
   } catch (err: any) {
     return errorJson(`Failed to apply change: ${err.message}`);

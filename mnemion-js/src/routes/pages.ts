@@ -80,6 +80,18 @@ export const liveSocket: RouteHandler = async (ctx) => {
   if (ctx.request.headers.get("Upgrade") !== "websocket") {
     return new Response("Expected WebSocket", { status: 426 });
   }
+  // Same-origin check. The session cookie is SameSite=Lax, which does NOT
+  // protect WebSocket upgrades — a cross-origin page could otherwise open
+  // wss://this-host/ws with the owner's cookie attached and read live change
+  // events about the owner's private hive. Require the Origin to match this host.
+  const origin = ctx.request.headers.get("Origin");
+  if (origin) {
+    let originHost: string | null = null;
+    try { originHost = new URL(origin).host; } catch { /* malformed → reject */ }
+    if (originHost !== ctx.url.host) {
+      return new Response("Forbidden", { status: 403 });
+    }
+  }
   // WebSocket upgrades must go through fetch(), not RPC
   return ctx.hive.fetch(ctx.request);
 };

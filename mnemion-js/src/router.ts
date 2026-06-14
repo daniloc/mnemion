@@ -1,5 +1,5 @@
 import type { HiveDO } from "./hive";
-import { PRODUCT_NAME } from "./constants";
+import { PRODUCT_NAME, HIVE_ID } from "./constants";
 
 // === Types ===
 
@@ -7,6 +7,7 @@ export interface Env {
   OAUTH_KV: KVNamespace;
   MNEMION_HIVE: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace;
+  DOCUMENTS?: R2Bucket;  // optional — present only when R2 is enabled + bound
   MNEMION_SECRET: string;
   WORKER_HOST?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
@@ -81,6 +82,7 @@ export function extractBasicPassword(request: Request): string | null {
 
 const SESSION_COOKIE = "__session";
 const SESSION_MAX_AGE = 86400; // 24 hours
+const SESSION_EPOCH_KEY = "session_epoch";
 
 async function hmacSign(secret: string, data: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -91,27 +93,49 @@ async function hmacSign(secret: string, data: string): Promise<string> {
   return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function createSessionCookie(secret: string, host: string): Promise<string> {
-  const ts = Math.floor(Date.now() / 1000).toString();
-  const sig = await hmacSign(secret, `session:${ts}`);
-  const secure = !host.includes("localhost");
-  return `${SESSION_COOKIE}=${ts}.${sig}; HttpOnly; ${secure ? "Secure; " : ""}SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}`;
+async function getSessionEpoch(kv: KVNamespace): Promise<string> {
+  return (await kv.get(SESSION_EPOCH_KEY)) ?? "0";
 }
 
-async function validateSession(request: Request, secret: string): Promise<boolean> {
+/**
+ * Revoke every existing session by bumping the stored epoch. Cookies embed the
+ * epoch they were minted under, and validateSession rejects any whose epoch no
+ * longer matches — so the owner can invalidate all sessions (e.g. after a
+ * suspected cookie theft) without rotating MNEMION_SECRET. KV is eventually
+ * consistent, so global propagation can take up to ~60s.
+ */
+export async function revokeAllSessions(kv: KVNamespace): Promise<void> {
+  const current = Number(await getSessionEpoch(kv)) || 0;
+  await kv.put(SESSION_EPOCH_KEY, String(current + 1));
+}
+
+export async function createSessionCookie(secret: string, host: string, kv: KVNamespace): Promise<string> {
+  const ts = Math.floor(Date.now() / 1000).toString();
+  // Random per-session id: gives each session a distinct, signable identity
+  // (two logins in the same second no longer collide) and an audit handle.
+  const sid = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const epoch = await getSessionEpoch(kv);
+  const payload = `${ts}.${sid}.${epoch}`;
+  const sig = await hmacSign(secret, `session:${payload}`);
+  const secure = !host.includes("localhost");
+  return `${SESSION_COOKIE}=${payload}.${sig}; HttpOnly; ${secure ? "Secure; " : ""}SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}`;
+}
+
+async function validateSession(request: Request, secret: string, kv: KVNamespace): Promise<boolean> {
   const cookie = request.headers.get("Cookie");
   if (!cookie) return false;
   const match = cookie.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
   if (!match) return false;
-  const token = match[1];
-  const dot = token.indexOf(".");
-  if (dot === -1) return false;
-  const ts = token.substring(0, dot);
-  const sig = token.substring(dot + 1);
+  // Format: ts.sid.epoch.sig (older ts.sig cookies fail length check → re-login)
+  const parts = match[1].split(".");
+  if (parts.length !== 4) return false;
+  const [ts, sid, epoch, sig] = parts;
   const age = Math.floor(Date.now() / 1000) - parseInt(ts);
   if (isNaN(age) || age < 0 || age > SESSION_MAX_AGE) return false;
-  const expected = await hmacSign(secret, `session:${ts}`);
-  return timingSafeEqual(sig, expected);
+  const expected = await hmacSign(secret, `session:${ts}.${sid}.${epoch}`);
+  if (!(await timingSafeEqual(sig, expected))) return false;
+  // Revocation: reject cookies minted under a superseded epoch.
+  return epoch === (await getSessionEpoch(kv));
 }
 
 // === Router ===
@@ -169,7 +193,7 @@ export function createRouter(routes: Route[]) {
         }
       }
       if (auth === Auth.SESSION) {
-        if (env.MNEMION_SECRET && !(await validateSession(request, env.MNEMION_SECRET))) {
+        if (env.MNEMION_SECRET && !(await validateSession(request, env.MNEMION_SECRET, env.OAUTH_KV))) {
           const returnTo = encodeURIComponent(url.pathname + url.search);
           return new Response(null, {
             status: 302,
@@ -189,7 +213,7 @@ export function createRouter(routes: Route[]) {
       }
 
       // Build context
-      const hiveId = env.MNEMION_HIVE.idFromName("user:owner");
+      const hiveId = env.MNEMION_HIVE.idFromName(HIVE_ID);
       const hive = env.MNEMION_HIVE.get(hiveId) as DurableObjectStub<HiveDO>;
 
       return route.handler({ request, url, env, params, hive });

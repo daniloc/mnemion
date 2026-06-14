@@ -13,8 +13,8 @@ project-docs/active/   Design documents (the "why" and "what")
 mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/index.ts         Route table + OAuthProvider config (~60 lines)
   src/router.ts        Declarative router: types, enums, pattern matching, dispatch
-  src/routes/auth.ts   /authorize, /auth/verify, passkey setup & authentication
-  src/routes/io.ts     /o/entry/:pattern/:id shared entries, /o/:path egress, /i/:path ingress, /upload/:token
+  src/routes/auth.ts   /authorize, /auth/verify, passkey setup & authentication, /invite/:token approval
+  src/routes/io.ts     /o/entry/:pattern/:id shared entries, /o/:path egress, /p/:path publications, /f/:token|:id documents, /i/:path ingress, /upload/:token
   src/routes/marketplace.ts  Token management, git endpoints (composes query + git adapter)
   src/routes/dev.ts    Dev-only seed routes (Auth.DEV gated, inert in production)
   src/routes/canvas.ts /canvas SSR page + /api/canvases, /api/canvas (list/save tldraw snapshots)
@@ -24,6 +24,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/data.ts          Query engine, mutation engine (CRUD), cross-pattern search
   src/evolution.ts     Schema evolution: CHANGE_TYPES declaration table, propose/apply/revert
   src/prime.ts         Auto-associative priming: Workers AI embeddings + Vectorize KNN
+  src/publications.ts  Publication renderers: live pattern data → HTML/RSS/JSON/markdown, template seam
   src/web.ts           Web URL resolution adapter dispatch (Bluesky, browser-rendering); _web_cache
   src/tools.ts         Tool metadata SSOT — feeds session.ts MCP registration and /api/tools
   src/credentials.ts   Passkey CRUD, access token validation
@@ -65,10 +66,19 @@ HiveDO is a thin wiring shell. Domain logic lives in pure-function modules with 
 
 Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the worker and handles the OAuth flow (DCR, tokens).
 
-- **Master secret** (`MNEMION_SECRET`): High-entropy random hex, set via `npm run setup`. Root of trust — used to bootstrap passkeys and as fallback for headless agents. The user's Cloudflare login is the true credential; the secret is ephemeral and replaceable.
-- **Passkey** (WebAuthn): Optional convenience layer for browser-based OAuth. Registered via one-time setup URL. Stored in HiveDO `_passkeys` table (single credential, replaced on re-registration). If registered, `/authorize` shows passkey-first UI with secret fallback.
-- **Access tokens** (`_access_tokens`): Scoped bearer tokens for remote agents, uploads, marketplace, and federated access. Created via `mutate`. Scope matching is hierarchical prefix-based.
+- **Master secret** (`MNEMION_SECRET`): High-entropy random hex, set via `npm run setup`. Root of trust — used to bootstrap the owner passkey and as fallback for headless agents. The user's Cloudflare login is the true credential; the secret is ephemeral and replaceable. Master-secret logins resolve to the `owner` actor.
+- **Passkey** (WebAuthn): Optional convenience layer for browser-based OAuth. Registered via one-time setup URL. Stored in HiveDO `_passkeys` table — **one credential per member** (re-registering a member replaces only that member's row). If any passkey is registered, `/authorize` shows passkey-first UI with secret fallback. Authentication offers all members' credentials and resolves the actor from the one used.
+- **Access tokens** (`_access_tokens`): Scoped bearer tokens for remote agents, uploads, marketplace, and federated access. Created via `mutate`. Scope matching is hierarchical prefix-based. Optional `member` column attributes a token to a member; the OAuth external-token path resolves the session's actor from it (member-less → `owner` sentinel; suspended/archived member → refused).
 - **No secret configured** = dev mode (auto-approves).
+
+### Shared hive (multi-member)
+
+One hive, several people. Hive identity (which Durable Object) is decoupled from actor identity (which person): `HIVE_ID` (`src/constants.ts`, literal `"user:owner"` — a rename for clarity, not a re-key) names the single store every member authenticates into; the authenticated member's label rides in the OAuth session props as `actor`, separate from `hiveId`. Design doc: `project-docs/active/shared-hive.md`.
+
+- **Members** (`_members` kernel pattern): the roster. `label` (immutable handle, the join key for passkeys/tokens), `display_name`, `role` (`owner`|`member`), `status` (`active`|`suspended`). The `owner` member is seeded on boot and reserved. Creating a member is consent-gated at the MCP layer (it grants standing access to the whole hive).
+- **Invite flow**: (1) create the `_members` row with `label` + `display_name` (the inviting agent names them); (2) mint a `register`-scoped access token with `member: "<label>"` (forced single-use; the hook refuses `owner` and any non-active-roster member); (3) the token is minted **inert** — an existing member must approve it in person at `/invite/{token}` via passkey (master-secret fallback) before it works; (4) once approved, give the invitee its `/setup?token=...` URL, where they register their own passkey, bound to that member. The setup endpoints accept either the master secret (owner bootstrap) or an **approved** `register` token (invitee). The passkey approval — not the agent-satisfiable mutate round-trip — is the real human-consent gate: `approved_at` is IMMUTABLE on the mutate path and set only by the approval endpoint, so an agent acting on injected content can mint an invite but never activate it.
+- **Revocation**: suspend (`status: suspended`) or archive a member → their passkey logins and tokens stop resolving; also archive their `_access_tokens` rows. The global session epoch (`/sessions/revoke`) remains the all-at-once panic button.
+- **Attribution** (per-entry `created_by`/`updated_by`) is the deliberate **Phase 2** follow-up — not yet implemented. Phase 1 establishes distinct identities and per-member revocation; the actor is resolved and carried in props but not yet written onto entries.
 
 ### Vocabulary
 
@@ -80,16 +90,17 @@ Mnemion uses biological vocabulary at every layer — API parameters, URIs, JSON
 - `mnemion://schema/{pattern_name}` — facet definitions for a pattern
 - `mnemion://history` — schema evolution history (supports `?limit=N`)
 - `mnemion://entry/{pattern}/{id}` — individual entry by URI
+- `mnemion://stale` — entries past their staleness horizon (supports `?days=N`); review surface for maintenance passes
 
 ### Tools (7 total)
 
 Tool metadata is centralized in `src/tools.ts` (SSOT for `session.ts` MCP registration + `/api/tools` frontend):
 
-- `prime` — auto-associative recall: pass conversational context, get semantically-nearest entries + one-hop links. Workers AI embeds entries on write, Vectorize indexes them, prime queries KNN.
+- `prime` — auto-associative recall: pass conversational context, get semantically-nearest entries + one-hop links. Workers AI embeds entries on write, Vectorize indexes them, prime queries KNN. Relevance is weighted at read time: superseded entries demoted ×0.3 + annotated `superseded_by`; patterns with a memory-policy half-life decay by `0.5^(age/half_life)` where age runs from the later of `updated_at` and the last prime hit (`_entry_access_log` — recall is rehearsal). `raw_similarity` is kept alongside weighted `relevance`. A `maintenance` field appears when a cleanup pass is overdue.
 - `resolve` — read anything by `mnemion://` URI, including federated cross-hive URIs and `mnemion://web/<https-url>` for adapter-cached web fetches (escape hatch for platforms without resource support)
 - `query` — filtered, sorted, paginated reads (supports `count_only` mode). Filter operators: `= != > < >= <= ~` (LIKE) and `|=` (IN, comma-separated values — e.g. `id|=1,3,7` for batched multi-id lookups)
 - `search` — cross-pattern full-text search across text facets
-- `mutate` — create, update, or archive entries
+- `mutate` — create, update, or archive entries. Single creates in user patterns run a policy-gated write-time conflict check (synchronous embed + KNN ≥0.80 same-pattern; the vector is reused for the post-write upsert) and return `possible_overlap` advisories; exclusive-facet duplicates advise via cheap SQL (batch included). Advisory only — never blocks.
 - `propose_change` — propose schema evolution (preview, no commit)
 - `apply_change` — commit proposed change (fires resource update notifications)
 
@@ -98,11 +109,24 @@ Tool metadata is centralized in `src/tools.ts` (SSOT for `session.ts` MCP regist
 Agent-defined HTTP endpoints, configured as entries:
 - **Shared entries** (`_shared`): `GET /o/entry/{pattern}/{id}` — serve entries marked public or unlisted
 - **Egress** (`_outputs`): `GET /o/{path}` — serve agent-constructed content at arbitrary paths
+- **Documents** (`_documents`): R2-backed file store. `_documents` entry holds agent metadata (title/description/tags/visibility) + system-managed blob bookkeeping (`r2_key`/`size`/`content_type`/`stored_at`, IMMUTABLE); bytes live in R2 (`DOCUMENTS` binding), never the hive. Two-step: `mutate _documents create` auto-mints a single-use `document`-scoped token and returns `upload_url`; `POST /f/{token}` streams to R2 (≤25 MB) and records the key. Served at `GET /f/{id}`, visibility-gated like `_shared` (private 404 / unlisted token `read:document:{id}` / public edge-cached). Archiving the entry deletes the R2 object (waitUntil). Non-private visibility is consent-gated (visibility-aware, like set_sharing). R2 key is fully random (non-enumerable). On upload, text is extracted into `extracted_text` (text-family inline via `src/extract.ts`; PDF via `unpdf` in `ctx.waitUntil`) and the entry re-embedded, so document contents are searchable (`search`) and recallable (`prime` — `_documents` is in prime's KERNEL_INCLUDE); `extraction_status` reports done/pending/failed/unsupported. Chunked embeddings for long docs are a future seam.
+- **Publications** (`_publications`): `GET /p/{path}` — live pattern projections rendered at request time (never stored). Formats: html (default styles + owner `css` override), rss, json, markdown (YAML frontmatter). Source query reuses the data.ts query engine (filters/facets/sort/limit pass through); superseded entries excluded by default. Per-entry `template` seam: `{{facet}}` + `{{_label}}`/`{{_uri}}`/`{{_id}}`/`{{_updated_at}}` — template text raw, substituted values HTML-escaped in html/rss. Source must be a user pattern (kernel patterns never publishable). Creation is consent-gated at the MCP layer like `_shared`. ETag = max(publication, served entries) `updated_at`; public responses edge-cached 60s.
 - **Ingress** (`_inputs`): `POST /i/{path}` — accept inbound data, create entries in target patterns with optional transform DSL
 
 **Federation**: `resolve` recognizes foreign URIs by a dot in the first path segment (hostname). `mnemion://other.hive.dev/entry/axioms/7` → `GET https://other.hive.dev/o/entry/axioms/7`. Private access via `?token=<auth_code>` → Bearer header. Public responses edge-cached. No federation protocol — sovereign hives, voluntary connections.
 
 Federation is gated by a consent allow-list (`_federation_hosts` kernel pattern): `resolve` refuses any cross-hive URI — and never sends a token — unless the target host has an active entry there. Loopback/private/link-local/internal hosts (incl. cloud metadata) are blocked outright and can't be allow-listed (`isBlockedFederationHost` in kernel.ts). Adding a host is consent-gated at the MCP `mutate` layer (confirmation round-trip, also blocked inside batches), so an agent acting on untrusted content can't silently leak the owner's token to an attacker host.
+
+### Memory maintenance (contradiction management + decay)
+
+All read-time-derived, owner-ratified, never auto-deleting:
+
+- **Supersession**: a `supersedes`-labeled `_links` row (source supersedes target). Prime demotes + annotates; entry resolution and the stale view annotate `superseded_by`. Entries are never hidden.
+- **Memory policy**: `memory_policy` JSON column on `_objects` (beside `doctrine`), set via the `set_memory_policy` change type. Shape: `{half_life_days?: number|null, conflict_check?: "annotate"|"off", exclusive_facets?: string[]}`. Defaults when unset: conflict check on, decay off. Surfaced per-pattern in the index. Kernel patterns can't carry policy.
+- **Decay**: `decayMultiplier` in prime.ts — `max(0.05, 0.5^(age/half_life))`, ranking only, never data. `_entry_access_log` records prime hits on user-pattern entries.
+- **Stale view**: `mnemion://stale` — per-pattern horizon of 3× half-life (90 days without a policy).
+- **Maintenance passes**: `_maintenance_passes` kernel pattern. Days-since derived from the latest row; interval from charter key `maintenance_interval_days` (default 14). Overdue status injected into MCP init instructions (session.ts) AND the prime response (web clients never see init instructions).
+- Agent protocol lives in `src/system-docs/memory-maintenance.md`.
 
 ### Entry sharing
 
@@ -118,18 +142,25 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `read` — read any shared entry or output (matches `read:entry:axioms:7`)
 - `upload` — write via `/upload/{token}` (constraints JSON: `{target_pattern, target_id, target_facet, mode}`)
 - `marketplace` — private marketplace git access (constraints JSON: `{plugins: [...]}`)
+- `register` — one-time passkey-registration link for inviting a member (constraints JSON: `{member}`; forced single-use). Minted **inert**; requires a member's passkey approval at `/invite/{token}` (sets `approved_at`) before `/setup` accepts it. Not usable as an API token (doesn't match `*`); rejects `owner` and non-roster members.
 
 ### Internal tables
 
 - `_schema_history` — log of all schema changes
 - `_pending_changes` — proposed but uncommitted changes
-- `_access_tokens` — unified scoped access tokens
+- `_access_tokens` — unified scoped access tokens (optional `member` attribution)
+- `_members` — roster of people sharing the hive (label/display_name/role/status); `owner` seeded + reserved. See "Shared hive" under Auth.
+- `_passkeys` — WebAuthn credentials, one row per member (`member` column; NULL = owner bootstrap). Not agent-facing (created via the setup flow, not `mutate`).
 - `_shared` — entry-level sharing for HTTP access
 - `_outputs` / `_inputs` — HTTP I/O endpoint definitions
+- `_publications` — declarative outbound projections served at `/p/{path}`; rendering is always derived, never stored
+- `_documents` — file-store metadata (title/tags/visibility + system-managed r2_key/size/content_type/stored_at); bytes live in R2, served at `/f/{id}`
 - `_system_docs` — agent orientation docs (seeded from `src/system-docs/*.md`)
-- `_web_cache` — adapter-fetched web content (Bluesky threads, browser-rendered markdown), TTL'd per adapter
+- `_web_cache` — adapter-fetched web content (Bluesky threads 24h, browser-rendered markdown 30d). TTL = re-fetch horizon, not eviction: active content is retained indefinitely as memory; only superseded duplicates are GC'd (7-day grace, pinned excluded). A re-fetch that returns empty keeps the existing snapshot (snapshot protection in web.ts). `pinned` column + `resolve(retain: true)` freeze a snapshot forever (always served, never re-fetched/GC'd) until `retain: false`; pinning stays system-managed (`_web_cache` is INTERNAL_WRITE_PROTECTED — driven only through resolve, never agent mutate)
 - `_canvases` — tldraw document snapshots for the Canvas spatial-thinking UI (full document state in the `snapshot` facet — do not modify directly; mutate via canvas tools/UI). Entry-type shapes inside the snapshot store **only references** (`{type: 'entry', pattern, entryId, x, y, w, h}`) — display label and facet preview are hydrated at render time from the live entry. Do not denormalize entry data into the snapshot; it goes stale.
 - `_fragment_access_log` — append-only log of prime hits per short-term fragment. Promotion to `_long_term_fragments` is COUNT(*)-derived from this log, not a stored counter. GC'd alongside fragments. Audit-exempt (high-frequency append-only).
+- `_entry_access_log` — append-only log of prime hits per user-pattern entry. Feeds decay (`last_touch`) and the stale view. Audit-exempt, write-protected, GC'd at 90 days.
+- `_maintenance_passes` — record of completed memory-maintenance passes; days-since-last-pass is derived from the latest row, never stored.
 
 ## Tech stack
 
@@ -148,6 +179,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `OAUTH_KV` — OAuth token storage
 - `AI` — Workers AI for embeddings
 - `VECTORIZE` — Vectorize index for prime KNN
+- `DOCUMENTS` — R2 bucket for document blobs (`mnemion-documents`; bytes for the `_documents` store). **Optional**: ships commented out in `wrangler.toml` (a binding to a non-existent bucket fails deploy), and `Env.DOCUMENTS` is optional. Mnemion runs fully without R2 — only `/f` upload/serve degrade (create returns a `documents_note`; `POST /f` → 503). Enable via dashboard → Storage & databases → R2, then `npm run enable-documents` (creates the bucket + uncomments the binding) and `npm run deploy`. When R2 is off, the index annotates `_documents` with an `unavailable` note and the MCP init message flags it so agents can tell the user. Document *contents* are not yet indexed for search/prime (metadata is); text extraction is the future seam.
 
 ### Environments
 
@@ -174,7 +206,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - **Store truth once, derive its consequences.** Counts, summaries, labels, and previews are computed at read time, not stored as columns. The `entry_count`/`latest_activity` on `/api/index` are SQL-computed every call. Entry labels are derived via `src/labels.ts` (`deriveLabel`) wherever they're needed; never persisted.
 - **Snapshots store references, not denormalized data.** Canvas entry shapes hold `{pattern, entryId}` and hydrate from the live entry; `_fragment_access_log` is the source of promotion eligibility, not a stored counter.
 - **Audit logs are exempt** — `_mutation_log`, `_schema_history`, `_pending_changes` are point-in-time records on purpose.
-- **Caches are bounded with explicit invalidation policy** — `_web_cache` has per-adapter TTLs; Vectorize embeddings are re-upserted on every mutate via `embedAfterMutate`.
+- **Caches are bounded with explicit invalidation policy** — `_web_cache` has per-adapter TTLs (re-fetch horizon) with superseded-duplicate GC; resolved content is retained as durable memory, not evicted on TTL. Vectorize embeddings are re-upserted on every mutate via `embedAfterMutate`.
 - **Schema integrity is checked at boot.** `verifyFieldsIntegrity` in `schema.ts` walks every pattern and warns on drift between actual table DDL and the `_fields` metadata table — guards against migration mistakes producing lying agent-facing schemas. `_fields` is the long-standing partial duplication that justifies the check; full deduplication (deriving facet metadata from PRAGMA) is a future cleanup.
 - **`WORKER_HOST` is derived at runtime.** HiveDO records the inbound `Host` header in `fetch()`; `_system/instance` doc is regenerated on every read from that, with `env.WORKER_HOST` as cold-start fallback only.
 

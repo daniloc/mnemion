@@ -3,7 +3,8 @@
 // Pure functions that take a DataContext. HiveDO keeps thin RPC wrappers
 // that add broadcast and transaction concerns.
 
-import { applyKernelRules, type KernelContext } from "./kernel";
+import { applyKernelRules, INTERNAL_WRITE_PROTECTED, type KernelContext } from "./kernel";
+import { getMemoryPolicy } from "./prime";
 import { uri } from "./constants";
 
 // === Types ===
@@ -17,6 +18,7 @@ export interface DataContext {
   entryExists(pattern: string, id: number): boolean;
   hasKernelVersion(patternName: string): boolean;
   facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
+  patternClass(name: string): "knowledge" | "dataset";
 }
 
 // === Constants ===
@@ -34,9 +36,10 @@ function isValidColumn(ctx: DataContext, pattern: string, name: string): boolean
 }
 
 const LIMITS = {
-  ENTRY_BYTES: 1_048_576,  // 1 MB per entry
-  QUERY_ROWS: 1_000,       // max rows a single query can return
-  BATCH_OPS: 100,          // max operations in a single batch mutate
+  ENTRY_BYTES: 1_048_576,       // 1 MB per entry
+  DOCUMENT_BYTES: 26_214_400,   // 25 MB per uploaded document (R2-backed)
+  QUERY_ROWS: 1_000,            // max rows a single query can return
+  BATCH_OPS: 100,               // max operations in a single batch mutate
 };
 
 export { LIMITS };
@@ -55,6 +58,56 @@ function estimateRecordBytes(data: Record<string, unknown>): number {
 
 function errorJson(message: string): string {
   return JSON.stringify({ error: true, message });
+}
+
+// === Facet value validation (dataset patterns) ===
+//
+// Knowledge patterns stay permissive — facet types are advisory, everything is
+// stored as given. Dataset patterns enforce structural well-formedness so that
+// aggregation over them is sound: a "number" facet must hold a number, not
+// "banana". This is shape-checking, not truth-adjudication — it never blocks a
+// memory on semantic grounds, so it sits cleanly beside the never-blocks doctrine.
+// Each validator coerces to the canonical stored form or reports why it can't.
+
+type Coerce = { ok: true; value: unknown } | { ok: false; error: string };
+
+const FACET_VALIDATORS: Record<string, (v: unknown) => Coerce> = {
+  text: (v) => ({ ok: true, value: typeof v === "string" ? v : String(v) }),
+  number: (v) => {
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, error: `expected a number, got ${JSON.stringify(v)}` };
+  },
+  integer: (v) => {
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isInteger(n) ? { ok: true, value: n } : { ok: false, error: `expected an integer, got ${JSON.stringify(v)}` };
+  },
+  boolean: (v) => {
+    if (typeof v === "boolean") return { ok: true, value: v ? 1 : 0 };
+    if (v === 1 || v === 0) return { ok: true, value: v };
+    if (v === "true" || v === "1") return { ok: true, value: 1 };
+    if (v === "false" || v === "0") return { ok: true, value: 0 };
+    return { ok: false, error: `expected a boolean, got ${JSON.stringify(v)}` };
+  },
+  datetime: (v) => {
+    if (typeof v !== "string" && typeof v !== "number") return { ok: false, error: `expected a date string` };
+    const t = Date.parse(String(v));
+    return Number.isNaN(t) ? { ok: false, error: `expected a valid date (ISO 8601), got ${JSON.stringify(v)}` } : { ok: true, value: String(v) };
+  },
+  select: (v) => ({ ok: true, value: v }), // option membership is checked separately
+};
+
+interface FacetDef { name: string; type: string; required: boolean; hasDefault: boolean; }
+
+/** Declared facets for a pattern, read straight from _fields. */
+function facetDefs(ctx: DataContext, pattern: string): FacetDef[] {
+  return (ctx.db.exec(
+    "SELECT name, type, required, default_value FROM _fields WHERE object_name = ? ORDER BY id", pattern
+  ).toArray() as any[]).map((r) => ({
+    name: r.name as string,
+    type: r.type as string,
+    required: !!r.required,
+    hasDefault: r.default_value != null,
+  }));
 }
 
 // === Fuzzy pattern suggestion ===
@@ -99,6 +152,15 @@ function suggestFacet(name: string, pattern: string, ctx: DataContext): string {
 
 // === Query ===
 
+const AGG_FNS = new Set(["count", "sum", "avg", "min", "max"]);
+const ALIAS_RE = /^[a-z_][a-z0-9_]*$/i;
+// strftime formats for date bucketing — group a datetime facet by calendar period.
+const BUCKET_FORMATS: Record<string, string> = {
+  day: "%Y-%m-%d", week: "%Y-W%W", month: "%Y-%m", year: "%Y",
+};
+
+interface AggSpec { fn: string; facet?: string; as?: string; }
+
 export function query(
   ctx: DataContext,
   patternName: string,
@@ -107,9 +169,18 @@ export function query(
   sortField: string,
   limit: number,
   countOnly: boolean,
+  groupBy: string = "",
+  aggregateJson: string = "",
 ): string {
   if (!ctx.patternExists(patternName))
     return errorJson(`Pattern "${patternName}" does not exist.${suggestPattern(patternName, ctx)}`);
+
+  // Aggregation: GROUP BY + aggregate functions. This is the analysis verb —
+  // compute over rows rather than fetch them. Triggered by either group_by or
+  // an aggregate spec; the two compose (e.g. sum(amount) grouped by category).
+  if (groupBy || aggregateJson) {
+    return aggregate(ctx, patternName, filterJson, groupBy, aggregateJson, sortField, limit);
+  }
 
   if (countOnly) {
     let countSql = `SELECT COUNT(*) as count FROM "${patternName}" WHERE archived_at IS NULL`;
@@ -191,27 +262,147 @@ function parseFilter(expr: string): { clause: string; bindings: string[] } | nul
   return { clause: `"${field}" ${op} ?`, bindings: [value] };
 }
 
+// === Aggregate ===
+//
+// SELECT <group exprs>, <agg exprs> FROM pattern WHERE ... GROUP BY <group exprs>.
+// Every facet name is validated against the real columns before interpolation
+// (identifiers can't be bound), aggregate functions against a fixed whitelist,
+// and aliases against ALIAS_RE — so nothing user-supplied reaches SQL unchecked.
+function aggregate(
+  ctx: DataContext,
+  patternName: string,
+  filterJson: string,
+  groupBy: string,
+  aggregateJson: string,
+  sortField: string,
+  limit: number,
+): string {
+  // Group dimensions: bare "facet" or "facet:unit" for date bucketing.
+  const groupExprs: { expr: string; alias: string }[] = [];
+  for (const raw of groupBy.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const [facet, unit] = raw.split(":");
+    if (!isValidColumn(ctx, patternName, facet))
+      return errorJson(`Cannot group by unknown facet "${facet}" on "${patternName}".${suggestFacet(facet, patternName, ctx)}`);
+    if (unit !== undefined) {
+      const fmt = BUCKET_FORMATS[unit];
+      if (!fmt) return errorJson(`Unknown bucket unit "${unit}". Use one of: ${Object.keys(BUCKET_FORMATS).join(", ")}`);
+      groupExprs.push({ expr: `strftime('${fmt}', "${facet}")`, alias: facet });
+    } else {
+      groupExprs.push({ expr: `"${facet}"`, alias: facet });
+    }
+  }
+
+  // Aggregate measures. Default: COUNT(*) when nothing else is asked.
+  let specs: AggSpec[] = [];
+  if (aggregateJson) {
+    try {
+      const parsed = JSON.parse(aggregateJson);
+      if (!Array.isArray(parsed)) return errorJson("aggregate must be an array of {fn, facet?, as?}");
+      specs = parsed;
+    } catch {
+      return errorJson("aggregate must be valid JSON: array of {fn, facet?, as?}");
+    }
+  }
+  if (specs.length === 0) specs = [{ fn: "count" }];
+
+  const aggExprs: { expr: string; alias: string }[] = [];
+  const usedAliases = new Set(groupExprs.map((g) => g.alias));
+  for (const spec of specs) {
+    const fn = String(spec.fn || "").toLowerCase();
+    if (!AGG_FNS.has(fn)) return errorJson(`Unknown aggregate function "${spec.fn}". Use: ${[...AGG_FNS].join(", ")}`);
+    let expr: string, defaultAlias: string;
+    if (fn === "count" && !spec.facet) {
+      expr = "COUNT(*)";
+      defaultAlias = "count";
+    } else {
+      if (!spec.facet) return errorJson(`Aggregate "${fn}" requires a facet`);
+      if (!isValidColumn(ctx, patternName, spec.facet))
+        return errorJson(`Cannot aggregate unknown facet "${spec.facet}" on "${patternName}".${suggestFacet(spec.facet, patternName, ctx)}`);
+      expr = `${fn.toUpperCase()}("${spec.facet}")`;
+      defaultAlias = `${fn}_${spec.facet}`;
+    }
+    const alias = spec.as ?? defaultAlias;
+    if (!ALIAS_RE.test(alias)) return errorJson(`Invalid aggregate alias "${alias}". Use letters, digits, underscores.`);
+    if (usedAliases.has(alias)) return errorJson(`Duplicate output name "${alias}" — set distinct "as" aliases.`);
+    usedAliases.add(alias);
+    aggExprs.push({ expr, alias });
+  }
+
+  const selectParts = [...groupExprs, ...aggExprs].map((e) => `${e.expr} AS "${e.alias}"`);
+  let sql = `SELECT ${selectParts.join(", ")} FROM "${patternName}" WHERE archived_at IS NULL`;
+
+  const bindings: (string | number)[] = [];
+  if (filterJson) {
+    const filters: string[] = JSON.parse(filterJson);
+    for (const expr of filters) {
+      const parsed = parseFilter(expr);
+      if (!parsed) return errorJson(`Invalid filter expression: ${expr}`);
+      sql += ` AND ${parsed.clause}`;
+      bindings.push(...parsed.bindings);
+    }
+  }
+
+  if (groupExprs.length) sql += ` GROUP BY ${groupExprs.map((g) => g.expr).join(", ")}`;
+
+  // Sort by any output column (group alias or aggregate alias).
+  if (sortField) {
+    const desc = sortField.startsWith("-");
+    const col = desc ? sortField.slice(1) : sortField;
+    if (!usedAliases.has(col))
+      return errorJson(`Cannot sort by "${col}" — not in this aggregate's output. Available: ${[...usedAliases].join(", ")}`);
+    sql += ` ORDER BY "${col}" ${desc ? "DESC" : "ASC"}`;
+  }
+
+  sql += ` LIMIT ${Math.min(limit || 100, LIMITS.QUERY_ROWS)}`;
+
+  try {
+    const rows = ctx.db.exec(sql, ...bindings).toArray();
+    return JSON.stringify({
+      pattern: patternName,
+      aggregate: true,
+      group_by: groupExprs.map((g) => g.alias),
+      rows,
+      count: rows.length,
+    }, null, 2);
+  } catch (err: any) {
+    return errorJson(`Aggregate failed: ${err.message}`);
+  }
+}
+
 // === Mutate ===
 
 export function executeMutate(ctx: DataContext, patternName: string, operation: string, data: any): any {
   if (!ctx.patternExists(patternName))
     return { error: true, message: `Pattern "${patternName}" does not exist.${suggestPattern(patternName, ctx)}` };
 
+  // System-managed caches/audit logs are never agent-writable (e.g. _web_cache
+  // poisoning → resolve() serving planted content). Internal writers use direct
+  // SQL, not this path.
+  if (INTERNAL_WRITE_PROTECTED.has(patternName))
+    return { error: true, message: `"${patternName}" is managed by the system and cannot be modified directly.` };
+
   // Kernel rules (immutable fields, create hooks)
   const kernelCtx: KernelContext = {
     patternExists: (name) => ctx.patternExists(name),
     facetMeta: (pattern, facet) => ctx.facetMeta(pattern, facet),
     entryExists: (pattern, id) => ctx.entryExists(pattern, id),
+    memberActive: (label) =>
+      ctx.db.exec(
+        `SELECT 1 FROM "_members" WHERE label = ? AND status = 'active' AND archived_at IS NULL`,
+        label
+      ).toArray().length > 0,
   };
   const ruled = applyKernelRules(patternName, operation, data, kernelCtx);
   if ('error' in ruled) return ruled;
   data = ruled;
 
-  // Size guard + select validation
+  // Size guard + facet validation
   if (operation === "create" || operation === "update") {
     const size = estimateRecordBytes(data);
     if (size > LIMITS.ENTRY_BYTES)
       return { error: true, message: `Entry too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
+
+    const isDataset = ctx.patternClass(patternName) === "dataset";
 
     const SKIP_KEYS = new Set(["id", "version", "created_at", "updated_at", "archived_at"]);
     for (const [key, val] of Object.entries(data)) {
@@ -221,12 +412,62 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         return { error: true, message: `Facet "${key}" does not exist on "${patternName}".${suggestFacet(key, patternName, ctx)}` };
       if (val != null && meta.options && !meta.options.includes(String(val)))
         return { error: true, message: `Invalid value "${val}" for "${key}". Options: ${meta.options.join(", ")}` };
+
+      // Dataset patterns enforce types: coerce to canonical form or reject.
+      // Knowledge patterns leave the value untouched (types stay advisory).
+      if (isDataset && val != null) {
+        const validate = FACET_VALIDATORS[meta.type];
+        if (validate) {
+          const r = validate(val);
+          if (!r.ok)
+            return { error: true, message: `Invalid value for "${key}" on dataset "${patternName}" (${meta.type}): ${r.error}` };
+          data[key] = r.value;
+        }
+      }
+    }
+
+    // Required-field enforcement for datasets: a clean message before SQL's
+    // NOT NULL would reject it. On create, every required facet without a
+    // default must be present; on update, a required facet can't be cleared.
+    if (isDataset) {
+      for (const def of facetDefs(ctx, patternName)) {
+        if (!def.required) continue;
+        const present = Object.prototype.hasOwnProperty.call(data, def.name);
+        const empty = data[def.name] == null || data[def.name] === "";
+        if (operation === "create" && !def.hasDefault && (!present || empty))
+          return { error: true, message: `Facet "${def.name}" is required on dataset "${patternName}".` };
+        if (operation === "update" && present && empty)
+          return { error: true, message: `Facet "${def.name}" is required on dataset "${patternName}" and cannot be cleared.` };
+      }
     }
   }
 
   try {
     switch (operation) {
       case "create": {
+        // Exclusive-facet advisory (memory policy): the pattern declares this
+        // facet single-valued-per-value, and an active entry already holds it.
+        // Checked before the insert so the advisory never matches the new row.
+        let overlap: { pattern: string; id: number; uri: string; reason: string; facet: string }[] | undefined;
+        if (!patternName.startsWith("_")) {
+          const policy = getMemoryPolicy(ctx.db, patternName);
+          for (const facet of policy.exclusive_facets) {
+            const val = data[facet];
+            if (val == null || val === "") continue;
+            if (!ctx.facetMeta(patternName, facet)) continue;
+            const existing = ctx.db.exec(
+              `SELECT id FROM "${patternName}" WHERE "${facet}" = ? AND archived_at IS NULL LIMIT 3`, val
+            ).toArray() as { id: number }[];
+            for (const e of existing) {
+              (overlap ??= []).push({
+                pattern: patternName, id: e.id,
+                uri: uri(`entry/${patternName}/${e.id}`),
+                reason: "exclusive_facet", facet,
+              });
+            }
+          }
+        }
+
         const fields = Object.keys(data).filter((k) => !KERNEL_COLUMNS.has(k));
         const cols = fields.map((f) => `"${f}"`).join(", ");
         const placeholders = fields.map(() => "?").join(", ");
@@ -234,7 +475,12 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
         ctx.db.exec(`INSERT INTO "${patternName}" (${cols}) VALUES (${placeholders})`, ...values);
         const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = last_insert_rowid()`).one();
-        return { operation: "create", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${(row as any).id}`) };
+        const result: any = { operation: "create", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${(row as any).id}`) };
+        if (overlap?.length) {
+          result.possible_overlap = overlap;
+          result.overlap_guidance = `Advisory only — the entry was created. These facets are declared exclusive in this pattern's memory policy; if the new entry replaces one of them, link supersession: mutate(pattern: "link", data: {source: "${patternName}/${(row as any).id}", target: "${patternName}/{old_id}", label: "supersedes"}).`;
+        }
+        return result;
       }
 
       case "update": {

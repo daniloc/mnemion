@@ -1,12 +1,13 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { SessionDO } from "./session";
 import { HiveDO } from "./hive";
+import { HIVE_ID } from "./constants";
 import { Method, Auth, createRouter, type Route, type Env } from "./router";
 
 // Auth
-import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify } from "./routes/auth";
+import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify, revokeSessions, invitePage, inviteBegin, inviteComplete } from "./routes/auth";
 // I/O
-import { serveSharedEntry, serveOutput, receiveInput, upload, exportPattern } from "./routes/io";
+import { serveSharedEntry, serveOutput, servePublication, receiveInput, upload, uploadDocument, serveDocument, exportPattern } from "./routes/io";
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/marketplace";
 // Pages
@@ -31,17 +32,26 @@ const routes: Route[] = [
   { method: Method.POST, pattern: "/auth/passkey/begin",   handler: passkeyBegin },
   { method: Method.POST, pattern: "/auth/passkey/complete", handler: passkeyComplete },
 
+  // Invite approval (human passkey gate before a register token can be used)
+  { method: Method.GET,  pattern: "/invite/:token",          auth: Auth.CONFIGURED, where: { token: /^[a-fA-F0-9]+$/ }, handler: invitePage },
+  { method: Method.POST, pattern: "/invite/:token/begin",    auth: Auth.CONFIGURED, where: { token: /^[a-fA-F0-9]+$/ }, handler: inviteBegin },
+  { method: Method.POST, pattern: "/invite/:token/complete", auth: Auth.CONFIGURED, where: { token: /^[a-fA-F0-9]+$/ }, handler: inviteComplete },
+
   // Session login (for browser pages)
   { method: Method.GET,  pattern: "/login",                auth: Auth.CONFIGURED, handler: loginPage },
   { method: Method.POST, pattern: "/login/begin",          auth: Auth.CONFIGURED, handler: loginBegin },
   { method: Method.POST, pattern: "/login/complete",       auth: Auth.CONFIGURED, handler: loginComplete },
   { method: Method.POST, pattern: "/login/verify",         auth: Auth.CONFIGURED, handler: loginVerify },
+  { method: Method.POST, pattern: "/sessions/revoke",      auth: Auth.SECRET, handler: revokeSessions },
 
   // HTTP I/O
   { method: Method.GET,  pattern: "/o/entry/:pattern/:id", where: { id: /^\d+$/ }, handler: serveSharedEntry },
   { method: Method.GET,  pattern: "/o/:path",              handler: serveOutput },
+  { method: Method.GET,  pattern: "/p/:path",              handler: servePublication },
   { method: Method.POST, pattern: "/i/:path",              handler: receiveInput },
   { method: Method.POST, pattern: "/upload/:token",        where: { token: /^[a-fA-F0-9]+$/ }, handler: upload },
+  { method: Method.POST, pattern: "/f/:token",             where: { token: /^[a-fA-F0-9]+$/ }, handler: uploadDocument },
+  { method: Method.GET,  pattern: "/f/:id",                where: { id: /^\d+$/ }, handler: serveDocument },
   { method: Method.GET,  pattern: "/export/:pattern",       auth: Auth.SESSION, handler: exportPattern },
 
   // Pages
@@ -85,11 +95,13 @@ export default new OAuthProvider({
     // chars. Accept either case so a valid wildcard token actually validates.
     if (!/^[a-fA-F0-9]{32}$/.test(token)) return null;
 
-    const storeId = (env as any).MNEMION_HIVE.idFromName("user:owner");
+    const storeId = (env as any).MNEMION_HIVE.idFromName(HIVE_ID);
     const store = (env as any).MNEMION_HIVE.get(storeId) as DurableObjectStub<HiveDO>;
-    const valid = await store.validateAccessToken(token, "*");
-    if (!valid) return null;
+    // Resolve which member this token authenticates as (null = invalid/out of
+    // scope/suspended). Member-less tokens resolve to the owner sentinel.
+    const actor = await store.resolveTokenActor(token, "*");
+    if (!actor) return null;
 
-    return { props: { userId: "owner" } };
+    return { props: { hiveId: HIVE_ID, actor, userId: actor } };
   },
 });

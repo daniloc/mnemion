@@ -88,9 +88,19 @@ export const marketplaceToken: RouteHandler = async (ctx) => {
     });
   }
 
-  // GET: list marketplace-scoped tokens
+  // GET: list marketplace-scoped tokens. Do not return the token secrets in a
+  // list — they're only revealed once, at creation. Expose a short suffix so the
+  // owner can identify a token without the full value leaking into logs/history.
+  // query() returns { pattern, entries, count } — redact over .entries.
   const result = await ctx.hive.query("_access_tokens", JSON.stringify(["scope=marketplace"]), "id,label,token,constraints,created_at", "-created_at", 100, false);
-  return Response.json(JSON.parse(result));
+  const parsed = JSON.parse(result);
+  if (parsed && Array.isArray(parsed.entries)) {
+    parsed.entries = parsed.entries.map(({ token, ...rest }: Record<string, any>) => ({
+      ...rest,
+      token_suffix: typeof token === "string" ? token.slice(-4) : null,
+    }));
+  }
+  return Response.json(parsed);
 };
 
 // === Marketplace git endpoints ===

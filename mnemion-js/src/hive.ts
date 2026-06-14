@@ -7,7 +7,9 @@ import * as cred from "./credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
 import * as priming from "./prime";
+import * as pubs from "./publications";
 import * as web from "./web";
+import { capText, extractPdfText } from "./extract";
 
 // === Types ===
 
@@ -23,6 +25,9 @@ export interface IndexPatternEntry {
   name: string;
   description: string;
   doctrine: string;
+  pattern_class?: "knowledge" | "dataset";
+  memory_policy?: Record<string, unknown> | null;
+  unavailable?: string;
   facets: IndexFacetEntry[];
   entry_count: number;
   latest_activity: string | null;
@@ -68,6 +73,13 @@ export class HiveDO extends DurableObject {
 
   async getIndex(): Promise<string> {
     const index = this.getCurrentIndex();
+
+    // Flag the document store when R2 isn't enabled, so agents reading the
+    // index know files can't be stored (and can tell the human how to enable it).
+    if (!this.env.DOCUMENTS) {
+      const docs = index.patterns.find((p) => p.name === "_documents");
+      if (docs) docs.unavailable = "Cloudflare R2 is not enabled on this instance — _documents entries can be created but file upload/serve is unavailable. To enable: turn on R2 (dashboard → Storage & databases → R2), then run `npm run enable-documents` and redeploy.";
+    }
 
     // Enrich with live entry counts and latest activity
     for (const pat of index.patterns) {
@@ -157,6 +169,127 @@ export class HiveDO extends DurableObject {
     return JSON.stringify(all.slice(0, limit));
   }
 
+  // === Memory maintenance ===
+
+  async getMaintenanceStatus(): Promise<string> {
+    return JSON.stringify(this.computeMaintenanceStatus(), null, 2);
+  }
+
+  private computeMaintenanceStatus(): {
+    last_pass_at: string | null;
+    days_since_last_pass: number | null;
+    interval_days: number;
+    overdue: boolean;
+  } {
+    const DAY = 86_400_000;
+
+    let intervalDays = 14;
+    try {
+      const r = this.db.exec(
+        `SELECT "value" FROM "_charter" WHERE "key" = 'maintenance_interval_days' AND archived_at IS NULL`
+      ).toArray() as any[];
+      const v = Number(r[0]?.value);
+      if (Number.isFinite(v) && v > 0) intervalDays = v;
+    } catch { /* charter may not exist yet */ }
+
+    let lastPass: string | null = null;
+    try {
+      const r = this.db.exec(
+        `SELECT MAX(created_at) as t FROM "_maintenance_passes" WHERE archived_at IS NULL`
+      ).toArray() as any[];
+      lastPass = r[0]?.t ?? null;
+    } catch { /* table may not exist yet */ }
+
+    if (lastPass) {
+      const t = priming.parseDbDate(lastPass);
+      const days = t != null ? Math.floor((Date.now() - t) / DAY) : null;
+      return {
+        last_pass_at: lastPass,
+        days_since_last_pass: days,
+        interval_days: intervalDays,
+        overdue: days != null && days >= intervalDays,
+      };
+    }
+
+    // Never run — only nag once the hive is older than the interval, using the
+    // first schema change as its birth. Fresh hives stay quiet.
+    let overdue = false;
+    try {
+      const r = this.db.exec(`SELECT MIN(created_at) as t FROM _schema_history`).toArray() as any[];
+      const birth = priming.parseDbDate(r[0]?.t ?? undefined);
+      overdue = birth != null && (Date.now() - birth) / DAY >= intervalDays;
+    } catch { /* no history — fresh hive */ }
+
+    return { last_pass_at: null, days_since_last_pass: null, interval_days: intervalDays, overdue };
+  }
+
+  async getStaleEntries(days?: number): Promise<string> {
+    const patterns = this.db.exec(
+      "SELECT name FROM _objects WHERE archived_at IS NULL AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name"
+    ).toArray() as { name: string }[];
+
+    const stale: any[] = [];
+    for (const pat of patterns) {
+      // Dataset patterns don't go stale — a recorded observation is history, not
+      // memory awaiting review. Skip them in the maintenance surface.
+      if (this.patternClass(pat.name) === "dataset") continue;
+      const policy = priming.getMemoryPolicy(this.db, pat.name);
+      const horizon = days ?? (policy.half_life_days != null ? policy.half_life_days * 3 : 90);
+      const modifier = `-${Math.round(horizon)} days`;
+
+      try {
+        // Preview from the first text/select facet (same convention as getRecentActivity)
+        const facets = this.db.exec(
+          "SELECT name FROM _fields WHERE object_name = ? AND type IN ('text', 'select') ORDER BY id",
+          pat.name
+        ).toArray() as { name: string }[];
+        const firstFacet = facets[0]?.name;
+        const selectCols = firstFacet ? `, e."${firstFacet}"` : "";
+
+        // Stale = neither updated nor recalled inside the horizon
+        const rows = this.db.exec(
+          `SELECT e.id, e.updated_at, MAX(l.accessed_at) as last_primed${selectCols}
+           FROM "${pat.name}" e
+           LEFT JOIN "_entry_access_log" l ON l.pattern = ? AND l.entry_id = e.id
+           WHERE e.archived_at IS NULL
+           GROUP BY e.id
+           HAVING e.updated_at < datetime('now', ?) AND COALESCE(MAX(l.accessed_at), e.updated_at) < datetime('now', ?)
+           ORDER BY e.updated_at ASC`,
+          pat.name, modifier, modifier
+        ).toArray() as any[];
+
+        for (const row of rows) {
+          const item: any = {
+            pattern: pat.name,
+            id: row.id,
+            uri: uri(`entry/${pat.name}/${row.id}`),
+            preview: firstFacet && row[firstFacet] ? String(row[firstFacet]).slice(0, 120) : "",
+            updated_at: row.updated_at,
+            last_primed: row.last_primed ?? null,
+            horizon_days: horizon,
+          };
+          try {
+            const sup = this.db.exec(
+              `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
+              pat.name, row.id
+            ).toArray() as any[];
+            if (sup.length > 0) item.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
+          } catch { /* _links may not exist */ }
+          stale.push(item);
+        }
+      } catch { /* table may not exist */ }
+    }
+
+    stale.sort((a, b) => String(a.updated_at).localeCompare(String(b.updated_at)));
+    const capped = stale.slice(0, 100);
+    return JSON.stringify({
+      stale: capped,
+      count: capped.length,
+      total: stale.length,
+      guidance: "Read-only review surface. Propose supersession or archival to the human; never bulk-archive unprompted. See the memory-maintenance system doc.",
+    }, null, 2);
+  }
+
   // === Schema evolution (delegated to evolution.ts) ===
 
   private evoCtx(): evo.EvolutionContext {
@@ -169,6 +302,20 @@ export class HiveDO extends DurableObject {
 
   async proposeChange(description: string, changeJson: string): Promise<string> {
     return evo.proposeChange(description, changeJson, this.evoCtx(), () => this.getCurrentIndex());
+  }
+
+  // Peek at a pending change's spec without applying it — lets the SessionDO
+  // decide whether the change needs a consent round-trip (e.g. set_sharing to a
+  // non-private visibility, which publishes an entry over HTTP).
+  async getPendingChange(changeId: string): Promise<string | null> {
+    try {
+      const rows = this.db.exec(
+        "SELECT change_spec FROM _pending_changes WHERE id = ?", changeId
+      ).toArray() as any[];
+      return rows.length > 0 ? (rows[0].change_spec as string) : null;
+    } catch {
+      return null;
+    }
   }
 
   async applyChange(changeId: string): Promise<string> {
@@ -194,8 +341,8 @@ export class HiveDO extends DurableObject {
       return this.errorJson(`Pattern "${patternName}" does not exist`);
 
     const objRow = this.db.exec(
-      "SELECT name, description FROM _objects WHERE name = ?", patternName
-    ).one() as { name: string; description: string };
+      "SELECT name, description, pattern_class FROM _objects WHERE name = ?", patternName
+    ).one() as { name: string; description: string; pattern_class: string };
 
     const fields = this.db.exec(
       "SELECT name, type, required, default_value, references_object FROM _fields WHERE object_name = ? ORDER BY id",
@@ -205,6 +352,7 @@ export class HiveDO extends DurableObject {
     return JSON.stringify({
       pattern: objRow.name,
       description: objRow.description,
+      pattern_class: objRow.pattern_class === "dataset" ? "dataset" : "knowledge",
       facets: fields.map((f: any) => {
         const facet: any = {
           name: f.name,
@@ -241,6 +389,15 @@ export class HiveDO extends DurableObject {
       const entry = rows[0] as Record<string, unknown>;
       const result: any = { pattern: patternName, entry };
 
+      // Superseded entries are annotated, never hidden — the chain stays navigable
+      try {
+        const sup = this.db.exec(
+          `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
+          patternName, entryId
+        ).toArray() as any[];
+        if (sup.length > 0) result.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
+      } catch { /* _links may not exist */ }
+
       // One-hop link following
       const linked = priming.followLinks(this.primeCtx(), patternName, entry);
       if (linked.length > 0) result.linked = linked;
@@ -274,11 +431,17 @@ export class HiveDO extends DurableObject {
         if (rows[0].options) meta.options = JSON.parse(rows[0].options);
         return meta;
       },
+      patternClass: (name) => this.patternClass(name),
     };
   }
 
-  async query(patternName: string, filterJson: string, facets: string, sortField: string, limit: number, countOnly: boolean): Promise<string> {
-    return data.query(this.dataCtx(), patternName, filterJson, facets, sortField, limit, countOnly);
+  /** A pattern's class: "dataset" (structured records) or "knowledge" (default). */
+  private patternClass(name: string): "knowledge" | "dataset" {
+    return priming.getPatternClass(this.db, name);
+  }
+
+  async query(patternName: string, filterJson: string, facets: string, sortField: string, limit: number, countOnly: boolean, groupBy: string = "", aggregateJson: string = ""): Promise<string> {
+    return data.query(this.dataCtx(), patternName, filterJson, facets, sortField, limit, countOnly, groupBy, aggregateJson);
   }
 
   async mutate(patternName: string, operation: string, dataJson: string): Promise<string> {
@@ -289,15 +452,161 @@ export class HiveDO extends DurableObject {
       operation = shortcut.operation;
     }
 
-    const result = data.executeMutate(this.dataCtx(), patternName, operation, JSON.parse(dataJson));
+    const parsed = JSON.parse(dataJson);
+
+    // Write-time conflict surfacing: semantic neighbors for single creates in
+    // user patterns (policy-gated, advisory only). The embedding computed here
+    // is reused for the post-write upsert — no second AI call.
+    let conflictCheck: { neighbors: priming.NeighborMatch[]; vector: number[] | null } | null = null;
+    if (operation === "create" && !patternName.startsWith("_") && this.patternExists(patternName)
+        && this.patternClass(patternName) !== "dataset") {
+      const policy = priming.getMemoryPolicy(this.db, patternName);
+      if (policy.conflict_check !== "off") {
+        conflictCheck = await priming.findNeighbors(this.primeCtx(), patternName, parsed);
+      }
+    }
+
+    // Capture a document's R2 key before archiving so we can free the blob after.
+    let archivedDocKey: string | null = null;
+    if (patternName === "_documents" && operation === "archive" && parsed.id != null) {
+      try {
+        const r = this.db.exec(`SELECT r2_key FROM "_documents" WHERE id = ?`, parsed.id).toArray() as any[];
+        archivedDocKey = r[0]?.r2_key ?? null;
+      } catch { /* best-effort */ }
+    }
+
+    const result = data.executeMutate(this.dataCtx(), patternName, operation, parsed);
     if (!result.error) {
+      if (conflictCheck?.neighbors.length) {
+        result.possible_overlap = [
+          ...(result.possible_overlap ?? []),
+          ...conflictCheck.neighbors.map(n => ({ ...n, reason: "semantic_similarity" })),
+        ];
+        result.overlap_guidance = "Advisory only — the entry was created. If it duplicates or replaces an existing entry, consider updating that entry instead, or link supersession: mutate(pattern: \"link\", data: {source: \"" + patternName + "/" + result.entry?.id + "\", target: \"" + patternName + "/{old_id}\", label: \"supersedes\"}).";
+      }
       this.broadcastChange([patternName]);
-      this.embedAfterMutate(patternName, operation, result.entry?.id);
+      this.embedAfterMutate(patternName, operation, result.entry?.id, conflictCheck?.vector ?? undefined);
       if (patternName === "_system_tasks" && operation === "create") {
         await this.runTask(result.entry.id, result.entry.task);
       }
+      // A new document entry is born with its single-use upload ticket — the
+      // bytes are POSTed to upload_url, which records r2_key/size on the entry.
+      if (patternName === "_documents" && operation === "create" && result.entry && !result.entry.r2_key) {
+        const tok = data.executeMutate(this.dataCtx(), "_access_tokens", "create", {
+          scope: "document", label: `upload:document:${result.entry.id}`,
+          constraints: JSON.stringify({ document_id: result.entry.id }),
+        });
+        if (!tok.error && tok.entry?.token) {
+          result.upload_token = tok.entry.token;
+          result.upload_url = `https://${this.currentHost()}/f/${tok.entry.token}`;
+        }
+        // Minting the token is pure DB; the bytes need R2. If it isn't enabled,
+        // say so plainly rather than handing back an upload_url that 503s.
+        if (!this.env.DOCUMENTS) {
+          result.documents_note = "File storage (R2) is not enabled on this instance — the metadata entry was created, but uploading bytes to upload_url will fail until R2 is enabled. Everything else works without it.";
+        }
+      }
+      // Archiving a document frees its R2 object — the metadata and the blob die together.
+      if (archivedDocKey && this.env.DOCUMENTS) {
+        this.ctx.waitUntil(this.env.DOCUMENTS.delete(archivedDocKey).catch(() => {}));
+      }
     }
     return JSON.stringify(result, null, 2);
+  }
+
+  // === Document store (R2-backed blobs) ===
+
+  /** Record a completed upload: bind the R2 key + metadata to the document entry
+   *  and burn the single-use token. The route has already streamed the bytes to
+   *  R2; on any failure here it deletes that orphaned object. */
+  async consumeDocumentUpload(token: string, r2Key: string, contentType: string, size: number): Promise<string> {
+    const accessToken = cred.findAccessToken(this.db, token);
+    if (!accessToken) return this.errorJson("Invalid or expired upload token");
+    if (!cred.scopeMatches(accessToken.scope, "document")) return this.errorJson("Token does not have document scope");
+
+    let documentId: number;
+    try {
+      documentId = JSON.parse(accessToken.constraints ?? "{}").document_id;
+    } catch { return this.errorJson("Upload token has invalid constraints"); }
+    if (documentId == null) return this.errorJson("Upload token missing document_id");
+
+    const rows = this.db.exec(
+      `SELECT id FROM "_documents" WHERE id = ? AND archived_at IS NULL`, documentId
+    ).toArray();
+    if (rows.length === 0) return this.errorJson("Document not found");
+
+    this.db.exec(
+      `UPDATE "_documents" SET r2_key = ?, "size" = ?, content_type = ?, stored_at = datetime('now'), updated_at = datetime('now'), version = version + 1 WHERE id = ?`,
+      r2Key, size, contentType, documentId
+    );
+    cred.consumeToken(this.db, accessToken.id);
+    this.broadcastChange(["_documents"]);
+
+    const entry = this.db.exec(`SELECT * FROM "_documents" WHERE id = ?`, documentId).one();
+    return JSON.stringify({ uploaded: true, id: documentId, bytes: size, content_type: contentType, entry });
+  }
+
+  /** Record extracted text + status on a document, then re-embed so the text
+   *  joins prime recall (search already covers the facet). Called by the upload
+   *  route after it pulls text from the bytes (inline for text, async for PDF). */
+  async recordExtraction(documentId: number, text: string, status: string): Promise<string> {
+    try {
+      const rows = this.db.exec(
+        `SELECT id FROM "_documents" WHERE id = ? AND archived_at IS NULL`, documentId
+      ).toArray();
+      if (rows.length === 0) return this.errorJson("Document not found");
+
+      this.db.exec(
+        `UPDATE "_documents" SET extracted_text = ?, extraction_status = ?, updated_at = datetime('now'), version = version + 1 WHERE id = ?`,
+        text || null, status, documentId
+      );
+      this.broadcastChange(["_documents"]);
+      // Re-embed with the extracted text included (buildEmbedText reads text facets).
+      this.ctx.waitUntil(priming.embedEntry(this.primeCtx(), "_documents", documentId));
+      return JSON.stringify({ recorded: true, id: documentId, status, chars: (text || "").length });
+    } catch (err: any) {
+      return this.errorJson(`Failed to record extraction: ${err.message}`);
+    }
+  }
+
+  /** Schedule async PDF text extraction inside the DO (which has a real
+   *  waitUntil — the route ctx does not). Marks pending, then reads the blob
+   *  back from R2, extracts, and records. Returns immediately; the work
+   *  outlives the RPC via ctx.waitUntil. Best-effort: failures land as status. */
+  async extractDocument(id: number): Promise<string> {
+    const rows = this.db.exec(
+      `SELECT r2_key FROM "_documents" WHERE id = ? AND archived_at IS NULL`, id
+    ).toArray() as any[];
+    if (rows.length === 0 || !rows[0].r2_key) return this.errorJson("Document not found or not uploaded");
+    const r2Key = rows[0].r2_key as string;
+
+    this.db.exec(`UPDATE "_documents" SET extraction_status = 'pending', updated_at = datetime('now') WHERE id = ?`, id);
+
+    this.ctx.waitUntil((async () => {
+      try {
+        const obj = this.env.DOCUMENTS ? await this.env.DOCUMENTS.get(r2Key) : null;
+        if (!obj) { await this.recordExtraction(id, "", "failed"); return; }
+        const text = capText(await extractPdfText(await obj.arrayBuffer()));
+        await this.recordExtraction(id, text, text.trim() ? "done" : "empty");
+      } catch {
+        await this.recordExtraction(id, "", "failed");
+      }
+    })());
+
+    return JSON.stringify({ scheduled: true, id });
+  }
+
+  /** Resolve a document for serving. Returns found:false until bytes exist. */
+  async resolveDocument(id: number): Promise<string> {
+    try {
+      const rows = this.db.exec(
+        `SELECT title, visibility, r2_key, content_type, stored_at FROM "_documents" WHERE id = ? AND archived_at IS NULL`, id
+      ).toArray() as any[];
+      if (rows.length === 0 || !rows[0].r2_key) return JSON.stringify({ found: false });
+      return JSON.stringify({ found: true, ...rows[0] });
+    } catch {
+      return JSON.stringify({ found: false });
+    }
   }
 
   async batchMutate(operationsJson: string): Promise<string> {
@@ -350,6 +659,12 @@ export class HiveDO extends DurableObject {
     const IDENT_RE = /^[a-z_][a-z0-9_-]*$/;
     if (typeof constraints.target_pattern !== "string" || !IDENT_RE.test(constraints.target_pattern) || !this.patternExists(constraints.target_pattern))
       return this.errorJson("Upload token has an invalid target pattern");
+    // Uploads write user patterns only. consumeUpload uses raw UPDATE (not
+    // executeMutate), so it must enforce the kernel/internal-write boundary
+    // itself — this catches any token minted before the create-hook guard, and
+    // closes the _web_cache / _system_docs poisoning path directly.
+    if (constraints.target_pattern.startsWith("_"))
+      return this.errorJson("Upload token has an invalid target pattern");
     if (typeof constraints.target_facet !== "string" || !IDENT_RE.test(constraints.target_facet))
       return this.errorJson("Upload token has an invalid target facet");
 
@@ -376,7 +691,10 @@ export class HiveDO extends DurableObject {
         } catch { /* No version column — fine */ }
       }
     } catch (err: any) {
-      return this.errorJson(`Upload write failed: ${err.message}`);
+      // Don't echo the raw SQLite error to the (low-trust) upload caller — it can
+      // leak column names, constraints, and internal table structure.
+      console.error("Upload write failed:", err?.message);
+      return this.errorJson("Upload write failed");
     }
 
     cred.consumeToken(this.db, accessToken.id);
@@ -400,8 +718,8 @@ export class HiveDO extends DurableObject {
     return { env: this.env as any, db: this.db };
   }
 
-  private async resolveWeb(url: string): Promise<string> {
-    const result = await web.resolveWeb(this.webCtx(), url);
+  private async resolveWeb(url: string, retain?: boolean): Promise<string> {
+    const result = await web.resolveWeb(this.webCtx(), url, retain);
 
     if (result.metadata?.error) {
       return this.errorJson(result.metadata.message as string);
@@ -424,10 +742,11 @@ export class HiveDO extends DurableObject {
 
   // === URI resolution ===
 
-  async resolve(input: string): Promise<string> {
-    // https://, http://, and at:// (Bluesky AT Protocol) URIs → web resolution
+  async resolve(input: string, retain?: boolean): Promise<string> {
+    // https://, http://, and at:// (Bluesky AT Protocol) URIs → web resolution.
+    // retain pins/unpins the cached snapshot; it's ignored for non-web URIs.
     if (input.startsWith("https://") || input.startsWith("http://") || input.startsWith("at://")) {
-      return this.resolveWeb(input);
+      return this.resolveWeb(input, retain);
     }
 
     const match = input.match(new RegExp(`^${URI_SCHEME}://(.+)$`));
@@ -451,6 +770,12 @@ export class HiveDO extends DurableObject {
       const params = new URLSearchParams(path.split("?")[1] || "");
       const limit = Number(params.get("limit")) || 20;
       return this.getHistory(limit);
+    }
+
+    if (path === "stale" || path.startsWith("stale?")) {
+      const params = new URLSearchParams(path.split("?")[1] || "");
+      const days = Number(params.get("days")) || undefined;
+      return this.getStaleEntries(days);
     }
 
     const schemaMatch = path.match(/^schema\/(.+)$/);
@@ -482,7 +807,7 @@ export class HiveDO extends DurableObject {
       return this.getMutationLog(tableName, limit);
     }
 
-    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
+    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
   }
 
   // === Federated resolve: foreign hive URIs ===
@@ -514,15 +839,48 @@ export class HiveDO extends DurableObject {
       );
     }
 
-    const url = `https://${host}/o/${cleanPath}`;
+    // Build the fetch URL from the SAME normalized host we authorized above —
+    // never the raw segment — so "what we approved" and "what we contact" can't
+    // diverge.
+    let currentUrl = `https://${normalizeHost(host)}/o/${cleanPath}`;
 
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
+    // Manual redirect handling. The host block + consent allow-list are only
+    // meaningful if every hop is re-validated: with the default redirect:"follow"
+    // a compromised or redirecting peer could bounce us to 169.254.169.254 /
+    // loopback (SSRF) or carry the owner's token to an un-approved host. We
+    // follow at most MAX_REDIRECTS hops, re-checking the block list AND the
+    // allow-list on each, and only send the token to allow-listed hosts.
+    const MAX_REDIRECTS = 3;
 
     try {
-      const response = await fetch(url, { headers });
+      let response: Response;
+      for (let hop = 0; ; hop++) {
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        response = await fetch(currentUrl, { headers, redirect: "manual" });
+
+        const location = response.headers.get("Location");
+        if (response.status >= 300 && response.status < 400 && location) {
+          if (hop >= MAX_REDIRECTS) {
+            return this.errorJson(`Foreign hive ${host} exceeded the redirect limit for: ${cleanPath}`);
+          }
+          let next: URL;
+          try {
+            next = new URL(location, currentUrl);
+          } catch {
+            return this.errorJson(`Foreign hive ${host} returned an invalid redirect for: ${cleanPath}`);
+          }
+          if (next.protocol !== "https:") {
+            return this.errorJson(`Refusing to follow non-https redirect from ${host} (token not sent).`);
+          }
+          if (isBlockedFederationHost(next.host) || !this.isFederationHostAllowed(next.host)) {
+            return this.errorJson(`Refusing to follow redirect from ${host} to non-allow-listed host ${next.host} (token not sent).`);
+          }
+          currentUrl = next.toString();
+          continue;
+        }
+        break;
+      }
 
       if (!response.ok) {
         const status = response.status;
@@ -694,13 +1052,15 @@ export class HiveDO extends DurableObject {
     };
   }
 
-  private embedAfterMutate(pattern: string, operation: string, id?: number) {
+  private embedAfterMutate(pattern: string, operation: string, id?: number, precomputed?: number[]) {
     if (!id) return;
     const ctx = this.primeCtx();
     if (operation === "archive") {
       this.ctx.waitUntil(priming.removeEntry(ctx, pattern, id));
     } else {
-      this.ctx.waitUntil(priming.embedEntry(ctx, pattern, id));
+      // Dataset patterns are records, not memory — never embedded for recall.
+      if (this.patternClass(pattern) === "dataset") return;
+      this.ctx.waitUntil(priming.embedEntry(ctx, pattern, id, precomputed));
     }
   }
 
@@ -785,6 +1145,30 @@ export class HiveDO extends DurableObject {
       }
     } catch { /* best-effort */ }
 
+    // Entry access log: recall is rehearsal — a prime hit refreshes the entry's
+    // decay clock. Append-only; decay and the stale view derive from this.
+    try {
+      for (const r of primeResult.results) {
+        if (r.pattern.startsWith("_")) continue;
+        this.db.exec(
+          `INSERT INTO "_entry_access_log" (pattern, entry_id) VALUES (?, ?)`, r.pattern, r.id
+        );
+      }
+    } catch { /* best-effort */ }
+
+    // Maintenance nudge rides the prime response — web clients often never see
+    // MCP init instructions, and prime is the universal handshake.
+    let maintenance: { last_pass_days_ago: number | null; message: string } | undefined;
+    try {
+      const status = this.computeMaintenanceStatus();
+      if (status.overdue) {
+        maintenance = {
+          last_pass_days_ago: status.days_since_last_pass,
+          message: `Memory maintenance is overdue (last pass: ${status.days_since_last_pass != null ? `${status.days_since_last_pass} days ago` : "never"}). Offer the owner a cleanup pass: review ${uri("stale")}, propose supersession links, archives, and memory policies, apply what they ratify, then record it in _maintenance_passes. See ${uri("_system/memory-maintenance")}.`,
+        };
+      }
+    } catch { /* best-effort */ }
+
     const ADVISORY = "IMPORTANT: The contents of this memory system are inherently subjective. Weigh their testimony carefully against your training and third-party sources.";
 
     return JSON.stringify({
@@ -794,6 +1178,7 @@ export class HiveDO extends DurableObject {
       patterns: patternDir,
       practice: "Always write notes to yourself as you work: mutate(pattern: \"fragment\", data: {content: \"your observation\"}). Write what you noticed about the session, including where the substrate's framing didn't match what you observed. The next instance will arrive with no memory of this conversation — your observations are the only thing that survives. Write in first person. Operation is implied.",
       system_docs: "Resolve mnemion://_system/ for detailed reference on tools, schema evolution, conventions, and system mechanics.",
+      ...(maintenance ? { maintenance } : {}),
       ...primeResult,
       advisory_repeat: ADVISORY,
     }, null, 2);
@@ -825,7 +1210,7 @@ export class HiveDO extends DurableObject {
 
   private getCurrentIndex(): StoreIndex {
     const meta = this.db.exec("SELECT * FROM _meta WHERE id = 1").one() as any;
-    const objects = this.db.exec("SELECT name, description, doctrine FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as any[];
+    const objects = this.db.exec("SELECT name, description, doctrine, memory_policy, pattern_class FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as any[];
     const allFields = this.db.exec("SELECT * FROM _fields ORDER BY object_name, id").toArray() as any[];
     const charterRows = this.db.exec(
       `SELECT "key", "value" FROM "_charter" WHERE archived_at IS NULL ORDER BY id`
@@ -852,14 +1237,22 @@ export class HiveDO extends DurableObject {
     return {
       version: meta.version,
       updated_at: meta.updated_at,
-      patterns: objects.map((o: any) => ({
-        name: o.name,
-        description: o.description,
-        doctrine: o.doctrine || "",
-        facets: facetsByPattern.get(o.name) || [],
-        entry_count: 0,
-        latest_activity: null,
-      })),
+      patterns: objects.map((o: any) => {
+        let memoryPolicy: Record<string, unknown> | null = null;
+        if (o.memory_policy) {
+          try { memoryPolicy = JSON.parse(o.memory_policy); } catch { /* malformed — omit */ }
+        }
+        return {
+          name: o.name,
+          description: o.description,
+          doctrine: o.doctrine || "",
+          ...(o.pattern_class === "dataset" ? { pattern_class: "dataset" as const } : {}),
+          ...(memoryPolicy ? { memory_policy: memoryPolicy } : {}),
+          facets: facetsByPattern.get(o.name) || [],
+          entry_count: 0,
+          latest_activity: null,
+        };
+      }),
       charter,
       guidance: meta.guidance,
     };
@@ -901,17 +1294,54 @@ export class HiveDO extends DurableObject {
     ).toArray().length === 0;
   }
 
+  // === Consent round-trips ===
+
+  /** Two-phase consent that survives session churn. First call with a key arms
+   *  it (10-minute TTL) and returns false — the caller should surface the
+   *  confirmation message. Re-issuing the same key while armed consumes it and
+   *  returns true — the caller proceeds. Durable in DO storage because
+   *  sessionless MCP clients land every call on a fresh SessionDO, where an
+   *  in-memory set can never complete the handshake. The consent signal is the
+   *  deliberate re-issue of identical arguments; the TTL bounds how long an
+   *  armed confirmation can wait. Fails closed: storage errors never confirm. */
+  async checkAndArmConsent(key: string): Promise<boolean> {
+    try {
+      this.db.exec(`DELETE FROM _pending_consent WHERE expires_at < datetime('now')`);
+      const armed = this.db.exec(
+        `SELECT 1 FROM _pending_consent WHERE key = ?`, key
+      ).toArray().length > 0;
+      if (armed) {
+        this.db.exec(`DELETE FROM _pending_consent WHERE key = ?`, key);
+        return true;
+      }
+      this.db.exec(
+        `INSERT OR REPLACE INTO _pending_consent ("key", expires_at) VALUES (?, datetime('now', '+10 minutes'))`, key
+      );
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   // === Credentials (delegated to credentials.ts) ===
 
   async hasPasskey(): Promise<boolean> { return cred.hasPasskey(this.db); }
-  async getPasskey() { return cred.getPasskey(this.db); }
-  async storePasskey(credentialId: string, publicKey: string, counter: number, transports: string) {
-    cred.storePasskey(this.db, credentialId, publicKey, counter, transports);
+  async getPasskeys() { return cred.getPasskeys(this.db); }
+  async storePasskey(credentialId: string, publicKey: string, counter: number, transports: string, member: string | null = null) {
+    cred.storePasskey(this.db, credentialId, publicKey, counter, transports, member);
   }
-  async updatePasskeyCounter(counter: number) { cred.updatePasskeyCounter(this.db, counter); }
+  async updatePasskeyCounter(credentialId: string, counter: number) { cred.updatePasskeyCounter(this.db, credentialId, counter); }
   async validateAccessToken(token: string, requiredScope: string) {
     return cred.validateAccessToken(this.db, token, requiredScope);
   }
+  async resolveTokenActor(token: string, requiredScope: string) {
+    return cred.resolveTokenActor(this.db, token, requiredScope);
+  }
+  async isMemberActive(member: string) { return cred.isMemberActive(this.db, member); }
+  async resolveRegisterToken(token: string) { return cred.resolveRegisterToken(this.db, token); }
+  async getRegisterToken(token: string) { return cred.getRegisterToken(this.db, token); }
+  async approveRegisterToken(token: string) { return cred.approveRegisterToken(this.db, token); }
+  async consumeAccessToken(id: number) { cred.consumeToken(this.db, id); }
   async validateAuthCode(code: string) { return cred.validateAuthCode(this.db, code); }
   async consumeAuthCode(code: string) { return cred.consumeAuthCode(this.db, code); }
 
@@ -981,6 +1411,72 @@ export class HiveDO extends DurableObject {
     } catch {
       return JSON.stringify({ found: false });
     }
+  }
+
+  async resolvePublication(path: string): Promise<string> {
+    let pub: any;
+    try {
+      const rows = this.db.exec(
+        `SELECT * FROM "_publications" WHERE path = ? AND archived_at IS NULL`, path
+      ).toArray() as any[];
+      if (rows.length === 0) return JSON.stringify({ found: false });
+      pub = rows[0];
+    } catch {
+      return JSON.stringify({ found: false });
+    }
+
+    // private = staged, not served (route layer never sees it)
+    if (pub.visibility === "private") return JSON.stringify({ found: false });
+    if (!this.patternExists(pub.source_pattern)) return JSON.stringify({ found: false });
+
+    // Live projection: run the stored query against current truth
+    const queryRaw = data.query(
+      this.dataCtx(), pub.source_pattern,
+      pub.filters || "", pub.facets || "", pub.sort || "-updated_at",
+      pub.limit || 50, false,
+    );
+    const queryResult = JSON.parse(queryRaw);
+    if (queryResult.error) return JSON.stringify({ found: false });
+    let entries = queryResult.entries as Record<string, unknown>[];
+
+    // Publications project current truth: superseded entries drop out unless opted in
+    if (!pub.include_superseded && entries.length > 0) {
+      try {
+        const ids = entries.map((e) => e.id);
+        const placeholders = ids.map(() => "?").join(",");
+        const superseded = new Set(
+          this.db.exec(
+            `SELECT target_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id IN (${placeholders})`,
+            pub.source_pattern, ...ids
+          ).toArray().map((r: any) => r.target_id)
+        );
+        entries = entries.filter((e) => !superseded.has(e.id));
+      } catch { /* _links may not exist */ }
+    }
+
+    const facetMeta = this.db.exec(
+      "SELECT name, type FROM _fields WHERE object_name = ? ORDER BY id", pub.source_pattern
+    ).toArray() as { name: string; type: string }[];
+
+    const rendered = pubs.renderPublication(pub, entries, {
+      facets: facetMeta,
+      host: this.currentHost(),
+    });
+
+    // ETag source: content changes when the publication config OR any served entry changes
+    let latest = pub.updated_at as string;
+    for (const e of entries) {
+      const u = e.updated_at as string | undefined;
+      if (u && u > latest) latest = u;
+    }
+
+    return JSON.stringify({
+      found: true,
+      visibility: pub.visibility,
+      body: rendered.body,
+      content_type: rendered.contentType,
+      updated_at: latest,
+    });
   }
 
   async resolveOutput(path: string): Promise<string> {

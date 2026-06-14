@@ -2,17 +2,23 @@ import { McpAgent } from "agents/mcp";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { HiveDO } from "./hive";
-import { PRODUCT_NAME, URI_SCHEME, uri } from "./constants";
+import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID } from "./constants";
 import { TOOLS } from "./tools";
 
 // === Types ===
 
 interface Env {
   MNEMION_HIVE: DurableObjectNamespace<HiveDO>;
+  DOCUMENTS?: R2Bucket;  // optional — present only when R2 is enabled + bound
 }
 
 interface AuthProps {
-  userId: string;
+  // Which hive (Durable Object) this session reads/writes. Stable per deploy.
+  hiveId?: string;
+  // Which member this session acts as — the authenticated person's label.
+  actor?: string;
+  // Retained for backward compatibility; mirrors `actor`.
+  userId?: string;
   [key: string]: unknown;
 }
 
@@ -28,7 +34,43 @@ const CONSENT_GATED: Record<string, string> = {
     "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
   _federation_hosts:
     "Adding a federation host is a standing grant: resolve() will send this hive's access tokens to that host whenever it fetches a mnemion:// URI there. Only proceed if the human explicitly approved federating with this host. Call mutate again with the same arguments to proceed.",
+  _shared:
+    "Sharing an entry publishes it over HTTP at /o/entry/{pattern}/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this entry. Call mutate again with the same arguments to proceed.",
+  _publications:
+    "A publication serves LIVE query results over HTTP at /p/{path} — every current and future entry the query matches (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human explicitly approved publishing this data. Call mutate again with the same arguments to proceed.",
+  _documents:
+    "Making this document non-private serves its file over HTTP at /f/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this file. Call mutate again with the same arguments to proceed.",
+  _members:
+    "Adding a member grants another person standing access to this shared hive — everything in it becomes readable and writable by them. Only proceed if the human explicitly chose to share this hive with this person. Call mutate again with the same arguments to proceed.",
+  // _access_tokens stays gated so patch is rejected (it could otherwise set the
+  // system-managed approved_at/consumed_at), but register-token creation is NOT
+  // gated by the re-issue round-trip — that gate is agent-satisfiable, so invite
+  // tokens are instead minted INERT and require a real member's passkey approval
+  // at /invite/{token} before they work. See consentRequired below.
+  _access_tokens:
+    "This token cannot be modified with patch.",
 };
+
+// Whether a write to a consent-gated pattern actually needs the round-trip.
+// Most gated patterns always do; _documents only when it exposes a file
+// (non-private visibility) — creating/uploading a private document is benign.
+// patch can't be inspected for its resulting visibility, so it always trips
+// (and is rejected outright on the single path).
+function consentRequired(pattern: string, operation: string | undefined, dataObj: any): boolean {
+  if (!CONSENT_GATED[pattern]) return false;
+  if (pattern === "_documents") {
+    if (operation === "patch") return true;
+    const vis = dataObj?.visibility;
+    return vis === "public" || vis === "unlisted";
+  }
+  // Token creation never trips the re-issue round-trip: ordinary tokens are
+  // benign, and register/invite tokens are minted inert and gated by an
+  // out-of-band passkey approval at /invite/{token} instead (a stronger,
+  // human-present gate that an injected agent can't satisfy). patch is still
+  // force-rejected upstream for any gated pattern, protecting approved_at.
+  if (pattern === "_access_tokens") return false;
+  return true;
+}
 
 // === SessionDO: MCP protocol handler, proxies data to HiveDO ===
 
@@ -51,11 +93,11 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     },
   );
 
-  private confirmed = new Set<string>();
-
   private getHive(): DurableObjectStub<HiveDO> {
-    const userId = this.props?.userId ?? "anonymous";
-    const id = this.env.MNEMION_HIVE.idFromName(`user:${userId}`);
+    // The hive's location is independent of who authenticated — one shared
+    // store per deploy. The member (actor) lives in props.actor, separate from
+    // the store's identity.
+    const id = this.env.MNEMION_HIVE.idFromName(this.props?.hiveId ?? HIVE_ID);
     return this.env.MNEMION_HIVE.get(id);
   }
 
@@ -73,6 +115,29 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       const briefing = `=== Working Memory ===\n${lines}\n\n`;
       const base = (this.server as any)._instructions ?? "";
       (this.server as any)._instructions = briefing + base;
+    }
+
+    // === Inject maintenance status into instructions ===
+    // (Also rides the prime response — web clients often never read instructions.)
+    try {
+      const status = JSON.parse(await hive.getMaintenanceStatus()) as {
+        days_since_last_pass: number | null; interval_days: number; overdue: boolean;
+      };
+      if (status.overdue) {
+        const age = status.days_since_last_pass != null ? `${status.days_since_last_pass} days ago` : "never";
+        const section = `=== Maintenance ===\nLast memory maintenance pass: ${age} (interval: ${status.interval_days} days). Consider offering the owner a cleanup pass: review ${uri("stale")}, propose supersessions, archives, and memory policies, apply what they ratify, then record the pass in _maintenance_passes. See ${uri("_system/memory-maintenance")}.\n\n`;
+        const base = (this.server as any)._instructions ?? "";
+        (this.server as any)._instructions = section + base;
+      }
+    } catch { /* best-effort */ }
+
+    // === Capability status: document storage needs R2 ===
+    // When R2 isn't enabled, _documents entries can be created but file upload
+    // fails — surface that up front so the agent can flag it to the human.
+    if (!this.env.DOCUMENTS) {
+      const section = `=== Document storage unavailable ===\nCloudflare R2 is not enabled on this instance, so the document store (the _documents pattern and /f file endpoints) cannot store files — creating a _documents entry works, but uploads fail. If the human wants to store files (PDFs, images), tell them: enable R2 in the Cloudflare dashboard (Storage & databases → R2), then run \`npm run enable-documents\` and redeploy. Everything else works without R2.\n\n`;
+      const base = (this.server as any)._instructions ?? "";
+      (this.server as any)._instructions = section + base;
     }
 
     // === Resources (stable, cacheable, subscribable) ===
@@ -130,6 +195,18 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     );
 
     this.server.resource(
+      "stale",
+      uri("stale"),
+      { description: "Entries past their staleness horizon — neither updated nor recalled recently. Read-only review surface for maintenance passes.", mimeType: "application/json" },
+      async (u) => {
+        const result = await hive.getStaleEntries();
+        return {
+          contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
+        };
+      }
+    );
+
+    this.server.resource(
       "entry",
       new ResourceTemplate(uri("entry/{pattern}/{id}"), {
         list: undefined, // Entries are too numerous to enumerate
@@ -155,9 +232,12 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       toolDesc("resolve"),
       {
         uri: z.string().describe(`A ${URI_SCHEME}:// URI, an https:// URL, or an at:// Bluesky at-uri to fetch web content. Examples: ${URI_SCHEME}://entry/notes/1, https://bsky.app/profile/user/post/abc, at://did:plc:xyz/app.bsky.feed.post/abc`),
+        // Some clients (e.g. Claude.ai) stringify booleans — accept "true"/"false" too.
+        retain: z.union([z.boolean(), z.enum(["true", "false"])]).optional().describe("For web URLs only: true pins the cached snapshot for indefinite retention (always served, never re-fetched or GC'd); false releases it back to normal TTL. Omit to leave retention unchanged."),
       },
-      async ({ uri: resolveUri }) => {
-        const result = await hive.resolve(resolveUri);
+      async ({ uri: resolveUri, retain }) => {
+        const retainNorm = retain === undefined ? undefined : (retain === true || retain === "true");
+        const result = await hive.resolve(resolveUri, retainNorm);
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {
@@ -177,9 +257,10 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       {
         description: z.string().describe("Natural language description of the change"),
         change: z.object({
-          type: z.enum(["create_pattern", "add_facet", "set_sharing", "set_options", "set_doctrine", "archive_pattern", "unarchive_pattern"]).describe("Type of structural change"),
+          type: z.enum(["create_pattern", "add_facet", "set_sharing", "set_options", "set_doctrine", "set_memory_policy", "set_class", "archive_pattern", "unarchive_pattern"]).describe("Type of structural change"),
           pattern_name: z.string().optional().describe("Target pattern name"),
           pattern_description: z.string().optional().describe("Purpose of the pattern (for create_pattern)"),
+          pattern_class: z.enum(["knowledge", "dataset"]).optional().describe('Pattern class (for create_pattern/set_class). "knowledge" (default): prose recalled by meaning via prime. "dataset": structured records with enforced types, aggregated by query — excluded from prime/decay/stale.'),
           doctrine: z.string().optional().describe("How this pattern should be used — required for create_pattern"),
           facets: z.array(z.object({
             name: z.string(),
@@ -196,6 +277,11 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           options: z.array(z.string()).optional().describe("Allowed values (for set_options)"),
           entry_id: z.number().optional().describe("Entry ID (for set_sharing)"),
           visibility: z.enum(["public", "unlisted", "private"]).optional().describe("Sharing visibility (for set_sharing)"),
+          policy: z.object({
+            half_life_days: z.number().positive().nullable().optional().describe("Decay half-life in days for prime recall; null = no decay (default)"),
+            conflict_check: z.enum(["annotate", "off"]).optional().describe("Write-time semantic overlap advisory on create (default: annotate)"),
+            exclusive_facets: z.array(z.string()).optional().describe("Facets where only one active entry per value should exist — duplicates get a supersession advisory"),
+          }).nullable().optional().describe("Memory policy (for set_memory_policy; null clears the policy)"),
         }),
       },
       async ({ description, change }) => {
@@ -224,8 +310,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         // Revert mode
         if (revert_history_id != null) {
           const confirmKey = `revert:${revert_history_id}`;
-          if (!this.confirmed.has(confirmKey)) {
-            this.confirmed.add(confirmKey);
+          if (!(await hive.checkAndArmConsent(confirmKey))) {
             return {
               content: [{
                 type: "text" as const,
@@ -237,7 +322,6 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
               }],
             };
           }
-          this.confirmed.delete(confirmKey);
 
           const result = await hive.revertChange(revert_history_id);
           const parsed = JSON.parse(result);
@@ -260,6 +344,39 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           };
         }
 
+        // Consent boundary: publishing an entry (set_sharing to public/unlisted)
+        // exposes private data over HTTP at /o/entry/{pattern}/{id}. Like adding
+        // a federation host, this must pass an explicit confirmation round-trip
+        // so an agent acting on prompt-injected content can't silently exfiltrate
+        // the owner's memory by flipping an entry's visibility.
+        const specJson = await hive.getPendingChange(change_id);
+        if (specJson) {
+          let spec: any = null;
+          try { spec = JSON.parse(specJson); } catch { /* not gated if unparseable */ }
+          // evolution.ts defaults an omitted visibility to "public", so treat a
+          // missing visibility as public here too — otherwise an unconfirmed
+          // publish slips through.
+          const effectiveVis = spec?.visibility ?? "public";
+          if (spec && spec.type === "set_sharing" && effectiveVis !== "private") {
+            const confirmKey = `sharing:${change_id}`;
+            if (!(await hive.checkAndArmConsent(confirmKey))) {
+              const exposure = effectiveVis === "public"
+                ? "readable by anyone (and edge-cached)"
+                : "readable by anyone holding an access token";
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    confirmation_required: true,
+                    message: `Applying this change makes ${spec.pattern_name ?? "this entry"}#${spec.entry_id ?? "?"} ${effectiveVis} — ${exposure} over HTTP. Only proceed if the human approved publishing this entry. Call apply_change again with the same change_id to proceed.`,
+                    change_id,
+                  }, null, 2),
+                }],
+              };
+            }
+          }
+        }
+
         const result = await hive.applyChange(change_id);
         const parsed = JSON.parse(result);
         if (parsed.error) {
@@ -274,10 +391,10 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         try {
           await this.server.server.sendResourceUpdated({ uri: uri("index") });
           await this.server.server.sendResourceUpdated({ uri: uri("history") });
-          if (parsed.index?.patterns) {
-            for (const pat of parsed.index.patterns) {
-              await this.server.server.sendResourceUpdated({ uri: uri(`schema/${pat.name}`) });
-            }
+          // A change targets one pattern — notify just its schema resource
+          // (the apply result no longer carries the full index).
+          if (parsed.pattern_name) {
+            await this.server.server.sendResourceUpdated({ uri: uri(`schema/${parsed.pattern_name}`) });
           }
         } catch {
           // Client may not support subscriptions — notifications are best-effort
@@ -296,18 +413,26 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         pattern: z.string().describe("Pattern name to query"),
         filter: z.array(z.string()).optional().describe("Filter expressions: facet=value, facet>value, facet~text (contains)"),
         facets: z.string().optional().describe("Comma-separated facet names to return (default: all)"),
-        sort: z.string().optional().describe("Facet to sort by. Prefix with - for descending (e.g. -created_at)"),
+        sort: z.string().optional().describe("Facet to sort by, or an aggregate output name. Prefix with - for descending (e.g. -created_at)"),
         limit: z.number().optional().describe("Max entries to return (default: 100)"),
         count_only: z.boolean().optional().describe("If true, return only the count matching the filters, not the entries"),
+        group_by: z.string().optional().describe('Aggregate: comma-separated facets to group by. Bucket a datetime facet with "facet:unit" where unit is day|week|month|year (e.g. "created_at:month").'),
+        aggregate: z.array(z.object({
+          fn: z.enum(["count", "sum", "avg", "min", "max"]),
+          facet: z.string().optional().describe("Facet to aggregate (omit for count → COUNT(*))"),
+          as: z.string().optional().describe("Output name for this measure (default: fn or fn_facet)"),
+        })).optional().describe("Aggregate measures computed over the rows. Combine with group_by, e.g. [{fn:'sum',facet:'amount'},{fn:'avg',facet:'amount'}]. Either group_by or aggregate switches query into aggregation mode."),
       },
-      async ({ pattern, filter, facets, sort, limit, count_only }) => {
+      async ({ pattern, filter, facets, sort, limit, count_only, group_by, aggregate }) => {
         const result = await hive.query(
           pattern,
           filter ? JSON.stringify(filter) : "",
           facets ?? "",
           sort ?? "",
           limit ?? 100,
-          count_only ?? false
+          count_only ?? false,
+          group_by ?? "",
+          aggregate ? JSON.stringify(aggregate) : ""
         );
         const parsed = JSON.parse(result);
         if (parsed.error) {
@@ -399,9 +524,11 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
             };
           }
           // Consent-gated patterns can't ride along in a batch — that would skip
-          // the confirmation round-trip. Force them through a single mutate.
+          // the confirmation round-trip (and patch would also skip validation).
+          // Force any escalating change through a single mutate; only archive
+          // (removal/de-escalation) is allowed inside a batch.
           const gated = batchData.find((op: any) =>
-            op && CONSENT_GATED[op.pattern] && (op.operation === "create" || op.operation === "update"));
+            op && consentRequired(op.pattern, op.operation, op.data) && op.operation !== "archive");
           if (gated) {
             return {
               isError: true as const,
@@ -442,28 +569,41 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         }
 
         // Confirmation gate for consent-boundary patterns (system docs,
-        // federation allow-list). First call returns confirmation_required;
-        // the agent must re-issue the identical call to commit.
-        if (CONSENT_GATED[pattern] && (resolvedOp === "update" || resolvedOp === "create")) {
-          const confirmKey = `consent:${pattern}:${JSON.stringify(singleData)}`;
-          const alreadyConfirmed = this.confirmed.has(confirmKey);
-
-          if (!alreadyConfirmed) {
-            this.confirmed.add(confirmKey);
+        // federation allow-list, entry sharing).
+        if (CONSENT_GATED[pattern]) {
+          // patch is rejected outright: it edits a text facet directly, skipping
+          // the kernel validation hooks (e.g. isBlockedFederationHost) AND the
+          // confirmation round-trip — an agent could patch _federation_hosts.host
+          // from an approved host to an attacker host and leak the token. These
+          // patterns must go through create/update.
+          if (resolvedOp === "patch") {
             return {
-              content: [{
-                type: "text" as const,
-                text: JSON.stringify({
-                  confirmation_required: true,
-                  message: CONSENT_GATED[pattern],
-                  pattern,
-                  operation: resolvedOp,
-                  data: singleData,
-                }, null, 2),
-              }],
+              isError: true as const,
+              content: [{ type: "text" as const, text: `"${pattern}" cannot be modified with patch (it would bypass validation and confirmation). Use create or update.` }],
             };
           }
-          this.confirmed.delete(confirmKey);
+          // Escalating ops (create/update/unarchive) require a round-trip; the
+          // first call returns confirmation_required and the agent must re-issue
+          // the identical call to commit. archive (removal) is de-escalation and
+          // is allowed without one.
+          if ((resolvedOp === "create" || resolvedOp === "update" || resolvedOp === "unarchive")
+              && consentRequired(pattern, resolvedOp, singleData)) {
+            const confirmKey = `consent:${pattern}:${resolvedOp}:${JSON.stringify(singleData)}`;
+            if (!(await hive.checkAndArmConsent(confirmKey))) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    confirmation_required: true,
+                    message: CONSENT_GATED[pattern],
+                    pattern,
+                    operation: resolvedOp,
+                    data: singleData,
+                  }, null, 2),
+                }],
+              };
+            }
+          }
         }
 
         const result = await hive.mutate(pattern, resolvedOp, JSON.stringify(singleData));
@@ -472,6 +612,16 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           return {
             isError: true as const,
             content: [{ type: "text" as const, text: parsed.message }],
+          };
+        }
+        // A freshly minted invite (register token) is inert until a current
+        // member approves it in person with their passkey. Tell the agent to
+        // route the human through approval rather than handing /setup directly.
+        if (pattern === "_access_tokens" && resolvedOp === "create"
+            && parsed.entry?.scope === "register" && parsed.entry?.token) {
+          parsed.invite_approval = `This invite is INERT until an existing member approves it in person. Send a current member to /invite/${parsed.entry.token} to approve via passkey — only then does the invitee's /setup link work. Prepend this hive's host (see ${uri("_system/instance")}). Do not hand out /setup before approval; it will be refused.`;
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
           };
         }
         return {

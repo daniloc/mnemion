@@ -1,4 +1,4 @@
-import { env, fetchMock } from "cloudflare:test";
+import { env, fetchMock, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import type { HiveDO } from "../hive";
 
@@ -1265,6 +1265,193 @@ describe("Access Tokens", () => {
   });
 });
 
+// === Kernel-target write boundary (exfiltration hardening) ===
+//
+// Ingress and upload reach the data layer outside the MCP tool layer, so they
+// must enforce the user-pattern boundary themselves: kernel/_-prefixed patterns
+// are never valid ingress or upload targets. This blocks publishing private
+// entries via _shared and poisoning _web_cache / _system_docs.
+
+describe("kernel-target write boundary", () => {
+  it("refuses upload tokens targeting kernel patterns at mint time", async () => {
+    const store = getStore();
+    for (const target of ["_web_cache", "_system_docs", "_shared"]) {
+      const result = JSON.parse(
+        await store.mutate("_access_tokens", "create", JSON.stringify({
+          scope: "upload",
+          constraints: JSON.stringify({ target_pattern: target, target_id: 1, target_facet: "content" }),
+        }))
+      );
+      expect(result.error).toBe(true);
+      expect(result.message).toMatch(/kernel pattern/);
+    }
+  });
+
+  it("refuses upload at consume time even if a token names a kernel pattern", async () => {
+    // Defense in depth: simulate a pre-fix token by writing the row directly,
+    // then confirm consumeUpload still refuses (it uses raw UPDATE, not executeMutate).
+    const store = getStore();
+    let token = "";
+    await runInDurableObject(store, async (_i, state) => {
+      token = "deadbeefdeadbeefdeadbeefdeadbeef";
+      state.storage.sql.exec(
+        `INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'upload', ?, 1)`,
+        token, JSON.stringify({ target_pattern: "_web_cache", target_id: 1, target_facet: "content", mode: "replace" })
+      );
+    });
+    const result = JSON.parse(await store.consumeUpload(token, "poisoned"));
+    expect(result.error).toBe(true);
+    expect(result.message).toMatch(/invalid target pattern/);
+  });
+
+  it("refuses ingress endpoints targeting kernel patterns", async () => {
+    const store = getStore();
+    for (const target of ["_shared", "_publications", "_system_docs"]) {
+      const result = JSON.parse(
+        await store.mutate("_inputs", "create", JSON.stringify({ path: `hook-${target}`, target_pattern: target }))
+      );
+      expect(result.error).toBe(true);
+      expect(result.message).toMatch(/kernel pattern/);
+    }
+  });
+
+  it("still allows ingress and upload to user patterns", async () => {
+    const store = getStore();
+    await createPattern(store, "events", [{ name: "body", type: "text" }]);
+    const ingress = JSON.parse(await store.mutate("_inputs", "create", JSON.stringify({ path: "ok-hook", target_pattern: "events", body_facet: "body" })));
+    expect(ingress.error).toBeUndefined();
+
+    const entry = await createEntry(store, "events", { body: "x" });
+    const token = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({
+      scope: "upload",
+      constraints: JSON.stringify({ target_pattern: "events", target_id: entry.entry.id, target_facet: "body" }),
+    })));
+    expect(token.error).toBeUndefined();
+  });
+});
+
+// === Linked-facet identifier validation ===
+
+describe("linked facet validation", () => {
+  it("rejects a foreign-key facet name that is not a valid identifier", async () => {
+    const store = getStore();
+    await createPattern(store, "goals2", [{ name: "title", type: "text", required: true }]);
+    const result = JSON.parse(await store.proposeChange(
+      "malformed link facet",
+      JSON.stringify({
+        type: "create_pattern",
+        pattern_name: "tasks2",
+        pattern_description: "x",
+        doctrine: "x",
+        facets: [
+          { name: "title", type: "text", required: true },
+          { name: "goal", type: "integer", links: { pattern: "goals2", facet: 'id") --' } },
+        ],
+      })
+    ));
+    expect(result.error).toBe(true);
+    expect(result.message).toMatch(/Linked facet/);
+  });
+
+  it("accepts a valid linked facet", async () => {
+    const store = getStore();
+    await createPattern(store, "goals3", [{ name: "title", type: "text", required: true }]);
+    const result = JSON.parse(await store.proposeChange(
+      "valid link",
+      JSON.stringify({
+        type: "create_pattern",
+        pattern_name: "tasks3",
+        pattern_description: "x",
+        doctrine: "x",
+        facets: [
+          { name: "title", type: "text", required: true },
+          { name: "goal", type: "integer", links: { pattern: "goals3", facet: "id" } },
+        ],
+      })
+    ));
+    expect(result.error).toBeUndefined();
+  });
+});
+
+// === Web cache retention (pinning) ===
+
+describe("web cache pinning", () => {
+  const URL = "https://bsky.app/profile/alice.bsky.social/post/abc123";
+
+  function mockThread() {
+    const fixture = {
+      thread: {
+        $type: "app.bsky.feed.defs#threadViewPost",
+        post: {
+          uri: "at://did:plc:alice/app.bsky.feed.post/abc123",
+          author: { handle: "alice.bsky.social", displayName: "Alice" },
+          record: { text: "Pinned thread content", createdAt: "2026-01-01T00:00:00.000Z" },
+        },
+        replies: [],
+      },
+    };
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    fetchMock.get("https://public.api.bsky.app")
+      .intercept({ path: /\/xrpc\/app\.bsky\.feed\.getPostThread/ })
+      .reply(200, JSON.stringify(fixture), { headers: { "Content-Type": "application/json" } });
+  }
+
+  async function cacheRow(store: DurableObjectStub<HiveDO>) {
+    return await runInDurableObject(store, async (_i, state) =>
+      state.storage.sql.exec(`SELECT pinned, expires_at FROM "_web_cache" WHERE url = ? AND archived_at IS NULL`, URL).toArray()[0] as any
+    );
+  }
+  async function expire(store: DurableObjectStub<HiveDO>) {
+    await runInDurableObject(store, async (_i, state) => {
+      state.storage.sql.exec(`UPDATE "_web_cache" SET expires_at = datetime('now','-1 day') WHERE url = ? AND archived_at IS NULL`, URL);
+    });
+  }
+
+  it("pins a resolved snapshot and serves it frozen past its TTL without re-fetching", async () => {
+    const store = getStore();
+    mockThread();
+
+    // resolve with retain → fresh fetch, pinned
+    const first = JSON.parse(await store.resolve(URL, true));
+    expect(first.content).toContain("Pinned thread content");
+    expect(first.pinned).toBe(true);
+    expect((await cacheRow(store)).pinned).toBe(1);
+
+    // Backdate past TTL; the one-shot mock is now spent, so any re-fetch would
+    // fail. A pinned hit serves from cache WITHOUT attempting a fetch — proven
+    // by pinned:true and the absence of the stale-fallback flag.
+    await expire(store);
+    const second = JSON.parse(await store.resolve(URL));
+    expect(second.cached).toBe(true);
+    expect(second.pinned).toBe(true);
+    expect(second.stale).toBeUndefined();
+    expect(second.content).toContain("Pinned thread content");
+
+    fetchMock.deactivate();
+  });
+
+  it("releases the pin with retain:false", async () => {
+    const store = getStore();
+    mockThread();
+    await store.resolve(URL, true);
+    expect((await cacheRow(store)).pinned).toBe(1);
+
+    const released = JSON.parse(await store.resolve(URL, false));
+    expect(released.pinned).toBe(false);
+    expect((await cacheRow(store)).pinned).toBe(0);
+
+    fetchMock.deactivate();
+  });
+
+  it("keeps _web_cache write-protected against agent mutate", async () => {
+    const store = getStore();
+    const r = JSON.parse(await store.mutate("_web_cache", "update", JSON.stringify({ id: 1, pinned: 1 })));
+    expect(r.error).toBe(true);
+    expect(r.message).toMatch(/managed by the system/);
+  });
+});
+
 // === Mutation Audit Log ===
 
 describe("Mutation Audit Log", () => {
@@ -1277,5 +1464,238 @@ describe("Mutation Audit Log", () => {
     expect(log.mutations.length).toBeGreaterThan(0);
     const insert = log.mutations.find((m: any) => m.operation === "INSERT");
     expect(insert).toBeDefined();
+  });
+});
+
+// === Shared hive: members, multi-passkey, token attribution ===
+//
+// A hive can be shared by several people, each a distinct member who
+// authenticates as themselves but reads/writes the same store. The consent
+// round-trip lives at the MCP tool layer; these tests drive HiveDO RPC directly.
+
+describe("Shared hive — members", () => {
+  it("seeds an active owner member on a fresh store", async () => {
+    const store = getStore();
+    const owner = JSON.parse(await store.query("_members", JSON.stringify(["label=owner"]), "", "", 10, false, "", ""));
+    expect(owner.entries.length).toBe(1);
+    expect(owner.entries[0].status).toBe("active");
+    expect(owner.entries[0].role).toBe("owner");
+    expect(await store.isMemberActive("owner")).toBe(true);
+  });
+
+  it("creates an invited member with label + display_name", async () => {
+    const store = getStore();
+    const res = JSON.parse(await store.mutate("_members", "create", JSON.stringify({
+      label: "partner", display_name: "Sam",
+    })));
+    expect(res.error).toBeUndefined();
+    expect(res.entry.label).toBe("partner");
+    expect(res.entry.role).toBe("member");
+    expect(res.entry.status).toBe("active");
+    expect(await store.isMemberActive("partner")).toBe(true);
+  });
+
+  it("reserves the owner label and the owner role", async () => {
+    const store = getStore();
+    const dup = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "owner" })));
+    expect(dup.error).toBe(true);
+    const role = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "x", role: "owner" })));
+    expect(role.error).toBe(true);
+  });
+
+  it("makes a member's label immutable but display_name editable", async () => {
+    const store = getStore();
+    const m = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "kai", display_name: "Kai" })));
+    const relabel = JSON.parse(await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, label: "kai2" })));
+    expect(relabel.error).toBe(true);
+    const rename = JSON.parse(await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, display_name: "Kai R." })));
+    expect(rename.error).toBeUndefined();
+  });
+
+  it("treats a suspended member as inactive", async () => {
+    const store = getStore();
+    const m = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "temp", display_name: "Temp" })));
+    expect(await store.isMemberActive("temp")).toBe(true);
+    await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, status: "suspended" }));
+    expect(await store.isMemberActive("temp")).toBe(false);
+  });
+});
+
+describe("Shared hive — token attribution", () => {
+  it("resolves a wildcard token's actor to the owner sentinel", async () => {
+    const store = getStore();
+    const star = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ label: "api" })));
+    expect(await store.resolveTokenActor(star.entry.token, "*")).toBe("owner");
+  });
+
+  it("resolves an access token's actor to its member", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ label: "sam-cli", member: "partner" })));
+    expect(await store.resolveTokenActor(tok.entry.token, "*")).toBe("partner");
+  });
+
+  it("refuses a token whose member has been suspended", async () => {
+    const store = getStore();
+    const m = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" })));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ member: "partner" })));
+    expect(await store.resolveTokenActor(tok.entry.token, "*")).toBe("partner");
+    await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, status: "suspended" }));
+    expect(await store.resolveTokenActor(tok.entry.token, "*")).toBeNull();
+  });
+});
+
+describe("Shared hive — register tokens (invite)", () => {
+  it("forces single-use and pins the member into constraints", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+    expect(tok.error).toBeUndefined();
+    expect(tok.entry.single_use).toBe(1);
+    expect(JSON.parse(tok.entry.constraints).member).toBe("partner");
+  });
+
+  it("requires a member for register scope", async () => {
+    const store = getStore();
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register" })));
+    expect(tok.error).toBe(true);
+  });
+
+  it("is inert until approved, then resolves to the member's setup identity (never as an API token)", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+
+    // Before approval: the approval page can see it, but /setup refuses it.
+    const info = await store.getRegisterToken(tok.entry.token);
+    expect(info!.approved).toBe(false);
+    expect(info!.userDisplayName).toBe("Sam");
+    expect(await store.resolveRegisterToken(tok.entry.token)).toBeNull();
+
+    // After a member approves: /setup resolves it.
+    const approved = await store.approveRegisterToken(tok.entry.token);
+    expect(approved!.member).toBe("partner");
+    const resolved = await store.resolveRegisterToken(tok.entry.token);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.member).toBe("partner");
+    expect(resolved!.userName).toBe("partner");
+
+    // A register token must not grant API access, approved or not.
+    expect(await store.resolveTokenActor(tok.entry.token, "*")).toBeNull();
+  });
+
+  it("never approves an invite for the owner or a non-roster member", async () => {
+    const store = getStore();
+    // Craft a register token pointing at owner via raw write (bypassing the hook).
+    let ownerTok = "", ghostTok = "";
+    await runInDurableObject(store, async (_i, state) => {
+      ownerTok = "abad1deaabad1deaabad1deaabad1dea";
+      ghostTok = "decafbaddecafbaddecafbaddecafbad";
+      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`, ownerTok, JSON.stringify({ member: "owner" }));
+      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`, ghostTok, JSON.stringify({ member: "ghost" }));
+    });
+    expect(await store.approveRegisterToken(ownerTok)).toBeNull();
+    expect(await store.approveRegisterToken(ghostTok)).toBeNull();
+  });
+
+  it("freezes a register token's member/scope/constraints after creation", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+    // Repointing the token to another member after creation must be refused.
+    const repoint = JSON.parse(await store.mutate("_access_tokens", "update", JSON.stringify({ id: tok.entry.id, version: tok.entry.version, member: "owner" })));
+    expect(repoint.error).toBe(true);
+    const reconstrain = JSON.parse(await store.mutate("_access_tokens", "update", JSON.stringify({ id: tok.entry.id, version: tok.entry.version, constraints: JSON.stringify({ member: "owner" }) })));
+    expect(reconstrain.error).toBe(true);
+  });
+
+  it("treats approved_at as system-managed (not settable via mutate)", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+    // An agent trying to self-approve by writing approved_at must be refused.
+    const attempt = JSON.parse(await store.mutate("_access_tokens", "update", JSON.stringify({ id: tok.entry.id, version: tok.entry.version, approved_at: "2099-01-01" })));
+    expect(attempt.error).toBe(true);
+    // And the token is still inert.
+    expect(await store.resolveRegisterToken(tok.entry.token)).toBeNull();
+  });
+
+  // Privilege-escalation guards: an invite link must never be able to register
+  // a passkey that authenticates as the owner, nor target a non-roster member.
+  it("refuses to mint a register token targeting the owner", async () => {
+    const store = getStore();
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "owner" })));
+    expect(tok.error).toBe(true);
+  });
+
+  it("refuses to mint a register token for a member not in the roster", async () => {
+    const store = getStore();
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "ghost" })));
+    expect(tok.error).toBe(true);
+  });
+
+  it("refuses to mint a register token for a suspended member", async () => {
+    const store = getStore();
+    const m = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" })));
+    await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, status: "suspended" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+    expect(tok.error).toBe(true);
+  });
+
+  // Defense in depth: even a tampered register token (constraints set to owner
+  // by a raw write that bypassed the mint-time hook) must not resolve at setup.
+  it("refuses at setup time to provision the owner even if a token's constraints say so", async () => {
+    const store = getStore();
+    let token = "";
+    await runInDurableObject(store, async (_i, state) => {
+      token = "feedfacefeedfacefeedfacefeedface";
+      state.storage.sql.exec(
+        `INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`,
+        token, JSON.stringify({ member: "owner" })
+      );
+    });
+    expect(await store.resolveRegisterToken(token)).toBeNull();
+  });
+
+  it("refuses at setup time when constraints name a member not in the roster", async () => {
+    const store = getStore();
+    let token = "";
+    await runInDurableObject(store, async (_i, state) => {
+      token = "0ddba110ddba110ddba110ddba110dd0";
+      state.storage.sql.exec(
+        `INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`,
+        token, JSON.stringify({ member: "ghost" })
+      );
+    });
+    expect(await store.resolveRegisterToken(token)).toBeNull();
+  });
+});
+
+describe("Shared hive — multi-passkey storage", () => {
+  it("stores one passkey per member and replaces only that member's credential", async () => {
+    const store = getStore();
+    await store.storePasskey("cred-owner", "key-owner", 0, "[]", null);
+    await store.storePasskey("cred-partner", "key-partner", 0, "[]", "partner");
+    let rows = await store.getPasskeys();
+    expect(rows.length).toBe(2);
+
+    // Re-registering owner replaces only the owner row.
+    await store.storePasskey("cred-owner-2", "key-owner-2", 0, "[]", null);
+    rows = await store.getPasskeys();
+    expect(rows.length).toBe(2);
+    const owner = rows.find((r: any) => r.member == null);
+    expect(owner!.credential_id).toBe("cred-owner-2");
+    const partner = rows.find((r: any) => r.member === "partner");
+    expect(partner!.credential_id).toBe("cred-partner");
+  });
+
+  it("updates the counter for a specific credential", async () => {
+    const store = getStore();
+    await store.storePasskey("cred-a", "key-a", 0, "[]", null);
+    await store.storePasskey("cred-b", "key-b", 0, "[]", "partner");
+    await store.updatePasskeyCounter("cred-b", 7);
+    const rows = await store.getPasskeys();
+    expect(rows.find((r: any) => r.credential_id === "cred-a")!.counter).toBe(0);
+    expect(rows.find((r: any) => r.credential_id === "cred-b")!.counter).toBe(7);
   });
 });

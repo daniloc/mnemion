@@ -4,6 +4,7 @@
 // embeds for prime recall. Pure functions with context injected.
 
 import type { Env } from "./router";
+import { isBlockedFederationHost } from "./kernel";
 
 // === Types ===
 
@@ -23,9 +24,15 @@ interface WebAdapter {
 
 // === Adapter dispatch table ===
 
+// TTL = how long a cached copy is served before resolve re-fetches on next
+// access. Resolved content is reference memory that feeds prime, so it's worth
+// keeping fresh-enough for a long time rather than churning: social threads
+// mostly settle within a day, rendered pages change rarely. Retention is
+// separate — cached content is never evicted while active (only superseded
+// duplicates are GC'd, in schema.ts), so resolved content persists as memory.
 const WEB_ADAPTERS: WebAdapter[] = [
-  { name: "bluesky", match: isBlueskyPost, fetch: fetchBlueskyThread, ttl: 3600 },
-  { name: "browser-rendering", match: isHttpUrl, fetch: fetchViaMarkdown, ttl: 86400 },
+  { name: "bluesky", match: isBlueskyPost, fetch: fetchBlueskyThread, ttl: 86400 },        // 24h
+  { name: "browser-rendering", match: isHttpUrl, fetch: fetchViaMarkdown, ttl: 2592000 },  // 30d
 ];
 
 // === Public API ===
@@ -33,7 +40,8 @@ const WEB_ADAPTERS: WebAdapter[] = [
 export async function resolveWeb(
   ctx: WebContext,
   rawUrl: string,
-): Promise<{ content: string; url: string; source: string; cached: boolean; stale?: boolean; metadata?: Record<string, unknown> }> {
+  retain?: boolean,
+): Promise<{ content: string; url: string; source: string; cached: boolean; stale?: boolean; pinned?: boolean; metadata?: Record<string, unknown> }> {
   // Scheme validation. at:// (Bluesky AT Protocol) is handled as a raw string —
   // the WHATWG URL parser rejects DID authorities (at://did:plc:.../...).
   if (!rawUrl.startsWith("at://")) {
@@ -47,16 +55,28 @@ export async function resolveWeb(
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
       return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Only http://, https://, and at:// URIs are supported" } };
     }
+
+    // SSRF guard: refuse to fetch loopback / private / link-local / internal
+    // targets (incl. cloud metadata). The federation path enforces this for
+    // mnemion:// URIs; the web-resolution path must too, or it becomes an
+    // unguarded fetch primitive whose responses get cached and embedded into
+    // prime recall.
+    if (isBlockedFederationHost(parsed.host)) {
+      return { content: "", url: rawUrl, source: "none", cached: false, metadata: { error: true, message: "Refusing to fetch non-public host" } };
+    }
   }
 
-  // Check cache first
+  // Check cache first. A pinned entry is a frozen snapshot — always served,
+  // never re-fetched, never GC'd — until explicitly unpinned (retain: false).
   const cached = findCachedEntry(ctx.db, rawUrl);
-  if (cached && !isExpired(cached.expires_at)) {
+  if (cached && (cached.pinned || !isExpired(cached.expires_at))) {
+    if (retain !== undefined) setPinned(ctx.db, rawUrl, retain);
     return {
       content: cached.content,
       url: rawUrl,
       source: cached.source_adapter,
       cached: true,
+      pinned: retain ?? !!cached.pinned,
       metadata: cached.metadata ? JSON.parse(cached.metadata) : undefined,
     };
   }
@@ -70,16 +90,33 @@ export async function resolveWeb(
   // Fetch via adapter
   try {
     const result = await adapter.fetch(rawUrl, ctx.env);
+
+    // Snapshot protection: a re-fetch that comes back empty (page changed,
+    // paywalled, transient blank) must not overwrite a good cached copy. Treat
+    // resolved content as memory — keep the snapshot rather than degrade it.
+    if ((!result.content || !result.content.trim()) && cached) {
+      return {
+        content: cached.content,
+        url: rawUrl,
+        source: cached.source_adapter,
+        cached: true,
+        stale: true,
+        metadata: cached.metadata ? JSON.parse(cached.metadata) : undefined,
+      };
+    }
+
     const expiresAt = new Date(Date.now() + adapter.ttl * 1000).toISOString();
 
     // Write to cache (archive old entry if exists)
     writeCacheEntry(ctx.db, rawUrl, result.content, adapter.name, expiresAt, result.metadata);
+    if (retain) setPinned(ctx.db, rawUrl, true);
 
     return {
       content: result.content,
       url: rawUrl,
       source: adapter.name,
       cached: false,
+      pinned: !!retain,
       metadata: result.metadata,
     };
   } catch (err: any) {
@@ -370,6 +407,18 @@ interface CachedEntry {
   metadata: string | null;
   fetched_at: string;
   expires_at: string;
+  pinned: number;
+}
+
+/** Mark (or unmark) a cached URL for indefinite retention — system-managed,
+ *  driven only by resolve(retain), keeping _web_cache fully write-protected. */
+function setPinned(db: any, url: string, pinned: boolean): void {
+  try {
+    db.exec(
+      `UPDATE "_web_cache" SET pinned = ?, updated_at = datetime('now') WHERE url = ? AND archived_at IS NULL`,
+      pinned ? 1 : 0, url
+    );
+  } catch { /* best-effort */ }
 }
 
 function findCachedEntry(db: any, url: string): CachedEntry | null {
