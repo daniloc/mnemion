@@ -2,7 +2,7 @@ import { McpAgent } from "agents/mcp";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { HiveDO } from "./hive";
-import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID } from "./constants";
+import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID, OWNER_ACTOR } from "./constants";
 import { TOOLS } from "./tools";
 
 // === Types ===
@@ -535,7 +535,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
               content: [{ type: "text" as const, text: `"${gated.pattern}" requires explicit confirmation and cannot be modified inside a batch. Submit it as a single mutate.` }],
             };
           }
-          const result = await hive.batchMutate(JSON.stringify(batchData));
+          const result = await hive.batchMutate(JSON.stringify(batchData), this.props?.actor ?? OWNER_ACTOR);
           const parsed = JSON.parse(result);
           if (parsed.error) {
             return {
@@ -606,7 +606,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           }
         }
 
-        const result = await hive.mutate(pattern, resolvedOp, JSON.stringify(singleData));
+        const result = await hive.mutate(pattern, resolvedOp, JSON.stringify(singleData), this.props?.actor ?? OWNER_ACTOR);
         const parsed = JSON.parse(result);
         if (parsed.error) {
           return {

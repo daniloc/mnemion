@@ -1,5 +1,5 @@
 import type { HiveDO } from "./hive";
-import { PRODUCT_NAME, HIVE_ID } from "./constants";
+import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "./constants";
 
 // === Types ===
 
@@ -34,6 +34,8 @@ export interface RouteContext {
   env: Env;
   params: Record<string, string>;
   hive: DurableObjectStub<HiveDO>;
+  /** The authenticated member for this request (owner sentinel by default). */
+  actor: string;
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<Response>;
@@ -109,33 +111,64 @@ export async function revokeAllSessions(kv: KVNamespace): Promise<void> {
   await kv.put(SESSION_EPOCH_KEY, String(current + 1));
 }
 
-export async function createSessionCookie(secret: string, host: string, kv: KVNamespace): Promise<string> {
+// base64url for the actor segment so a member label can't inject a "." into the
+// dot-delimited cookie payload.
+function b64urlEncode(s: string): string {
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+function b64urlDecode(s: string): string {
+  const b = s.replace(/-/g, "+").replace(/_/g, "/");
+  return atob(b + "=".repeat((4 - (b.length % 4)) % 4));
+}
+
+export async function createSessionCookie(secret: string, host: string, kv: KVNamespace, actor: string = OWNER_ACTOR): Promise<string> {
   const ts = Math.floor(Date.now() / 1000).toString();
   // Random per-session id: gives each session a distinct, signable identity
   // (two logins in the same second no longer collide) and an audit handle.
   const sid = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
   const epoch = await getSessionEpoch(kv);
-  const payload = `${ts}.${sid}.${epoch}`;
+  // Payload carries the authenticated member so browser-UI writes are attributed.
+  const payload = `${ts}.${sid}.${epoch}.${b64urlEncode(actor)}`;
   const sig = await hmacSign(secret, `session:${payload}`);
   const secure = !host.includes("localhost");
   return `${SESSION_COOKIE}=${payload}.${sig}; HttpOnly; ${secure ? "Secure; " : ""}SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}`;
 }
 
-async function validateSession(request: Request, secret: string, kv: KVNamespace): Promise<boolean> {
+/**
+ * Validate a session cookie and return the authenticated member (actor), or null
+ * if invalid. Accepts both the new 5-part (ts.sid.epoch.actor.sig) and the legacy
+ * 4-part (ts.sid.epoch.sig → owner) format, so existing sessions aren't forced to
+ * re-login on deploy. Pre-actor (2-part) cookies fail and re-login.
+ */
+async function validateSession(request: Request, secret: string, kv: KVNamespace): Promise<string | null> {
   const cookie = request.headers.get("Cookie");
-  if (!cookie) return false;
+  if (!cookie) return null;
   const match = cookie.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
-  if (!match) return false;
-  // Format: ts.sid.epoch.sig (older ts.sig cookies fail length check → re-login)
+  if (!match) return null;
   const parts = match[1].split(".");
-  if (parts.length !== 4) return false;
-  const [ts, sid, epoch, sig] = parts;
+  let ts: string, sid: string, epoch: string, sig: string, signed: string, actorB64: string | null;
+  if (parts.length === 5) {
+    [ts, sid, epoch, actorB64, sig] = parts;
+    signed = `session:${ts}.${sid}.${epoch}.${actorB64}`;
+  } else if (parts.length === 4) {
+    [ts, sid, epoch, sig] = parts;
+    signed = `session:${ts}.${sid}.${epoch}`;
+    actorB64 = null;
+  } else {
+    return null;
+  }
   const age = Math.floor(Date.now() / 1000) - parseInt(ts);
-  if (isNaN(age) || age < 0 || age > SESSION_MAX_AGE) return false;
-  const expected = await hmacSign(secret, `session:${ts}.${sid}.${epoch}`);
-  if (!(await timingSafeEqual(sig, expected))) return false;
+  if (isNaN(age) || age < 0 || age > SESSION_MAX_AGE) return null;
+  const expected = await hmacSign(secret, signed);
+  if (!(await timingSafeEqual(sig, expected))) return null;
   // Revocation: reject cookies minted under a superseded epoch.
-  return epoch === (await getSessionEpoch(kv));
+  if (epoch !== (await getSessionEpoch(kv))) return null;
+  if (!actorB64) return OWNER_ACTOR;
+  try {
+    return b64urlDecode(actorB64) || OWNER_ACTOR;
+  } catch {
+    return null;
+  }
 }
 
 // === Router ===
@@ -192,14 +225,19 @@ export function createRouter(routes: Route[]) {
           });
         }
       }
-      if (auth === Auth.SESSION) {
-        if (env.MNEMION_SECRET && !(await validateSession(request, env.MNEMION_SECRET, env.OAUTH_KV))) {
+      // Default actor (dev mode, or non-session routes) is the owner sentinel;
+      // a validated browser session resolves the actual member.
+      let actor = OWNER_ACTOR;
+      if (auth === Auth.SESSION && env.MNEMION_SECRET) {
+        const sessionActor = await validateSession(request, env.MNEMION_SECRET, env.OAUTH_KV);
+        if (!sessionActor) {
           const returnTo = encodeURIComponent(url.pathname + url.search);
           return new Response(null, {
             status: 302,
             headers: { Location: `/login?return=${returnTo}` },
           });
         }
+        actor = sessionActor;
       }
 
       // Extract params
@@ -216,7 +254,7 @@ export function createRouter(routes: Route[]) {
       const hiveId = env.MNEMION_HIVE.idFromName(HIVE_ID);
       const hive = env.MNEMION_HIVE.get(hiveId) as DurableObjectStub<HiveDO>;
 
-      return route.handler({ request, url, env, params, hive });
+      return route.handler({ request, url, env, params, hive, actor });
     }
 
     return new Response("Not found", { status: 404 });

@@ -1699,3 +1699,55 @@ describe("Shared hive — multi-passkey storage", () => {
     expect(rows.find((r: any) => r.credential_id === "cred-b")!.counter).toBe(7);
   });
 });
+
+// === Shared hive: attribution (created_by / updated_by) ===
+
+describe("Shared hive — attribution", () => {
+  it("stamps created_by and updated_by from the actor on create", async () => {
+    const store = getStore();
+    await createPattern(store, "notes", [{ name: "body", type: "text" }]);
+    const c = JSON.parse(await store.mutate("notes", "create", JSON.stringify({ body: "hi" }), "partner"));
+    expect(c.entry.created_by).toBe("partner");
+    expect(c.entry.updated_by).toBe("partner");
+  });
+
+  it("defaults attribution to the owner sentinel when no actor is passed", async () => {
+    const store = getStore();
+    await createPattern(store, "notes", [{ name: "body", type: "text" }]);
+    const c = JSON.parse(await store.mutate("notes", "create", JSON.stringify({ body: "hi" })));
+    expect(c.entry.created_by).toBe("owner");
+  });
+
+  it("updates updated_by but preserves created_by", async () => {
+    const store = getStore();
+    await createPattern(store, "notes", [{ name: "body", type: "text" }]);
+    const c = JSON.parse(await store.mutate("notes", "create", JSON.stringify({ body: "hi" }), "alice"));
+    const u = JSON.parse(await store.mutate("notes", "update", JSON.stringify({ id: c.entry.id, version: c.entry.version, body: "bye" }), "bob"));
+    expect(u.entry.created_by).toBe("alice");
+    expect(u.entry.updated_by).toBe("bob");
+  });
+
+  it("ignores caller-supplied created_by/updated_by (attribution can't be forged)", async () => {
+    const store = getStore();
+    await createPattern(store, "notes", [{ name: "body", type: "text" }]);
+    const c = JSON.parse(await store.mutate("notes", "create", JSON.stringify({ body: "hi", created_by: "evil", updated_by: "evil" }), "partner"));
+    expect(c.entry.created_by).toBe("partner");
+    expect(c.entry.updated_by).toBe("partner");
+  });
+
+  it("attributes batch writes to the actor", async () => {
+    const store = getStore();
+    await createPattern(store, "notes", [{ name: "body", type: "text" }]);
+    const b = JSON.parse(await store.batchMutate(JSON.stringify([{ pattern: "notes", operation: "create", data: { body: "x" } }]), "partner"));
+    expect(b.results[0].entry.created_by).toBe("partner");
+  });
+
+  it("stamps updated_by on patch, preserving created_by", async () => {
+    const store = getStore();
+    await createPattern(store, "notes", [{ name: "body", type: "text" }]);
+    const c = JSON.parse(await store.mutate("notes", "create", JSON.stringify({ body: "hello world" }), "alice"));
+    const p = JSON.parse(await store.mutate("notes", "patch", JSON.stringify({ id: c.entry.id, facet: "body", match: "hello", replacement: "hi" }), "bob"));
+    expect(p.entry.created_by).toBe("alice");
+    expect(p.entry.updated_by).toBe("bob");
+  });
+});

@@ -153,6 +153,10 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         ...(hasUserVersion ? [] : ["version INTEGER NOT NULL DEFAULT 0"]),
         "created_at TEXT NOT NULL DEFAULT (datetime('now'))",
         "updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+        // Attribution (Phase 2 shared hive): which member created/last-touched
+        // this entry. Set by the mutate engine from the session actor.
+        "created_by TEXT",
+        "updated_by TEXT",
         "archived_at TEXT",
       ];
       db.exec(`CREATE TABLE "${change.pattern_name}" (

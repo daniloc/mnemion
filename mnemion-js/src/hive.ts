@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { URI_SCHEME, URI_PREFIX, uri } from "./constants";
+import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "./constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
@@ -415,9 +415,10 @@ export class HiveDO extends DurableObject {
 
   // === Data operations (delegated to data.ts) ===
 
-  private dataCtx(): data.DataContext {
+  private dataCtx(actor: string = OWNER_ACTOR): data.DataContext {
     return {
       db: this.db,
+      actor,
       patternExists: (name) => this.patternExists(name),
       listPatterns: () => this.db.exec("SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray().map((r: any) => r.name as string),
       entryExists: (pattern, id) => this.entryExists(pattern, id),
@@ -444,7 +445,7 @@ export class HiveDO extends DurableObject {
     return data.query(this.dataCtx(), patternName, filterJson, facets, sortField, limit, countOnly, groupBy, aggregateJson);
   }
 
-  async mutate(patternName: string, operation: string, dataJson: string): Promise<string> {
+  async mutate(patternName: string, operation: string, dataJson: string, actor: string = OWNER_ACTOR): Promise<string> {
     // Expand shortcuts: "fragment" → _short_term_fragments + create
     const shortcut = expandShortcut(patternName);
     if (shortcut) {
@@ -475,7 +476,7 @@ export class HiveDO extends DurableObject {
       } catch { /* best-effort */ }
     }
 
-    const result = data.executeMutate(this.dataCtx(), patternName, operation, parsed);
+    const result = data.executeMutate(this.dataCtx(actor), patternName, operation, parsed);
     if (!result.error) {
       if (conflictCheck?.neighbors.length) {
         result.possible_overlap = [
@@ -492,7 +493,7 @@ export class HiveDO extends DurableObject {
       // A new document entry is born with its single-use upload ticket — the
       // bytes are POSTed to upload_url, which records r2_key/size on the entry.
       if (patternName === "_documents" && operation === "create" && result.entry && !result.entry.r2_key) {
-        const tok = data.executeMutate(this.dataCtx(), "_access_tokens", "create", {
+        const tok = data.executeMutate(this.dataCtx(actor), "_access_tokens", "create", {
           scope: "document", label: `upload:document:${result.entry.id}`,
           constraints: JSON.stringify({ document_id: result.entry.id }),
         });
@@ -609,7 +610,7 @@ export class HiveDO extends DurableObject {
     }
   }
 
-  async batchMutate(operationsJson: string): Promise<string> {
+  async batchMutate(operationsJson: string, actor: string = OWNER_ACTOR): Promise<string> {
     const operations = JSON.parse(operationsJson) as { pattern: string; operation: string; data: any }[];
 
     if (operations.length > data.LIMITS.BATCH_OPS) {
@@ -621,7 +622,7 @@ export class HiveDO extends DurableObject {
         return this.errorJson(`Pattern "${op.pattern}" does not exist`);
     }
 
-    const ctx = this.dataCtx();
+    const ctx = this.dataCtx(actor);
     const results: any[] = [];
     this.ctx.storage.transactionSync(() => {
       for (const op of operations) {

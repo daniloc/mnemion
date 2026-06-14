@@ -55,7 +55,7 @@ export const mutateEntry: RouteHandler = async (ctx) => {
       headers: { "Content-Type": "application/json" },
     });
   }
-  const result = await ctx.hive.mutate(ctx.params.pattern, operation, JSON.stringify(data));
+  const result = await ctx.hive.mutate(ctx.params.pattern, operation, JSON.stringify(data), ctx.actor);
   return new Response(result, {
     headers: { "Content-Type": "application/json" },
   });

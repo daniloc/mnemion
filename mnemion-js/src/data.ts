@@ -19,17 +19,22 @@ export interface DataContext {
   hasKernelVersion(patternName: string): boolean;
   facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
   patternClass(name: string): "knowledge" | "dataset";
+  /** The member this write is attributed to (created_by/updated_by). */
+  actor: string;
 }
 
 // === Constants ===
 
-const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]);
+// Auto-provided kernel columns excluded from the agent-supplied field set on
+// create (id is autoincrement; the rest are system-managed). created_by/updated_by
+// are attribution columns set from ctx.actor, never from caller input.
+const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at", "created_by", "updated_by"]);
 
 // Columns that always exist on a pattern table regardless of declared facets.
 // Used to validate user-supplied identifiers (facets list, sort field) before
 // they're interpolated into SQL — identifiers can't be bound, so they must be
 // confirmed real to prevent injection via the quoting escape.
-const KERNEL_SELECTABLE = new Set(["id", "version", "created_at", "updated_at", "archived_at"]);
+const KERNEL_SELECTABLE = new Set(["id", "version", "created_at", "updated_at", "archived_at", "created_by", "updated_by"]);
 
 function isValidColumn(ctx: DataContext, pattern: string, name: string): boolean {
   return KERNEL_SELECTABLE.has(name) || ctx.facetMeta(pattern, name) != null;
@@ -381,6 +386,11 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   if (INTERNAL_WRITE_PROTECTED.has(patternName))
     return { error: true, message: `"${patternName}" is managed by the system and cannot be modified directly.` };
 
+  // Attribution is system-set from the session actor, never caller-supplied —
+  // strip any forged created_by/updated_by before processing.
+  delete (data as any).created_by;
+  delete (data as any).updated_by;
+
   // Kernel rules (immutable fields, create hooks)
   const kernelCtx: KernelContext = {
     patternExists: (name) => ctx.patternExists(name),
@@ -469,9 +479,10 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         }
 
         const fields = Object.keys(data).filter((k) => !KERNEL_COLUMNS.has(k));
-        const cols = fields.map((f) => `"${f}"`).join(", ");
-        const placeholders = fields.map(() => "?").join(", ");
-        const values = fields.map((f) => data[f]);
+        // Attribution: stamp created_by + updated_by from the session actor.
+        const cols = [...fields.map((f) => `"${f}"`), `"created_by"`, `"updated_by"`].join(", ");
+        const placeholders = [...fields, "_cb", "_ub"].map(() => "?").join(", ");
+        const values = [...fields.map((f) => data[f]), ctx.actor, ctx.actor];
 
         ctx.db.exec(`INSERT INTO "${patternName}" (${cols}) VALUES (${placeholders})`, ...values);
         const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = last_insert_rowid()`).one();
@@ -494,6 +505,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
         const sets = fields.map((f) => `"${f}" = ?`).join(", ");
         const values = fields.map((f) => data[f]);
+        values.push(ctx.actor); // updated_by — bound right after the SET facets
 
         if (kernelVersion) {
           let where = `id = ? AND archived_at IS NULL`;
@@ -501,7 +513,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           if (data.version != null) { where += ` AND version = ?`; values.push(data.version); }
 
           ctx.db.exec(
-            `UPDATE "${patternName}" SET ${sets}, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
+            `UPDATE "${patternName}" SET ${sets}, updated_by = ?, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
             ...values
           );
 
@@ -513,7 +525,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         } else {
           values.push(data.id);
           ctx.db.exec(
-            `UPDATE "${patternName}" SET ${sets}, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+            `UPDATE "${patternName}" SET ${sets}, updated_by = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
             ...values
           );
         }
@@ -559,11 +571,11 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
         const kernelVersion = ctx.hasKernelVersion(patternName);
         if (kernelVersion) {
-          const bindings: any[] = [patched, data.id];
+          const bindings: any[] = [patched, ctx.actor, data.id];
           let where = `id = ? AND archived_at IS NULL`;
           if (data.version != null) { where += ` AND version = ?`; bindings.push(data.version); }
           ctx.db.exec(
-            `UPDATE "${patternName}" SET "${data.facet}" = ?, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
+            `UPDATE "${patternName}" SET "${data.facet}" = ?, updated_by = ?, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
             ...bindings
           );
           if (data.version != null) {
@@ -573,8 +585,8 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           }
         } else {
           ctx.db.exec(
-            `UPDATE "${patternName}" SET "${data.facet}" = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
-            patched, data.id
+            `UPDATE "${patternName}" SET "${data.facet}" = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+            patched, ctx.actor, data.id
           );
         }
 
@@ -585,8 +597,8 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
       case "archive": {
         if (!data.id) return { error: true, message: "id is required for archive" };
         ctx.db.exec(
-          `UPDATE "${patternName}" SET archived_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
-          data.id
+          `UPDATE "${patternName}" SET archived_at = datetime('now'), updated_at = datetime('now'), updated_by = ? WHERE id = ? AND archived_at IS NULL`,
+          ctx.actor, data.id
         );
         return { operation: "archive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
       }
@@ -617,7 +629,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           return { error: true, message: `No active link from ${sp}/${si} to ${tp}/${ti}` };
 
         ctx.db.exec(
-          `UPDATE "_links" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`, links[0].id
+          `UPDATE "_links" SET archived_at = datetime('now'), updated_at = datetime('now'), updated_by = ? WHERE id = ?`, ctx.actor, links[0].id
         );
         return { operation: "unlink", pattern: "_links", id: links[0].id, source: `${sp}/${si}`, target: `${tp}/${ti}` };
       }
@@ -625,8 +637,8 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
       case "unarchive": {
         if (!data.id) return { error: true, message: "id is required for unarchive" };
         ctx.db.exec(
-          `UPDATE "${patternName}" SET archived_at = NULL, updated_at = datetime('now') WHERE id = ? AND archived_at IS NOT NULL`,
-          data.id
+          `UPDATE "${patternName}" SET archived_at = NULL, updated_at = datetime('now'), updated_by = ? WHERE id = ? AND archived_at IS NOT NULL`,
+          ctx.actor, data.id
         );
         return { operation: "unarchive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
       }

@@ -630,7 +630,7 @@ export const loginComplete: RouteHandler = async (ctx) => {
     }
     await ctx.hive.updatePasskeyCounter(credentialId!, newCounter);
 
-    const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host, ctx.env.OAUTH_KV);
+    const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host, ctx.env.OAUTH_KV, actor);
     const safePath = safeReturnPath(returnTo);
     return new Response(JSON.stringify({ redirectTo: safePath }), {
       headers: {
