@@ -395,13 +395,21 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
 // ~95% irrelevant to the change — and the charter's epistemic_caution block
 // alone dominates it. Return only what's needed to confirm the change looks
 // right; agents that want the full picture resolve mnemion://index.
-function focusedPreview(change: any, index: StoreIndex): Record<string, unknown> {
+//
+// The exception is downstream impact: a destructive change (archiving a pattern)
+// can leave references elsewhere dangling. Minimalism that hides a broken
+// reference is worse than the bloat, so we surface the affected set — the target
+// plus what the change actually breaks. That's a targeted inbound-reference
+// query, not a re-serialization of the hive.
+function focusedPreview(change: any, index: StoreIndex, ctx: EvolutionContext): Record<string, unknown> {
   const name = change.pattern_name;
   switch (change.type) {
     case "set_sharing":
       return { pattern_name: name, entry_id: change.entry_id, visibility: change.visibility ?? "public" };
-    case "archive_pattern":
-      return { pattern_name: name, archived: true };
+    case "archive_pattern": {
+      const impact = referenceImpact(ctx, name);
+      return { pattern_name: name, archived: true, ...(impact ? { impact } : {}) };
+    }
     case "unarchive_pattern":
       return { pattern_name: name, unarchived: true };
     default: {
@@ -410,6 +418,49 @@ function focusedPreview(change: any, index: StoreIndex): Record<string, unknown>
     }
   }
 }
+
+// References from elsewhere that point INTO `patternName` — active `_links` whose
+// target is one of its entries, and foreign-key facets on other patterns that
+// reference it. After the pattern is archived these dangle (the entries become
+// unreachable), so the propose/apply return flags them. Self-references are
+// excluded: they're archived together with the pattern, not orphaned.
+function referenceImpact(ctx: EvolutionContext, patternName: string): Record<string, unknown> | null {
+  if (!patternName) return null;
+  const CAP = 25;
+  let links: { source_pattern: string; source_id: number; label: string | null }[] = [];
+  let facets: { object_name: string; name: string }[] = [];
+  try {
+    links = ctx.db.exec(
+      `SELECT source_pattern, source_id, label FROM "_links"
+       WHERE target_pattern = ? AND source_pattern != ? AND archived_at IS NULL
+       ORDER BY source_pattern, source_id`,
+      patternName, patternName
+    ).toArray() as any[];
+  } catch { /* _links may not exist yet */ }
+  try {
+    facets = ctx.db.exec(
+      `SELECT object_name, name FROM _fields WHERE references_object = ? AND object_name != ?`,
+      patternName, patternName
+    ).toArray() as any[];
+  } catch { /* best-effort */ }
+
+  if (links.length === 0 && facets.length === 0) return null;
+
+  return {
+    dangling_reference_count: links.length,
+    ...(links.length ? {
+      dangling_references: links.slice(0, CAP).map((l) => ({
+        from: `${l.source_pattern}/${l.source_id}`,
+        uri: uri(`entry/${l.source_pattern}/${l.source_id}`),
+        ...(l.label ? { label: l.label } : {}),
+      })),
+    } : {}),
+    ...(links.length > CAP ? { dangling_references_truncated: links.length - CAP } : {}),
+    ...(facets.length ? { referencing_facets: facets.map((f) => `${f.object_name}.${f.name}`) } : {}),
+    warning: `Archiving "${patternName}" leaves ${links.length} reference(s) from other entries pointing at now-unreachable entries${facets.length ? ` and ${facets.length} foreign-key facet(s) referencing it` : ""}. Re-point or archive those, or reconsider the archive.`,
+  };
+}
+
 
 export function proposeChange(
   description: string,
@@ -439,7 +490,7 @@ export function proposeChange(
     description,
     change_type: change.type,
     version: preview.version,
-    preview: focusedPreview(change, preview),
+    preview: focusedPreview(change, preview, ctx),
     message: "Change proposed. Call apply_change with this change_id to commit.",
   }, null, 2);
 }
@@ -493,7 +544,7 @@ export async function applyChange(
       change_type: change.type,
       pattern_name: change.pattern_name ?? null,
       version: freshIndex.version,
-      preview: focusedPreview(change, freshIndex),
+      preview: focusedPreview(change, freshIndex, ctx),
     }, null, 2);
   } catch (err: any) {
     return errorJson(`Failed to apply change: ${err.message}`);
