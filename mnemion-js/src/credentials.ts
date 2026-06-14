@@ -141,20 +141,28 @@ export function resolveRegisterToken(db: DB, token: string): {
   if (!row) return null;
   // Must be register-scoped specifically — a wildcard API token is not a setup link.
   if (row.scope !== "register") return null;
-  let member = OWNER_ACTOR;
+  let member = "";
   try {
     const c = JSON.parse(row.constraints || "{}");
     if (c && typeof c.member === "string" && c.member) member = c.member;
-  } catch { /* fall back to owner sentinel */ }
+  } catch { /* no member → unusable, rejected below */ }
+  if (!member) return null;
+  // Robust gate (independent of how `member`/constraints got their value — the
+  // create hook validates at mint time, but an update could tamper with them):
+  // the owner is never provisionable via an invite, and the target must be an
+  // active, non-archived roster member. This is the last line before a passkey
+  // is bound, so it must not trust the token's stored member blindly.
+  if (member === OWNER_ACTOR) return null;
   const m = db.exec(
-    `SELECT label, display_name FROM "_members" WHERE label = ? AND archived_at IS NULL`,
+    `SELECT label, display_name FROM "_members" WHERE label = ? AND status = 'active' AND archived_at IS NULL`,
     member
   ).toArray()[0] as any;
+  if (!m) return null;
   return {
     id: row.id,
     member,
-    userName: m?.label ?? member,
-    userDisplayName: m?.display_name || member,
+    userName: m.label,
+    userDisplayName: m.display_name || member,
   };
 }
 

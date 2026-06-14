@@ -8,6 +8,8 @@ export interface KernelContext {
   patternExists(name: string): boolean;
   facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
   entryExists(pattern: string, id: number): boolean;
+  /** An active, non-archived member with this label exists in the roster. */
+  memberActive(label: string): boolean;
 }
 
 type HookResult = Record<string, unknown> | { error: true; message: string };
@@ -125,6 +127,17 @@ const ON_CREATE: Record<string, CreateHook> = {
       }
       if (!member)
         return { error: true, message: "register scope requires member (the label of the member being invited)" };
+      // The owner is NOT provisionable via an invite link — the owner's
+      // bootstrap passkey is registered only through the master secret
+      // (npm run setup). Allowing a register token to target "owner" would let
+      // whoever opens the /setup URL register a passkey that authenticates as
+      // the founder (full access). Reject it outright.
+      if (member === "owner")
+        return { error: true, message: 'register tokens cannot target the "owner" — the owner registers via the master secret. Invite a member with their own label.' };
+      // The invitee must already exist as an active member (creating the member
+      // is the consent-gated act; the token just attaches a credential to it).
+      if (!ctx.memberActive(member))
+        return { error: true, message: `register scope requires an existing active member; "${member}" is not in the roster. Create the member first, then mint the invite.` };
       data.member = member;
       data.constraints = JSON.stringify({ member });
       data.single_use = 1;

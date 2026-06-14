@@ -1573,6 +1573,56 @@ describe("Shared hive — register tokens (invite)", () => {
     // A register token must not grant API access.
     expect(await store.resolveTokenActor(tok.entry.token, "*")).toBeNull();
   });
+
+  // Privilege-escalation guards: an invite link must never be able to register
+  // a passkey that authenticates as the owner, nor target a non-roster member.
+  it("refuses to mint a register token targeting the owner", async () => {
+    const store = getStore();
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "owner" })));
+    expect(tok.error).toBe(true);
+  });
+
+  it("refuses to mint a register token for a member not in the roster", async () => {
+    const store = getStore();
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "ghost" })));
+    expect(tok.error).toBe(true);
+  });
+
+  it("refuses to mint a register token for a suspended member", async () => {
+    const store = getStore();
+    const m = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" })));
+    await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, status: "suspended" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+    expect(tok.error).toBe(true);
+  });
+
+  // Defense in depth: even a tampered register token (constraints set to owner
+  // by a raw write that bypassed the mint-time hook) must not resolve at setup.
+  it("refuses at setup time to provision the owner even if a token's constraints say so", async () => {
+    const store = getStore();
+    let token = "";
+    await runInDurableObject(store, async (_i, state) => {
+      token = "feedfacefeedfacefeedfacefeedface";
+      state.storage.sql.exec(
+        `INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`,
+        token, JSON.stringify({ member: "owner" })
+      );
+    });
+    expect(await store.resolveRegisterToken(token)).toBeNull();
+  });
+
+  it("refuses at setup time when constraints name a member not in the roster", async () => {
+    const store = getStore();
+    let token = "";
+    await runInDurableObject(store, async (_i, state) => {
+      token = "0ddba110ddba110ddba110ddba110dd0";
+      state.storage.sql.exec(
+        `INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`,
+        token, JSON.stringify({ member: "ghost" })
+      );
+    });
+    expect(await store.resolveRegisterToken(token)).toBeNull();
+  });
 });
 
 describe("Shared hive — multi-passkey storage", () => {

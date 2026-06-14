@@ -386,6 +386,11 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
     patternExists: (name) => ctx.patternExists(name),
     facetMeta: (pattern, facet) => ctx.facetMeta(pattern, facet),
     entryExists: (pattern, id) => ctx.entryExists(pattern, id),
+    memberActive: (label) =>
+      ctx.db.exec(
+        `SELECT 1 FROM "_members" WHERE label = ? AND status = 'active' AND archived_at IS NULL`,
+        label
+      ).toArray().length > 0,
   };
   const ruled = applyKernelRules(patternName, operation, data, kernelCtx);
   if ('error' in ruled) return ruled;
