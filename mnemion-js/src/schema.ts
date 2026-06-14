@@ -953,8 +953,11 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
   // --- Register kernel objects in normalized schema ---
 
   for (const table of KERNEL_TABLES) {
+    // Refresh description too (not just doctrine) so an existing install's
+    // kernel docs track the code on deploy — otherwise new scopes/facets stay
+    // undiscoverable in the live schema.
     db.exec(
-      "INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET doctrine = excluded.doctrine",
+      "INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET doctrine = excluded.doctrine, description = excluded.description",
       table.name, table.description, table.doctrine
     );
     for (const f of table.facets) {
@@ -962,6 +965,26 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
         "INSERT OR IGNORE INTO _fields (object_name, name, type, required, options) VALUES (?, ?, ?, ?, ?)",
         table.name, f.name, f.type, f.required ? 1 : 0, f.options ? JSON.stringify(f.options) : null
       );
+    }
+  }
+
+  // --- Phase 2 attribution: created_by/updated_by on every agent-facing pattern ---
+  //
+  // Every pattern (kernel + user) carries attribution columns, set by the mutate
+  // engine from the session actor. Run after kernel registration so the loop
+  // covers freshly-created kernel tables and pre-existing user tables alike, and
+  // before audit triggers below so they capture the columns on fresh tables.
+  // Idempotent (ALTER only when the column is missing). They're kernel columns
+  // (in KERNEL_COLS), not facets, so they're not registered in _fields.
+  {
+    const patterns = db.exec("SELECT name FROM _objects").toArray() as any[];
+    for (const p of patterns) {
+      try {
+        const cols = db.exec(`PRAGMA table_info("${p.name}")`).toArray() as any[];
+        if (!cols.length) continue;
+        if (!cols.some((c: any) => c.name === "created_by")) db.exec(`ALTER TABLE "${p.name}" ADD COLUMN "created_by" TEXT`);
+        if (!cols.some((c: any) => c.name === "updated_by")) db.exec(`ALTER TABLE "${p.name}" ADD COLUMN "updated_by" TEXT`);
+      } catch { /* table may be an archived-then-dropped pattern */ }
     }
   }
 
@@ -1015,7 +1038,7 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 // Drift is reported, not thrown — a degraded boot is recoverable; a refusing
 // boot is not. Real fix is to derive name/required/etc. from PRAGMA at read
 // time and shrink _fields to only its semantic-only columns.
-const KERNEL_COLS = new Set(["id", "version", "created_at", "updated_at", "archived_at"]);
+const KERNEL_COLS = new Set(["id", "version", "created_at", "updated_at", "archived_at", "created_by", "updated_by"]);
 
 function verifyFieldsIntegrity(db: any): void {
   const drifts: string[] = [];

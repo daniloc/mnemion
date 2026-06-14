@@ -47,7 +47,7 @@ export const saveCanvas: RouteHandler = async (ctx) => {
       { status: 400 },
     );
   }
-  const result = await ctx.hive.mutate("_canvases", operation, JSON.stringify(data));
+  const result = await ctx.hive.mutate("_canvases", operation, JSON.stringify(data), ctx.actor);
   return new Response(result, {
     headers: { "Content-Type": "application/json" },
   });
