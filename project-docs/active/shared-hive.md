@@ -165,7 +165,15 @@ Why on-the-entry rather than only in the audit log: attribution is read-time val
 
 ### 6. Invitation and per-member revocation
 
-**Invitation.** A new member is added by an existing member, consent-gated through the same machinery that gates federation-host additions (`_pending_consent`, the confirmation round-trip in the MCP `mutate` layer). The flow: existing member creates a `_members` row (`status: active`) → mints a single-use, passkey-setup-scoped access token for the invitee → invitee opens the setup URL and registers their own passkey, which is stored against their `member` label. Reuses the existing one-time-token setup path almost verbatim; the only new ingredient is associating the registration with a member label instead of the hardcoded owner.
+**Invitation.** A new member is added by an existing member, consent-gated through the same machinery that gates federation-host additions (`_pending_consent`, the confirmation round-trip in the MCP `mutate` layer). The flow:
+
+1. The inviting agent **names the member at invite time** — it creates the `_members` row (`status: active`) with both `label` (the immutable handle) and `display_name` (the human name) set up front. The invitee's identity therefore exists, fully named, *before* they ever touch the setup URL.
+2. The agent mints a single-use, passkey-setup-scoped access token bound to that member's `label`.
+3. The invitee opens the setup URL and registers their own passkey, which is stored against the pre-existing `member` label.
+
+This is a deliberate choice: naming is the inviter's act, not the invitee's. The person being invited never has to pick or type a handle — they receive a URL that already knows who they are, and registration just attaches a credential to an identity that's already named and visible in the roster. (Attribution in §5 reads `display_name` straight off this row, so writes are correctly named from the invitee's very first mutation.) The token is the *only* new ingredient over the existing one-time-setup path — everything else reuses it almost verbatim, just associating the registration with a named member instead of the hardcoded owner.
+
+Because `label` is immutable (§2) but `display_name` is not, an inviter who fat-fingers the handle must re-invite, but a corrected human name is a plain `mutate` on the `_members` row.
 
 **Revocation.** Today revocation is the global session epoch (`src/router.ts`) — all-or-nothing. With members plus per-token/per-passkey `member` labels, granular revocation falls out almost for free:
 
