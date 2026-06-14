@@ -40,6 +40,10 @@ export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = 
     fields: ["r2_key", "size", "stored_at", "extracted_text", "extraction_status"],
     message: "r2_key, size, stored_at, extracted_text, and extraction_status are managed by the system on upload/extraction — they cannot be set via mutate.",
   },
+  _members: {
+    fields: ["label"],
+    message: "A member's label is immutable — it's the stable handle that passkeys, tokens, and attribution reference. Correct display_name instead, or re-invite under a new label.",
+  },
 };
 
 // === Create hooks — validate + transform before INSERT ===
@@ -106,6 +110,27 @@ const ON_CREATE: Record<string, CreateHook> = {
       data.single_use = 1;
     }
 
+    // Register scope: a one-time passkey-registration link for inviting a
+    // member. The holder of /setup?token=... registers a passkey bound to the
+    // named member. Always single-use; short default TTL. The member is taken
+    // from the token's `member` field (or constraints.member) and pinned into
+    // constraints so the setup flow can read it.
+    if (scope === "register") {
+      let member = typeof data.member === "string" ? (data.member as string) : "";
+      if (!member && data.constraints) {
+        try {
+          const c = typeof data.constraints === "string" ? JSON.parse(data.constraints) : data.constraints;
+          if (c && typeof c.member === "string") member = c.member;
+        } catch { /* validated below */ }
+      }
+      if (!member)
+        return { error: true, message: "register scope requires member (the label of the member being invited)" };
+      data.member = member;
+      data.constraints = JSON.stringify({ member });
+      data.single_use = 1;
+      data.expires_at = data.expires_at || new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
+    }
+
     // Default TTL for wildcard tokens (old auth code behavior)
     if (scope === "*" && !data.expires_at) {
       const ttl = typeof data.ttl_minutes === "number" ? data.ttl_minutes : 60;
@@ -121,6 +146,24 @@ const ON_CREATE: Record<string, CreateHook> = {
       }
     }
 
+    return data;
+  },
+
+  _members(data) {
+    if (!data.label || typeof data.label !== "string")
+      return { error: true, message: "label is required for _members (a stable handle, e.g. \"partner\")" };
+    if ((data.label as string) === "owner")
+      return { error: true, message: 'The "owner" member is reserved for the hive founder and already exists.' };
+    const role = (data.role as string) || "member";
+    if (!["owner", "member"].includes(role))
+      return { error: true, message: `Invalid role "${role}". Use "member" (or "owner", reserved).` };
+    if (role === "owner")
+      return { error: true, message: 'Role "owner" is reserved for the founding member.' };
+    data.role = role;
+    const status = (data.status as string) || "active";
+    if (!["active", "suspended"].includes(status))
+      return { error: true, message: `Invalid status "${status}". Use "active" or "suspended".` };
+    data.status = status;
     return data;
   },
 

@@ -4,38 +4,70 @@
 // Auth concerns separated from the cognitive substrate.
 
 import { scopeMatches } from "./kernel";
+import { OWNER_ACTOR } from "./constants";
 export { scopeMatches };
 
 type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one: () => any } };
 
 // === Passkey storage ===
+//
+// One passkey per member (a member's `member` label, or NULL for the bootstrap
+// owner credential). Several members each register their own credential, so the
+// table holds many rows; re-registering a given member replaces only that
+// member's row.
 
-export function hasPasskey(db: DB): boolean {
-  return db.exec("SELECT 1 FROM _passkeys WHERE id = 1").toArray().length > 0;
+export interface StoredPasskeyRow {
+  credential_id: string;
+  public_key: string;
+  counter: number;
+  transports: string;
+  member: string | null;
 }
 
-export function getPasskey(db: DB): { credential_id: string; public_key: string; counter: number; transports: string } | null {
-  const rows = db.exec("SELECT * FROM _passkeys WHERE id = 1").toArray() as any[];
-  if (rows.length === 0) return null;
-  const r = rows[0];
-  return {
+export function hasPasskey(db: DB): boolean {
+  return db.exec("SELECT 1 FROM _passkeys LIMIT 1").toArray().length > 0;
+}
+
+/** All registered passkeys — the authentication candidate set. */
+export function getPasskeys(db: DB): StoredPasskeyRow[] {
+  const rows = db.exec("SELECT * FROM _passkeys").toArray() as any[];
+  return rows.map((r) => ({
     credential_id: r.credential_id,
     public_key: r.public_key,
     counter: r.counter,
     transports: r.transports,
-  };
+    member: r.member ?? null,
+  }));
 }
 
-export function storePasskey(db: DB, credentialId: string, publicKey: string, counter: number, transports: string): void {
-  db.exec("DELETE FROM _passkeys");
+/**
+ * Store a member's passkey, replacing any existing credential for that same
+ * member (per-member rotation — the original "single credential, replaced on
+ * re-registration" semantic, now scoped to one member). `member` is the member
+ * label, or null for the bootstrap owner credential.
+ */
+export function storePasskey(
+  db: DB,
+  credentialId: string,
+  publicKey: string,
+  counter: number,
+  transports: string,
+  member: string | null = null,
+): void {
+  if (member == null) {
+    db.exec("DELETE FROM _passkeys WHERE member IS NULL");
+  } else {
+    db.exec("DELETE FROM _passkeys WHERE member = ?", member);
+  }
   db.exec(
-    "INSERT INTO _passkeys (id, credential_id, public_key, counter, transports) VALUES (1, ?, ?, ?, ?)",
-    credentialId, publicKey, counter, transports
+    "INSERT INTO _passkeys (member, credential_id, public_key, counter, transports) VALUES (?, ?, ?, ?, ?)",
+    member, credentialId, publicKey, counter, transports
   );
 }
 
-export function updatePasskeyCounter(db: DB, counter: number): void {
-  db.exec("UPDATE _passkeys SET counter = ? WHERE id = 1", counter);
+/** Bump the signature counter for a specific credential (clone detection). */
+export function updatePasskeyCounter(db: DB, credentialId: string, counter: number): void {
+  db.exec("UPDATE _passkeys SET counter = ? WHERE credential_id = ?", counter, credentialId);
 }
 
 // === Access tokens ===
@@ -67,6 +99,63 @@ export function validateAccessToken(db: DB, token: string, requiredScope: string
   if (!scopeMatches(accessToken.scope, requiredScope)) return false;
   if (accessToken.single_use) consumeToken(db, accessToken.id);
   return true;
+}
+
+/**
+ * Validate a token and resolve the actor (member) it authenticates as. Returns
+ * the member label, or null if the token is invalid / out of scope / belongs to
+ * a suspended-or-archived member. A token with no `member` resolves to the owner
+ * sentinel (legacy and headless tokens). Used by the OAuth external-token path
+ * to attribute the resulting session to a person.
+ */
+export function resolveTokenActor(db: DB, token: string, requiredScope: string): string | null {
+  const accessToken = findAccessToken(db, token);
+  if (!accessToken) return null;
+  if (!scopeMatches(accessToken.scope, requiredScope)) return null;
+  const member: string | null = accessToken.member ?? null;
+  if (member != null && !isMemberActive(db, member)) return null;
+  if (accessToken.single_use) consumeToken(db, accessToken.id);
+  return member ?? OWNER_ACTOR;
+}
+
+/** A member exists, is active, and not archived. The owner sentinel is always active. */
+export function isMemberActive(db: DB, member: string): boolean {
+  if (member === OWNER_ACTOR) return true;
+  const rows = db.exec(
+    `SELECT 1 FROM "_members" WHERE label = ? AND status = 'active' AND archived_at IS NULL`,
+    member
+  ).toArray();
+  return rows.length > 0;
+}
+
+/**
+ * Resolve a passkey-registration ("register" scoped) setup token to the member
+ * it provisions, with display fields for the WebAuthn ceremony. Does not consume
+ * the token — completion consumes it via consumeToken. Returns null for any
+ * token that isn't a valid register token.
+ */
+export function resolveRegisterToken(db: DB, token: string): {
+  id: number; member: string; userName: string; userDisplayName: string;
+} | null {
+  const row = findAccessToken(db, token);
+  if (!row) return null;
+  // Must be register-scoped specifically — a wildcard API token is not a setup link.
+  if (row.scope !== "register") return null;
+  let member = OWNER_ACTOR;
+  try {
+    const c = JSON.parse(row.constraints || "{}");
+    if (c && typeof c.member === "string" && c.member) member = c.member;
+  } catch { /* fall back to owner sentinel */ }
+  const m = db.exec(
+    `SELECT label, display_name FROM "_members" WHERE label = ? AND archived_at IS NULL`,
+    member
+  ).toArray()[0] as any;
+  return {
+    id: row.id,
+    member,
+    userName: m?.label ?? member,
+    userDisplayName: m?.display_name || member,
+  };
 }
 
 /** Validate a token without consuming it (for reusable Bearer sessions). */

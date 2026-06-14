@@ -83,12 +83,16 @@ Scopes:
 - read:entry:{pattern}:{id} — read a specific shared entry
 - read:output:{path} — read a specific output
 - upload — write via POST /upload/{token} (constraints: {target_pattern, target_id, target_facet, mode})
-- marketplace — private marketplace git access (constraints: {plugins: [...]})`,
+- marketplace — private marketplace git access (constraints: {plugins: [...]})
+- register — one-time passkey-registration link for inviting a member (constraints: {member}; forced single-use). The holder of the /setup?token=... URL registers a passkey for that member.
+
+Set "member" to attribute a token to a specific member of the hive (the person who holds it); leave it unset for owner/headless tokens.`,
     doctrine: "Create tokens only when the human requests external access. Use the narrowest scope possible. Never create wildcard tokens without explicit instruction.",
     ddl: `CREATE TABLE IF NOT EXISTS "_access_tokens" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
       "label" TEXT,
+      "member" TEXT,
       "scope" TEXT NOT NULL DEFAULT '*',
       "constraints" TEXT,
       "expires_at" TEXT,
@@ -102,11 +106,39 @@ Scopes:
     facets: [
       { name: "token", type: "text", required: false },
       { name: "label", type: "text", required: false },
+      { name: "member", type: "text", required: false },
       { name: "scope", type: "text", required: false },
       { name: "constraints", type: "text", required: false },
       { name: "expires_at", type: "datetime", required: false },
       { name: "single_use", type: "boolean", required: false },
       { name: "consumed_at", type: "datetime", required: false },
+    ],
+  },
+  {
+    name: "_members",
+    description: `The roster of people who share this hive. Each member is a distinct person who authenticates as themselves (their own passkey or access tokens) but reads and writes the same shared store. "label" is the stable, immutable handle everything else references (passkeys, tokens, attribution); "display_name" is the human name shown in the UI. The "owner" member is the hive's founder.
+
+Adding a member is a two-step invite: (1) create the member here with label + display_name (the inviting agent names them), then (2) mint a single-use "register"-scoped access token with constraints {"member": "<label>"} and give the invitee its /setup?token=... URL, where they register their own passkey. Suspend a member (status: suspended) or archive them to revoke access; also archive their tokens and they can no longer authenticate.`,
+    doctrine: "Only add a member when the human explicitly chooses to share this hive with that person — it grants them full read/write access to everything. Set both label and display_name at invite time. label is immutable; correct a typo'd display_name with update, but a wrong label means re-inviting.",
+    ddl: `CREATE TABLE IF NOT EXISTS "_members" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "label" TEXT NOT NULL,
+      "display_name" TEXT,
+      "role" TEXT NOT NULL DEFAULT 'member',
+      "status" TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_members_label_active" ON "_members" ("label") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "label", type: "text", required: true },
+      { name: "display_name", type: "text", required: false },
+      { name: "role", type: "select", required: false, options: ["owner", "member"] },
+      { name: "status", type: "select", required: false, options: ["active", "suspended"] },
     ],
   },
   {
@@ -593,8 +625,11 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     expires_at TEXT NOT NULL
   )`);
 
+  // One passkey per member (member = NULL for the bootstrap owner credential).
+  // Several members each register their own credential, so this holds many rows.
   db.exec(`CREATE TABLE IF NOT EXISTS _passkeys (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member TEXT,
     credential_id TEXT NOT NULL,
     public_key TEXT NOT NULL,
     counter INTEGER NOT NULL DEFAULT 0,
@@ -735,6 +770,50 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
       if (!docCols.some((c: any) => c.name === "extraction_status")) {
         db.exec(`ALTER TABLE "_documents" ADD COLUMN "extraction_status" TEXT`);
       }
+    }
+  } catch {}
+
+  // --- v15: shared hive — multi-member passkeys + token/member attribution ---
+  //
+  // Pre-shared-hive _passkeys was a singleton (PK CHECK (id = 1)); a shared hive
+  // needs one passkey per member, so rebuild the table without the constraint and
+  // carry the existing owner credential over as a member-less (NULL) row. SQLite
+  // can't drop a CHECK via ALTER, so rebuild via rename/copy/drop.
+
+  try {
+    const pkSqlRows = db.exec(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '_passkeys'`
+    ).toArray() as any[];
+    const pkSql = pkSqlRows[0]?.sql ?? "";
+    if (/CHECK\s*\(\s*id\s*=\s*1\s*\)/i.test(pkSql)) {
+      db.exec(`ALTER TABLE _passkeys RENAME TO _passkeys_old`);
+      db.exec(`CREATE TABLE _passkeys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member TEXT,
+        credential_id TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        counter INTEGER NOT NULL DEFAULT 0,
+        transports TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+      db.exec(`INSERT INTO _passkeys (id, member, credential_id, public_key, counter, transports, created_at)
+        SELECT id, NULL, credential_id, public_key, counter, transports, created_at FROM _passkeys_old`);
+      db.exec(`DROP TABLE _passkeys_old`);
+    } else {
+      // Table already constraint-free (fresh install or prior migration) — just
+      // ensure the member column exists.
+      const pkCols = db.exec(`PRAGMA table_info("_passkeys")`).toArray() as any[];
+      if (pkCols.length && !pkCols.some((c: any) => c.name === "member")) {
+        db.exec(`ALTER TABLE _passkeys ADD COLUMN "member" TEXT`);
+      }
+    }
+  } catch {}
+
+  // _access_tokens gains a member column (which person holds the token).
+  try {
+    const atCols = db.exec(`PRAGMA table_info("_access_tokens")`).toArray() as any[];
+    if (atCols.length && !atCols.some((c: any) => c.name === "member")) {
+      db.exec(`ALTER TABLE "_access_tokens" ADD COLUMN "member" TEXT`);
     }
   } catch {}
 
@@ -879,6 +958,23 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
       );
     }
   }
+
+  // --- Seed the owner member ---
+  //
+  // Every hive has an "owner" — the founder, and the actor that the bootstrap
+  // passkey and master-secret logins resolve to. Seed the roster row so the
+  // owner appears alongside any invited members.
+  try {
+    const hasOwner = db.exec(
+      `SELECT 1 FROM "_members" WHERE label = 'owner' AND archived_at IS NULL`
+    ).toArray().length > 0;
+    if (!hasOwner) {
+      db.exec(
+        `INSERT INTO "_members" (label, display_name, role, status) VALUES ('owner', ?, 'owner', 'active')`,
+        `${PRODUCT_NAME} Owner`
+      );
+    }
+  } catch {}
 
   // --- Audit triggers for all registered objects ---
 

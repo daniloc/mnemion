@@ -9,3 +9,21 @@ export const URI_PREFIX = `${URI_SCHEME}://`;
 export function uri(path: string): string {
   return `${URI_PREFIX}${path}`;
 }
+
+// === Hive identity ===
+//
+// Mnemion is single-hive-per-deploy: one shared store that one or more members
+// authenticate into. The hive's location (which Durable Object) is stable and
+// independent of who logs in — "which hive" and "who am I" are separate
+// concerns. HIVE_ID names the store; the actor (a member label) names the
+// person, carried separately in the session props.
+//
+// The literal stays "user:owner" so existing single-owner deploys keep their
+// data: this is a rename for clarity, not a re-key. New deploys land on the
+// same DO name.
+export const HIVE_ID = "user:owner";
+
+// The sentinel member every hive has. The bootstrap passkey (registered with
+// the master secret) and any member-less legacy token resolve to this actor.
+// Always active; never suspended.
+export const OWNER_ACTOR = "owner";

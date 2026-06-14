@@ -1326,14 +1326,20 @@ export class HiveDO extends DurableObject {
   // === Credentials (delegated to credentials.ts) ===
 
   async hasPasskey(): Promise<boolean> { return cred.hasPasskey(this.db); }
-  async getPasskey() { return cred.getPasskey(this.db); }
-  async storePasskey(credentialId: string, publicKey: string, counter: number, transports: string) {
-    cred.storePasskey(this.db, credentialId, publicKey, counter, transports);
+  async getPasskeys() { return cred.getPasskeys(this.db); }
+  async storePasskey(credentialId: string, publicKey: string, counter: number, transports: string, member: string | null = null) {
+    cred.storePasskey(this.db, credentialId, publicKey, counter, transports, member);
   }
-  async updatePasskeyCounter(counter: number) { cred.updatePasskeyCounter(this.db, counter); }
+  async updatePasskeyCounter(credentialId: string, counter: number) { cred.updatePasskeyCounter(this.db, credentialId, counter); }
   async validateAccessToken(token: string, requiredScope: string) {
     return cred.validateAccessToken(this.db, token, requiredScope);
   }
+  async resolveTokenActor(token: string, requiredScope: string) {
+    return cred.resolveTokenActor(this.db, token, requiredScope);
+  }
+  async isMemberActive(member: string) { return cred.isMemberActive(this.db, member); }
+  async resolveRegisterToken(token: string) { return cred.resolveRegisterToken(this.db, token); }
+  async consumeAccessToken(id: number) { cred.consumeToken(this.db, id); }
   async validateAuthCode(code: string) { return cred.validateAuthCode(this.db, code); }
   async consumeAuthCode(code: string) { return cred.consumeAuthCode(this.db, code); }
 

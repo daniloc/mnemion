@@ -30,14 +30,17 @@ function getOrigin(request: Request): string {
   return new URL(request.url).origin;
 }
 
-export async function beginRegistration(request: Request) {
+export async function beginRegistration(
+  request: Request,
+  identity?: { userName?: string; userDisplayName?: string },
+) {
   const rpID = getRpID(request);
 
   const options = await generateRegistrationOptions({
     rpName: PRODUCT_NAME,
     rpID,
-    userName: "owner",
-    userDisplayName: `${PRODUCT_NAME} Owner`,
+    userName: identity?.userName ?? "owner",
+    userDisplayName: identity?.userDisplayName ?? `${PRODUCT_NAME} Owner`,
     attestationType: "none",
     authenticatorSelection: {
       residentKey: "preferred",
@@ -89,17 +92,18 @@ export async function completeRegistration(
 
 export async function beginAuthentication(
   request: Request,
-  stored: StoredPasskey,
+  stored: StoredPasskey | StoredPasskey[],
 ) {
   const rpID = getRpID(request);
-  const transports: AuthenticatorTransportFuture[] = JSON.parse(stored.transports || "[]");
+  const list = Array.isArray(stored) ? stored : [stored];
 
   const options = await generateAuthenticationOptions({
     rpID,
-    allowCredentials: [{
-      id: stored.credential_id,
-      transports,
-    }],
+    // Offer every registered member's credential; the authenticator picks one.
+    allowCredentials: list.map((s) => ({
+      id: s.credential_id,
+      transports: JSON.parse(s.transports || "[]") as AuthenticatorTransportFuture[],
+    })),
     userVerification: "required",
   });
 
@@ -110,10 +114,19 @@ export async function completeAuthentication(
   request: Request,
   response: AuthenticationResponseJSON,
   expectedChallenge: string,
-  stored: StoredPasskey,
-): Promise<{ verified: boolean; newCounter: number }> {
+  stored: StoredPasskey | StoredPasskey[],
+): Promise<{ verified: boolean; newCounter: number; credentialId: string | null }> {
   const rpID = getRpID(request);
   const origin = getOrigin(request);
+
+  // Select the registered credential the assertion was made with. Returning
+  // which one verified lets the caller resolve the member (actor) behind it.
+  const list = Array.isArray(stored) ? stored : [stored];
+  const matched = list.find((s) => s.credential_id === response.id) ?? null;
+  if (!matched) {
+    return { verified: false, newCounter: 0, credentialId: null };
+  }
+  stored = matched;
 
   // Decode stored public key from base64url back to Uint8Array
   const b64 = stored.public_key.replace(/-/g, "+").replace(/_/g, "/");
@@ -142,12 +155,13 @@ export async function completeAuthentication(
   // treat it as a failure rather than silently preserving the old counter, which
   // would mask a missing/regressed signature counter (clone-detection signal).
   if (verification.verified && !verification.authenticationInfo) {
-    return { verified: false, newCounter: stored.counter };
+    return { verified: false, newCounter: stored.counter, credentialId: stored.credential_id };
   }
 
   return {
     verified: verification.verified,
     newCounter: verification.authenticationInfo?.newCounter ?? stored.counter,
+    credentialId: stored.credential_id,
   };
 }
 

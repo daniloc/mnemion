@@ -1,5 +1,5 @@
 import type { HiveDO } from "./hive";
-import { PRODUCT_NAME } from "./constants";
+import { PRODUCT_NAME, HIVE_ID } from "./constants";
 
 // === Types ===
 
@@ -213,7 +213,7 @@ export function createRouter(routes: Route[]) {
       }
 
       // Build context
-      const hiveId = env.MNEMION_HIVE.idFromName("user:owner");
+      const hiveId = env.MNEMION_HIVE.idFromName(HIVE_ID);
       const hive = env.MNEMION_HIVE.get(hiveId) as DurableObjectStub<HiveDO>;
 
       return route.handler({ request, url, env, params, hive });

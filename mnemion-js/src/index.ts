@@ -1,6 +1,7 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { SessionDO } from "./session";
 import { HiveDO } from "./hive";
+import { HIVE_ID } from "./constants";
 import { Method, Auth, createRouter, type Route, type Env } from "./router";
 
 // Auth
@@ -89,11 +90,13 @@ export default new OAuthProvider({
     // chars. Accept either case so a valid wildcard token actually validates.
     if (!/^[a-fA-F0-9]{32}$/.test(token)) return null;
 
-    const storeId = (env as any).MNEMION_HIVE.idFromName("user:owner");
+    const storeId = (env as any).MNEMION_HIVE.idFromName(HIVE_ID);
     const store = (env as any).MNEMION_HIVE.get(storeId) as DurableObjectStub<HiveDO>;
-    const valid = await store.validateAccessToken(token, "*");
-    if (!valid) return null;
+    // Resolve which member this token authenticates as (null = invalid/out of
+    // scope/suspended). Member-less tokens resolve to the owner sentinel.
+    const actor = await store.resolveTokenActor(token, "*");
+    if (!actor) return null;
 
-    return { props: { userId: "owner" } };
+    return { props: { hiveId: HIVE_ID, actor, userId: actor } };
   },
 });

@@ -195,7 +195,7 @@ Because `label` is immutable (§2) but `display_name` is not, an inviter who fat
 
 ## Implementation phasing
 
-**Phase 1 — keystone (shippable on its own).** §1–4, §6. Split `hiveId`/`actor`, add `_members`, multi-passkey, actor resolution, invite + per-member revocation. After this, two people log in as themselves and can be individually revoked. Writes are not yet attributed (every actor can write; the system just doesn't *record* which one). Touches ~6 files: `src/constants.ts`, `src/index.ts`, `src/session.ts`, `src/routes/auth.ts`, `src/credentials.ts`, `src/schema.ts`, `src/passkey.ts`.
+**Phase 1 — keystone (shippable on its own). ✅ IMPLEMENTED.** §1–4, §6. Split `hiveId`/`actor`, add `_members`, multi-passkey, actor resolution, invite + per-member revocation. After this, two people log in as themselves and can be individually revoked. Writes are not yet attributed (every actor can write; the system just doesn't *record* which one). Landed across `src/constants.ts`, `src/index.ts`, `src/session.ts`, `src/routes/auth.ts`, `src/credentials.ts`, `src/passkey.ts`, `src/hive.ts`, `src/schema.ts`, `src/kernel.ts`, with tests in `src/__tests__/hive.test.ts`.
 
 **Phase 2 — attribution.** §5 and the cookie actor. Add `created_by`/`updated_by` kernel columns, thread `actor` through `DataContext`/`executeMutate`, surface attribution in labels/viewers/publications. Larger, DDL-touching, deliberately separate.
 

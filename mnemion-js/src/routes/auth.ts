@@ -1,6 +1,6 @@
 import type { RouteHandler } from "../router";
 import { createSessionCookie, revokeAllSessions, timingSafeEqual } from "../router";
-import { PRODUCT_NAME } from "../constants";
+import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "../constants";
 
 // Passkey module loaded lazily to avoid tslib issues in test environments
 type PasskeyModule = typeof import("../passkey");
@@ -60,13 +60,16 @@ function secretOnlyLoginPage(authStateId: string): string {
 
 // === Helpers ===
 
-async function completeOAuth(env: any, oauthReq: any) {
+// Complete the OAuth grant, attributing the resulting session to a member.
+// `actor` is the member label that authenticated (defaults to the owner
+// sentinel for secret/code logins, which aren't tied to a specific member).
+async function completeOAuth(env: any, oauthReq: any, actor: string = OWNER_ACTOR) {
   return (env as any).OAUTH_PROVIDER.completeAuthorization({
     request: oauthReq,
-    userId: "owner",
+    userId: actor,
     metadata: {},
     scope: oauthReq.scope || [],
-    props: { userId: "owner" },
+    props: { hiveId: HIVE_ID, actor, userId: actor },
   });
 }
 
@@ -130,23 +133,48 @@ export const authVerify: RouteHandler = async (ctx) => {
   return Response.json({ redirectTo });
 };
 
+// Resolve a /setup token to the member being provisioned. Two kinds of token
+// open the setup page:
+//   - the master secret → registers the owner's bootstrap passkey (member null)
+//   - a "register"-scoped, single-use access token → registers an invited
+//     member's passkey (member from the token's constraints)
+// Returns null for any invalid token. `tokenId` is set for register tokens so
+// completion can consume them.
+async function resolveSetupToken(ctx: any, token: string): Promise<
+  | { member: string | null; userName: string; userDisplayName: string; tokenId: number | null }
+  | null
+> {
+  if (!token) return null;
+  if (ctx.env.MNEMION_SECRET && (await timingSafeEqual(token, ctx.env.MNEMION_SECRET))) {
+    return { member: null, userName: OWNER_ACTOR, userDisplayName: `${PRODUCT_NAME} Owner`, tokenId: null };
+  }
+  const reg = await ctx.hive.resolveRegisterToken(token);
+  if (!reg) return null;
+  return { member: reg.member, userName: reg.userName, userDisplayName: reg.userDisplayName, tokenId: reg.id };
+}
+
 export const setupPage: RouteHandler = async (ctx) => {
   const token = ctx.url.searchParams.get("token");
-  if (!token || !(await timingSafeEqual(token, ctx.env.MNEMION_SECRET))) {
+  const setup = token ? await resolveSetupToken(ctx, token) : null;
+  if (!setup) {
     return new Response("Invalid or missing token", { status: 403 });
   }
-  return new Response((await passkey()).setupPage(token), {
+  return new Response((await passkey()).setupPage(token!), {
     headers: { "Content-Type": "text/html" },
   });
 };
 
 export const setupBegin: RouteHandler = async (ctx) => {
   const { token } = (await ctx.request.json()) as { token: string };
-  if (!token || !(await timingSafeEqual(token, ctx.env.MNEMION_SECRET))) {
+  const setup = await resolveSetupToken(ctx, token);
+  if (!setup) {
     return Response.json({ error: "Invalid token" }, { status: 403 });
   }
 
-  const { options, challenge } = await (await passkey()).beginRegistration(ctx.request);
+  const { options, challenge } = await (await passkey()).beginRegistration(ctx.request, {
+    userName: setup.userName,
+    userDisplayName: setup.userDisplayName,
+  });
   // Per-attempt challenge id so concurrent/overlapping flows don't clobber a
   // shared key, and the challenge is bound to this specific attempt.
   const cid = crypto.randomUUID();
@@ -156,7 +184,8 @@ export const setupBegin: RouteHandler = async (ctx) => {
 
 export const setupComplete: RouteHandler = async (ctx) => {
   const { token, credential, cid } = (await ctx.request.json()) as { token: string; credential: any; cid: string };
-  if (!token || !(await timingSafeEqual(token, ctx.env.MNEMION_SECRET))) {
+  const setup = await resolveSetupToken(ctx, token);
+  if (!setup) {
     return Response.json({ error: "Invalid token" }, { status: 403 });
   }
   if (!cid || !/^[a-f0-9-]{36}$/.test(cid)) {
@@ -172,7 +201,9 @@ export const setupComplete: RouteHandler = async (ctx) => {
 
   try {
     const stored = await (await passkey()).completeRegistration(ctx.request, credential, challenge);
-    await ctx.hive.storePasskey(stored.credential_id, stored.public_key, stored.counter, stored.transports);
+    await ctx.hive.storePasskey(stored.credential_id, stored.public_key, stored.counter, stored.transports, setup.member);
+    // Burn the single-use invite token so the setup link can't be replayed.
+    if (setup.tokenId != null) await ctx.hive.consumeAccessToken(setup.tokenId);
     return Response.json({ ok: true });
   } catch (err: any) {
     return Response.json({ error: err.message }, { status: 400 });
@@ -182,15 +213,26 @@ export const setupComplete: RouteHandler = async (ctx) => {
 export const passkeyBegin: RouteHandler = async (ctx) => {
   const { authStateId } = (await ctx.request.json()) as { authStateId: string };
 
-  const storedPasskey = await ctx.hive.getPasskey();
-  if (!storedPasskey) {
+  const storedPasskeys = await ctx.hive.getPasskeys();
+  if (storedPasskeys.length === 0) {
     return Response.json({ error: "No passkey registered" }, { status: 404 });
   }
 
-  const { options, challenge } = await (await passkey()).beginAuthentication(ctx.request, storedPasskey);
+  const { options, challenge } = await (await passkey()).beginAuthentication(ctx.request, storedPasskeys);
   await ctx.env.OAUTH_KV.put(`passkey_challenge:${authStateId}`, challenge, { expirationTtl: 300 });
   return Response.json(options);
 };
+
+// Resolve which member a verified assertion authenticated as, enforcing that the
+// member is still active. Returns the member label (or owner sentinel), or null
+// if the credential belongs to a suspended/removed member.
+async function actorForCredential(ctx: any, credentialId: string | null): Promise<string | null> {
+  const rows = await ctx.hive.getPasskeys();
+  const row = rows.find((r: any) => r.credential_id === credentialId);
+  const member: string | null = row?.member ?? null;
+  if (member != null && !(await ctx.hive.isMemberActive(member))) return null;
+  return member ?? OWNER_ACTOR;
+}
 
 export const passkeyComplete: RouteHandler = async (ctx) => {
   const { authStateId, assertion } = (await ctx.request.json()) as { authStateId: string; assertion: any };
@@ -201,18 +243,22 @@ export const passkeyComplete: RouteHandler = async (ctx) => {
   }
   await ctx.env.OAUTH_KV.delete(`passkey_challenge:${authStateId}`);
 
-  const storedPasskey = await ctx.hive.getPasskey();
-  if (!storedPasskey) {
+  const storedPasskeys = await ctx.hive.getPasskeys();
+  if (storedPasskeys.length === 0) {
     return Response.json({ error: "No passkey registered" }, { status: 404 });
   }
 
   try {
-    const { verified, newCounter } = await (await passkey()).completeAuthentication(ctx.request, assertion, challenge, storedPasskey);
+    const { verified, newCounter, credentialId } = await (await passkey()).completeAuthentication(ctx.request, assertion, challenge, storedPasskeys);
     if (!verified) {
       return Response.json({ error: "Passkey verification failed" }, { status: 401 });
     }
 
-    await ctx.hive.updatePasskeyCounter(newCounter);
+    const actor = await actorForCredential(ctx, credentialId);
+    if (!actor) {
+      return Response.json({ error: "Member access has been revoked" }, { status: 403 });
+    }
+    await ctx.hive.updatePasskeyCounter(credentialId!, newCounter);
 
     const oauthReq = await ctx.env.OAUTH_KV.get(`auth_state:${authStateId}`, { type: "json" }) as any;
     if (!oauthReq) {
@@ -220,7 +266,7 @@ export const passkeyComplete: RouteHandler = async (ctx) => {
     }
     await ctx.env.OAUTH_KV.delete(`auth_state:${authStateId}`);
 
-    const { redirectTo } = await completeOAuth(ctx.env, oauthReq);
+    const { redirectTo } = await completeOAuth(ctx.env, oauthReq, actor);
     return Response.json({ redirectTo });
   } catch (err: any) {
     return Response.json({ error: err.message }, { status: 401 });
@@ -350,12 +396,12 @@ export const loginPage: RouteHandler = async (ctx) => {
 };
 
 export const loginBegin: RouteHandler = async (ctx) => {
-  const storedPasskey = await ctx.hive.getPasskey();
-  if (!storedPasskey) {
+  const storedPasskeys = await ctx.hive.getPasskeys();
+  if (storedPasskeys.length === 0) {
     return Response.json({ error: "No passkey registered" }, { status: 404 });
   }
 
-  const { options, challenge } = await (await passkey()).beginAuthentication(ctx.request, storedPasskey);
+  const { options, challenge } = await (await passkey()).beginAuthentication(ctx.request, storedPasskeys);
   const cid = crypto.randomUUID();
   await ctx.env.OAUTH_KV.put(`passkey_challenge:login:${cid}`, challenge, { expirationTtl: 300 });
   return Response.json({ options, cid });
@@ -374,17 +420,21 @@ export const loginComplete: RouteHandler = async (ctx) => {
   }
   await ctx.env.OAUTH_KV.delete(challengeKey);
 
-  const storedPasskey = await ctx.hive.getPasskey();
-  if (!storedPasskey) {
+  const storedPasskeys = await ctx.hive.getPasskeys();
+  if (storedPasskeys.length === 0) {
     return Response.json({ error: "No passkey registered" }, { status: 404 });
   }
 
   try {
-    const { verified, newCounter } = await (await passkey()).completeAuthentication(ctx.request, assertion, challenge, storedPasskey);
+    const { verified, newCounter, credentialId } = await (await passkey()).completeAuthentication(ctx.request, assertion, challenge, storedPasskeys);
     if (!verified) {
       return Response.json({ error: "Passkey verification failed" }, { status: 401 });
     }
-    await ctx.hive.updatePasskeyCounter(newCounter);
+    const actor = await actorForCredential(ctx, credentialId);
+    if (!actor) {
+      return Response.json({ error: "Member access has been revoked" }, { status: 403 });
+    }
+    await ctx.hive.updatePasskeyCounter(credentialId!, newCounter);
 
     const cookie = await createSessionCookie(ctx.env.MNEMION_SECRET, ctx.url.host, ctx.env.OAUTH_KV);
     const safePath = safeReturnPath(returnTo);

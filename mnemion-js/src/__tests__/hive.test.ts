@@ -1466,3 +1466,140 @@ describe("Mutation Audit Log", () => {
     expect(insert).toBeDefined();
   });
 });
+
+// === Shared hive: members, multi-passkey, token attribution ===
+//
+// A hive can be shared by several people, each a distinct member who
+// authenticates as themselves but reads/writes the same store. The consent
+// round-trip lives at the MCP tool layer; these tests drive HiveDO RPC directly.
+
+describe("Shared hive — members", () => {
+  it("seeds an active owner member on a fresh store", async () => {
+    const store = getStore();
+    const owner = JSON.parse(await store.query("_members", JSON.stringify(["label=owner"]), "", "", 10, false, "", ""));
+    expect(owner.entries.length).toBe(1);
+    expect(owner.entries[0].status).toBe("active");
+    expect(owner.entries[0].role).toBe("owner");
+    expect(await store.isMemberActive("owner")).toBe(true);
+  });
+
+  it("creates an invited member with label + display_name", async () => {
+    const store = getStore();
+    const res = JSON.parse(await store.mutate("_members", "create", JSON.stringify({
+      label: "partner", display_name: "Sam",
+    })));
+    expect(res.error).toBeUndefined();
+    expect(res.entry.label).toBe("partner");
+    expect(res.entry.role).toBe("member");
+    expect(res.entry.status).toBe("active");
+    expect(await store.isMemberActive("partner")).toBe(true);
+  });
+
+  it("reserves the owner label and the owner role", async () => {
+    const store = getStore();
+    const dup = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "owner" })));
+    expect(dup.error).toBe(true);
+    const role = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "x", role: "owner" })));
+    expect(role.error).toBe(true);
+  });
+
+  it("makes a member's label immutable but display_name editable", async () => {
+    const store = getStore();
+    const m = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "kai", display_name: "Kai" })));
+    const relabel = JSON.parse(await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, label: "kai2" })));
+    expect(relabel.error).toBe(true);
+    const rename = JSON.parse(await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, display_name: "Kai R." })));
+    expect(rename.error).toBeUndefined();
+  });
+
+  it("treats a suspended member as inactive", async () => {
+    const store = getStore();
+    const m = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "temp", display_name: "Temp" })));
+    expect(await store.isMemberActive("temp")).toBe(true);
+    await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, status: "suspended" }));
+    expect(await store.isMemberActive("temp")).toBe(false);
+  });
+});
+
+describe("Shared hive — token attribution", () => {
+  it("resolves a wildcard token's actor to the owner sentinel", async () => {
+    const store = getStore();
+    const star = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ label: "api" })));
+    expect(await store.resolveTokenActor(star.entry.token, "*")).toBe("owner");
+  });
+
+  it("resolves an access token's actor to its member", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ label: "sam-cli", member: "partner" })));
+    expect(await store.resolveTokenActor(tok.entry.token, "*")).toBe("partner");
+  });
+
+  it("refuses a token whose member has been suspended", async () => {
+    const store = getStore();
+    const m = JSON.parse(await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" })));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ member: "partner" })));
+    expect(await store.resolveTokenActor(tok.entry.token, "*")).toBe("partner");
+    await store.mutate("_members", "update", JSON.stringify({ id: m.entry.id, version: m.entry.version, status: "suspended" }));
+    expect(await store.resolveTokenActor(tok.entry.token, "*")).toBeNull();
+  });
+});
+
+describe("Shared hive — register tokens (invite)", () => {
+  it("forces single-use and pins the member into constraints", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+    expect(tok.error).toBeUndefined();
+    expect(tok.entry.single_use).toBe(1);
+    expect(JSON.parse(tok.entry.constraints).member).toBe("partner");
+  });
+
+  it("requires a member for register scope", async () => {
+    const store = getStore();
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register" })));
+    expect(tok.error).toBe(true);
+  });
+
+  it("resolves a register token to its member's setup identity, and not as an API token", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+    const resolved = await store.resolveRegisterToken(tok.entry.token);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.member).toBe("partner");
+    expect(resolved!.userName).toBe("partner");
+    expect(resolved!.userDisplayName).toBe("Sam");
+    // A register token must not grant API access.
+    expect(await store.resolveTokenActor(tok.entry.token, "*")).toBeNull();
+  });
+});
+
+describe("Shared hive — multi-passkey storage", () => {
+  it("stores one passkey per member and replaces only that member's credential", async () => {
+    const store = getStore();
+    await store.storePasskey("cred-owner", "key-owner", 0, "[]", null);
+    await store.storePasskey("cred-partner", "key-partner", 0, "[]", "partner");
+    let rows = await store.getPasskeys();
+    expect(rows.length).toBe(2);
+
+    // Re-registering owner replaces only the owner row.
+    await store.storePasskey("cred-owner-2", "key-owner-2", 0, "[]", null);
+    rows = await store.getPasskeys();
+    expect(rows.length).toBe(2);
+    const owner = rows.find((r: any) => r.member == null);
+    expect(owner!.credential_id).toBe("cred-owner-2");
+    const partner = rows.find((r: any) => r.member === "partner");
+    expect(partner!.credential_id).toBe("cred-partner");
+  });
+
+  it("updates the counter for a specific credential", async () => {
+    const store = getStore();
+    await store.storePasskey("cred-a", "key-a", 0, "[]", null);
+    await store.storePasskey("cred-b", "key-b", 0, "[]", "partner");
+    await store.updatePasskeyCounter("cred-b", 7);
+    const rows = await store.getPasskeys();
+    expect(rows.find((r: any) => r.credential_id === "cred-a")!.counter).toBe(0);
+    expect(rows.find((r: any) => r.credential_id === "cred-b")!.counter).toBe(7);
+  });
+});

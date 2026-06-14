@@ -66,10 +66,19 @@ HiveDO is a thin wiring shell. Domain logic lives in pure-function modules with 
 
 Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the worker and handles the OAuth flow (DCR, tokens).
 
-- **Master secret** (`MNEMION_SECRET`): High-entropy random hex, set via `npm run setup`. Root of trust — used to bootstrap passkeys and as fallback for headless agents. The user's Cloudflare login is the true credential; the secret is ephemeral and replaceable.
-- **Passkey** (WebAuthn): Optional convenience layer for browser-based OAuth. Registered via one-time setup URL. Stored in HiveDO `_passkeys` table (single credential, replaced on re-registration). If registered, `/authorize` shows passkey-first UI with secret fallback.
-- **Access tokens** (`_access_tokens`): Scoped bearer tokens for remote agents, uploads, marketplace, and federated access. Created via `mutate`. Scope matching is hierarchical prefix-based.
+- **Master secret** (`MNEMION_SECRET`): High-entropy random hex, set via `npm run setup`. Root of trust — used to bootstrap the owner passkey and as fallback for headless agents. The user's Cloudflare login is the true credential; the secret is ephemeral and replaceable. Master-secret logins resolve to the `owner` actor.
+- **Passkey** (WebAuthn): Optional convenience layer for browser-based OAuth. Registered via one-time setup URL. Stored in HiveDO `_passkeys` table — **one credential per member** (re-registering a member replaces only that member's row). If any passkey is registered, `/authorize` shows passkey-first UI with secret fallback. Authentication offers all members' credentials and resolves the actor from the one used.
+- **Access tokens** (`_access_tokens`): Scoped bearer tokens for remote agents, uploads, marketplace, and federated access. Created via `mutate`. Scope matching is hierarchical prefix-based. Optional `member` column attributes a token to a member; the OAuth external-token path resolves the session's actor from it (member-less → `owner` sentinel; suspended/archived member → refused).
 - **No secret configured** = dev mode (auto-approves).
+
+### Shared hive (multi-member)
+
+One hive, several people. Hive identity (which Durable Object) is decoupled from actor identity (which person): `HIVE_ID` (`src/constants.ts`, literal `"user:owner"` — a rename for clarity, not a re-key) names the single store every member authenticates into; the authenticated member's label rides in the OAuth session props as `actor`, separate from `hiveId`. Design doc: `project-docs/active/shared-hive.md`.
+
+- **Members** (`_members` kernel pattern): the roster. `label` (immutable handle, the join key for passkeys/tokens), `display_name`, `role` (`owner`|`member`), `status` (`active`|`suspended`). The `owner` member is seeded on boot and reserved. Creating a member is consent-gated at the MCP layer (it grants standing access to the whole hive).
+- **Invite flow**: (1) create the `_members` row with `label` + `display_name` (the inviting agent names them); (2) mint a `register`-scoped access token with `member: "<label>"` (forced single-use, consent-gated — minting it is what grants registration); (3) give the invitee its `/setup?token=...` URL, where they register their own passkey, bound to that member. The setup endpoints accept either the master secret (owner bootstrap) or a `register` token (invitee).
+- **Revocation**: suspend (`status: suspended`) or archive a member → their passkey logins and tokens stop resolving; also archive their `_access_tokens` rows. The global session epoch (`/sessions/revoke`) remains the all-at-once panic button.
+- **Attribution** (per-entry `created_by`/`updated_by`) is the deliberate **Phase 2** follow-up — not yet implemented. Phase 1 establishes distinct identities and per-member revocation; the actor is resolved and carried in props but not yet written onto entries.
 
 ### Vocabulary
 
@@ -133,12 +142,15 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `read` — read any shared entry or output (matches `read:entry:axioms:7`)
 - `upload` — write via `/upload/{token}` (constraints JSON: `{target_pattern, target_id, target_facet, mode}`)
 - `marketplace` — private marketplace git access (constraints JSON: `{plugins: [...]}`)
+- `register` — one-time passkey-registration link for inviting a member (constraints JSON: `{member}`; forced single-use). Not usable as an API token (doesn't match `*`); only the `/setup` flow accepts it.
 
 ### Internal tables
 
 - `_schema_history` — log of all schema changes
 - `_pending_changes` — proposed but uncommitted changes
-- `_access_tokens` — unified scoped access tokens
+- `_access_tokens` — unified scoped access tokens (optional `member` attribution)
+- `_members` — roster of people sharing the hive (label/display_name/role/status); `owner` seeded + reserved. See "Shared hive" under Auth.
+- `_passkeys` — WebAuthn credentials, one row per member (`member` column; NULL = owner bootstrap). Not agent-facing (created via the setup flow, not `mutate`).
 - `_shared` — entry-level sharing for HTTP access
 - `_outputs` / `_inputs` — HTTP I/O endpoint definitions
 - `_publications` — declarative outbound projections served at `/p/{path}`; rendering is always derived, never stored

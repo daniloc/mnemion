@@ -2,7 +2,7 @@ import { McpAgent } from "agents/mcp";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { HiveDO } from "./hive";
-import { PRODUCT_NAME, URI_SCHEME, uri } from "./constants";
+import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID } from "./constants";
 import { TOOLS } from "./tools";
 
 // === Types ===
@@ -13,7 +13,12 @@ interface Env {
 }
 
 interface AuthProps {
-  userId: string;
+  // Which hive (Durable Object) this session reads/writes. Stable per deploy.
+  hiveId?: string;
+  // Which member this session acts as — the authenticated person's label.
+  actor?: string;
+  // Retained for backward compatibility; mirrors `actor`.
+  userId?: string;
   [key: string]: unknown;
 }
 
@@ -35,6 +40,10 @@ const CONSENT_GATED: Record<string, string> = {
     "A publication serves LIVE query results over HTTP at /p/{path} — every current and future entry the query matches (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human explicitly approved publishing this data. Call mutate again with the same arguments to proceed.",
   _documents:
     "Making this document non-private serves its file over HTTP at /f/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this file. Call mutate again with the same arguments to proceed.",
+  _members:
+    "Adding a member grants another person standing access to this shared hive — everything in it becomes readable and writable by them. Only proceed if the human explicitly chose to share this hive with this person. Call mutate again with the same arguments to proceed.",
+  _access_tokens:
+    "Creating a passkey-registration token mints a one-time setup link: whoever opens it can register their own passkey and gain member access to this hive. Only proceed if the human is deliberately inviting this person. Call mutate again with the same arguments to proceed.",
 };
 
 // Whether a write to a consent-gated pattern actually needs the round-trip.
@@ -48,6 +57,13 @@ function consentRequired(pattern: string, operation: string | undefined, dataObj
     if (operation === "patch") return true;
     const vis = dataObj?.visibility;
     return vis === "public" || vis === "unlisted";
+  }
+  // Most token creation is benign and ungated — only a passkey-registration
+  // ("register" scoped) token is a standing grant of member access, so only that
+  // trips the round-trip. (patch is force-tripped upstream for any gated pattern.)
+  if (pattern === "_access_tokens") {
+    if (operation === "patch") return true;
+    return dataObj?.scope === "register";
   }
   return true;
 }
@@ -74,8 +90,10 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
   );
 
   private getHive(): DurableObjectStub<HiveDO> {
-    const userId = this.props?.userId ?? "anonymous";
-    const id = this.env.MNEMION_HIVE.idFromName(`user:${userId}`);
+    // The hive's location is independent of who authenticated — one shared
+    // store per deploy. The member (actor) lives in props.actor, separate from
+    // the store's identity.
+    const id = this.env.MNEMION_HIVE.idFromName(this.props?.hiveId ?? HIVE_ID);
     return this.env.MNEMION_HIVE.get(id);
   }
 
