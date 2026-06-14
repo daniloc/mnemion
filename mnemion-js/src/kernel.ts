@@ -52,6 +52,20 @@ export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = 
   },
 };
 
+// === Immutable-after-create fields — set once at create, frozen thereafter ===
+//
+// Distinct from IMMUTABLE (rejected on every op): these define a token's
+// capability and are validated by the create hook, but must never be repointed
+// by a later update/unarchive. Freezing scope/member/constraints/token closes the
+// defense-in-depth gap where an update could repoint an existing token (e.g. to
+// a different member) without re-passing the create-time validation.
+export const IMMUTABLE_AFTER_CREATE: Record<string, { fields: string[]; message: string }> = {
+  _access_tokens: {
+    fields: ["scope", "member", "constraints", "token"],
+    message: "A token's scope, member, constraints, and value are fixed at creation. Archive it and mint a new one instead of editing them.",
+  },
+};
+
 // === Create hooks — validate + transform before INSERT ===
 
 const ON_CREATE: Record<string, CreateHook> = {
@@ -543,6 +557,15 @@ export function applyKernelRules(
   if (rule) {
     for (const field of rule.fields) {
       if (field in data) return { error: true, message: rule.message };
+    }
+  }
+
+  if (operation !== "create") {
+    const postRule = IMMUTABLE_AFTER_CREATE[pattern];
+    if (postRule) {
+      for (const field of postRule.fields) {
+        if (field in data) return { error: true, message: postRule.message };
+      }
     }
   }
 

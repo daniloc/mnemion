@@ -1598,6 +1598,17 @@ describe("Shared hive — register tokens (invite)", () => {
     expect(await store.approveRegisterToken(ghostTok)).toBeNull();
   });
 
+  it("freezes a register token's member/scope/constraints after creation", async () => {
+    const store = getStore();
+    await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
+    const tok = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "register", member: "partner" })));
+    // Repointing the token to another member after creation must be refused.
+    const repoint = JSON.parse(await store.mutate("_access_tokens", "update", JSON.stringify({ id: tok.entry.id, version: tok.entry.version, member: "owner" })));
+    expect(repoint.error).toBe(true);
+    const reconstrain = JSON.parse(await store.mutate("_access_tokens", "update", JSON.stringify({ id: tok.entry.id, version: tok.entry.version, constraints: JSON.stringify({ member: "owner" }) })));
+    expect(reconstrain.error).toBe(true);
+  });
+
   it("treats approved_at as system-managed (not settable via mutate)", async () => {
     const store = getStore();
     await store.mutate("_members", "create", JSON.stringify({ label: "partner", display_name: "Sam" }));
