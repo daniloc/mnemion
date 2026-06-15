@@ -1,0 +1,11 @@
+# Master secret — root of trust for this Mnemion instance.
+#
+# The "Deploy to Cloudflare" button reads this file and prompts for each value,
+# storing them as encrypted Worker secrets (never committed).
+#
+# Generate a high-entropy value, e.g.:  openssl rand -hex 32
+#
+# If you leave it empty, the instance comes up in INSECURE dev mode (auth is
+# auto-approved). Set it for any real deployment. After deploying, register your
+# owner passkey once at:  https://<your-worker>.workers.dev/setup?token=<secret>
+MNEMION_SECRET=

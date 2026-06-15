@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Pre-deploy build hook. Runs on every `wrangler deploy` (and in Workers Builds
+# for one-click installs): ensures the Vectorize index exists (Vectorize is not
+# auto-provisioned), then builds the Svelte client/SSR bundles the worker imports.
+[build]
+command = "bash scripts/ensure-vectorize.sh; npm run build:pages"
+
 
 [vars]
 # Cold-start fallback only — the runtime prefers the inbound request Host header.
@@ -10,11 +16,12 @@ compatibility_flags = ["nodejs_compat"]
 # since DO eviction. Safe to omit; defaults to "localhost" when missing.
 WORKER_HOST = "your-worker.workers.dev"
 
-# KV namespace for OAuth tokens.
-# `npm run setup` finds-or-creates this namespace on your account and patches the id in.
+# KV namespace for OAuth tokens. No `id` → Cloudflare auto-provisions one named
+# after the worker on first deploy and keeps it linked on later deploys. This is
+# what lets a one-click "Deploy to Cloudflare" install work with no manual setup.
+# (A local `wrangler deploy` writes the resolved id back into this file.)
 [[kv_namespaces]]
 binding = "OAUTH_KV"
-id = "4835a97bf420489eb48af03129663f97"
 
 # Session DO (McpAgent, one per MCP session)
 [[durable_objects.bindings]]
@@ -76,7 +83,6 @@ WORKER_HOST = "your-test-worker.workers.dev"
 
 [[env.test.kv_namespaces]]
 binding = "OAUTH_KV"
-id = "3ea8800016ec455d8b3b661e4d2e4ec6"
 
 [[env.test.durable_objects.bindings]]
 name = "MCP_OBJECT"
