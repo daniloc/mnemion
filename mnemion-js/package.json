@@ -14,11 +14,11 @@
     "enable-documents": "bash scripts/enable-documents.sh"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.3.0",
+    "@cloudflare/workers-oauth-provider": "^0.8.0",
     "@modelcontextprotocol/ext-apps": "^1.7.4",
-    "@modelcontextprotocol/sdk": "1.26.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@simplewebauthn/server": "^13.3.1",
-    "agents": "^0.7.5",
+    "agents": "^0.16.0",
     "fflate": "^0.8.3",
     "konva": "^10.3.0",
     "svelte": "^5.53.10",
