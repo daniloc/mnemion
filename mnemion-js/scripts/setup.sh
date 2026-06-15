@@ -11,63 +11,10 @@ if ! npx wrangler whoami >/dev/null 2>&1; then
   npx wrangler login
 fi
 
-# Worker name and current KV id from wrangler.toml (top-level / production env)
-WORKER_NAME=$(awk -F'"' '/^name = / {print $2; exit}' wrangler.toml)
-CURRENT_KV_ID=$(awk '
-  /^\[\[kv_namespaces\]\]/ { in_kv=1; next }
-  /^\[/ { in_kv=0 }
-  in_kv && /^id *= *"/ { match($0, /"[^"]+"/); print substr($0, RSTART+1, RLENGTH-2); exit }
-' wrangler.toml)
-EXPECTED_KV_TITLE="${WORKER_NAME}-OAUTH_KV"
-
-# === KV namespace: find-or-create, patch wrangler.toml ===
-echo "Checking KV namespace ${EXPECTED_KV_TITLE}..."
-
-# Wrangler may print banner/warning lines around the JSON — extract the JSON array defensively.
-LIST_RAW=$(npx wrangler kv namespace list 2>&1 || true)
-EXISTING_KV_ID=$(node -e "
-  const raw = process.argv[1];
-  const start = raw.indexOf('[');
-  const end = raw.lastIndexOf(']');
-  if (start < 0 || end < 0) process.exit(0);
-  try {
-    const data = JSON.parse(raw.slice(start, end + 1));
-    const ns = data.find(n => n && n.title === process.argv[2]);
-    if (ns) process.stdout.write(ns.id);
-  } catch (e) {}
-" "$LIST_RAW" "$EXPECTED_KV_TITLE")
-
-if [ -n "$EXISTING_KV_ID" ]; then
-  NEW_KV_ID="$EXISTING_KV_ID"
-  echo "  Found existing: $NEW_KV_ID"
-else
-  echo "  Creating..."
-  CREATE_LOG=$(mktemp)
-  # Don't let a non-zero exit (e.g. "already exists") kill the script silently — inspect output instead.
-  set +e
-  npx wrangler kv namespace create OAUTH_KV 2>&1 | tee "$CREATE_LOG"
-  CREATE_RC=${PIPESTATUS[0]}
-  set -e
-  NEW_KV_ID=$(grep -oE 'id *= *"[a-f0-9]+"' "$CREATE_LOG" | head -1 | sed 's/.*"\([a-f0-9]*\)".*/\1/')
-  rm -f "$CREATE_LOG"
-  if [ -z "$NEW_KV_ID" ]; then
-    echo ""
-    echo "Could not create or detect KV namespace ${EXPECTED_KV_TITLE} (wrangler exit $CREATE_RC)."
-    echo "If the namespace already exists, run 'npx wrangler kv namespace list' and paste its id"
-    echo "into the [[kv_namespaces]] block of wrangler.toml, then re-run setup."
-    exit 1
-  fi
-fi
-
-if [ "$NEW_KV_ID" != "$CURRENT_KV_ID" ]; then
-  echo "  Patching wrangler.toml: $CURRENT_KV_ID -> $NEW_KV_ID"
-  # Replace only the FIRST occurrence — the [env.test] block may share the same
-  # "REPLACE_ME" placeholder, and setup.sh only provisions the production namespace.
-  awk -v old="$CURRENT_KV_ID" -v new="$NEW_KV_ID" '
-    !done && index($0, old) { sub(old, new); done=1 }
-    { print }
-  ' wrangler.toml > wrangler.toml.tmp && mv wrangler.toml.tmp wrangler.toml
-fi
+# === KV namespace ===
+# No manual step: the OAUTH_KV binding in wrangler.toml has no id, so
+# `wrangler deploy` (below) auto-provisions the namespace and links it. The
+# resolved id is written back into wrangler.toml on a local deploy.
 
 # === Vectorize index: find-or-create ===
 VEC_NAME=$(awk '

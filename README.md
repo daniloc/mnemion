@@ -4,6 +4,10 @@ Persistent, evolving shared knowledge management between a human and their AI ag
 
 MCP and HTTP server on Cloudflare Workers.
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/daniloc/mnemion/tree/main/mnemion-js)
+
+One click clones the repo to your account, provisions the resources, and deploys. You set one secret (`MNEMION_SECRET`), then register a passkey at `/setup`. Details under [**Deploy to Cloudflare**](#deploy-to-cloudflare) below.
+
 Every conversation with an AI agent starts cold. Mnemion gives each session access to a shared history of thinking and problem solving — read, write, search, and reshape — so context from yesterday's Claude.ai chat, this morning's Claude Code run, and tomorrow's API agent all share the same memory.
 
 See [`CLAUDE.md`](CLAUDE.md) for architecture and internals.
@@ -181,6 +185,29 @@ A single Cloudflare Worker hosts everything. Two Durable Objects: **SessionDO** 
 
 ## Deploy to Cloudflare
 
+### One-click
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/daniloc/mnemion/tree/main/mnemion-js)
+
+Clicking the button clones the repo to your own GitHub, provisions the resources
+(KV is auto-provisioned; the Vectorize index is created by the build step), wires
+up CI/CD via Workers Builds, and deploys. You'll be prompted for one secret,
+**`MNEMION_SECRET`** — paste a high-entropy value (e.g. `openssl rand -hex 32`).
+Leaving it blank brings the instance up in **insecure dev mode**, so set it.
+
+After it deploys, register your owner passkey **once**:
+
+```
+https://<your-worker>.workers.dev/setup?token=<the MNEMION_SECRET you set>
+```
+
+That's the only manual step — passkey registration has to happen in your browser,
+on your device. After that, browser login uses the passkey and the secret is your
+headless/fallback credential. (Document storage still needs R2 — see *Document
+storage requires R2* above — but everything else works immediately.)
+
+### Or, from a clone (CLI)
+
 ### Prerequisites
 
 - Node.js 22+ (required by Wrangler 4)
@@ -197,11 +224,10 @@ npm run setup
 
 `npm run setup` is idempotent. It:
 
-1. Finds or creates the `OAUTH_KV` namespace and patches its id into `wrangler.toml`
-2. Finds or creates the `mnemion-vectors` Vectorize index (768 dims, cosine — matches the Workers AI `bge-base-en-v1.5` embedding model)
-3. Generates a 256-bit master secret and pushes it as `MNEMION_SECRET`
-4. Builds the Svelte client + SSR bundles and deploys the worker
-5. Prints (and optionally opens) a one-time URL: `https://<your-worker>.workers.dev/setup?token=<secret>`
+1. Finds or creates the `mnemion-vectors` Vectorize index (768 dims, cosine — matches the Workers AI `bge-base-en-v1.5` embedding model)
+2. Generates a 256-bit master secret and pushes it as `MNEMION_SECRET`
+3. Builds the Svelte client + SSR bundles and deploys the worker — the `OAUTH_KV` namespace is auto-provisioned on this first deploy (no id needed in `wrangler.toml`) and stays linked thereafter
+4. Prints (and optionally opens) a one-time URL: `https://<your-worker>.workers.dev/setup?token=<secret>`
 
 Open that URL once in a browser to register a passkey. After that, browser-based OAuth uses the passkey; the master secret remains as a fallback for headless agents and re-registration.
 
