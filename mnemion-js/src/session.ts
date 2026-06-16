@@ -88,9 +88,13 @@ const RENDER_UI = `<!DOCTYPE html>
 <style>
 :root{color-scheme:light dark}
 body{font-family:system-ui,sans-serif;margin:0;padding:12px}
+/* horizontal scroll for wide entry tables (many facets) */
+#root{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:14px}
 th,td{text-align:left;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 15%,transparent)}
-th{font-weight:600;opacity:.65;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+/* long prose cells stay one line + ellipsis (values are pre-truncated too) */
+td{max-width:44ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+th{font-weight:600;opacity:.65;font-size:11px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
 th.r,td.r{text-align:right;font-variant-numeric:tabular-nums}
 .title{font-weight:600;margin-bottom:8px;font-size:15px}
 .msg{opacity:.6;font-size:13px;white-space:pre-wrap}
@@ -272,12 +276,19 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     this.server.registerTool(
       "render",
       {
-        description: "Render a rich UI view of the hive in MCP-Apps-capable clients (falls back to text elsewhere). view=\"patterns\": a table of every pattern and its entry count.",
-        inputSchema: { view: z.enum(["patterns"]).default("patterns") },
+        description: "Render a rich UI view of the hive in MCP-Apps-capable clients (falls back to text elsewhere). view=\"patterns\": a table of every pattern and its entry count. view=\"entries\" with pattern=<name>: a table of that pattern's entries (most recent first; long text truncated).",
+        inputSchema: {
+          view: z.enum(["patterns", "entries"]).default("patterns"),
+          pattern: z.string().optional().describe("Required for view=\"entries\": the pattern whose entries to render."),
+          limit: z.number().optional().describe("Max entries for view=\"entries\" (default 25, max 100)."),
+        },
         _meta: { ui: { resourceUri: "ui://mnemion/render" } },
       },
-      async ({ view }) => {
-        if (view === "patterns" || view == null) {
+      async ({ view, pattern, limit }) => {
+        const uiMeta = { ui: { resourceUri: "ui://mnemion/render" } };
+        const v = view ?? "patterns";
+
+        if (v === "patterns") {
           const idx = JSON.parse(await hive.getIndex());
           const patterns = (idx.patterns ?? []).map((p: any) => ({
             name: p.name as string,
@@ -293,15 +304,56 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           const text = patterns.length
             ? patterns.map((p: any) => `${p.name}: ${p.entry_count}`).join("\n")
             : "No patterns yet.";
-          return {
-            content: [{ type: "text" as const, text }],
-            structuredContent,
-            _meta: { ui: { resourceUri: "ui://mnemion/render" } },
-          };
+          return { content: [{ type: "text" as const, text }], structuredContent, _meta: uiMeta };
         }
+
+        if (v === "entries") {
+          if (!pattern) {
+            return { isError: true as const, content: [{ type: "text" as const, text: "view=\"entries\" requires a pattern." }] };
+          }
+          const schema = JSON.parse(await hive.getSchema(pattern));
+          if (schema.error) {
+            return { isError: true as const, content: [{ type: "text" as const, text: schema.message ?? `Pattern "${pattern}" not found.` }] };
+          }
+          const facets: string[] = (schema.facets ?? []).map((f: any) => f.name as string);
+          const cap = Math.min(Math.max(1, limit ?? 25), 100);
+          const q = JSON.parse(await hive.query(pattern, "", "", "-updated_at", cap, false, "", ""));
+          if (q.error) {
+            return { isError: true as const, content: [{ type: "text" as const, text: q.message ?? "Query failed." }] };
+          }
+          const entries: any[] = q.entries ?? [];
+          // Collapse whitespace + truncate so prose facets don't blow out the table.
+          const cell = (val: unknown): string => {
+            if (val == null) return "";
+            const s = String(val).replace(/\s+/g, " ").trim();
+            return s.length > 100 ? s.slice(0, 99) + "…" : s;
+          };
+          const columns = [
+            { label: "id", align: "right" as const },
+            ...facets.map((f) => ({ label: f })),
+            { label: "updated" },
+          ];
+          const rows = entries.map((e) => [
+            e.id,
+            ...facets.map((f) => cell(e[f])),
+            String(e.updated_at ?? "").slice(0, 10),
+          ]);
+          const structuredContent = {
+            kind: "table",
+            title: `${pattern} (${entries.length})`,
+            columns,
+            rows,
+            emptyText: `No entries in ${pattern}.`,
+          };
+          const text = entries.length
+            ? entries.map((e) => `#${e.id}: ${facets.map((f) => cell(e[f])).filter(Boolean).join(" | ")}`).join("\n")
+            : `No entries in ${pattern}.`;
+          return { content: [{ type: "text" as const, text }], structuredContent, _meta: uiMeta };
+        }
+
         return {
           isError: true as const,
-          content: [{ type: "text" as const, text: `Unknown view "${view}".` }],
+          content: [{ type: "text" as const, text: `Unknown view "${v}".` }],
         };
       }
     );
