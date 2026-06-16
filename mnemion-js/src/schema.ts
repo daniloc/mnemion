@@ -9,6 +9,7 @@
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { TOOLS } from "./tools";
 import { seedDevData } from "./dev-seed";
+import { KERNEL_WRITE_POLICY } from "./policy";
 
 // System docs — imported as raw text, placeholders resolved at load time
 import schemaEvolutionRaw from "./system-docs/schema-evolution.md";
@@ -1016,6 +1017,10 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 
   verifyFieldsIntegrity(db);
 
+  // --- Integrity: every kernel pattern must declare a write class ---
+
+  verifyWritePolicyTotality();
+
   // --- Dev seed: populate with realistic data when no secret is configured ---
 
   if (!env?.MNEMION_SECRET && env?.DEV_SEED) {
@@ -1097,6 +1102,27 @@ function verifyFieldsIntegrity(db: any): void {
   if (drifts.length > 0) {
     console.warn(`[mnemion] schema integrity drift detected (${drifts.length}):\n  ${drifts.join("\n  ")}`);
   }
+}
+
+// === Integrity check: write-class policy totality ===
+//
+// Every agent-facing kernel pattern must declare a write class in policy.ts.
+// writeClass() fails CLOSED (System — denied) for any unclassified `_` pattern,
+// so a newly added kernel table is safe by default — but silently un-writable is
+// a bug, not a feature. This warns loudly at boot so a missing classification is
+// caught the moment the table ships, not when a reviewer finds the next hole.
+// Code-vs-code (KERNEL_TABLES vs KERNEL_WRITE_POLICY) — no DB needed; exported so
+// the admission-matrix test asserts it statically too.
+export function verifyWritePolicyTotality(): string[] {
+  const gaps: string[] = [];
+  for (const table of KERNEL_TABLES) {
+    if (!KERNEL_WRITE_POLICY[table.name])
+      gaps.push(`kernel pattern "${table.name}" has no write-class policy (defaults to System/denied)`);
+  }
+  if (gaps.length > 0) {
+    console.warn(`[mnemion] write-policy gaps detected (${gaps.length}):\n  ${gaps.join("\n  ")}`);
+  }
+  return gaps;
 }
 
 // === Audit triggers ===

@@ -3,7 +3,8 @@
 // Pure functions that take a DataContext. HiveDO keeps thin RPC wrappers
 // that add broadcast and transaction concerns.
 
-import { applyKernelRules, INTERNAL_WRITE_PROTECTED, type KernelContext } from "./kernel";
+import { applyKernelRules, type KernelContext } from "./kernel";
+import { isInternalWriteProtected, isKernelPattern } from "./policy";
 import { getMemoryPolicy } from "./prime";
 import { uri } from "./constants";
 
@@ -383,7 +384,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   // System-managed caches/audit logs are never agent-writable (e.g. _web_cache
   // poisoning → resolve() serving planted content). Internal writers use direct
   // SQL, not this path.
-  if (INTERNAL_WRITE_PROTECTED.has(patternName))
+  if (isInternalWriteProtected(patternName))
     return { error: true, message: `"${patternName}" is managed by the system and cannot be modified directly.` };
 
   // Attribution is system-set from the session actor, never caller-supplied —
@@ -459,7 +460,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         // facet single-valued-per-value, and an active entry already holds it.
         // Checked before the insert so the advisory never matches the new row.
         let overlap: { pattern: string; id: number; uri: string; reason: string; facet: string }[] | undefined;
-        if (!patternName.startsWith("_")) {
+        if (!isKernelPattern(patternName)) {
           const policy = getMemoryPolicy(ctx.db, patternName);
           for (const facet of policy.exclusive_facets) {
             const val = data[facet];

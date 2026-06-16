@@ -6,6 +6,7 @@
 // Pure functions with env/db injected. HiveDO wires the lifecycle.
 
 import { uri } from "./constants";
+import { isKernelPattern } from "./policy";
 
 // === Types ===
 
@@ -266,7 +267,7 @@ export async function prime(
     const KERNEL_INCLUDE = new Set(["_short_term_fragments", "_long_term_fragments", "_documents"]);
     filtered = filtered.filter((m: any) => {
       const p = m.metadata?.pattern as string;
-      return p && (!p.startsWith("_") || KERNEL_INCLUDE.has(p));
+      return p && (!isKernelPattern(p) || KERNEL_INCLUDE.has(p));
     });
   }
 

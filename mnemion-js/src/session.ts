@@ -3,6 +3,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { z } from "zod";
 import type { HiveDO } from "./hive";
 import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID, OWNER_ACTOR } from "./constants";
+import { consentPolicy, patchRejected, consentRoundTripRequired } from "./policy";
 import { TOOLS } from "./tools";
 import { FRAGMENT_CSS } from "./pages/render-styles";
 // @ts-ignore — text import via wrangler [[rules]] (.client.txt → string). The
@@ -30,51 +31,12 @@ function toolDesc(name: string): string {
   return TOOLS.find(t => t.name === name)!.description;
 }
 
-// Patterns whose create/update must pass an explicit confirmation round-trip
-// before the agent can commit — the human-consent boundary. Keyed by pattern,
-// valued by the message shown on the first (unconfirmed) call.
-const CONSENT_GATED: Record<string, string> = {
-  _system_docs:
-    "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
-  _federation_hosts:
-    "Adding a federation host is a standing grant: resolve() will send this hive's access tokens to that host whenever it fetches a mnemion:// URI there. Only proceed if the human explicitly approved federating with this host. Call mutate again with the same arguments to proceed.",
-  _shared:
-    "Sharing an entry publishes it over HTTP at /o/entry/{pattern}/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this entry. Call mutate again with the same arguments to proceed.",
-  _publications:
-    "A publication serves LIVE query results over HTTP at /p/{path} — every current and future entry the query matches (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human explicitly approved publishing this data. Call mutate again with the same arguments to proceed.",
-  _documents:
-    "Making this document non-private serves its file over HTTP at /f/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this file. Call mutate again with the same arguments to proceed.",
-  _members:
-    "Adding a member grants another person standing access to this shared hive — everything in it becomes readable and writable by them. Only proceed if the human explicitly chose to share this hive with this person. Call mutate again with the same arguments to proceed.",
-  // _access_tokens stays gated so patch is rejected (it could otherwise set the
-  // system-managed approved_at/consumed_at), but register-token creation is NOT
-  // gated by the re-issue round-trip — that gate is agent-satisfiable, so invite
-  // tokens are instead minted INERT and require a real member's passkey approval
-  // at /invite/{token} before they work. See consentRequired below.
-  _access_tokens:
-    "This token cannot be modified with patch.",
-};
-
-// Whether a write to a consent-gated pattern actually needs the round-trip.
-// Most gated patterns always do; _documents only when it exposes a file
-// (non-private visibility) — creating/uploading a private document is benign.
-// patch can't be inspected for its resulting visibility, so it always trips
-// (and is rejected outright on the single path).
-function consentRequired(pattern: string, operation: string | undefined, dataObj: any): boolean {
-  if (!CONSENT_GATED[pattern]) return false;
-  if (pattern === "_documents") {
-    if (operation === "patch") return true;
-    const vis = dataObj?.visibility;
-    return vis === "public" || vis === "unlisted";
-  }
-  // Token creation never trips the re-issue round-trip: ordinary tokens are
-  // benign, and register/invite tokens are minted inert and gated by an
-  // out-of-band passkey approval at /invite/{token} instead (a stronger,
-  // human-present gate that an injected agent can't satisfy). patch is still
-  // force-rejected upstream for any gated pattern, protecting approved_at.
-  if (pattern === "_access_tokens") return false;
-  return true;
-}
+// The consent boundary — which patterns require a human confirmation round-trip
+// before an agent can commit, and which message to show — is derived from the
+// write-class registry in policy.ts (the single source of truth). consentPolicy,
+// patchRejected, and consentRoundTripRequired below read straight from it; this
+// layer only drives the round-trip mechanics that the engine can't (it needs an
+// interactive re-issue, which only the MCP session can satisfy).
 
 // === MCP Apps UI fragment (experimental) ===
 //
@@ -644,11 +606,15 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
             };
           }
           // Consent-gated patterns can't ride along in a batch — that would skip
-          // the confirmation round-trip (and patch would also skip validation).
-          // Force any escalating change through a single mutate; only archive
-          // (removal/de-escalation) is allowed inside a batch.
+          // the confirmation round-trip, and patch would skip the kernel
+          // validation hooks. Force any escalating change (and any patch on a
+          // gated pattern) through a single mutate; only archive (removal/
+          // de-escalation) is allowed inside a batch.
           const gated = batchData.find((op: any) =>
-            op && consentRequired(op.pattern, op.operation, op.data) && op.operation !== "archive");
+            op && (
+              (op.operation === "patch" && patchRejected(op.pattern)) ||
+              consentRoundTripRequired(op.pattern, op.operation, op.data)
+            ));
           if (gated) {
             return {
               isError: true as const,
@@ -689,14 +655,15 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         }
 
         // Confirmation gate for consent-boundary patterns (system docs,
-        // federation allow-list, entry sharing).
-        if (CONSENT_GATED[pattern]) {
+        // federation allow-list, entry sharing, members, publications, …).
+        const policy = consentPolicy(pattern);
+        if (policy) {
           // patch is rejected outright: it edits a text facet directly, skipping
           // the kernel validation hooks (e.g. isBlockedFederationHost) AND the
           // confirmation round-trip — an agent could patch _federation_hosts.host
           // from an approved host to an attacker host and leak the token. These
           // patterns must go through create/update.
-          if (resolvedOp === "patch") {
+          if (resolvedOp === "patch" && patchRejected(pattern)) {
             return {
               isError: true as const,
               content: [{ type: "text" as const, text: `"${pattern}" cannot be modified with patch (it would bypass validation and confirmation). Use create or update.` }],
@@ -706,8 +673,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           // first call returns confirmation_required and the agent must re-issue
           // the identical call to commit. archive (removal) is de-escalation and
           // is allowed without one.
-          if ((resolvedOp === "create" || resolvedOp === "update" || resolvedOp === "unarchive")
-              && consentRequired(pattern, resolvedOp, singleData)) {
+          if (consentRoundTripRequired(pattern, resolvedOp, singleData)) {
             const confirmKey = `consent:${pattern}:${resolvedOp}:${JSON.stringify(singleData)}`;
             if (!(await hive.checkAndArmConsent(confirmKey))) {
               return {
@@ -715,7 +681,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
                   type: "text" as const,
                   text: JSON.stringify({
                     confirmation_required: true,
-                    message: CONSENT_GATED[pattern],
+                    message: policy.message,
                     pattern,
                     operation: resolvedOp,
                     data: singleData,

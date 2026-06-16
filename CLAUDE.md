@@ -29,6 +29,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/tools.ts         Tool metadata SSOT — feeds session.ts MCP registration and /api/tools
   src/credentials.ts   Passkey CRUD, access token validation
   src/kernel.ts        Pre-mutation hooks, immutable fields, scope matching
+  src/policy.ts        Write-class SSOT: KERNEL_WRITE_POLICY table; every consent/kernel/ingress gate derives from it
   src/labels.ts        Single source of truth for "what does this entry look like" (deriveLabel, truncate)
   src/schema.ts        DDL, migrations, kernel table declarations, system doc seeding
   src/dev-seed.ts      DEV_SEED-gated realistic data population (raw SQL, runs in DO ctor)
@@ -156,7 +157,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `_publications` — declarative outbound projections served at `/p/{path}`; rendering is always derived, never stored
 - `_documents` — file-store metadata (title/tags/visibility + system-managed r2_key/size/content_type/stored_at); bytes live in R2, served at `/f/{id}`
 - `_system_docs` — agent orientation docs (seeded from `src/system-docs/*.md`)
-- `_web_cache` — adapter-fetched web content (Bluesky threads 24h, browser-rendered markdown 30d). TTL = re-fetch horizon, not eviction: active content is retained indefinitely as memory; only superseded duplicates are GC'd (7-day grace, pinned excluded). A re-fetch that returns empty keeps the existing snapshot (snapshot protection in web.ts). `pinned` column + `resolve(retain: true)` freeze a snapshot forever (always served, never re-fetched/GC'd) until `retain: false`; pinning stays system-managed (`_web_cache` is INTERNAL_WRITE_PROTECTED — driven only through resolve, never agent mutate)
+- `_web_cache` — adapter-fetched web content (Bluesky threads 24h, browser-rendered markdown 30d). TTL = re-fetch horizon, not eviction: active content is retained indefinitely as memory; only superseded duplicates are GC'd (7-day grace, pinned excluded). A re-fetch that returns empty keeps the existing snapshot (snapshot protection in web.ts). `pinned` column + `resolve(retain: true)` freeze a snapshot forever (always served, never re-fetched/GC'd) until `retain: false`; pinning stays system-managed (`_web_cache` is write-class System in `src/policy.ts` — driven only through resolve, never agent mutate)
 - `_canvases` — tldraw document snapshots for the Canvas spatial-thinking UI (full document state in the `snapshot` facet — do not modify directly; mutate via canvas tools/UI). Entry-type shapes inside the snapshot store **only references** (`{type: 'entry', pattern, entryId, x, y, w, h}`) — display label and facet preview are hydrated at render time from the live entry. Do not denormalize entry data into the snapshot; it goes stale.
 - `_fragment_access_log` — append-only log of prime hits per short-term fragment. Promotion to `_long_term_fragments` is COUNT(*)-derived from this log, not a stored counter. GC'd alongside fragments. Audit-exempt (high-frequency append-only).
 - `_entry_access_log` — append-only log of prime hits per user-pattern entry. Feeds decay (`last_touch`) and the stale view. Audit-exempt, write-protected, GC'd at 90 days.
