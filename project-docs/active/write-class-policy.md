@@ -89,9 +89,13 @@ The same shape — "behavior keyed by pattern name, scattered, no totality check
 
 Both are now `primeInclude` / `auditExempt` flags on the same `KERNEL_WRITE_POLICY` row, derived via `primeIncluded()` / `isAuditExempt()`, and covered by the same totality check and the same double-entry matrix test. Each kernel pattern's behavior — write class, consent, recall inclusion, audit exemption — is one row, classified and checked together.
 
-## The ingress consumption fix
+## The untrusted-write chokepoint
 
-The write-class invariant said "ingress/upload may only target user patterns." The *upload* path enforced it at consumption (`consumeUpload` re-checks `isValidWriteTarget`). The *ingress* path validated only at `_inputs` create — but `target_pattern` was mutable and `processInput` (reached by the unauthenticated public `POST /i/{path}`) never re-checked. An agent could repoint an endpoint at `_shared` and let anonymous POSTs publish private entries with no consent round-trip, partially re-opening what commit `38b9465` closed. Fixed by enforcing `isValidWriteTarget` at the write chokepoint (`processInput`) and freezing `_inputs.target_pattern` after create — validate at the boundary, not just at the source.
+The write-class invariant said "ingress/upload may only target user patterns," but enforcement was scattered: the *upload* path re-checked `isValidWriteTarget` at consumption, the *ingress* path validated only at `_inputs` create — and `target_pattern` was mutable, while `processInput` (reached by the unauthenticated public `POST /i/{path}`) never re-checked. An agent could repoint an endpoint at `_shared` and let anonymous POSTs publish private entries, partially re-opening commit `38b9465`.
+
+The deeper fix moves enforcement to the engine, the one place all engine writes converge. `DataContext` now carries a `trusted` flag; `executeMutate` refuses **any** kernel target (System, Open, or Consent) on an untrusted write. `processInput` builds an untrusted context, so its inline guard is gone — subsumed by the chokepoint. This is property 3 of the doctrine realized: a future HTTP write path that goes through the engine inherits the boundary for free, instead of having to remember a call-site check. Two narrower defenses back it: `patch` now honors field immutability (`immutableFieldError` — applyKernelRules only scans top-level keys, so the patched facet, which rides in `data.facet`, would otherwise repoint a frozen `_inputs.target_pattern`), and `_inputs.target_pattern` stays immutable-after-create. The boundary now holds at the engine, on patch, and at the row — each at its own layer.
+
+The one write path that does **not** cross `executeMutate` is upload (`consumeUpload` uses a raw `UPDATE` for its targeted-facet write), so it keeps its own `isValidWriteTarget` guard. Routing upload through the engine is the natural next step to make the chokepoint literally singular.
 
 ## Remaining seam (named, not papered over)
 
@@ -103,4 +107,4 @@ Per-pattern **lifecycle hooks** are still hardcoded as `patternName === "_docume
 - `src/schema.ts` — `verifyWritePolicyTotality()` boot check; `ensureAuditTriggers` derives exemption from the registry.
 - Consumers (read-through, no local predicate): `session.ts`, `data.ts`, `kernel.ts`, `hive.ts`, `evolution.ts`, `prime.ts`.
 - `src/__tests__/policy.test.ts` — the admission matrix (write class + behavioral flags).
-- Ingress fix: `hive.ts` (`processInput` chokepoint re-check), `kernel.ts` (`_inputs.target_pattern` immutable-after-create), tested in `hive.test.ts` "kernel-target write boundary".
+- Untrusted-write chokepoint: `data.ts` (`DataContext.trusted` + `executeMutate` refuses kernel targets on untrusted writes; `patch` honors `immutableFieldError`), `hive.ts` (`processInput` untrusted context), `kernel.ts` (`immutableFieldError`, `_inputs.target_pattern` immutable-after-create), tested in `hive.test.ts` "kernel-target write boundary".

@@ -548,6 +548,21 @@ export function scopeMatches(tokenScope: string, requiredScope: string): boolean
 
 // === Public API ===
 
+/**
+ * The immutability error for editing a single named facet on an existing entry,
+ * or null if the facet is freely editable. Covers both IMMUTABLE (rejected on
+ * any op) and IMMUTABLE_AFTER_CREATE (frozen after create). Used by the patch
+ * path, which edits one facet by name and so can't rely on applyKernelRules'
+ * top-level-key scan.
+ */
+export function immutableFieldError(pattern: string, facet: string): string | null {
+  const imm = IMMUTABLE[pattern];
+  if (imm && imm.fields.includes(facet)) return imm.message;
+  const post = IMMUTABLE_AFTER_CREATE[pattern];
+  if (post && post.fields.includes(facet)) return post.message;
+  return null;
+}
+
 export function applyKernelRules(
   pattern: string,
   operation: string,

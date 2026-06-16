@@ -420,10 +420,11 @@ export class HiveDO extends DurableObject {
 
   // === Data operations (delegated to data.ts) ===
 
-  private dataCtx(actor: string = OWNER_ACTOR): data.DataContext {
+  private dataCtx(actor: string = OWNER_ACTOR, trusted: boolean = true): data.DataContext {
     return {
       db: this.db,
       actor,
+      trusted,
       patternExists: (name) => this.patternExists(name),
       listPatterns: () => this.db.exec("SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray().map((r: any) => r.name as string),
       entryExists: (pattern, id) => this.entryExists(pattern, id),
@@ -1519,14 +1520,6 @@ export class HiveDO extends DurableObject {
     if (rows.length === 0) return this.errorJson("No input endpoint for this path");
 
     const input = rows[0];
-    // Re-validate the target at the write chokepoint, not just where the _inputs
-    // row was created. target_pattern's create-hook check (kernel.ts) doesn't
-    // re-run on update, and /i is an unauthenticated public endpoint — so without
-    // this an agent could repoint an endpoint at a kernel pattern (e.g. _shared)
-    // and let anonymous POSTs publish private entries with no consent round-trip.
-    // The invariant lives in policy.ts; enforce it where the write happens.
-    if (!isValidWriteTarget(input.target_pattern))
-      return this.errorJson(`Ingress endpoint targets "${input.target_pattern}", which is not a writable user pattern.`);
     let entryData: Record<string, unknown>;
 
     if (input.facet_mapping) {
@@ -1546,7 +1539,10 @@ export class HiveDO extends DurableObject {
       entryData = { body };
     }
 
-    const result = data.executeMutate(this.dataCtx(), input.target_pattern, "create", entryData);
+    // Untrusted context: this is a public, unauthenticated HTTP path entering
+    // below the MCP consent layer. executeMutate refuses any kernel target for
+    // an untrusted write, so a repointed/legacy endpoint can't reach _shared et al.
+    const result = data.executeMutate(this.dataCtx(OWNER_ACTOR, false), input.target_pattern, "create", entryData);
     if (!result.error) this.broadcastChange([input.target_pattern]);
     return JSON.stringify(result, null, 2);
   }

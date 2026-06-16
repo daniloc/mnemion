@@ -663,7 +663,9 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           // confirmation round-trip — an agent could patch _federation_hosts.host
           // from an approved host to an attacker host and leak the token. These
           // patterns must go through create/update.
-          if (resolvedOp === "patch" && patchRejected(pattern)) {
+          // Every consent-gated pattern rejects patch (patchRejected is true for
+          // any pattern with a consent policy, which `policy` already is here).
+          if (resolvedOp === "patch") {
             return {
               isError: true as const,
               content: [{ type: "text" as const, text: `"${pattern}" cannot be modified with patch (it would bypass validation and confirmation). Use create or update.` }],

@@ -219,6 +219,11 @@ export function consentRoundTripRequired(
   if (policy.condition === "patch_only") return false;
   if (operation !== "create" && operation !== "update" && operation !== "unarchive") return false;
   if (policy.condition === "on_expose") {
+    // unarchive restores the entry's stored visibility, which isn't in the
+    // supplied data ({id} only) — we can't tell if it re-exposes the file, so
+    // require the round-trip rather than assume private. create/update carry the
+    // authoritative visibility, so gate on it.
+    if (operation === "unarchive") return true;
     const vis = data?.visibility;
     return vis === "public" || vis === "unlisted";
   }

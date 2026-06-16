@@ -1330,6 +1330,22 @@ describe("kernel-target write boundary", () => {
     expect(upd.message).toMatch(/fixed at creation/i);
   });
 
+  it("freeze holds against patch too — can't repoint target_pattern via patch", async () => {
+    // patch edits a facet by name (in data.facet), so it sidesteps applyKernelRules'
+    // top-level-key immutability scan; the patch path must reject immutable facets itself.
+    const store = getStore();
+    await createPattern(store, "ev-patch", [{ name: "body", type: "text" }]);
+    const created = JSON.parse(await store.mutate("_inputs", "create", JSON.stringify({
+      path: "patch-retarget", target_pattern: "ev-patch", body_facet: "body",
+    })));
+    expect(created.error).toBeUndefined();
+    const patched = JSON.parse(await store.mutate("_inputs", "patch", JSON.stringify({
+      id: created.entry.id, facet: "target_pattern", match: "ev-patch", replacement: "_shared",
+    })));
+    expect(patched.error).toBe(true);
+    expect(patched.message).toMatch(/fixed at creation/i);
+  });
+
   it("refuses ingress at consume time even if an endpoint row names a kernel pattern", async () => {
     // Defense in depth: simulate a row that reached a kernel target some other
     // way (legacy/migration/pre-fix update), then confirm processInput — the

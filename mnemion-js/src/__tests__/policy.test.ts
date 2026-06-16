@@ -1,6 +1,5 @@
-import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import type { HiveDO } from "../hive";
+import { getStore, createPattern } from "./helpers";
 import {
   WriteClass,
   KERNEL_WRITE_POLICY,
@@ -15,26 +14,6 @@ import {
   isAuditExempt,
 } from "../policy";
 import { verifyWritePolicyTotality } from "../schema";
-
-function getStore(): DurableObjectStub<HiveDO> {
-  const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);
-  return env.MNEMION_HIVE.get(id);
-}
-
-async function createPattern(store: DurableObjectStub<HiveDO>, name: string) {
-  const proposed = JSON.parse(await store.proposeChange(
-    `Create ${name}`,
-    JSON.stringify({
-      type: "create_pattern",
-      pattern_name: name,
-      pattern_description: `Test ${name}`,
-      doctrine: `Test doctrine for ${name}`,
-      facets: [{ name: "body", type: "text" }],
-    }),
-  ));
-  if (proposed.error) throw new Error(proposed.message);
-  await store.applyChange(proposed.change_id);
-}
 
 // === The expected admission matrix ===
 //
@@ -165,6 +144,9 @@ describe("consent round-trip fires per condition", () => {
     expect(consentRoundTripRequired("_documents", "create", {})).toBe(false);
     expect(consentRoundTripRequired("_documents", "create", { visibility: "public" })).toBe(true);
     expect(consentRoundTripRequired("_documents", "update", { visibility: "unlisted" })).toBe(true);
+  });
+  it("_documents unarchive requires the round-trip (resulting visibility unknown from {id})", () => {
+    expect(consentRoundTripRequired("_documents", "unarchive", { id: 5 })).toBe(true);
   });
   it("_access_tokens is patch-only: create/update never round-trip, but patch is rejected", () => {
     expect(consentRoundTripRequired("_access_tokens", "create", { scope: "read" })).toBe(false);
