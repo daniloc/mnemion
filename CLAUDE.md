@@ -219,6 +219,10 @@ The route table in `index.ts` is the reference example: method, pattern, auth ga
 
 Domain logic lives in pure-function modules with context injected. HiveDO builds context objects (`dataCtx()`, `evoCtx()`) and delegates. No God objects — each module owns one concern.
 
+## Design principle: self-enforcing declarations
+
+The operational synthesis of the two principles above, for a codebase agents edit. Every invariant gets **one declarative home** (a table keyed by what it governs) that is simultaneously the spec an agent reads, the enforcement every gate derives from, and the oracle a totality check asserts completeness against — so spec, enforcement, and test can't drift. Five properties make a declaration self-enforcing: (1) one table, and it's data; (2) derive, never duplicate; (3) enforce at the chokepoint the invariant is about, not the convenient layer; (4) fail closed (absence → the safe state); (5) a totality check that fails loudly. Reference: `src/policy.ts` (write-class registry) + `verifyWritePolicyTotality` + `src/__tests__/policy.test.ts`. Full doctrine and checklists: `project-docs/active/self-enforcing-declarations.md`. Quality metric: minimize the number of files an agent must touch in lockstep to add a pattern/tool/route/invariant — drive it toward one. Not for effects (keep imperative), one-offs, or history (migrations/audit logs).
+
 ## Router architecture
 
 Declarative dispatch table in `src/router.ts`. Routes are matched in declaration order.
