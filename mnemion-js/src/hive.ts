@@ -3,6 +3,7 @@ import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "./constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
+import { isKernelPattern, isValidWriteTarget, writeClass } from "./policy";
 import * as cred from "./credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
@@ -353,6 +354,10 @@ export class HiveDO extends DurableObject {
       pattern: objRow.name,
       description: objRow.description,
       pattern_class: objRow.pattern_class === "dataset" ? "dataset" : "knowledge",
+      // Derived at read time from the write-class registry (policy.ts) — never
+      // stored, so it can't drift from the enforced policy. Tells an agent which
+      // writes a pattern admits and why a refusal happened.
+      write_class: writeClass(patternName),
       facets: fields.map((f: any) => {
         const facet: any = {
           name: f.name,
@@ -415,10 +420,11 @@ export class HiveDO extends DurableObject {
 
   // === Data operations (delegated to data.ts) ===
 
-  private dataCtx(actor: string = OWNER_ACTOR): data.DataContext {
+  private dataCtx(actor: string = OWNER_ACTOR, trusted: boolean = true): data.DataContext {
     return {
       db: this.db,
       actor,
+      trusted,
       patternExists: (name) => this.patternExists(name),
       listPatterns: () => this.db.exec("SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray().map((r: any) => r.name as string),
       entryExists: (pattern, id) => this.entryExists(pattern, id),
@@ -459,7 +465,7 @@ export class HiveDO extends DurableObject {
     // user patterns (policy-gated, advisory only). The embedding computed here
     // is reused for the post-write upsert — no second AI call.
     let conflictCheck: { neighbors: priming.NeighborMatch[]; vector: number[] | null } | null = null;
-    if (operation === "create" && !patternName.startsWith("_") && this.patternExists(patternName)
+    if (operation === "create" && !isKernelPattern(patternName) && this.patternExists(patternName)
         && this.patternClass(patternName) !== "dataset") {
       const policy = priming.getMemoryPolicy(this.db, patternName);
       if (policy.conflict_check !== "off") {
@@ -664,7 +670,7 @@ export class HiveDO extends DurableObject {
     // executeMutate), so it must enforce the kernel/internal-write boundary
     // itself — this catches any token minted before the create-hook guard, and
     // closes the _web_cache / _system_docs poisoning path directly.
-    if (constraints.target_pattern.startsWith("_"))
+    if (!isValidWriteTarget(constraints.target_pattern))
       return this.errorJson("Upload token has an invalid target pattern");
     if (typeof constraints.target_facet !== "string" || !IDENT_RE.test(constraints.target_facet))
       return this.errorJson("Upload token has an invalid target facet");
@@ -1150,7 +1156,7 @@ export class HiveDO extends DurableObject {
     // decay clock. Append-only; decay and the stale view derive from this.
     try {
       for (const r of primeResult.results) {
-        if (r.pattern.startsWith("_")) continue;
+        if (isKernelPattern(r.pattern)) continue;
         this.db.exec(
           `INSERT INTO "_entry_access_log" (pattern, entry_id) VALUES (?, ?)`, r.pattern, r.id
         );
@@ -1533,7 +1539,10 @@ export class HiveDO extends DurableObject {
       entryData = { body };
     }
 
-    const result = data.executeMutate(this.dataCtx(), input.target_pattern, "create", entryData);
+    // Untrusted context: this is a public, unauthenticated HTTP path entering
+    // below the MCP consent layer. executeMutate refuses any kernel target for
+    // an untrusted write, so a repointed/legacy endpoint can't reach _shared et al.
+    const result = data.executeMutate(this.dataCtx(OWNER_ACTOR, false), input.target_pattern, "create", entryData);
     if (!result.error) this.broadcastChange([input.target_pattern]);
     return JSON.stringify(result, null, 2);
   }

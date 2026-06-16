@@ -3,7 +3,8 @@
 // Pure functions that take a DataContext. HiveDO keeps thin RPC wrappers
 // that add broadcast and transaction concerns.
 
-import { applyKernelRules, INTERNAL_WRITE_PROTECTED, type KernelContext } from "./kernel";
+import { applyKernelRules, immutableFieldError, type KernelContext } from "./kernel";
+import { isInternalWriteProtected, isKernelPattern, isValidWriteTarget } from "./policy";
 import { getMemoryPolicy } from "./prime";
 import { uri } from "./constants";
 
@@ -21,6 +22,12 @@ export interface DataContext {
   patternClass(name: string): "knowledge" | "dataset";
   /** The member this write is attributed to (created_by/updated_by). */
   actor: string;
+  /** Whether this write entered through a trusted surface (the MCP tool layer,
+   *  which runs the consent gate) or an untrusted public HTTP path (ingress).
+   *  Untrusted writes may only target user patterns — the engine refuses any
+   *  kernel target, so the boundary lives at this one chokepoint rather than
+   *  being re-checked at each call site. Defaults to trusted (internal callers). */
+  trusted: boolean;
 }
 
 // === Constants ===
@@ -383,8 +390,15 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   // System-managed caches/audit logs are never agent-writable (e.g. _web_cache
   // poisoning → resolve() serving planted content). Internal writers use direct
   // SQL, not this path.
-  if (INTERNAL_WRITE_PROTECTED.has(patternName))
+  if (isInternalWriteProtected(patternName))
     return { error: true, message: `"${patternName}" is managed by the system and cannot be modified directly.` };
+
+  // Untrusted write paths (public HTTP ingress) enter below the MCP consent
+  // layer, so the engine itself confines them to user patterns — every kernel
+  // target (System, Open, or Consent) is refused here, at the one chokepoint all
+  // engine writes cross, rather than re-checked at each entry point.
+  if (!ctx.trusted && !isValidWriteTarget(patternName))
+    return { error: true, message: `Pattern "${patternName}" is not a writable user pattern — ingress/upload write user patterns only.` };
 
   // Attribution is system-set from the session actor, never caller-supplied —
   // strip any forged created_by/updated_by before processing.
@@ -459,7 +473,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         // facet single-valued-per-value, and an active entry already holds it.
         // Checked before the insert so the advisory never matches the new row.
         let overlap: { pattern: string; id: number; uri: string; reason: string; facet: string }[] | undefined;
-        if (!patternName.startsWith("_")) {
+        if (!isKernelPattern(patternName)) {
           const policy = getMemoryPolicy(ctx.db, patternName);
           for (const facet of policy.exclusive_facets) {
             const val = data[facet];
@@ -543,6 +557,14 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         const meta = ctx.facetMeta(patternName, data.facet as string);
         if (!meta) return { error: true, message: `Facet "${data.facet}" does not exist on "${patternName}"` };
         if (meta.type !== "text") return { error: true, message: `Patch only works on text facets, "${data.facet}" is ${meta.type}` };
+
+        // Patch must honor field immutability exactly as update does. applyKernelRules
+        // (above) only inspects top-level keys, so the patched facet — which rides in
+        // data.facet, not as a key — would otherwise slip past IMMUTABLE rules (e.g.
+        // repointing _inputs.target_pattern, which the create hook confines to a user
+        // pattern). patch is always on an existing entry, so both immutable tables apply.
+        const immErr = immutableFieldError(patternName, data.facet as string);
+        if (immErr) return { error: true, message: immErr };
 
         // Read current value
         let current: string;

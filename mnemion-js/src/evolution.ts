@@ -6,6 +6,7 @@
 
 import { PRODUCT_NAME, uri } from "./constants";
 import { ensureAuditTriggers } from "./schema";
+import { isKernelPattern } from "./policy";
 import type { StoreIndex, IndexFacetEntry } from "./hive";
 
 // === Types ===
@@ -125,6 +126,11 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       if (!change.pattern_name) return "pattern_name is required for create_pattern";
       const nameErr = validateName("Pattern", change.pattern_name);
       if (nameErr) return nameErr;
+      // The leading-underscore namespace is reserved for kernel patterns — a
+      // user pattern named "_foo" would collide with the write-class registry
+      // (isKernelPattern) and be denied as unclassified. Refuse it at the source.
+      if (isKernelPattern(change.pattern_name))
+        return `Pattern name "${change.pattern_name}" is reserved — names starting with "_" belong to the kernel. Choose a name starting with a letter.`;
       if (!change.doctrine) return "doctrine is required for create_pattern — describe how this pattern should be used";
       if (!change.facets?.length) return "At least one facet is required for create_pattern";
       if (change.facets.length > LIMITS.FACETS_PER_PATTERN)
@@ -177,7 +183,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       if (!change.pattern_name) return "pattern_name is required for set_class";
       if (!ctx.patternExists(change.pattern_name))
         return `Pattern "${change.pattern_name}" does not exist`;
-      if (change.pattern_name.startsWith("_"))
+      if (isKernelPattern(change.pattern_name))
         return `Pattern class applies to user patterns, not kernel pattern "${change.pattern_name}"`;
       if (!PATTERN_CLASSES.has(change.pattern_class))
         return `Invalid pattern_class "${change.pattern_class}". Use "knowledge" or "dataset".`;
@@ -315,7 +321,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       if (!change.pattern_name) return "pattern_name is required for set_memory_policy";
       if (!ctx.patternExists(change.pattern_name))
         return `Pattern "${change.pattern_name}" does not exist`;
-      if (change.pattern_name.startsWith("_"))
+      if (isKernelPattern(change.pattern_name))
         return `Memory policy applies to user patterns, not kernel pattern "${change.pattern_name}"`;
       const p = change.policy;
       if (p === null) return null; // explicit clear
@@ -357,7 +363,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       if (!change.pattern_name) return "pattern_name is required for archive_pattern";
       if (!ctx.patternExists(change.pattern_name))
         return `Pattern "${change.pattern_name}" does not exist`;
-      if (change.pattern_name.startsWith("_"))
+      if (isKernelPattern(change.pattern_name))
         return `Cannot archive kernel pattern "${change.pattern_name}"`;
       return null;
     },

@@ -4,6 +4,8 @@
 // INSERT/UPDATE/ARCHIVE logic in store.ts runs. Each kernel table's
 // special behavior is visible in one place.
 
+import { isKernelPattern, isValidWriteTarget } from "./policy";
+
 export interface KernelContext {
   patternExists(name: string): boolean;
   facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
@@ -15,21 +17,9 @@ export interface KernelContext {
 type HookResult = Record<string, unknown> | { error: true; message: string };
 type CreateHook = (data: Record<string, unknown>, ctx: KernelContext) => HookResult;
 
-// === Internal patterns — written only by the system, never via agent mutate ===
-//
-// These are caches/audit logs maintained by internal code (direct SQL), not part
-// of the agent API. Letting an agent mutate them is dangerous: e.g. planting a
-// _web_cache row would make resolve() serve attacker-chosen content as a trusted
-// cache hit (and embed it into prime recall). Legitimate writers bypass the
-// mutate path, so this denylist costs them nothing.
-export const INTERNAL_WRITE_PROTECTED = new Set<string>([
-  "_web_cache",
-  "_fragment_access_log",
-  "_entry_access_log",
-  "_mutation_log",
-  "_schema_history",
-  "_pending_changes",
-]);
+// Which patterns the system writes itself (caches/audit logs) and which are
+// valid ingress/upload targets are derived from the write-class registry in
+// policy.ts — see isInternalWriteProtected / isValidWriteTarget there.
 
 // === Immutable fields — rejected on any operation ===
 
@@ -67,6 +57,14 @@ export const IMMUTABLE_AFTER_CREATE: Record<string, { fields: string[]; message:
     fields: ["label"],
     message: "A member's label is immutable — it's the stable handle that passkeys, tokens, and attribution reference. Correct display_name instead, or re-invite under a new label.",
   },
+  _inputs: {
+    // target_pattern gates which pattern anonymous POSTs to /i can write. The
+    // create hook confines it to a user pattern; freezing it after create stops
+    // an update from repointing the endpoint at a kernel pattern (defense in
+    // depth — processInput also re-validates at the write chokepoint).
+    fields: ["target_pattern"],
+    message: "An ingress endpoint's target_pattern is fixed at creation — it gates which pattern anonymous POSTs can write. Archive this endpoint and create a new one to retarget.",
+  },
 };
 
 // === Create hooks — validate + transform before INSERT ===
@@ -92,7 +90,7 @@ const ON_CREATE: Record<string, CreateHook> = {
       const c = constraints as Record<string, unknown>;
       if (!c.target_pattern || c.target_id == null || !c.target_facet)
         return { error: true, message: "upload constraints require target_pattern, target_id, and target_facet" };
-      if ((c.target_pattern as string).startsWith("_"))
+      if (!isValidWriteTarget(c.target_pattern as string))
         return { error: true, message: `Upload tokens cannot target kernel pattern "${c.target_pattern}" — uploads write user patterns only.` };
       if (!ctx.patternExists(c.target_pattern as string))
         return { error: true, message: `Target pattern "${c.target_pattern}" does not exist` };
@@ -214,7 +212,7 @@ const ON_CREATE: Record<string, CreateHook> = {
   _inputs(data, ctx) {
     if (!data.path) return { error: true, message: "path is required for _inputs" };
     if (!data.target_pattern) return { error: true, message: "target_pattern is required for _inputs" };
-    if ((data.target_pattern as string).startsWith("_"))
+    if (!isValidWriteTarget(data.target_pattern as string))
       return { error: true, message: `Ingress cannot target kernel pattern "${data.target_pattern}" — inputs write user patterns only.` };
     if (!ctx.patternExists(data.target_pattern as string))
       return { error: true, message: `Target pattern "${data.target_pattern}" does not exist` };
@@ -313,7 +311,7 @@ const ON_CREATE: Record<string, CreateHook> = {
     data.path = (data.path as string).trim().replace(/^\/+/, "");
     if (!data.source_pattern || typeof data.source_pattern !== "string")
       return { error: true, message: "source_pattern is required for _publications" };
-    if ((data.source_pattern as string).startsWith("_"))
+    if (isKernelPattern(data.source_pattern as string))
       return { error: true, message: `Kernel pattern "${data.source_pattern}" cannot be published — publications project user patterns only.` };
     if (!ctx.patternExists(data.source_pattern as string))
       return { error: true, message: `Pattern "${data.source_pattern}" does not exist` };
@@ -549,6 +547,21 @@ export function scopeMatches(tokenScope: string, requiredScope: string): boolean
 }
 
 // === Public API ===
+
+/**
+ * The immutability error for editing a single named facet on an existing entry,
+ * or null if the facet is freely editable. Covers both IMMUTABLE (rejected on
+ * any op) and IMMUTABLE_AFTER_CREATE (frozen after create). Used by the patch
+ * path, which edits one facet by name and so can't rely on applyKernelRules'
+ * top-level-key scan.
+ */
+export function immutableFieldError(pattern: string, facet: string): string | null {
+  const imm = IMMUTABLE[pattern];
+  if (imm && imm.fields.includes(facet)) return imm.message;
+  const post = IMMUTABLE_AFTER_CREATE[pattern];
+  if (post && post.fields.includes(facet)) return post.message;
+  return null;
+}
 
 export function applyKernelRules(
   pattern: string,

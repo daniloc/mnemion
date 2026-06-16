@@ -6,6 +6,7 @@
 // Pure functions with env/db injected. HiveDO wires the lifecycle.
 
 import { uri } from "./constants";
+import { isKernelPattern, primeIncluded } from "./policy";
 
 // === Types ===
 
@@ -262,11 +263,12 @@ export async function prime(
     const allowed = new Set(patterns);
     filtered = filtered.filter((m: any) => allowed.has(m.metadata?.pattern));
   } else {
-    // Default: exclude kernel patterns (system noise) but keep working memory
-    const KERNEL_INCLUDE = new Set(["_short_term_fragments", "_long_term_fragments", "_documents"]);
+    // Default: exclude kernel patterns (system noise) but keep the ones flagged
+    // primeInclude in the policy registry (working memory, consolidated memory,
+    // document contents) — single source of truth, covered by the totality check.
     filtered = filtered.filter((m: any) => {
       const p = m.metadata?.pattern as string;
-      return p && (!p.startsWith("_") || KERNEL_INCLUDE.has(p));
+      return p && (!isKernelPattern(p) || primeIncluded(p));
     });
   }
 
