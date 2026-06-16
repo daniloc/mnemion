@@ -15,4 +15,12 @@ th{font-weight:600;opacity:.65;font-size:11px;text-transform:uppercase;letter-sp
 th.r,td.r{text-align:right;font-variant-numeric:tabular-nums}
 .title{font-weight:600;margin-bottom:8px;font-size:15px}
 .msg{opacity:.6;font-size:13px;white-space:pre-wrap}
+/* cards: one entry per card, facets as labeled fields — for reading prose */
+.cards{display:flex;flex-direction:column;gap:10px}
+.card{border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;padding:10px 12px}
+.card-h{font-weight:600;font-size:14px;margin-bottom:6px}
+.field{display:grid;grid-template-columns:minmax(64px,max-content) 1fr;gap:10px;font-size:13px;padding:2px 0;align-items:baseline}
+.field .k{opacity:.55;text-transform:lowercase;letter-spacing:.02em}
+.field .v{white-space:pre-wrap;overflow-wrap:anywhere}
+.card-m{opacity:.5;font-size:11px;margin-top:7px}
 `;

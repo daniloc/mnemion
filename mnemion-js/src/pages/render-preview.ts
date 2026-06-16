@@ -40,6 +40,30 @@ const SAMPLES: Record<string, unknown> = {
       [1, "Escape velocity, not orbit", "By the time the PostHog vest completes (~mid 2028), the advisory practice is not a plan. It's a b…", "Getting caught. Getting absorbed. Someone offers a great role and the salary is good and the equi…", "2026-03-13"],
     ],
   },
+  "entries (cards)": {
+    kind: "cards",
+    title: "future-vision (2)",
+    cards: [
+      {
+        header: "Escape velocity, not orbit",
+        fields: [
+          { label: "vision", value: "In 2008 I was building toward independence — a self-taught developer creating his own career from nothing. The felt picture of arrival: a practice that compounds, where the work itself is the leverage, not a title someone grants me." },
+          { label: "parallel", value: "2008: bought a book about Mac development, spent 35 hours a week learning iPhone apps on top of a demanding day job." },
+          { label: "failure-mode", value: "Getting caught again. Someone offers a VP title or head-of-AI role at an interesting company; the salary and equity are good, and the gravity well pulls me back into orbit." },
+        ],
+        meta: "#2 · updated 2026-03-13 · by owner",
+      },
+      {
+        header: "Escape velocity, not orbit",
+        fields: [
+          { label: "vision", value: "By the time the PostHog vest completes (~mid 2028), the advisory practice is not a plan. It's a business with its own momentum." },
+          { label: "failure-mode", value: "Getting caught. Getting absorbed. The role is great, the comp is good, and three years later the practice is a hobby again." },
+        ],
+        meta: "#1 · updated 2026-03-13 · by owner",
+      },
+    ],
+    emptyText: "No entries.",
+  },
   "entries (empty)": {
     kind: "table",
     title: "tasks (0)",
@@ -54,6 +78,14 @@ const SAMPLES: Record<string, unknown> = {
   },
 };
 
+// URL params (used for headless screenshots): ?sample=<substr> picks the first
+// matching sample; ?theme=dark forces a dark backdrop for the shot.
+const params = new URLSearchParams(location.search);
+if ((params.get("theme") || "").toLowerCase() === "dark") {
+  document.documentElement.setAttribute("style", "color-scheme:dark;background:#191919;color:#e9e9e9");
+}
+const want = (params.get("sample") || "").toLowerCase();
+
 const bar = document.getElementById("bar")!;
 const buttons: HTMLButtonElement[] = [];
 function show(name: string): void {
@@ -67,4 +99,5 @@ for (const name of Object.keys(SAMPLES)) {
   bar.appendChild(b);
   buttons.push(b);
 }
-show(Object.keys(SAMPLES)[0]);
+const initial = Object.keys(SAMPLES).find((k) => want && k.toLowerCase().includes(want)) ?? Object.keys(SAMPLES)[0];
+show(initial);
