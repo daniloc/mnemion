@@ -29,7 +29,7 @@ function buildPdf(text: string): Uint8Array {
 }
 
 function getStore(): DurableObjectStub<HiveDO> {
-  return env.MNEMION_HIVE.get(env.MNEMION_HIVE.idFromName("user:test"));
+  return env.MNEMION_HIVE.get(env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`));
 }
 async function createDoc(store: DurableObjectStub<HiveDO>, data: Record<string, unknown>) {
   return JSON.parse(await store.mutate("_documents", "create", JSON.stringify(data)));

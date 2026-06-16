@@ -34,13 +34,20 @@ name = "MNEMION_HIVE"
 class_name = "HiveDO"
 
 # Workers AI (embedding generation)
+# remote = true: AI has no local simulator — dev/test reach the real binding.
+# No effect on production deploys (bindings are always remote there).
 [ai]
 binding = "AI"
+remote = true
 
 # Vectorize (semantic search index)
+# remote = true: required by the vitest pool (v0.16/miniflare) — Vectorize has no
+# local support, so without this tests throw "Binding VECTORIZE needs to be run
+# remotely". No effect on production deploys.
 [[vectorize]]
 binding = "VECTORIZE"
 index_name = "mnemion-vectors"
+remote = true
 
 # R2 bucket for document blobs (the bytes; metadata lives in the _documents pattern).
 # OPTIONAL — the document store. Mnemion runs fully without it; only file
