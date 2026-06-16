@@ -42,10 +42,6 @@ export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = 
     fields: ["r2_key", "size", "stored_at", "extracted_text", "extraction_status"],
     message: "r2_key, size, stored_at, extracted_text, and extraction_status are managed by the system on upload/extraction — they cannot be set via mutate.",
   },
-  _members: {
-    fields: ["label"],
-    message: "A member's label is immutable — it's the stable handle that passkeys, tokens, and attribution reference. Correct display_name instead, or re-invite under a new label.",
-  },
   _access_tokens: {
     fields: ["approved_at", "consumed_at"],
     message: "approved_at and consumed_at are system-managed (passkey approval / single-use consumption) and cannot be set via mutate.",
@@ -63,6 +59,13 @@ export const IMMUTABLE_AFTER_CREATE: Record<string, { fields: string[]; message:
   _access_tokens: {
     fields: ["scope", "member", "constraints", "token"],
     message: "A token's scope, member, constraints, and value are fixed at creation. Archive it and mint a new one instead of editing them.",
+  },
+  _members: {
+    // label is set at create (the invite names the member) and frozen after —
+    // it's the stable handle passkeys, tokens, and attribution reference.
+    // (Must NOT be in IMMUTABLE, which would reject it on create too.)
+    fields: ["label"],
+    message: "A member's label is immutable — it's the stable handle that passkeys, tokens, and attribution reference. Correct display_name instead, or re-invite under a new label.",
   },
 };
 

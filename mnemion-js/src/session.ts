@@ -4,6 +4,9 @@ import { z } from "zod";
 import type { HiveDO } from "./hive";
 import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID, OWNER_ACTOR } from "./constants";
 import { TOOLS } from "./tools";
+// @ts-ignore — text import via wrangler [[rules]] (.client.txt → string). The
+// MCP Apps render fragment, bundled self-contained by vite.fragment.ts.
+import renderClientScript from "../dist/fragment/render-client.client.txt";
 
 // === Types ===
 
@@ -74,53 +77,26 @@ function consentRequired(pattern: string, operation: string | undefined, dataObj
 
 // === MCP Apps UI fragment (experimental) ===
 //
-// Self-contained HTML+JS served as a `text/html+mcp` resource under the `ui://`
-// scheme. MCP-Apps-capable hosts (Claude web/desktop, etc.) render it in a
-// sandboxed iframe; the iframe receives the tool's structuredContent over the
-// ext-apps postMessage bridge and draws a table. Hosts WITHOUT MCP Apps support
-// ignore the UI and fall back to the tool's text content. Uses textContent only
-// (no HTML injection). No ${...} interpolation below — safe inside this literal.
-const PATTERN_TABLE_UI = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+// One `text/html+mcp` resource (ui://mnemion/render) serves a generic renderer
+// for all rich UI. The bundled client (render-client.ts → render-client.client.txt,
+// built by vite.fragment.ts with the ext-apps SDK inlined) is injected into a
+// minimal HTML shell here. MCP-Apps-capable hosts (Claude web/desktop) mount it in
+// a sandboxed iframe and feed it the tool's structuredContent over the ext-apps
+// bridge; other hosts ignore the UI and use the tool's text content.
+const RENDER_UI = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; }
-  table { border-collapse: collapse; width: 100%; font-size: 14px; }
-  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
-  th { font-weight: 600; opacity: .65; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
-  td.count { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.kernel td:first-child { opacity: .55; }
-  #msg { opacity: .6; padding: 8px; font-size: 13px; }
+:root{color-scheme:light dark}
+body{font-family:system-ui,sans-serif;margin:0;padding:12px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 15%,transparent)}
+th{font-weight:600;opacity:.65;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+th.r,td.r{text-align:right;font-variant-numeric:tabular-nums}
+.title{font-weight:600;margin-bottom:8px;font-size:15px}
+.msg{opacity:.6;font-size:13px;white-space:pre-wrap}
 </style></head>
-<body>
-  <table><thead><tr><th>Pattern</th><th class="count">Entries</th></tr></thead><tbody id="rows"></tbody></table>
-  <div id="msg">Loading…</div>
-  <script type="module">
-    const rows = document.getElementById('rows');
-    const msg = document.getElementById('msg');
-    function render(data) {
-      const patterns = (data && data.patterns) || [];
-      rows.innerHTML = '';
-      if (!patterns.length) { msg.textContent = 'No patterns yet.'; return; }
-      msg.hidden = true;
-      for (const p of patterns) {
-        const tr = document.createElement('tr');
-        if (p.name && p.name.charAt(0) === '_') tr.className = 'kernel';
-        const name = document.createElement('td'); name.textContent = p.name;
-        const cnt = document.createElement('td'); cnt.className = 'count';
-        cnt.textContent = String(p.entry_count == null ? 0 : p.entry_count);
-        tr.appendChild(name); tr.appendChild(cnt); rows.appendChild(tr);
-      }
-    }
-    try {
-      const mod = await import('https://esm.sh/@modelcontextprotocol/ext-apps');
-      const app = new mod.App({ transport: new mod.PostMessageTransport({ window: window.parent }) });
-      app.ontoolresult = (result) => render((result && result.structuredContent) || result);
-      if (app.toolResult) render(app.toolResult.structuredContent || app.toolResult);
-    } catch (e) {
-      msg.textContent = 'UI bridge unavailable (' + (e && e.message ? e.message : e) + ').';
-    }
-  </script>
+<body><div id="root"></div>
+<script>${(renderClientScript as string).replace(/<\/script>/gi, "<\\/script>")}</script>
 </body></html>`;
 
 // === SessionDO: MCP protocol handler, proxies data to HiveDO ===
@@ -276,41 +252,56 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     );
 
     // === MCP Apps UI resource (experimental) ===
-    // The HTML fragment the `overview` tool renders in MCP-Apps-capable hosts.
+    // One generic fragment for all rich UI. The `render` tool returns
+    // structuredContent tagged with a `kind`; the bundled client (render-client.ts)
+    // dispatches on it. New views = a new kind, not a new resource/tool.
     this.server.registerResource(
-      "pattern-table-ui",
-      "ui://mnemion/pattern-table",
-      { description: "Table view of patterns and entry counts", mimeType: "text/html+mcp" },
+      "render-ui",
+      "ui://mnemion/render",
+      { description: "Generic rich-UI renderer for Mnemion views", mimeType: "text/html+mcp" },
       async (u) => ({
-        contents: [{ uri: u.href, mimeType: "text/html+mcp", text: PATTERN_TABLE_UI }],
+        contents: [{ uri: u.href, mimeType: "text/html+mcp", text: RENDER_UI }],
       })
     );
 
     // === Tools ===
 
-    // overview — patterns + entry counts, with an MCP Apps table fragment.
-    // structuredContent feeds the ui:// fragment; the text content is the
-    // fallback for hosts without MCP Apps support. _meta links the UI resource.
+    // render — the visual twin of the read tools: returns a UI view in
+    // MCP-Apps-capable hosts (via the ui://mnemion/render fragment), with a text
+    // fallback everywhere else. structuredContent.kind selects the view.
     this.server.registerTool(
-      "overview",
+      "render",
       {
-        description: "Show every pattern in the hive with its entry count, as a table.",
-        inputSchema: {},
-        _meta: { ui: { resourceUri: "ui://mnemion/pattern-table" } },
+        description: "Render a rich UI view of the hive in MCP-Apps-capable clients (falls back to text elsewhere). view=\"patterns\": a table of every pattern and its entry count.",
+        inputSchema: { view: z.enum(["patterns"]).default("patterns") },
+        _meta: { ui: { resourceUri: "ui://mnemion/render" } },
       },
-      async () => {
-        const idx = JSON.parse(await hive.getIndex());
-        const patterns = (idx.patterns ?? []).map((p: any) => ({
-          name: p.name as string,
-          entry_count: (p.entry_count ?? 0) as number,
-        }));
-        const text = patterns.length
-          ? patterns.map((p: any) => `${p.name}: ${p.entry_count}`).join("\n")
-          : "No patterns yet.";
+      async ({ view }) => {
+        if (view === "patterns" || view == null) {
+          const idx = JSON.parse(await hive.getIndex());
+          const patterns = (idx.patterns ?? []).map((p: any) => ({
+            name: p.name as string,
+            entry_count: (p.entry_count ?? 0) as number,
+          }));
+          const structuredContent = {
+            kind: "table",
+            title: "Patterns",
+            columns: [{ label: "Pattern" }, { label: "Entries", align: "right" }],
+            rows: patterns.map((p: any) => [p.name, p.entry_count]),
+            emptyText: "No patterns yet.",
+          };
+          const text = patterns.length
+            ? patterns.map((p: any) => `${p.name}: ${p.entry_count}`).join("\n")
+            : "No patterns yet.";
+          return {
+            content: [{ type: "text" as const, text }],
+            structuredContent,
+            _meta: { ui: { resourceUri: "ui://mnemion/render" } },
+          };
+        }
         return {
-          content: [{ type: "text" as const, text }],
-          structuredContent: { patterns },
-          _meta: { ui: { resourceUri: "ui://mnemion/pattern-table" } },
+          isError: true as const,
+          content: [{ type: "text" as const, text: `Unknown view "${view}".` }],
         };
       }
     );

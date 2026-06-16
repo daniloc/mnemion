@@ -7,7 +7,7 @@ import type { HiveDO } from "../hive";
 import { escapeHtml, renderTemplate } from "../publications";
 
 function getStore(): DurableObjectStub<HiveDO> {
-  const id = env.MNEMION_HIVE.idFromName("user:test");
+  const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);
   return env.MNEMION_HIVE.get(id);
 }
 

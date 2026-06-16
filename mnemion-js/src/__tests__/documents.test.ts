@@ -19,7 +19,7 @@ import type { HiveDO } from "../hive";
 const R2_PRESENT = !!(env as any).DOCUMENTS;
 
 function getStore(): DurableObjectStub<HiveDO> {
-  const id = env.MNEMION_HIVE.idFromName("user:test");
+  const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);
   return env.MNEMION_HIVE.get(id);
 }
 
