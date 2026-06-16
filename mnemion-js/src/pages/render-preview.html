@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mnemion fragment preview</title>
+  <style>
+    #bar { display: flex; gap: 6px; padding: 8px 12px; flex-wrap: wrap;
+      border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+      font-family: system-ui, sans-serif; align-items: center; }
+    #bar button { font: 12px system-ui; padding: 4px 9px; border-radius: 6px;
+      border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+      background: transparent; color: inherit; cursor: pointer; }
+    #bar button.active { background: color-mix(in srgb, currentColor 12%, transparent); }
+    #bar .label { opacity: .6; font-size: 12px; margin-right: 4px; }
+  </style>
+</head>
+<body>
+  <!-- Toolbar to switch sample payloads; the renderer below is the *exact* code
+       that ships in the ui:// fragment. Edit render-view.ts / render-styles.ts and
+       this hot-reloads — no deploy, no MCP, no reconnect. -->
+  <div id="bar"><span class="label">sample:</span></div>
+  <div id="root"></div>
+  <script type="module" src="./render-preview.ts"></script>
+</body>
+</html>

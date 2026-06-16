@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { HiveDO } from "./hive";
 import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID, OWNER_ACTOR } from "./constants";
 import { TOOLS } from "./tools";
+import { FRAGMENT_CSS } from "./pages/render-styles";
 // @ts-ignore — text import via wrangler [[rules]] (.client.txt → string). The
 // MCP Apps render fragment, bundled self-contained by vite.fragment.ts.
 import renderClientScript from "../dist/fragment/render-client.client.txt";
@@ -85,20 +86,7 @@ function consentRequired(pattern: string, operation: string | undefined, dataObj
 // bridge; other hosts ignore the UI and use the tool's text content.
 const RENDER_UI = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-:root{color-scheme:light dark}
-body{font-family:system-ui,sans-serif;margin:0;padding:12px}
-/* horizontal scroll for wide entry tables (many facets) */
-#root{overflow-x:auto}
-table{border-collapse:collapse;width:100%;font-size:14px}
-th,td{text-align:left;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 15%,transparent)}
-/* long prose cells stay one line + ellipsis (values are pre-truncated too) */
-td{max-width:44ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-th{font-weight:600;opacity:.65;font-size:11px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
-th.r,td.r{text-align:right;font-variant-numeric:tabular-nums}
-.title{font-weight:600;margin-bottom:8px;font-size:15px}
-.msg{opacity:.6;font-size:13px;white-space:pre-wrap}
-</style></head>
+<style>${FRAGMENT_CSS}</style></head>
 <body><div id="root"></div>
 <script>${(renderClientScript as string).replace(/<\/script>/gi, "<\\/script>")}</script>
 </body></html>`;
