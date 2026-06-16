@@ -1519,6 +1519,14 @@ export class HiveDO extends DurableObject {
     if (rows.length === 0) return this.errorJson("No input endpoint for this path");
 
     const input = rows[0];
+    // Re-validate the target at the write chokepoint, not just where the _inputs
+    // row was created. target_pattern's create-hook check (kernel.ts) doesn't
+    // re-run on update, and /i is an unauthenticated public endpoint — so without
+    // this an agent could repoint an endpoint at a kernel pattern (e.g. _shared)
+    // and let anonymous POSTs publish private entries with no consent round-trip.
+    // The invariant lives in policy.ts; enforce it where the write happens.
+    if (!isValidWriteTarget(input.target_pattern))
+      return this.errorJson(`Ingress endpoint targets "${input.target_pattern}", which is not a writable user pattern.`);
     let entryData: Record<string, unknown>;
 
     if (input.facet_mapping) {

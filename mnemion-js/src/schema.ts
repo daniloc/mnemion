@@ -9,7 +9,7 @@
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
 import { TOOLS } from "./tools";
 import { seedDevData } from "./dev-seed";
-import { KERNEL_WRITE_POLICY } from "./policy";
+import { KERNEL_WRITE_POLICY, isAuditExempt } from "./policy";
 
 // System docs — imported as raw text, placeholders resolved at load time
 import schemaEvolutionRaw from "./system-docs/schema-evolution.md";
@@ -1127,13 +1127,12 @@ export function verifyWritePolicyTotality(): string[] {
 
 // === Audit triggers ===
 
-// Tables that mutate too often to be worth auditing — high-frequency append-only
-// logs whose change history is the data itself. Auditing them would just churn
-// the bounded _mutation_log and evict useful entries.
-const AUDIT_EXEMPT = new Set(["_fragment_access_log", "_entry_access_log"]);
-
+// Audit exemption (high-frequency append-only logs whose change history is the
+// data itself — auditing them would just churn the bounded _mutation_log) is a
+// per-pattern behavior declared in the policy registry (policy.ts), alongside
+// write class, so it's covered by the same boot-time totality check.
 export function ensureAuditTriggers(db: any, tableName: string): void {
-  if (AUDIT_EXEMPT.has(tableName)) return;
+  if (isAuditExempt(tableName)) return;
   let columns: string[];
   try {
     const info = db.exec(`PRAGMA table_info("${tableName}")`).toArray() as any[];

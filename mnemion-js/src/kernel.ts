@@ -57,6 +57,14 @@ export const IMMUTABLE_AFTER_CREATE: Record<string, { fields: string[]; message:
     fields: ["label"],
     message: "A member's label is immutable — it's the stable handle that passkeys, tokens, and attribution reference. Correct display_name instead, or re-invite under a new label.",
   },
+  _inputs: {
+    // target_pattern gates which pattern anonymous POSTs to /i can write. The
+    // create hook confines it to a user pattern; freezing it after create stops
+    // an update from repointing the endpoint at a kernel pattern (defense in
+    // depth — processInput also re-validates at the write chokepoint).
+    fields: ["target_pattern"],
+    message: "An ingress endpoint's target_pattern is fixed at creation — it gates which pattern anonymous POSTs can write. Archive this endpoint and create a new one to retarget.",
+  },
 };
 
 // === Create hooks — validate + transform before INSERT ===

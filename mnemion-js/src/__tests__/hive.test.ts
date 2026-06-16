@@ -1316,6 +1316,35 @@ describe("kernel-target write boundary", () => {
     }
   });
 
+  it("freezes an ingress endpoint's target_pattern after create (can't be repointed)", async () => {
+    const store = getStore();
+    await createPattern(store, "ev-create", [{ name: "body", type: "text" }]);
+    const created = JSON.parse(await store.mutate("_inputs", "create", JSON.stringify({
+      path: "retarget", target_pattern: "ev-create", body_facet: "body",
+    })));
+    expect(created.error).toBeUndefined();
+    const upd = JSON.parse(await store.mutate("_inputs", "update", JSON.stringify({
+      id: created.entry.id, target_pattern: "_shared",
+    })));
+    expect(upd.error).toBe(true);
+    expect(upd.message).toMatch(/fixed at creation/i);
+  });
+
+  it("refuses ingress at consume time even if an endpoint row names a kernel pattern", async () => {
+    // Defense in depth: simulate a row that reached a kernel target some other
+    // way (legacy/migration/pre-fix update), then confirm processInput — the
+    // unauthenticated public /i chokepoint — still refuses to write it.
+    const store = getStore();
+    await runInDurableObject(store, async (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO "_inputs" (path, target_pattern, visibility) VALUES ('evil', '_shared', 'public')`
+      );
+    });
+    const result = JSON.parse(await store.processInput("evil", "{}", "{}", "{}"));
+    expect(result.error).toBe(true);
+    expect(result.message).toMatch(/not a writable user pattern/);
+  });
+
   it("still allows ingress and upload to user patterns", async () => {
     const store = getStore();
     await createPattern(store, "events", [{ name: "body", type: "text" }]);

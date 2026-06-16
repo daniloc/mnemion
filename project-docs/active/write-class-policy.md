@@ -80,9 +80,27 @@ Consent conditions are data: `always` (every escalating write), `on_expose` (onl
 
 The matrix is now exhaustive by construction, not by the next reviewer finding the next hole.
 
+## Per-pattern behavior is data too
+
+The same shape — "behavior keyed by pattern name, scattered, no totality check" — showed up one level above write-class. Two invisible hand-maintained sets decided pattern behavior with nothing guarding them:
+
+- `KERNEL_INCLUDE` (prime.ts) — which kernel patterns surface in recall. Rename a pattern → it silently drops out of prime.
+- `AUDIT_EXEMPT` (schema.ts) — which high-frequency logs skip audit triggers. Miss one → the audit log churns.
+
+Both are now `primeInclude` / `auditExempt` flags on the same `KERNEL_WRITE_POLICY` row, derived via `primeIncluded()` / `isAuditExempt()`, and covered by the same totality check and the same double-entry matrix test. Each kernel pattern's behavior — write class, consent, recall inclusion, audit exemption — is one row, classified and checked together.
+
+## The ingress consumption fix
+
+The write-class invariant said "ingress/upload may only target user patterns." The *upload* path enforced it at consumption (`consumeUpload` re-checks `isValidWriteTarget`). The *ingress* path validated only at `_inputs` create — but `target_pattern` was mutable and `processInput` (reached by the unauthenticated public `POST /i/{path}`) never re-checked. An agent could repoint an endpoint at `_shared` and let anonymous POSTs publish private entries with no consent round-trip, partially re-opening what commit `38b9465` closed. Fixed by enforcing `isValidWriteTarget` at the write chokepoint (`processInput`) and freezing `_inputs.target_pattern` after create — validate at the boundary, not just at the source.
+
+## Remaining seam (named, not papered over)
+
+Per-pattern **lifecycle hooks** are still hardcoded as `patternName === "_documents"` / `"_system_tasks"` branches inside `hive.ts` (R2 blob deletion on archive, task dispatch on create, upload-token mint on create, R2-availability index annotation). These are imperative side effects bound to the DO (R2 bucket, token minting), not pure data, so lifting them into the registry is a larger refactor with no security payoff — left as a deliberate future seam rather than an unacknowledged scatter. Unlike the invisible sets above, a rename here fails loudly in tests.
+
 ## Files
 
-- `src/policy.ts` — the SSOT (`KERNEL_WRITE_POLICY` + derivations).
-- `src/schema.ts` — `verifyWritePolicyTotality()` boot check.
+- `src/policy.ts` — the SSOT (`KERNEL_WRITE_POLICY` + derivations, incl. `primeInclude`/`auditExempt`).
+- `src/schema.ts` — `verifyWritePolicyTotality()` boot check; `ensureAuditTriggers` derives exemption from the registry.
 - Consumers (read-through, no local predicate): `session.ts`, `data.ts`, `kernel.ts`, `hive.ts`, `evolution.ts`, `prime.ts`.
-- `src/__tests__/policy.test.ts` — the admission matrix.
+- `src/__tests__/policy.test.ts` — the admission matrix (write class + behavioral flags).
+- Ingress fix: `hive.ts` (`processInput` chokepoint re-check), `kernel.ts` (`_inputs.target_pattern` immutable-after-create), tested in `hive.test.ts` "kernel-target write boundary".

@@ -51,6 +51,13 @@ interface ConsentPolicy {
 interface KernelPolicy {
   class: WriteClass;
   consent?: ConsentPolicy;
+  // Behavioral flags that used to live as invisible, hand-maintained sets keyed
+  // by pattern name (prime's KERNEL_INCLUDE, schema's AUDIT_EXEMPT) with no
+  // totality check — a renamed pattern silently dropped out of recall / started
+  // churning the audit log. Folded in here so each kernel pattern's behavior is
+  // one row, covered by the same boot-time totality check as write class.
+  primeInclude?: boolean; // surface this kernel pattern in prime recall (default: kernel patterns are excluded)
+  auditExempt?: boolean;  // skip audit triggers (high-frequency append-only logs whose history is the data)
 }
 
 // === The registry ===
@@ -109,6 +116,7 @@ export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
       message:
         "Making this document non-private serves its file over HTTP at /f/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this file. Call mutate again with the same arguments to proceed.",
     },
+    primeInclude: true, // document contents are searchable + recallable
   },
   _access_tokens: {
     class: WriteClass.Consent,
@@ -130,19 +138,19 @@ export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
   _links: { class: WriteClass.Open },
   _charter: { class: WriteClass.Open },
   _system_tasks: { class: WriteClass.Open },
-  _short_term_fragments: { class: WriteClass.Open },
+  _short_term_fragments: { class: WriteClass.Open, primeInclude: true }, // working memory surfaces in recall
   _maintenance_passes: { class: WriteClass.Open },
   _canvases: { class: WriteClass.Open },
   // Promotion from _short_term_fragments is the intended writer, but direct
   // agent writes have never been denied — kept Open to preserve that behavior.
-  _long_term_fragments: { class: WriteClass.Open },
+  _long_term_fragments: { class: WriteClass.Open, primeInclude: true }, // consolidated memory surfaces in recall
 
   // --- System-only: never agent-writable (caches + audit logs) ---
   // Planting a _web_cache row would make resolve() serve attacker-chosen content
   // as a trusted cache hit; the logs are append-only point-in-time records.
   _web_cache: { class: WriteClass.System },
-  _fragment_access_log: { class: WriteClass.System },
-  _entry_access_log: { class: WriteClass.System },
+  _fragment_access_log: { class: WriteClass.System, auditExempt: true },
+  _entry_access_log: { class: WriteClass.System, auditExempt: true },
   // Not registered in _objects (never reach the mutate path), but listed for
   // parity with the former INTERNAL_WRITE_PROTECTED denylist and as documentation.
   _mutation_log: { class: WriteClass.System },
@@ -180,6 +188,16 @@ export function isValidWriteTarget(pattern: string): boolean {
 /** Consent configuration for a pattern, or null if it carries none. */
 export function consentPolicy(pattern: string): ConsentPolicy | null {
   return KERNEL_WRITE_POLICY[pattern]?.consent ?? null;
+}
+
+/** True if this kernel pattern is surfaced in prime recall (most are excluded). */
+export function primeIncluded(pattern: string): boolean {
+  return KERNEL_WRITE_POLICY[pattern]?.primeInclude === true;
+}
+
+/** True if this pattern is exempt from audit triggers (append-only logs). */
+export function isAuditExempt(pattern: string): boolean {
+  return KERNEL_WRITE_POLICY[pattern]?.auditExempt === true;
 }
 
 /** True if patch must be rejected for this pattern (any consent-gated pattern —

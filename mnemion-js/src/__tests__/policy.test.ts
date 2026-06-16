@@ -11,6 +11,8 @@ import {
   consentPolicy,
   patchRejected,
   consentRoundTripRequired,
+  primeIncluded,
+  isAuditExempt,
 } from "../policy";
 import { verifyWritePolicyTotality } from "../schema";
 
@@ -98,6 +100,30 @@ describe("derivations are consistent with write class, for every pattern", () =>
       // Consent config (and patch rejection) iff Consent class
       expect(consentPolicy(pattern) != null).toBe(cls === WriteClass.Consent);
       expect(patchRejected(pattern)).toBe(cls === WriteClass.Consent);
+    });
+  }
+});
+
+// Behavioral flags lifted out of prime.ts (KERNEL_INCLUDE) and schema.ts
+// (AUDIT_EXEMPT) into the registry. Independently declared here; the derived
+// sets must match exactly, so a flag added/removed in the registry without
+// updating this expectation fails the suite (and vice versa).
+const EXPECTED_PRIME_INCLUDE = new Set(["_short_term_fragments", "_long_term_fragments", "_documents"]);
+const EXPECTED_AUDIT_EXEMPT = new Set(["_fragment_access_log", "_entry_access_log"]);
+
+describe("behavioral flags derive from the registry", () => {
+  it("primeInclude set matches the declared recall surface", () => {
+    const derived = new Set(Object.keys(KERNEL_WRITE_POLICY).filter(primeIncluded));
+    expect(derived).toEqual(EXPECTED_PRIME_INCLUDE);
+  });
+  it("auditExempt set matches the declared append-only logs", () => {
+    const derived = new Set(Object.keys(KERNEL_WRITE_POLICY).filter(isAuditExempt));
+    expect(derived).toEqual(EXPECTED_AUDIT_EXEMPT);
+  });
+  for (const pattern of Object.keys(EXPECTED)) {
+    it(`${pattern} flags are consistent`, () => {
+      expect(primeIncluded(pattern)).toBe(EXPECTED_PRIME_INCLUDE.has(pattern));
+      expect(isAuditExempt(pattern)).toBe(EXPECTED_AUDIT_EXEMPT.has(pattern));
     });
   }
 });
