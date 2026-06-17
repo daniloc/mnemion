@@ -7,6 +7,14 @@
 // The template seam is deliberately small: {{facet}} substitution plus a few
 // specials. Template text passes through raw (owners may write markup);
 // substituted VALUES are escaped in html/rss contexts. No logic, no loops.
+//
+// @why Publications render live pattern projections at request time and store
+// nothing, so the served page is always a consequence of current truth
+// (data-is-destiny applied to publishing). The per-entry template seam
+// substitutes HTML-escaped values into raw template text so an owner can shape
+// output without the projection becoming a stored, drift-prone artifact;
+// superseded entries are excluded by default because a publication projects
+// current truth.
 
 import { deriveLabel, type LabelFacet } from "../../entities/Hive/labels";
 import { uri } from "../core/constants";

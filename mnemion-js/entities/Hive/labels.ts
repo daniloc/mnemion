@@ -3,6 +3,11 @@
 // Used by both the backend (so /api/index can include a stable label) and the
 // frontend Svelte components (Canvas, SchemaViewer, LinkMap). If the algorithm
 // ever needs to evolve, change it here once.
+//
+// @why One deriveLabel so the backend (/api/index) and the frontend Svelte
+// components render an entry's label identically. The label is computed
+// everywhere it's needed, never persisted, per data-is-destiny (store truth
+// once, derive its consequences) — one algorithm, one place to evolve it.
 
 export interface LabelFacet {
   name: string;

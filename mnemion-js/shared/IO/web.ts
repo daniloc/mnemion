@@ -2,6 +2,14 @@
 //
 // Fetches web content through adapter dispatch, caches in _web_cache,
 // embeds for prime recall. Pure functions with context injected.
+//
+// @why Adapter-fetched web content is cached in _web_cache as durable memory,
+// not a TTL-evicted cache: the TTL is a re-fetch horizon, active content is
+// retained indefinitely and surfaces in prime recall, and a re-fetch that
+// returns empty never overwrites a good snapshot. Blocked hosts
+// (loopback/private/link-local/metadata) are refused before fetch, sharing the
+// same isBlockedFederationHost SSRF guard as federation so the boundary is
+// defined once.
 
 import type { Env } from "../Routing/router";
 import { isBlockedFederationHost } from "../../entities/Hive/kernel";

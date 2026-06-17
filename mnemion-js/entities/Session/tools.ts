@@ -2,6 +2,11 @@
 //
 // session.ts imports these for McpServer.tool() calls.
 // /api/tools serves them to the web frontend.
+//
+// @why Tool metadata lives once here as the SSOT feeding both McpServer.tool()
+// registration and the /api/tools frontend, so the agent-facing surface can't
+// drift between the protocol and the UI. New capability comes from patterns and
+// entries, not new tools — the set stays deliberately small.
 
 import { URI_SCHEME, uri } from "../../shared/core/constants";
 

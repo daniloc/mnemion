@@ -2,6 +2,16 @@
 //
 // Pure functions that take a DataContext. HiveDO keeps thin RPC wrappers
 // that add broadcast and transaction concerns.
+//
+// @why The query/mutate/search engine is pure functions over an injected
+// DataContext so the same logic serves the MCP path and the browser /api path
+// without duplication. executeMutate is the one chokepoint every engine write
+// crosses: it strips forged created_by/updated_by, refuses System patterns,
+// refuses any kernel target on an untrusted (ingress) write, and runs the
+// kernel rules — so the boundary holds for callers entering below the MCP
+// consent layer. patch honors field immutability here (not only in the kernel
+// hooks) because applyKernelRules scans top-level keys and a patched facet
+// rides in data.facet.
 
 import { applyKernelRules, immutableFieldError, type KernelContext } from "./kernel";
 import { isInternalWriteProtected, isKernelPattern, isValidWriteTarget } from "./policy";

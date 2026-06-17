@@ -4,6 +4,13 @@
 // queries Vectorize for semantic nearest neighbors, follows links one hop.
 //
 // Pure functions with env/db injected. HiveDO wires the lifecycle.
+//
+// @why Which kernel patterns participate in recall is not a local
+// hand-maintained set — primeIncluded derives from the policy.ts registry,
+// because the former invisible KERNEL_INCLUDE set had no totality check and a
+// renamed pattern would silently drop out of recall. Decay and the stale view
+// derive from _entry_access_log (recall is rehearsal — a prime hit refreshes
+// the decay clock), never from a stored counter, per data-is-destiny.
 
 import { uri } from "../../shared/core/constants";
 import { isKernelPattern, primeIncluded } from "./policy";

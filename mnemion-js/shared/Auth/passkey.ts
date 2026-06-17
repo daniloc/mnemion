@@ -1,3 +1,10 @@
+// WebAuthn passkey registration + authentication (SimpleWebAuthn).
+//
+// @why Lazy-imported (dynamic import in routes/auth) to dodge a tslib
+// resolution issue in the vitest/workerd test environment. User verification is
+// required on both registration and authentication so the passkey is a true
+// second factor, not merely possession of the device.
+
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,

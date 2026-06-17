@@ -5,6 +5,15 @@
 //
 // Kernel tables are defined declaratively: DDL + description + facets co-located.
 // Internal tables (not exposed to agents) are plain DDL.
+//
+// @why Kernel tables are declared once (DDL + description + facets co-located)
+// so the surface is visible by scanning one array, and re-registered into
+// _objects/_fields on every boot so an existing install's kernel docs track the
+// code on deploy. Boot runs two loud integrity checks — verifyFieldsIntegrity
+// (DDL vs _fields drift) and verifyWritePolicyTotality (every kernel table has
+// a write-class) — that warn rather than throw, because a degraded boot is
+// recoverable but a refusing one is not. Migrations are an append-only
+// procedural pile by necessity: point-in-time history is not derivable.
 
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/constants";
 import { TOOLS } from "../Session/tools";

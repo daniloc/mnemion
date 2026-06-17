@@ -1,3 +1,14 @@
+// SessionDO — one McpAgent Durable Object per MCP session.
+//
+// @why It handles the MCP protocol (tools, resources, init instructions) and
+// proxies to the single HiveDO over RPC, keeping protocol concerns out of the
+// data substrate. The consent round-trip lives here, not in the engine, because
+// it needs an interactive re-issue only the MCP path can satisfy — but whether
+// a write is gated derives from policy.ts
+// (consentPolicy/consentRoundTripRequired/patchRejected) so the boundary can't
+// drift from the engine's. The session stamps the authenticated actor from its
+// OAuth props onto every write so attribution is enforced at the protocol edge.
+
 import { McpAgent } from "agents/mcp";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";

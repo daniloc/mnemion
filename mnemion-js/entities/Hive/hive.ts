@@ -1,3 +1,16 @@
+// HiveDO — the single per-user Durable Object that owns all SQLite data.
+//
+// @why Every agent write funnels through hive's
+// mutate/batchMutate/processInput/consumeUpload methods so the kernel-write
+// boundary is enforced at one chokepoint instead of re-derived per call site.
+// It stays a thin shell over the pure-function domain modules (data, kernel,
+// policy, prime, evolution, schema) with db/context injected — but the
+// per-pattern lifecycle reactions (R2 blob delete on archive, _system_tasks
+// dispatch, _documents upload-token mint) remain hardcoded `patternName ===
+// "_x"` branches here: a consciously-retained imperative seam, since lifting
+// them into the registry was judged a larger refactor with no security payoff
+// and they fail loudly in tests on rename.
+
 import { DurableObject } from "cloudflare:workers";
 import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/constants";
 import { evaluateMapping } from "./transform";

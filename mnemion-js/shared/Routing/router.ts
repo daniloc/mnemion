@@ -1,3 +1,13 @@
+// Declarative HTTP dispatch: a route table matched in declaration order.
+//
+// @why The auth helpers here are security-load-bearing: timingSafeEqual is
+// constant-time specifically to close a timing-attack finding on master-secret
+// / setup-token / session-signature checks (replacing `===`), and session
+// cookies carry a random sid plus a KV-stored epoch so every session can be
+// revoked without rotating MNEMION_SECRET. The route table keeps the whole HTTP
+// surface scannable (method, pattern, auth gate, handler per line) so the
+// system's shape is graspable from the declarations alone.
+
 import type { HiveDO } from "../../entities/Hive/hive";
 import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "../core/constants";
 

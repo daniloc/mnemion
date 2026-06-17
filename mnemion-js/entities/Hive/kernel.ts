@@ -3,6 +3,15 @@
 // Declarative hooks that validate and transform data before the generic
 // INSERT/UPDATE/ARCHIVE logic in store.ts runs. Each kernel table's
 // special behavior is visible in one place.
+//
+// @why Declarative pre-mutation hooks so each kernel table's special behavior
+// lives in one visible place. IMMUTABLE / IMMUTABLE_AFTER_CREATE and the
+// register-scope memberActive guard are defense-in-depth against specific
+// attacks: an agent self-approving an invite (approved_at immutable),
+// repointing a token's target after mint, or escalating an invite into
+// owner-takeover. "Which patterns the system writes" and "which are valid
+// ingress/upload targets" are intentionally NOT defined here — they derive from
+// policy.ts so the boundary cannot drift between layers.
 
 import { isKernelPattern, isValidWriteTarget } from "./policy";
 

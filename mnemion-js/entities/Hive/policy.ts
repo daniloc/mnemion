@@ -16,6 +16,15 @@
 //
 // This module is a leaf: it imports nothing from the enforcement layers, so they
 // can all derive from it without cycles.
+//
+// @why That question was previously answered hole-by-hole across three layers
+// plus eleven scattered startsWith("_") checks, and every missed cell was a
+// security hole (set_sharing ungated, the patch-bypass, ingress/upload
+// targeting kernel patterns, register-token takeover). Unclassified kernel
+// patterns fail CLOSED (System → denied) so a new kernel pattern can never
+// silently default to agent-writable; the module is a dependency-free leaf so
+// every enforcement layer derives from it without cycles; write-class is
+// computed at read time, never persisted, to avoid denormalizing the constant.
 
 // === Write classes ===
 

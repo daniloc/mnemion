@@ -3,6 +3,14 @@
 // Each change type is one row in CHANGE_TYPES: validate, preview, apply.
 // The full evolution surface is visible by scanning this table.
 // proposeChange and applyChange are generic dispatchers.
+//
+// @why Schema evolution is a declaration table (CHANGE_TYPES:
+// validate/preview/apply per change type) so the full surface is scannable and
+// adding a change type is one row, not a procedural chain. Changes are proposed
+// then applied in two steps so the agent and the human can preview the index
+// delta before committing; apply fires resource-update notifications.
+// create_pattern reserves the `_` namespace here so a user pattern can never
+// collide with the kernel namespace that isKernelPattern keys on.
 
 import { PRODUCT_NAME, uri } from "../../shared/core/constants";
 import { ensureAuditTriggers } from "./schema";

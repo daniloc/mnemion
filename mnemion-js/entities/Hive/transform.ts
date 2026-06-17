@@ -2,6 +2,12 @@
 // Expressions: dot.path | transform arg | transform arg
 // Resolvers: foo.bar, $header.X-Name, $query.param, $body, $now, "literal"
 // Transforms: truncate N, lower, upper, default "value", json, join ", "
+//
+// @why A tiny declarative DSL for ingress field mapping so an _inputs endpoint
+// can shape arbitrary inbound payloads into pattern facets without code — the
+// mapping is data on the endpoint, evaluated at request time. Resolvers and
+// transforms are a closed, side-effect-free set so an agent-authored mapping
+// can't reach beyond the request envelope.
 
 export interface TransformContext {
   body: unknown;                    // parsed JSON body (or null)

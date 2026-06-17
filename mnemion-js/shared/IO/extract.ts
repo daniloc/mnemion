@@ -9,6 +9,13 @@
 //   - PDF: unpdf (serverless pdf.js) — runs in workerd (spiked), but CPU-heavier,
 //     so the caller runs it off the response path (waitUntil).
 // Anything else (images, office docs) is unsupported for now.
+//
+// @why Inline text extraction runs synchronously but PDF extraction is deferred
+// to the DO's waitUntil off the response path, because only the Durable Object
+// has waitUntil and PDF parsing is slow; extracted text is capped to stay under
+// the 1 MB entry limit. Extraction is the only missing piece for document
+// search/recall — once text lands in _documents.extracted_text, search (FTS)
+// and prime (embedding) cover it for free.
 
 // Cap stored text well under the 1 MB entry limit (length×2 bytes); enough to
 // cover the searchable substance of most documents.

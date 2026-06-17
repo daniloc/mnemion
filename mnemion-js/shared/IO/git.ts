@@ -3,6 +3,12 @@
 // Synthesizes a virtual git repo from a file tree (path → content).
 // Implements just enough of the git smart HTTP protocol for `git clone`.
 // No actual git repo on disk. No push support. No delta compression.
+//
+// @why Synthesizes a virtual git repo from an in-memory file tree and speaks
+// just enough of the git smart-HTTP protocol for read-only `git clone`, so the
+// marketplace serves plugins/skills over standard git tooling with no repo on
+// disk and no push path. Deliberately minimal — no delta compression, no write
+// support — because the only consumer is read-only clone.
 
 import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
