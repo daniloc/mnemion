@@ -1,25 +1,13 @@
 <script lang="ts">
   import { browser } from './env.js';
-  import { onMount, tick } from 'svelte';
-  import { deriveLabel, truncate } from '../../entities/Hive/labels';
-
-  function focusOnMount(node: HTMLElement) {
-    tick().then(() => node.focus());
-  }
-  import HiveMap from './HiveMap.svelte';
-  import LinkMap from './LinkMap.svelte';
-  import EntryDetail from './EntryDetail.svelte';
+  import { onMount } from 'svelte';
 
   interface Facet {
     name: string;
     type: string;
     required: boolean;
-    default?: string | number | boolean | null;
-    links?: string | null;
-    readonly?: boolean;
     options?: string[];
   }
-
   interface Pattern {
     name: string;
     description: string;
@@ -28,820 +16,576 @@
     entry_count: number;
     latest_activity?: string | null;
   }
-
   interface Props {
     patterns: Pattern[];
     charter: Record<string, string>;
     guidance: string;
   }
 
-  let { patterns, charter, guidance }: Props = $props();
+  let { patterns = [], charter = {}, guidance = '' }: Props = $props();
 
   let selected: Pattern | null = $state(null);
-  let filter = $state('');
   let entries: Record<string, unknown>[] = $state([]);
-  let loadingEntries = $state(false);
-  let selectedEntry: Record<string, unknown> | null = $state(null);
-  let landingView: 'patterns' | 'links' | 'tools' = $state('patterns');
+  let loading = $state(false);
+  let menuOpen = $state(false);
 
-  interface ToolMeta {
-    name: string;
-    description: string;
-    when: string;
-  }
-  let tools: ToolMeta[] = $state([]);
-  let toolsLoaded = $state(false);
+  // Index already arrives sorted by latest_activity (most recent first). Split
+  // user patterns from the kernel/system patterns, which sink to the bottom.
+  let userPatterns = $derived(patterns.filter(p => !p.name.startsWith('_')));
+  let kernelPatterns = $derived(patterns.filter(p => p.name.startsWith('_')));
 
-  async function loadTools() {
-    if (toolsLoaded) return;
-    try {
-      const res = await fetch('/api/tools');
-      tools = await res.json();
-      toolsLoaded = true;
-    } catch {}
-  }
-
-  let visible = $derived(
-    patterns.filter(p =>
-      p.name.toLowerCase().includes(filter.toLowerCase())
-    )
-  );
-
-  let kernel = $derived(visible.filter(p => p.name.startsWith('_')));
-  let user = $derived(visible.filter(p => !p.name.startsWith('_')));
-
-  // Determine which facet to use as the "name" for list cells
-  function entryLabel(entry: Record<string, unknown>): string {
-    if (!selected) return String(entry.id);
-    return truncate(deriveLabel(entry, selected.facets), 80);
-  }
-
-  function formatDate(val: unknown): string {
+  // --- time ---
+  function relativeTime(val: unknown): string {
     if (!val) return '';
-    const d = new Date(String(val));
+    const d = new Date(String(val).replace(' ', 'T') + (String(val).includes('Z') ? '' : 'Z'));
+    if (isNaN(d.getTime())) return '';
+    const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+    if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+  function fullTime(val: unknown): string {
+    if (!val) return '';
+    const d = new Date(String(val).replace(' ', 'T') + (String(val).includes('Z') ? '' : 'Z'));
     if (isNaN(d.getTime())) return String(val);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-      + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+      + ' · ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   }
 
-  function pushHash(patternName?: string, entryId?: unknown) {
+  // --- entry rendering: every populated facet, the entry in its entirety ---
+  const KERNEL_COLS = new Set(['id', 'version', 'created_at', 'updated_at', 'archived_at', 'created_by', 'updated_by']);
+
+  function fields(entry: Record<string, unknown>): { name: string; value: string; lead: boolean; long: boolean }[] {
+    if (!selected) return [];
+    const out: { name: string; value: string; lead: boolean; long: boolean }[] = [];
+    let leadTaken = false;
+    for (const f of selected.facets) {
+      if (KERNEL_COLS.has(f.name)) continue;
+      const raw = entry[f.name];
+      if (raw === null || raw === undefined || raw === '') continue;
+      let value = f.type === 'datetime' ? fullTime(raw)
+        : f.type === 'boolean' ? (raw ? 'yes' : 'no')
+        : String(raw);
+      const long = value.length > 88 || value.includes('\n');
+      const lead = !leadTaken && f.type === 'text';
+      if (lead) leadTaken = true;
+      out.push({ name: f.name, value, lead, long });
+    }
+    return out;
+  }
+
+  // --- navigation / data ---
+  function pushHash(name?: string) {
     if (!browser) return;
-    const hash = patternName
-      ? entryId != null ? `#${patternName}/${entryId}` : `#${patternName}`
-      : '';
-    history.replaceState(null, '', hash || location.pathname);
+    history.replaceState(null, '', name ? `#${name}` : location.pathname);
   }
 
-  async function selectPattern(pattern: Pattern, restoreEntryId?: string) {
-    selected = pattern;
+  async function selectPattern(p: Pattern) {
+    selected = p;
     entries = [];
-    selectedEntry = null;
-    editingDoctrine = false;
-    if (!restoreEntryId) pushHash(pattern.name);
+    menuOpen = false;
+    pushHash(p.name);
     if (!browser) return;
-    loadingEntries = true;
+    loading = true;
     try {
-      const res = await fetch(`/api/query/${pattern.name}`);
+      const res = await fetch(`/api/query/${p.name}`);
       const data = await res.json();
       entries = data.entries || [];
-      if (restoreEntryId) {
-        const match = entries.find(e => String(e.id) === restoreEntryId);
-        if (match) {
-          selectedEntry = match;
-          pushHash(pattern.name, match.id);
-        } else {
-          pushHash(pattern.name);
-        }
-      }
-    } catch {
-      entries = [];
-    }
-    loadingEntries = false;
+    } catch { entries = []; }
+    loading = false;
   }
 
-
-  function showMap() {
+  function goCover() {
     selected = null;
     entries = [];
-    selectedEntry = null;
+    menuOpen = false;
     pushHash();
   }
 
-  function parseHash(): { patternName?: string; entryId?: string } {
-    if (!browser) return {};
-    const hash = location.hash.slice(1);
-    if (!hash) return {};
-    const [patternName, entryId] = hash.split('/');
-    return { patternName, entryId };
-  }
-
-  // Live updates via WebSocket
+  // --- live updates ---
   let ws: WebSocket | null = null;
-  let reconnectTimer: ReturnType<typeof setTimeout>;
-
+  let reconnect: ReturnType<typeof setTimeout>;
   function connectLive() {
     if (!browser) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws`);
-
     ws.onmessage = async (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'changed') {
-          const changed: string[] = msg.patterns;
-          // Schema change — reload the whole page to get fresh index
-          if (changed.includes('_schema')) {
-            location.reload();
-            return;
-          }
-          // Refresh index (entry counts, etc.)
-          try {
-            const res = await fetch('/api/index');
-            const idx = await res.json();
-            patterns = idx.patterns;
-            charter = idx.charter ?? {};
-            // Update selected pattern reference if still viewing one
-            if (selected) {
-              const fresh = patterns.find(p => p.name === selected!.name);
-              if (fresh) selected = fresh;
-            }
-          } catch { /* index refresh failed, not fatal */ }
-          // If we're viewing a pattern that was mutated, re-fetch entries
-          if (selected && changed.includes(selected.name)) {
-            selectPattern(selected, selectedEntry ? String(selectedEntry.id) : undefined);
-          }
-        }
-      } catch { /* ignore bad messages */ }
+        if (msg.type !== 'changed') return;
+        const changed: string[] = msg.patterns || [];
+        if (changed.includes('_schema')) { location.reload(); return; }
+        try {
+          const idx = await (await fetch('/api/index')).json();
+          patterns = idx.patterns;
+          charter = idx.charter ?? {};
+          if (selected) selected = patterns.find(p => p.name === selected!.name) ?? selected;
+        } catch {}
+        if (selected && changed.includes(selected.name)) selectPattern(selected);
+      } catch {}
     };
-
-    ws.onclose = () => {
-      ws = null;
-      reconnectTimer = setTimeout(connectLive, 3000);
-    };
-
-    ws.onerror = () => {
-      ws?.close();
-    };
+    ws.onclose = () => { ws = null; reconnect = setTimeout(connectLive, 3000); };
+    ws.onerror = () => ws?.close();
   }
 
-  // Restore from URL on mount + connect live
   onMount(() => {
-    const { patternName, entryId } = parseHash();
-    if (patternName) {
-      const match = patterns.find(p => p.name === patternName);
-      if (match) selectPattern(match, entryId);
-    }
+    const name = location.hash.slice(1);
+    if (name) { const m = patterns.find(p => p.name === name); if (m) selectPattern(m); }
     connectLive();
-    return () => {
-      clearTimeout(reconnectTimer);
-      ws?.close();
-    };
+    return () => { clearTimeout(reconnect); ws?.close(); };
   });
 
-  // Doctrine editing
-  let editingDoctrine = $state(false);
-  let doctrineText = $state('');
-  let savingDoctrine = $state(false);
-
-  function startDoctrineEdit() {
-    if (!selected) return;
-    doctrineText = selected.doctrine || '';
-    editingDoctrine = true;
-  }
-
-  async function saveDoctrine() {
-    if (!selected || !browser) return;
-    savingDoctrine = true;
-    try {
-      const res = await fetch('/api/evolve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          description: `Set doctrine for ${selected.name}`,
-          change: { type: 'set_doctrine', pattern_name: selected.name, doctrine: doctrineText },
-        }),
-      });
-      const result = await res.json();
-      if (!result.error) {
-        selected.doctrine = doctrineText;
-        editingDoctrine = false;
-      }
-    } catch {}
-    savingDoctrine = false;
-  }
-
-  function selectEntry(entry: Record<string, unknown>) {
-    selectedEntry = entry;
-    if (selected) pushHash(selected.name, entry.id);
-  }
-
-  function deselectEntry() {
-    selectedEntry = null;
-    if (selected) pushHash(selected.name);
-  }
+  const charterEntries = $derived(Object.entries(charter).filter(([, v]) => v && String(v).trim()));
 </script>
 
-<div class="hive">
-  <header>
-    <button class="hive-title" onclick={showMap}><h1>hive</h1></button>
-    <p class="guidance">{guidance}</p>
+<svelte:head>
+  <title>mnemion</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+</svelte:head>
+
+<div class="shell" class:menu-open={menuOpen}>
+  <!-- mobile top bar -->
+  <header class="topbar">
+    <button class="menu-btn" onclick={() => (menuOpen = !menuOpen)} aria-label="patterns">
+      <span></span><span></span><span></span>
+    </button>
+    <button class="wordmark mobile-word" onclick={goCover}>mnemion</button>
+    <span class="topbar-current">{selected ? selected.name : ''}</span>
   </header>
 
-  <div class="layout">
-    <nav>
-      <input
-        class="filter"
-        type="text"
-        placeholder="filter patterns…"
-        bind:value={filter}
-      />
+  <!-- sidebar -->
+  <aside class="sidebar">
+    <button class="wordmark" onclick={goCover}>
+      mnemion
+      <span class="wordmark-sub">a notebook</span>
+    </button>
 
-      {#if user.length > 0}
-        <section>
-          <h2>patterns</h2>
-          {#each user as pattern (pattern.name)}
-            <button
-              class="pattern-item"
-              class:active={selected?.name === pattern.name}
-              onclick={() => selectPattern(pattern)}
-            >
-              <span class="name">{pattern.name}</span>
-              <span class="count">{pattern.entry_count}</span>
-            </button>
-          {/each}
-        </section>
-      {/if}
-
-      {#if kernel.length > 0}
-        <section>
-          <h2>kernel</h2>
-          {#each kernel as pattern (pattern.name)}
-            <button
-              class="pattern-item kernel"
-              class:active={selected?.name === pattern.name}
-              onclick={() => selectPattern(pattern)}
-            >
-              <span class="name">{pattern.name}</span>
-              <span class="count">{pattern.entry_count}</span>
-            </button>
-          {/each}
-        </section>
-      {/if}
-
-      {#if Object.keys(charter).length > 0}
-        <section class="charter-section">
-          <h2>charter</h2>
-          {#each Object.entries(charter) as [key, value]}
-            <div class="charter-entry">
-              <div class="charter-key">{key}</div>
-              <div class="charter-value">{value}</div>
-            </div>
-          {/each}
-        </section>
-      {/if}
+    <nav class="patterns">
+      {#each userPatterns as p (p.name)}
+        <button class="pat" class:active={selected?.name === p.name} onclick={() => selectPattern(p)}>
+          <span class="pat-name">{p.name}</span>
+          <span class="pat-meta">
+            <span class="pat-count">{p.entry_count}</span>
+            {#if p.latest_activity}<span class="pat-time">{relativeTime(p.latest_activity)}</span>{/if}
+          </span>
+        </button>
+      {/each}
     </nav>
 
-    <main>
-      {#if selected}
-        <div class="split">
-          <div class="entry-list">
-            <div class="list-header">
-              <h2>{selected.name}</h2>
-              <span class="entry-count">{selected.entry_count} {selected.entry_count === 1 ? 'entry' : 'entries'}</span>
+    {#if kernelPatterns.length}
+      <div class="group-label">system</div>
+      <nav class="patterns kernel">
+        {#each kernelPatterns as p (p.name)}
+          <button class="pat pat-sys" class:active={selected?.name === p.name} onclick={() => selectPattern(p)}>
+            <span class="pat-name">{p.name}</span>
+            <span class="pat-count">{p.entry_count}</span>
+          </button>
+        {/each}
+      </nav>
+    {/if}
+  </aside>
+
+  <!-- scrim for mobile menu -->
+  <button class="scrim" aria-label="close menu" onclick={() => (menuOpen = false)}></button>
+
+  <!-- main -->
+  <main class="main">
+    {#if !selected}
+      <!-- cover page: the notebook's identity -->
+      <section class="cover">
+        <div class="cover-mark">mnemion</div>
+        {#if guidance}<p class="cover-lede">{guidance}</p>{/if}
+        <div class="cover-charter">
+          {#each charterEntries as [key, value]}
+            <div class="charter-row">
+              <div class="charter-key">{key.replace(/_/g, ' ')}</div>
+              <p class="charter-val">{value}</p>
             </div>
-
-            {#if loadingEntries}
-              <p class="status">loading…</p>
-            {:else if entries.length === 0}
-              <p class="status">no entries</p>
-            {:else}
-              <div class="list-scroll">
-                {#each entries as entry (entry.id)}
-                  <button
-                    class="entry-item"
-                    class:active={selectedEntry?.id === entry.id}
-                    onclick={() => selectEntry(entry)}
-                  >
-                    <span class="entry-label">{entryLabel(entry)}</span>
-                    <span class="entry-meta">{entry.id} · {formatDate(entry.updated_at)}</span>
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-
-          <div class="entry-detail">
-            {#if selectedEntry}
-              <EntryDetail
-                patternName={selected.name}
-                facets={selected.facets}
-                entry={selectedEntry}
-                onsave={(updated) => {
-                  // Refresh entry in list
-                  selectedEntry = updated;
-                  entries = entries.map(e => e.id === updated.id ? updated : e);
-                }}
-              />
-            {:else}
-              <div class="schema-pane">
-                <div class="schema-header">
-                  <h3>schema</h3>
-                  <p class="description">{selected.description}</p>
-                  {#if editingDoctrine}
-                    <div class="doctrine-edit">
-                      <textarea
-                        class="doctrine-textarea"
-                        bind:value={doctrineText}
-                        onkeydown={(e) => { if (e.key === 'Escape') { editingDoctrine = false; } }}
-                        use:focusOnMount
-                      ></textarea>
-                      <div class="doctrine-actions">
-                        <button class="toolbar-btn cancel" onclick={() => { editingDoctrine = false; }} disabled={savingDoctrine}>cancel</button>
-                        <button class="toolbar-btn save" onclick={saveDoctrine} disabled={savingDoctrine}>
-                          {savingDoctrine ? 'saving…' : 'save'}
-                        </button>
-                      </div>
-                    </div>
-                  {:else}
-                    <!-- svelte-ignore a11y_no_static_element_interactions -->
-                    <p class="doctrine" class:empty={!selected.doctrine} ondblclick={startDoctrineEdit}>
-                      {selected.doctrine || 'no doctrine — double-click to set'}
-                    </p>
-                  {/if}
-                </div>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>facet</th>
-                      <th>type</th>
-                      <th>req</th>
-                      <th>default</th>
-                      <th>link</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {#each selected.facets as f (f.name)}
-                      <tr>
-                        <td class="facet-name">{f.name}</td>
-                        <td class="facet-type">{f.type}</td>
-                        <td class="facet-req">{f.required ? '●' : ''}</td>
-                        <td class="facet-default">{f.default ?? ''}</td>
-                        <td class="facet-link">{f.links ?? ''}</td>
-                      </tr>
-                    {/each}
-                  </tbody>
-                </table>
-              </div>
-            {/if}
-          </div>
+          {/each}
         </div>
-      {:else}
-        <div class="hive-landing">
-          <div class="landing-toggle">
-            <button class:active={landingView === 'patterns'} onclick={() => { landingView = 'patterns'; }}>patterns</button>
-            <button class:active={landingView === 'links'} onclick={() => { landingView = 'links'; }}>links</button>
-            <button class:active={landingView === 'tools'} onclick={() => { landingView = 'tools'; loadTools(); }}>tools</button>
+        {#if !charterEntries.length}
+          <p class="cover-empty">Select a pattern to begin.</p>
+        {/if}
+      </section>
+    {:else}
+      <section class="pattern-view">
+        <header class="pattern-head">
+          <h1>{selected.name}</h1>
+          <div class="pattern-sub">
+            <span class="ct">{selected.entry_count} {selected.entry_count === 1 ? 'entry' : 'entries'}</span>
+            {#if selected.description}<span class="desc">{selected.description}</span>{/if}
           </div>
-          {#if landingView === 'links'}
-            <LinkMap {patterns} onselect={(pn, eid) => { const p = patterns.find(x => x.name === pn); if (p) selectPattern(p, eid); }} />
-          {:else if landingView === 'tools'}
-            <div class="tools-guide">
-              {#if tools.length === 0}
-                <p class="status">loading…</p>
-              {:else}
-                <div class="tools-list">
-                  {#each tools as tool (tool.name)}
-                    <div class="tool-entry">
-                      <div class="tool-name">{tool.name}</div>
-                      <div class="tool-when"><span class="tool-when-label">when to use</span> {tool.when}</div>
-                      <pre class="tool-description">{tool.description}</pre>
+        </header>
+
+        {#if loading}
+          <div class="status">loading…</div>
+        {:else if entries.length === 0}
+          <div class="status">No entries yet.</div>
+        {:else}
+          <div class="stack">
+            {#each entries as entry, i (entry.id)}
+              <article class="block" style="--i:{Math.min(i, 12)}">
+                <div class="block-fields">
+                  {#each fields(entry) as field}
+                    <div class="field" class:lead={field.lead} class:long={field.long}>
+                      <div class="field-name">{field.name}</div>
+                      <div class="field-value">{field.value}</div>
                     </div>
                   {/each}
                 </div>
-              {/if}
-            </div>
-          {:else}
-            <HiveMap {patterns} onselect={(p) => selectPattern(p)} />
-          {/if}
-        </div>
-      {/if}
-    </main>
-  </div>
+                <footer class="block-meta">
+                  <span class="id">#{entry.id}</span>
+                  {#if entry.updated_at}<span title={fullTime(entry.updated_at)}>{relativeTime(entry.updated_at)}</span>{/if}
+                  {#if entry.created_by}<span class="author">{entry.created_by}</span>{/if}
+                </footer>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
+    {/if}
+  </main>
 </div>
 
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=DM+Sans:wght@400;500;700&display=swap');
-
-  :global(*) { margin: 0; padding: 0; box-sizing: border-box; }
-  :global(body) {
-    font-family: 'DM Sans', system-ui, sans-serif;
-    background: #0a0a0c;
-    color: #c8c8d0;
-    -webkit-font-smoothing: antialiased;
+  :global(:root) {
+    --paper: #f1efe8;
+    --paper-2: #e9e6dd;
+    --card: #fbfaf6;
+    --ink: #1b1a16;
+    --ink-2: #514d45;
+    --ink-3: #8b867b;
+    --line: #dcd8cd;
+    --line-strong: #cbc6b8;
+    --accent: #cf4a1a;
+    --accent-tint: #f6e3d8;
+    --sans: 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif;
+    --mono: 'Spline Sans Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   }
 
-  .hive {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
+  :global(*) { box-sizing: border-box; }
+  :global(body) { margin: 0; }
+  :global(::selection) { background: var(--accent-tint); color: var(--ink); }
 
-  header {
-    padding: 2rem 2.5rem 1.5rem;
-    border-bottom: 1px solid #1a1a22;
-  }
-
-  .hive-title {
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-  }
-
-  h1 {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.85rem;
-    font-weight: 600;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: #e8c872;
-    transition: opacity 0.15s;
-  }
-  .hive-title:hover h1 { opacity: 0.7; }
-
-  .guidance {
-    margin-top: 0.4rem;
-    font-size: 0.85rem;
-    color: #6a6a78;
-    font-style: italic;
-  }
-
-  .layout {
+  .shell {
     display: grid;
-    grid-template-columns: 280px 1fr;
-    flex: 1;
-    min-height: 0;
+    grid-template-columns: 304px 1fr;
+    min-height: 100vh;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    /* faint paper grain */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
   }
 
-  nav {
-    border-right: 1px solid #1a1a22;
-    padding: 1rem 0;
+  /* ---------- sidebar ---------- */
+  .sidebar {
+    grid-column: 1;
+    border-right: 1px solid var(--line-strong);
+    padding: 26px 14px 40px;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    height: 100vh;
     overflow-y: auto;
-    max-height: calc(100vh - 90px);
-  }
-
-  .filter {
-    display: block;
-    width: calc(100% - 2rem);
-    margin: 0 1rem 1rem;
-    padding: 0.5rem 0.75rem;
-    background: #12121a;
-    border: 1px solid #1a1a22;
-    border-radius: 6px;
-    color: #c8c8d0;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.8rem;
-    outline: none;
-    transition: border-color 0.15s;
-  }
-  .filter:focus { border-color: #e8c872; }
-  .filter::placeholder { color: #3a3a48; }
-
-  section { margin-bottom: 1.5rem; }
-
-  h2 {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: #4a4a58;
-    padding: 0 1rem;
-    margin-bottom: 0.5rem;
-  }
-
-  .pattern-item {
+    background: var(--paper);
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    width: 100%;
-    padding: 0.5rem 1rem;
-    border: none;
+    flex-direction: column;
+  }
+
+  .wordmark {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 17px;
+    letter-spacing: -0.02em;
+    color: var(--ink);
     background: none;
-    color: #c8c8d0;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.82rem;
+    border: 0;
+    padding: 6px 10px;
+    margin-bottom: 22px;
     cursor: pointer;
-    transition: background 0.1s;
     text-align: left;
-  }
-  .pattern-item:hover { background: #14141e; }
-  .pattern-item.active {
-    background: #1a1a28;
-    color: #e8c872;
-  }
-  .pattern-item.kernel .name { color: #6a6a78; }
-  .pattern-item.kernel.active .name { color: #e8c872; }
-
-  .count {
-    font-size: 0.7rem;
-    color: #3a3a48;
-    min-width: 2rem;
-    text-align: right;
-  }
-  .active .count { color: #a89044; }
-
-  .charter-entry {
-    padding: 0.35rem 1rem;
-    font-size: 0.78rem;
-    line-height: 1.4;
-  }
-  .charter-entry + .charter-entry { margin-top: 0.25rem; }
-  .charter-key {
-    color: #a89044;
-    font-size: 0.65rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .charter-value {
-    color: #8a8a98;
-    margin-top: 0.1rem;
-  }
-
-  main {
-    min-height: 0;
-    max-height: calc(100vh - 90px);
-  }
-
-  .hive-landing {
-    height: calc(100vh - 90px);
-    width: 100%;
     display: flex;
     flex-direction: column;
+    gap: 2px;
   }
-
-  .landing-toggle {
-    display: flex;
-    gap: 0;
-    border-bottom: 1px solid #1a1a22;
-    flex-shrink: 0;
-  }
-
-  .landing-toggle button {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    padding: 0.6rem 1.2rem;
-    border: none;
-    background: none;
-    color: #4a4a58;
-    cursor: pointer;
-    transition: color 0.1s;
-  }
-  .landing-toggle button:hover { color: #c8c8d0; }
-  .landing-toggle button.active {
-    color: #e8c872;
-    box-shadow: inset 0 -2px 0 #e8c872;
-  }
-
-  /* Split view */
-  .split {
-    display: flex;
-    flex-direction: column;
-    height: calc(100vh - 90px);
-  }
-
-  .entry-list {
-    height: 33.33%;
-    border-bottom: 1px solid #1a1a22;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    min-width: 0;
-  }
-
-  .list-header {
-    display: flex;
-    align-items: baseline;
-    gap: 1rem;
-    padding: 1.25rem 2rem 0.75rem;
-    flex-shrink: 0;
-  }
-
-  .list-header h2 {
-    font-size: 0.85rem;
-    color: #e8c872;
-    padding: 0;
-    text-transform: none;
-    letter-spacing: 0.05em;
-  }
-
-  .entry-count {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    color: #4a4a58;
-  }
-
-  .list-scroll {
-    overflow-y: auto;
-    flex: 1;
-    min-height: 0;
-  }
-
-  .entry-item {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    min-width: 0;
-    padding: 0.6rem 2rem;
-    border: none;
-    background: none;
-    cursor: pointer;
-    transition: background 0.1s;
-    text-align: left;
-    gap: 0.15rem;
-  }
-  .entry-item:hover { background: #14141e; }
-  .entry-item.active { background: #1a1a28; }
-
-  .entry-label {
-    font-family: 'DM Sans', system-ui, sans-serif;
-    font-size: 0.88rem;
+  .wordmark-sub {
+    font-family: var(--sans);
     font-weight: 500;
-    color: #c8c8d0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-3);
   }
-  .entry-item.active .entry-label { color: #e8c872; }
 
-  .entry-meta {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    color: #4a4a58;
+  .patterns { display: flex; flex-direction: column; gap: 2px; }
+
+  /* the big thick pattern button */
+  .pat {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: 0;
+    border-left: 3px solid transparent;
+    padding: 14px 13px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: var(--mono);
+    color: var(--ink-2);
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
+  .pat:hover { background: var(--paper-2); color: var(--ink); }
+  .pat.active {
+    background: var(--card);
+    border-left-color: var(--accent);
+    color: var(--ink);
+    box-shadow: 0 1px 0 var(--line) inset, 0 -1px 0 var(--line) inset;
+  }
+  .pat-name {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+  .pat.active .pat-name { font-weight: 600; }
+  .pat-meta { display: flex; align-items: baseline; gap: 10px; }
+  .pat-count {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .pat.active .pat-count { color: var(--accent); }
+  .pat-time {
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .group-label {
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 0 13px;
+    margin: 26px 0 8px;
+    border-top: 1px solid var(--line);
+    padding-top: 20px;
+  }
+  .kernel .pat-sys {
+    padding: 10px 13px;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .kernel .pat-name { font-size: 12.5px; font-weight: 400; color: var(--ink-3); }
+  .kernel .pat-sys:hover .pat-name,
+  .kernel .pat-sys.active .pat-name { color: var(--ink); }
+
+  /* ---------- main ---------- */
+  .main {
+    grid-column: 2;
+    padding: 0;
+    min-width: 0;
+  }
+
+  /* cover page */
+  .cover { max-width: 720px; padding: 96px 56px 120px; }
+  .cover-mark {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: clamp(40px, 8vw, 76px);
+    letter-spacing: -0.04em;
+    line-height: 0.95;
+    margin-bottom: 28px;
+  }
+  .cover-lede {
+    font-size: 18px;
+    line-height: 1.6;
+    color: var(--ink-2);
+    max-width: 56ch;
+    margin: 0 0 56px;
+  }
+  .cover-charter { display: flex; flex-direction: column; gap: 30px; }
+  .charter-row {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: 22px;
+    padding-top: 22px;
+    border-top: 1px solid var(--line);
+  }
+  .charter-key {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+    color: var(--accent);
+    padding-top: 3px;
+  }
+  .charter-val {
+    margin: 0;
+    font-size: 14.5px;
+    line-height: 1.62;
+    color: var(--ink-2);
+    white-space: pre-wrap;
+  }
+  .cover-empty { color: var(--ink-3); font-family: var(--mono); font-size: 13px; }
+
+  /* pattern view */
+  .pattern-view { max-width: 760px; padding: 64px 56px 140px; }
+  .pattern-head { margin-bottom: 40px; }
+  .pattern-head h1 {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 32px;
+    letter-spacing: -0.03em;
+    margin: 0 0 12px;
+  }
+  .pattern-sub { display: flex; flex-wrap: wrap; align-items: baseline; gap: 16px; }
+  .pattern-sub .ct {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .pattern-sub .desc { font-size: 14px; line-height: 1.5; color: var(--ink-2); max-width: 60ch; }
 
   .status {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.8rem;
-    color: #3a3a48;
-    padding: 1rem 2rem;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink-3);
+    padding: 8px 0;
   }
 
-  /* Entry detail */
-  .entry-detail {
-    height: 66.67%;
-    min-height: 0;
-    position: relative;
+  /* the entry stack */
+  .stack { display: flex; flex-direction: column; gap: 16px; }
+  .block {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 24px 26px 16px;
+    animation: rise 440ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    animation-delay: calc(var(--i) * 32ms);
   }
-
-  .detail-scroll {
-    overflow-y: auto;
-    height: 100%;
-    padding: 0.75rem 2rem 1.5rem;
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
   }
+  @media (prefers-reduced-motion: reduce) { .block { animation: none; } }
 
-  .schema-pane {
-    overflow-y: auto;
-    height: 100%;
-    padding: 1.5rem 2rem;
-  }
-
-  .schema-header {
-    margin-bottom: 1.25rem;
-  }
-
-  .schema-header h3 {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.2em;
+  .block-fields { display: flex; flex-direction: column; gap: 14px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-name {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #4a4a58;
-    margin-bottom: 0.4rem;
+    color: var(--ink-3);
   }
-
-  .description {
-    font-size: 0.85rem;
-    color: #6a6a78;
-    line-height: 1.5;
-  }
-
-  .doctrine {
-    font-size: 0.75rem;
-    color: #e8c872;
-    line-height: 1.4;
-    margin-top: 0.3rem;
-    padding: 0.3rem 0.4rem;
-    border-left: 2px solid #e8c87233;
-    cursor: pointer;
-  }
-  .doctrine.empty {
-    color: #3a3a48;
-    font-style: italic;
-  }
-
-  .doctrine-edit {
-    margin-top: 0.3rem;
-  }
-  .doctrine-textarea {
-    width: 100%;
-    min-height: 3rem;
-    background: #0d0d12;
-    color: #e8c872;
-    border: 1px solid #e8c87255;
-    border-radius: 3px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    padding: 0.4rem;
-    resize: vertical;
-  }
-  .doctrine-textarea:focus { border-color: #e8c872; outline: none; }
-  .doctrine-actions {
-    display: flex;
-    gap: 0.4rem;
-    margin-top: 0.3rem;
-    justify-content: flex-end;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-
-  th {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: #4a4a58;
-    text-align: left;
-    padding: 0.6rem 1rem;
-    border-bottom: 1px solid #1a1a22;
-    white-space: nowrap;
-  }
-
-  td {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.82rem;
-    padding: 0.6rem 1rem;
-    border-bottom: 1px solid #111118;
-  }
-
-  .facet-name { color: #c8c8d0; }
-  .facet-type { color: #6a8a9a; }
-  .facet-req { color: #e8c872; text-align: center; width: 3rem; }
-  th:nth-child(3) { text-align: center; width: 3rem; }
-  .facet-default { color: #5a5a68; }
-  .facet-link { color: #7a6a9a; }
-
-  tr:hover td { background: #0e0e14; }
-
-  /* Tools guide */
-  .tools-guide {
-    padding: 2rem;
-    overflow-y: auto;
-    flex: 1;
-  }
-
-  .tools-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2rem;
-  }
-
-  .tool-entry .tool-name {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.9rem;
-    color: #e8c872;
-    font-weight: 600;
-    margin-bottom: 0.25rem;
-  }
-
-  .tool-entry .tool-when {
-    font-family: 'DM Sans', system-ui, sans-serif;
-    font-size: 0.88rem;
-    color: #6a6a78;
-    margin-bottom: 0.5rem;
-  }
-
-  .tool-when-label {
-    font-variant: small-caps;
-    letter-spacing: 0.05em;
-    margin-right: 0.35em;
-  }
-
-  .tool-entry .tool-description {
-    font-family: 'DM Sans', system-ui, sans-serif;
-    font-size: 0.9rem;
-    color: #8a8a98;
+  .field-value {
+    font-size: 14.5px;
     line-height: 1.6;
-    margin: 0;
+    color: var(--ink);
     white-space: pre-wrap;
-    word-wrap: break-word;
+    word-break: break-word;
   }
+  /* the lead facet reads as the entry's headline */
+  .field.lead .field-value {
+    font-size: 18px;
+    line-height: 1.5;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+  }
+  .field.lead .field-name { display: none; }
+  .field:not(.long):not(.lead) {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 14px;
+  }
+  .field:not(.long):not(.lead) .field-name { padding-top: 1px; min-width: 96px; }
+
+  .block-meta {
+    display: flex;
+    gap: 16px;
+    align-items: baseline;
+    margin-top: 18px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.03em;
+    color: var(--ink-3);
+  }
+  .block-meta .id { color: var(--ink-2); }
+  .block-meta .author { margin-left: auto; }
+
+  /* ---------- mobile ---------- */
+  .topbar { display: none; }
+  .scrim { display: none; }
+
+  @media (max-width: 820px) {
+    .shell { grid-template-columns: 1fr; }
+    .topbar {
+      grid-column: 1;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      height: 56px;
+      padding: 0 16px;
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      background: var(--paper);
+      border-bottom: 1px solid var(--line-strong);
+    }
+    .menu-btn {
+      width: 34px; height: 34px; border: 0; background: none; cursor: pointer;
+      display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 6px;
+    }
+    .menu-btn span { display: block; height: 1.5px; background: var(--ink); border-radius: 2px; }
+    .mobile-word { margin: 0; padding: 0; font-size: 16px; }
+    .topbar-current {
+      margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+    }
+    .sidebar {
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      width: 290px;
+      z-index: 40;
+      transform: translateX(-102%);
+      transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+      box-shadow: 0 0 0 1px var(--line-strong);
+    }
+    .menu-open .sidebar { transform: none; }
+    .menu-open .scrim {
+      display: block;
+      position: fixed; inset: 0; z-index: 35;
+      background: rgba(20, 18, 14, 0.28);
+      border: 0; cursor: pointer;
+    }
+    .main { grid-column: 1; }
+    .cover { padding: 48px 22px 80px; }
+    .pattern-view { padding: 32px 20px 100px; }
+    .charter-row { grid-template-columns: 1fr; gap: 8px; }
+    .pattern-head h1 { font-size: 26px; }
+    .block { padding: 20px 18px 14px; }
+  }
+
+  @media (min-width: 821px) { .topbar { display: none; } }
 </style>
