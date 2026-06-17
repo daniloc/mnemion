@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { browser } from './env.js';
   import EntryDetail from './EntryDetail.svelte';
-  import { deriveLabel, truncate } from '../labels';
+  import { deriveLabel, truncate } from '../../entities/Hive/labels';
 
   // === Types ===
 

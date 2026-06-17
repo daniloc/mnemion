@@ -3,8 +3,8 @@
 // Fetches web content through adapter dispatch, caches in _web_cache,
 // embeds for prime recall. Pure functions with context injected.
 
-import type { Env } from "./router";
-import { isBlockedFederationHost } from "./kernel";
+import type { Env } from "../Routing/router";
+import { isBlockedFederationHost } from "../../entities/Hive/kernel";
 
 // === Types ===
 

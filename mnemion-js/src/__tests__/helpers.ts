@@ -3,7 +3,7 @@
 // keying scheme or the create_pattern payload is made in one place. (Existing
 // suites still carry their own copies — migrating them is a separate cleanup.)
 import { env } from "cloudflare:test";
-import type { HiveDO } from "../hive";
+import type { HiveDO } from "../../entities/Hive/hive";
 
 /** A fresh, isolated HiveDO stub keyed by a random id. */
 export function getStore(): DurableObjectStub<HiveDO> {

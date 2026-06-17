@@ -1,5 +1,5 @@
-import type { HiveDO } from "./hive";
-import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "./constants";
+import type { HiveDO } from "../../entities/Hive/hive";
+import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "../core/constants";
 
 // === Types ===
 

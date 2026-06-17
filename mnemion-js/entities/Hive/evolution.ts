@@ -4,7 +4,7 @@
 // The full evolution surface is visible by scanning this table.
 // proposeChange and applyChange are generic dispatchers.
 
-import { PRODUCT_NAME, uri } from "./constants";
+import { PRODUCT_NAME, uri } from "../../shared/core/constants";
 import { ensureAuditTriggers } from "./schema";
 import { isKernelPattern } from "./policy";
 import type { StoreIndex, IndexFacetEntry } from "./hive";

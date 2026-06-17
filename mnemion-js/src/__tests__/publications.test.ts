@@ -3,8 +3,8 @@
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import type { HiveDO } from "../hive";
-import { escapeHtml, renderTemplate } from "../publications";
+import type { HiveDO } from "../../entities/Hive/hive";
+import { escapeHtml, renderTemplate } from "../../shared/IO/publications";
 
 function getStore(): DurableObjectStub<HiveDO> {
   const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);

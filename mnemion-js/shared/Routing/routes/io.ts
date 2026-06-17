@@ -1,6 +1,6 @@
 import type { RouteHandler } from "../router";
 import { zipSync, strToU8 } from "fflate";
-import { extractionPlan, decodeText, capText } from "../extract";
+import { extractionPlan, decodeText, capText } from "../../IO/extract";
 
 const DOCUMENT_BYTES = 26_214_400; // 25 MB — mirrors data.LIMITS.DOCUMENT_BYTES
 

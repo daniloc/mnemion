@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
-import { PRODUCT_NAME } from "./constants";
+import { PRODUCT_NAME } from "../core/constants";
 
 // === Types ===
 

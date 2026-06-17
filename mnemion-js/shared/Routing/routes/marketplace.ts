@@ -1,7 +1,7 @@
 import type { RouteHandler } from "../router";
 import { extractBasicPassword } from "../router";
-import { handleMarketplaceGit, type MarketplacePlugin } from "../git";
-import { PRODUCT_NAME, URI_SCHEME } from "../constants";
+import { handleMarketplaceGit, type MarketplacePlugin } from "../../IO/git";
+import { PRODUCT_NAME, URI_SCHEME } from "../../core/constants";
 
 // === Dev-only: seed test marketplace data ===
 

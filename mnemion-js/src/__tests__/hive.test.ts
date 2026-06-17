@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { fetchMock } from "./fetch-mock";
 import { describe, it, expect, beforeEach } from "vitest";
-import type { HiveDO } from "../hive";
+import type { HiveDO } from "../../entities/Hive/hive";
 
 function getStore(): DurableObjectStub<HiveDO> {
   const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);

@@ -139,7 +139,7 @@ window.fetch = async (input, init) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 
   if (url === '/api/tools') {
-    const { TOOLS } = await import('../tools');
+    const { TOOLS } = await import('../../entities/Session/tools');
     return new Response(JSON.stringify(TOOLS), {
       headers: { 'Content-Type': 'application/json' },
     });

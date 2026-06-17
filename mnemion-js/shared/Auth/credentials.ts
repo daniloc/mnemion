@@ -3,8 +3,8 @@
 // Pure functions that take a db accessor. HiveDO keeps thin RPC wrappers.
 // Auth concerns separated from the cognitive substrate.
 
-import { scopeMatches } from "./kernel";
-import { OWNER_ACTOR } from "./constants";
+import { scopeMatches } from "../../entities/Hive/kernel";
+import { OWNER_ACTOR } from "../core/constants";
 export { scopeMatches };
 
 type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one: () => any } };

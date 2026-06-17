@@ -3,7 +3,7 @@
 // session.ts imports these for McpServer.tool() calls.
 // /api/tools serves them to the web frontend.
 
-import { URI_SCHEME, uri } from "./constants";
+import { URI_SCHEME, uri } from "../../shared/core/constants";
 
 export interface ToolMeta {
   name: string;

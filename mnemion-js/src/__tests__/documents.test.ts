@@ -9,7 +9,7 @@
 
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import type { HiveDO } from "../hive";
+import type { HiveDO } from "../../entities/Hive/hive";
 
 // Whether the test runtime has an R2 binding (depends on whether [[r2_buckets]]
 // is active in wrangler.toml — commented out by default/CI, uncommented locally

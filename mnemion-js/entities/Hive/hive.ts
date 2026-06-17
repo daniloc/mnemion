@@ -1,16 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
-import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "./constants";
+import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass } from "./policy";
-import * as cred from "./credentials";
+import * as cred from "../../shared/Auth/credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
 import * as priming from "./prime";
-import * as pubs from "./publications";
-import * as web from "./web";
-import { capText, extractPdfText } from "./extract";
+import * as pubs from "../../shared/IO/publications";
+import * as web from "../../shared/IO/web";
+import { capText, extractPdfText } from "../../shared/IO/extract";
 
 // === Types ===
 

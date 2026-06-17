@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isBlockedFederationHost } from "../kernel";
+import { isBlockedFederationHost } from "../../entities/Hive/kernel";
 
 // Regression coverage for SSRF host blocking. Federation/web fetches must never
 // reach loopback/private/link-local/internal targets, including via alternate

@@ -8,9 +8,9 @@
 // specials. Template text passes through raw (owners may write markup);
 // substituted VALUES are escaped in html/rss contexts. No logic, no loops.
 
-import { deriveLabel, type LabelFacet } from "./labels";
-import { uri } from "./constants";
-import { parseDbDate } from "./prime";
+import { deriveLabel, type LabelFacet } from "../../entities/Hive/labels";
+import { uri } from "../core/constants";
+import { parseDbDate } from "../../entities/Hive/prime";
 
 export interface PublicationRow {
   path: string;

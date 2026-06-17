@@ -1,7 +1,7 @@
 <script lang="ts">
   import { browser } from './env.js';
   import { onMount, tick } from 'svelte';
-  import { deriveLabel, truncate } from '../labels';
+  import { deriveLabel, truncate } from '../../entities/Hive/labels';
 
   function focusOnMount(node: HTMLElement) {
     tick().then(() => node.focus());

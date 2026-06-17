@@ -5,7 +5,7 @@ import {
   buildMarketplaceFiles,
   type FileTree,
   type MarketplacePlugin,
-} from "../git";
+} from "../../shared/IO/git";
 
 describe("synthesizeRepo", () => {
   it("creates objects from a file tree", () => {

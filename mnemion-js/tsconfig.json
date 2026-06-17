@@ -13,6 +13,6 @@
     "noEmit": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "shared/**/*", "entities/**/*"],
   "exclude": ["node_modules", "src/__tests__"]
 }

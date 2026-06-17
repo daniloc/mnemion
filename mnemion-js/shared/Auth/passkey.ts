@@ -9,7 +9,7 @@ import type {
   RegistrationResponseJSON,
   AuthenticationResponseJSON,
 } from "@simplewebauthn/server";
-import { PRODUCT_NAME } from "./constants";
+import { PRODUCT_NAME } from "../core/constants";
 
 // === Types ===
 

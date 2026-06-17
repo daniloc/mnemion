@@ -5,7 +5,7 @@
 
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import type { HiveDO } from "../hive";
+import type { HiveDO } from "../../entities/Hive/hive";
 
 function getStore(): DurableObjectStub<HiveDO> {
   // Unique per describe-block name so isolatedStorage rollback isn't relied on

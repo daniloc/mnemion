@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { browser } from './env.js';
-  import { deriveLabel, truncate } from '../labels';
+  import { deriveLabel, truncate } from '../../entities/Hive/labels';
 
   interface Facet {
     name: string;

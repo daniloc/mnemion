@@ -1,14 +1,14 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { HiveDO } from "./hive";
-import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID, OWNER_ACTOR } from "./constants";
-import { consentPolicy, patchRejected, consentRoundTripRequired } from "./policy";
+import type { HiveDO } from "../Hive/hive";
+import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID, OWNER_ACTOR } from "../../shared/core/constants";
+import { consentPolicy, patchRejected, consentRoundTripRequired } from "../Hive/policy";
 import { TOOLS } from "./tools";
-import { FRAGMENT_CSS } from "./pages/render-styles";
+import { FRAGMENT_CSS } from "../../src/pages/render-styles";
 // @ts-ignore — text import via wrangler [[rules]] (.client.txt → string). The
 // MCP Apps render fragment, bundled self-contained by vite.fragment.ts.
-import renderClientScript from "../dist/fragment/render-client.client.txt";
+import renderClientScript from "../../dist/fragment/render-client.client.txt";
 
 // === Types ===
 
@@ -642,7 +642,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         // Resolve operation from shortcut if omitted
         let resolvedOp: string | undefined = operation;
         if (!resolvedOp && pattern) {
-          const { expandShortcut } = await import("./kernel");
+          const { expandShortcut } = await import("../Hive/kernel");
           const shortcut = expandShortcut(pattern);
           if (shortcut) resolvedOp = shortcut.operation;
         }

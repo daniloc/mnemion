@@ -3,8 +3,8 @@
 
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import type { HiveDO } from "../hive";
-import { isTextLike, isPdf, extractionPlan, decodeText, extractPdfText, capText, TEXT_CHARS_CAP } from "../extract";
+import type { HiveDO } from "../../entities/Hive/hive";
+import { isTextLike, isPdf, extractionPlan, decodeText, extractPdfText, capText, TEXT_CHARS_CAP } from "../../shared/IO/extract";
 
 // Minimal valid single-page PDF with one text line; xref offsets computed so
 // pdf.js parses it on the happy path (no recovery mode).

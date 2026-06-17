@@ -1,21 +1,21 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import { SessionDO } from "./session";
-import { HiveDO } from "./hive";
-import { HIVE_ID } from "./constants";
-import { Method, Auth, createRouter, type Route, type Env } from "./router";
+import { SessionDO } from "../entities/Session/session";
+import { HiveDO } from "../entities/Hive/hive";
+import { HIVE_ID } from "../shared/core/constants";
+import { Method, Auth, createRouter, type Route, type Env } from "../shared/Routing/router";
 
 // Auth
-import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify, revokeSessions, invitePage, inviteBegin, inviteComplete } from "./routes/auth";
+import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify, revokeSessions, invitePage, inviteBegin, inviteComplete } from "../shared/Routing/routes/auth";
 // I/O
-import { serveSharedEntry, serveOutput, servePublication, receiveInput, upload, uploadDocument, serveDocument, exportPattern } from "./routes/io";
+import { serveSharedEntry, serveOutput, servePublication, receiveInput, upload, uploadDocument, serveDocument, exportPattern } from "../shared/Routing/routes/io";
 // Marketplace
-import { seedMarketplace, marketplaceToken, marketplaceGit } from "./routes/marketplace";
+import { seedMarketplace, marketplaceToken, marketplaceGit } from "../shared/Routing/routes/marketplace";
 // Pages
-import { schemaPage, queryIndex, queryEntries, queryTools, mutateEntry, evolveSchema, liveSocket } from "./routes/pages";
+import { schemaPage, queryIndex, queryEntries, queryTools, mutateEntry, evolveSchema, liveSocket } from "../shared/Routing/routes/pages";
 // Canvas
-import { canvasPage, listCanvases, saveCanvas, resolveUri } from "./routes/canvas";
+import { canvasPage, listCanvases, saveCanvas, resolveUri } from "../shared/Routing/routes/canvas";
 // Dev
-import { seedTestData, seedVectors } from "./routes/dev";
+import { seedTestData, seedVectors } from "../shared/Routing/routes/dev";
 
 // Re-export DO classes for wrangler
 export { SessionDO, HiveDO };

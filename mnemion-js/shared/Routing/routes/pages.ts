@@ -1,10 +1,10 @@
 import type { RouteHandler } from "../router";
-import { TOOLS } from "../tools";
+import { TOOLS } from "../../../entities/Session/tools";
 // @ts-ignore — compiled Svelte SSR bundle
-import { renderSchemaViewer } from "../../dist/server/entry-server.mjs";
+import { renderSchemaViewer } from "../../../dist/server/entry-server.mjs";
 // @ts-ignore — text import via wrangler rules
 // @ts-ignore — text import via wrangler rules (.client.txt → string)
-import clientScript from "../../dist/client/entry-client.client.txt";
+import clientScript from "../../../dist/client/entry-client.client.txt";
 
 export const schemaPage: RouteHandler = async (ctx) => {
   const raw = await ctx.hive.getIndex();

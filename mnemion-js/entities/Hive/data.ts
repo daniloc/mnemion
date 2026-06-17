@@ -6,7 +6,7 @@
 import { applyKernelRules, immutableFieldError, type KernelContext } from "./kernel";
 import { isInternalWriteProtected, isKernelPattern, isValidWriteTarget } from "./policy";
 import { getMemoryPolicy } from "./prime";
-import { uri } from "./constants";
+import { uri } from "../../shared/core/constants";
 
 // === Types ===
 

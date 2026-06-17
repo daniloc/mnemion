@@ -1,12 +1,12 @@
 import type { RouteHandler } from "../router";
 import { createSessionCookie, revokeAllSessions, timingSafeEqual } from "../router";
-import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "../constants";
+import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "../../core/constants";
 
 // Passkey module loaded lazily to avoid tslib issues in test environments
-type PasskeyModule = typeof import("../passkey");
+type PasskeyModule = typeof import("../../Auth/passkey");
 let _passkey: PasskeyModule | null = null;
 async function passkey(): Promise<PasskeyModule> {
-  if (!_passkey) _passkey = await import("../passkey");
+  if (!_passkey) _passkey = await import("../../Auth/passkey");
   return _passkey;
 }
 

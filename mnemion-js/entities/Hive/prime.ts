@@ -5,7 +5,7 @@
 //
 // Pure functions with env/db injected. HiveDO wires the lifecycle.
 
-import { uri } from "./constants";
+import { uri } from "../../shared/core/constants";
 import { isKernelPattern, primeIncluded } from "./policy";
 
 // === Types ===

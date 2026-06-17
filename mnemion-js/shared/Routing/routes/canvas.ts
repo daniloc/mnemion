@@ -1,8 +1,8 @@
 import type { RouteHandler } from "../router";
 // @ts-ignore — compiled Svelte SSR bundle
-import { renderCanvasPage } from "../../dist/server/canvas-server.mjs";
+import { renderCanvasPage } from "../../../dist/server/canvas-server.mjs";
 // @ts-ignore — text import via wrangler rules (.client.txt → string)
-import canvasClientScript from "../../dist/canvas/canvas-client.client.txt";
+import canvasClientScript from "../../../dist/canvas/canvas-client.client.txt";
 
 // === Canvas page ===
 

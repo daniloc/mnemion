@@ -12,8 +12,8 @@ import {
   consentRoundTripRequired,
   primeIncluded,
   isAuditExempt,
-} from "../policy";
-import { verifyWritePolicyTotality } from "../schema";
+} from "../../entities/Hive/policy";
+import { verifyWritePolicyTotality } from "../../entities/Hive/schema";
 
 // === The expected admission matrix ===
 //

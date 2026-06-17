@@ -6,20 +6,20 @@
 // Kernel tables are defined declaratively: DDL + description + facets co-located.
 // Internal tables (not exposed to agents) are plain DDL.
 
-import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "./constants";
-import { TOOLS } from "./tools";
-import { seedDevData } from "./dev-seed";
+import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/constants";
+import { TOOLS } from "../Session/tools";
+import { seedDevData } from "../../shared/core/dev-seed";
 import { KERNEL_WRITE_POLICY, isAuditExempt } from "./policy";
 
 // System docs — imported as raw text, placeholders resolved at load time
-import schemaEvolutionRaw from "./system-docs/schema-evolution.md";
-import skillsRaw from "./system-docs/skills.md";
-import conventionsRaw from "./system-docs/conventions.md";
-import indexGuideRaw from "./system-docs/index-guide.md";
-import remoteAccessRaw from "./system-docs/remote-access.md";
-import httpIoRaw from "./system-docs/http-io.md";
-import capabilitiesRaw from "./system-docs/capabilities.md";
-import memoryMaintenanceRaw from "./system-docs/memory-maintenance.md";
+import schemaEvolutionRaw from "../../src/system-docs/schema-evolution.md";
+import skillsRaw from "../../src/system-docs/skills.md";
+import conventionsRaw from "../../src/system-docs/conventions.md";
+import indexGuideRaw from "../../src/system-docs/index-guide.md";
+import remoteAccessRaw from "../../src/system-docs/remote-access.md";
+import httpIoRaw from "../../src/system-docs/http-io.md";
+import capabilitiesRaw from "../../src/system-docs/capabilities.md";
+import memoryMaintenanceRaw from "../../src/system-docs/memory-maintenance.md";
 
 // === System doc parsing ===
 

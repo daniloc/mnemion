@@ -4,7 +4,7 @@
 // Uses raw SQL (runs inside blockConcurrencyWhile during DO construction).
 
 import { PRODUCT_NAME, uri } from "./constants";
-import { ensureAuditTriggers } from "./schema";
+import { ensureAuditTriggers } from "../../entities/Hive/schema";
 
 type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one: () => any } };
 
