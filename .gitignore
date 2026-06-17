@@ -27,3 +27,5 @@ worker-configuration.d.ts
 
 # Per-user MCP client config — points at the user's own deploy
 .mcp.json
+# coherence transient job files (generated docs in docs/coherence are committed)
+mnemion-js/.coherence/

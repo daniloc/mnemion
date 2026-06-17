@@ -1,0 +1,3022 @@
+{
+  "generatedAt": "2026-06-17 00:37Z",
+  "root": "mnemion-js",
+  "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
+  "nodes": [
+    {
+      "id": "c:.",
+      "label": "Mnemion",
+      "kind": "component",
+      "sub": "Cloudflare Worker entry: an OAuth-wrapped MCP server whose one declarative route table is the whole HTTP surface.",
+      "claimed": true,
+      "claims": [
+        "src/index.ts exists at root",
+        "wrangler.toml exists at root",
+        "README.md exists at root",
+        "src/index.ts imports @cloudflare/workers-oauth-provider"
+      ],
+      "why": "The worker entry keeps the entire HTTP surface as one scannable declarative route table (method, pattern, auth gate, handler per line) so the system's shape is graspable from the declarations alone, per the \"code as schematic\" principle. OAuthProvider wraps the worker to own the OAuth 2.1 / DCR / token flow and intercept `/mcp`, `/token`, `/register` before dispatch, so the rest of the code never re-implements auth plumbing."
+    },
+    {
+      "id": "c:entities/Hive",
+      "label": "Hive",
+      "kind": "component",
+      "sub": "The single per-user Durable Object that owns all SQLite data and funnels every agent write through one kernel-enforced chokepoint.",
+      "claimed": true,
+      "claims": [
+        "hive.ts exists at this node",
+        "hive.ts imports cloudflare:workers",
+        "policy.ts exists at this node",
+        "prime.ts imports ./policy"
+      ],
+      "why": "HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints precisely so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf source of truth for \"which patterns agents can write, through which path, what gate fires\" — unclassified kernel patterns fail CLOSED (System → denied) so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary cannot drift between layers."
+    },
+    {
+      "id": "c:entities/Session",
+      "label": "Session",
+      "kind": "component",
+      "sub": "The per-session McpAgent Durable Object that speaks the MCP protocol and proxies tool calls to the hive over RPC.",
+      "claimed": true,
+      "claims": [
+        "session.ts exists at this node",
+        "session.ts imports agents/mcp",
+        "tools.ts exists at this node",
+        "session.ts imports ./tools"
+      ],
+      "why": "SessionDO is one Durable Object per MCP session: it handles the MCP protocol (tools, resources, init instructions) and proxies to the single HiveDO over RPC, keeping protocol concerns out of the data substrate. Tool metadata lives once in `tools.ts` as the SSOT feeding both MCP registration and the `/api/tools` frontend, so the agent-facing surface can't drift between the two; the session stamps the authenticated actor onto writes from its OAuth props so attribution is enforced at the protocol edge."
+    },
+    {
+      "id": "c:shared/Auth",
+      "label": "Auth",
+      "kind": "component",
+      "sub": "Credential primitives — multi-member passkeys and scoped access/register tokens — isolated as pure db-accessor functions.",
+      "claimed": true,
+      "claims": [
+        "credentials.ts exists at this node",
+        "passkey.ts exists at this node",
+        "passkey.ts imports @simplewebauthn/server"
+      ],
+      "why": "Auth primitives (passkeys + access/register/auth tokens) are isolated as pure db-accessor functions so credential concerns stay separate from the cognitive substrate; the multi-row passkey model (one credential per member, NULL = bootstrap owner) exists because one shared hive is authenticated into by several people each acting as themselves. `resolveRegisterToken` deliberately re-validates scope/owner/roster at setup/consume time — independent of how the token's fields were set — because an adversarial review showed mint-time checks alone could be bypassed by a post-create constraints update to mount an owner-takeover, and a malformed member-less token must be unusable rather than defaulting to the owner sentinel."
+    },
+    {
+      "id": "c:shared/IO",
+      "label": "IO",
+      "kind": "component",
+      "sub": "Outbound and inbound adapters: derived publication renderers, web-URL resolution with caching, git pack assembly, and text extraction.",
+      "claimed": true,
+      "claims": [
+        "publications.ts exists at this node",
+        "web.ts exists at this node",
+        "git.ts exists at this node",
+        "extract.ts exists at this node"
+      ],
+      "why": "IO holds the adapters that move data across the hive's boundary, kept as focused single-purpose modules so each owns one concern. Publications render live pattern projections at request time (never stored) per the \"data is destiny\" doctrine; `web.ts` caches adapter-fetched content as durable memory with a re-fetch-horizon TTL and refuses blocked hosts; `extract.ts` splits inline text extraction from async PDF extraction off the response path because only the DO has `waitUntil`, capping extracted text to stay under the entry size limit."
+    },
+    {
+      "id": "c:shared/Routing",
+      "label": "Routing",
+      "kind": "component",
+      "sub": "Declarative HTTP dispatch and session machinery: pattern-matched route table plus constant-time, revocable session auth helpers.",
+      "claimed": true,
+      "claims": [
+        "router.ts exists at this node",
+        "router.ts imports ../core/constants",
+        "routes/auth.ts exists at this node",
+        "routes/io.ts exists at this node"
+      ],
+      "why": "The router is the worker's declarative HTTP dispatch (method, pattern, auth gate, param constraints matched in declaration order) with handlers grouped by domain under `routes/`, so the full routing surface stays scannable. Its auth helpers are security-load-bearing: `timingSafeEqual` is constant-time to close a timing-attack finding on secret/token/signature checks, and session cookies carry a random sid plus a KV-stored epoch so every session can be revoked without rotating `MNEMION_SECRET`, while encoding the actor backward-compatibly so deploys don't force a re-login."
+    },
+    {
+      "id": "i:OAUTH_KV",
+      "label": "OAUTH_KV",
+      "kind": "infra",
+      "sub": "KV"
+    },
+    {
+      "id": "i:VECTORIZE",
+      "label": "VECTORIZE",
+      "kind": "infra",
+      "sub": "Vectorize"
+    },
+    {
+      "id": "i:AI",
+      "label": "AI",
+      "kind": "infra",
+      "sub": "Workers AI"
+    },
+    {
+      "id": "f:entities/Hive/data.ts",
+      "parent": "c:entities/Hive",
+      "label": "data.ts",
+      "kind": "file",
+      "sub": "entities/Hive/data.ts",
+      "path": "entities/Hive/data.ts",
+      "prose": "Data engine: query, mutate, search\n\nPure functions that take a DataContext. HiveDO keeps thin RPC wrappers\nthat add broadcast and transaction concerns."
+    },
+    {
+      "id": "s:entities/Hive/data.ts#DataContext",
+      "parent": "f:entities/Hive/data.ts",
+      "label": "DataContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/data.ts",
+      "line": 15
+    },
+    {
+      "id": "s:entities/Hive/data.ts#query",
+      "parent": "f:entities/Hive/data.ts",
+      "label": "query",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/data.ts",
+      "line": 176
+    },
+    {
+      "id": "s:entities/Hive/data.ts#executeMutate",
+      "parent": "f:entities/Hive/data.ts",
+      "label": "executeMutate",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/data.ts",
+      "line": 386
+    },
+    {
+      "id": "s:entities/Hive/data.ts#search",
+      "parent": "f:entities/Hive/data.ts",
+      "label": "search",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/data.ts",
+      "line": 678
+    },
+    {
+      "id": "f:entities/Hive/evolution.ts",
+      "parent": "c:entities/Hive",
+      "label": "evolution.ts",
+      "kind": "file",
+      "sub": "entities/Hive/evolution.ts",
+      "path": "entities/Hive/evolution.ts",
+      "prose": "Schema evolution engine\n\nEach change type is one row in CHANGE_TYPES: validate, preview, apply.\nThe full evolution surface is visible by scanning this table.\nproposeChange and applyChange are generic dispatchers."
+    },
+    {
+      "id": "s:entities/Hive/evolution.ts#EvolutionContext",
+      "parent": "f:entities/Hive/evolution.ts",
+      "label": "EvolutionContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/evolution.ts",
+      "line": 16
+    },
+    {
+      "id": "s:entities/Hive/evolution.ts#patternExists()",
+      "parent": "f:entities/Hive/evolution.ts",
+      "label": "patternExists()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/evolution.ts",
+      "line": 18
+    },
+    {
+      "id": "s:entities/Hive/evolution.ts#entryExists()",
+      "parent": "f:entities/Hive/evolution.ts",
+      "label": "entryExists()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/evolution.ts",
+      "line": 19
+    },
+    {
+      "id": "s:entities/Hive/evolution.ts#proposeChange",
+      "parent": "f:entities/Hive/evolution.ts",
+      "label": "proposeChange",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/evolution.ts",
+      "line": 475
+    },
+    {
+      "id": "s:entities/Hive/evolution.ts#applyChange",
+      "parent": "f:entities/Hive/evolution.ts",
+      "label": "applyChange",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/evolution.ts",
+      "line": 508
+    },
+    {
+      "id": "s:entities/Hive/evolution.ts#revertChange",
+      "parent": "f:entities/Hive/evolution.ts",
+      "label": "revertChange",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/evolution.ts",
+      "line": 564
+    },
+    {
+      "id": "f:entities/Hive/hive.ts",
+      "parent": "c:entities/Hive",
+      "label": "hive.ts",
+      "kind": "file",
+      "sub": "entities/Hive/hive.ts",
+      "path": "entities/Hive/hive.ts"
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#StoreIndex",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "StoreIndex",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/hive.ts",
+      "line": 17
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#IndexPatternEntry",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "IndexPatternEntry",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/hive.ts",
+      "line": 25
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#IndexFacetEntry",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "IndexFacetEntry",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/hive.ts",
+      "line": 37
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#HiveDO",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "HiveDO",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "entities/Hive/hive.ts",
+      "line": 52
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#db()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "db()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 58
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#currentHost()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "currentHost()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 69
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getIndex()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getIndex()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 75
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getCharter()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getCharter()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 121
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getRecentActivity()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getRecentActivity()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 130
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getMaintenanceStatus()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getMaintenanceStatus()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 175
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#computeMaintenanceStatus()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "computeMaintenanceStatus()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 179
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getStaleEntries()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getStaleEntries()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 227
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#evoCtx()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "evoCtx()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 296
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#proposeChange()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "proposeChange()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 304
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getPendingChange()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getPendingChange()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 311,
+      "prose": "Peek at a pending change's spec without applying it — lets the SessionDO\ndecide whether the change needs a consent round-trip (e.g. set_sharing to a\nnon-private visibility, which publishes an entry over HTTP)."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#applyChange()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "applyChange()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 322
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#revertChange()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "revertChange()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 330
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getSchema()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getSchema()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 340
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getHistory()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getHistory()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 375
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getEntry()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getEntry()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 383
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#listPatterns()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "listPatterns()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 416
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#dataCtx()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "dataCtx()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 423
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#patternClass()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "patternClass()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 446,
+      "prose": "A pattern's class: \"dataset\" (structured records) or \"knowledge\" (default)."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#query()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "query()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 450
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#mutate()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "mutate()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 454
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#consumeDocumentUpload()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "consumeDocumentUpload()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 529,
+      "prose": "Record a completed upload: bind the R2 key + metadata to the document entry\n and burn the single-use token. The route has already streamed the bytes to\n R2; on any failure here it deletes that orphaned object."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#recordExtraction()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "recordExtraction()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 559,
+      "prose": "Record extracted text + status on a document, then re-embed so the text\n joins prime recall (search already covers the facet). Called by the upload\n route after it pulls text from the bytes (inline for text, async for PDF)."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#extractDocument()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "extractDocument()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 583,
+      "prose": "Schedule async PDF text extraction inside the DO (which has a real\n waitUntil — the route ctx does not). Marks pending, then reads the blob\n back from R2, extracts, and records. Returns immediately; the work\n outlives the RPC via ctx.waitUntil. Best-effort: failures land as status."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#resolveDocument()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "resolveDocument()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 607,
+      "prose": "Resolve a document for serving. Returns found:false until bytes exist."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#batchMutate()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "batchMutate()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 619
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#consumeUpload()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "consumeUpload()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 649
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#webCtx()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "webCtx()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 724
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#resolveWeb()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "resolveWeb()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 728
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#resolve()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "resolve()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 752
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#federatedResolve()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "federatedResolve()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 822
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#search()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "search()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 915
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getMutationLog()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getMutationLog()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 921
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getSystemDocList()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getSystemDocList()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 937
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getSystemDoc()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getSystemDoc()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 950
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#renderInstanceDoc()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "renderInstanceDoc()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 980
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#computeStorageStats()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "computeStorageStats()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 993
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#runTask()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "runTask()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1024
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#primeCtx()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "primeCtx()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1054
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#embedAfterMutate()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "embedAfterMutate()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1062
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#prime()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "prime()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1074
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#seedVectors()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "seedVectors()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1194
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getCurrentIndex()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getCurrentIndex()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1218
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#isFederationHostAllowed()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "isFederationHostAllowed()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1269,
+      "prose": "True if `host` has been explicitly approved for federation (active _federation_hosts row)."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#patternExists()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "patternExists()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1280
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#entryExists()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "entryExists()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1286
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#hasKernelVersion()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "hasKernelVersion()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1295,
+      "prose": "True if the table's `version` column is the kernel auto-increment, not a user field."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#checkAndArmConsent()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "checkAndArmConsent()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1314,
+      "prose": "Two-phase consent that survives session churn. First call with a key arms\n it (10-minute TTL) and returns false — the caller should surface the\n confirmation message. Re-issuing the same key while armed consumes it and\n returns true — the caller proceeds. Durable in DO storage because\n sessionless MCP clients land every call on a fresh SessionDO, where an\n in-memory set can never complete the handshake. The consent signal is the\n deliberate re-issue of identical arguments; the TTL bounds how long an\n armed confirmation can wait. Fails closed: storage errors never confirm."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#hasPasskey()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "hasPasskey()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1335
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getPasskeys()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getPasskeys()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1336
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#storePasskey()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "storePasskey()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1337
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#updatePasskeyCounter()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "updatePasskeyCounter()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1340
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#validateAccessToken()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "validateAccessToken()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1341
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#resolveTokenActor()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "resolveTokenActor()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1344
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#isMemberActive()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "isMemberActive()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1347
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#resolveRegisterToken()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "resolveRegisterToken()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1348
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getRegisterToken()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getRegisterToken()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1349
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#approveRegisterToken()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "approveRegisterToken()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1350
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#consumeAccessToken()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "consumeAccessToken()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1351
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#validateAuthCode()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "validateAuthCode()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1352
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#consumeAuthCode()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "consumeAuthCode()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1353
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#exportPattern()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "exportPattern()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1357
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getSharedEntry()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getSharedEntry()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1400
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#resolvePublication()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "resolvePublication()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1423
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#resolveOutput()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "resolveOutput()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1489
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getInputVisibility()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getInputVisibility()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1502
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#processInput()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "processInput()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1515
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#fetch()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "fetch()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1552
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#webSocketMessage()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "webSocketMessage()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1565
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#webSocketClose()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "webSocketClose()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1569
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#broadcastChange()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "broadcastChange()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1573
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#errorJson()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "errorJson()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1580
+    },
+    {
+      "id": "x:cloudflare:workers",
+      "label": "cloudflare:workers",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "f:entities/Hive/kernel.ts",
+      "parent": "c:entities/Hive",
+      "label": "kernel.ts",
+      "kind": "file",
+      "sub": "entities/Hive/kernel.ts",
+      "path": "entities/Hive/kernel.ts",
+      "prose": "Kernel pattern pre-mutation rules\n\nDeclarative hooks that validate and transform data before the generic\nINSERT/UPDATE/ARCHIVE logic in store.ts runs. Each kernel table's\nspecial behavior is visible in one place."
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#KernelContext",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "KernelContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/kernel.ts",
+      "line": 9
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#patternExists()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "patternExists()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 10
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#facetMeta()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "facetMeta()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 11
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#entryExists()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "entryExists()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 12
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#memberActive()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "memberActive()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 14,
+      "prose": "An active, non-archived member with this label exists in the roster."
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#IMMUTABLE",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "IMMUTABLE",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/kernel.ts",
+      "line": 26
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#IMMUTABLE_AFTER_CREATE",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "IMMUTABLE_AFTER_CREATE",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/kernel.ts",
+      "line": 48,
+      "prose": "=== Immutable-after-create fields — set once at create, frozen thereafter ===\n\nDistinct from IMMUTABLE (rejected on every op): these define a token's\ncapability and are validated by the create hook, but must never be repointed\nby a later update/unarchive. Freezing scope/member/constraints/token closes the\ndefense-in-depth gap where an update could repoint an existing token (e.g. to\na different member) without re-passing the create-time validation."
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_access_tokens()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_access_tokens()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 73
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_members()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_members()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 184
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_outputs()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_outputs()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 202
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_inputs()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_inputs()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 212
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_links()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_links()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 233
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_short_term_fragments()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_short_term_fragments()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 267
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_web_cache()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_web_cache()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 272
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_canvases()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_canvases()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 280
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_system_tasks()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_system_tasks()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 286
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_federation_hosts()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_federation_hosts()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 293
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_publications()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_publications()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 308
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_documents()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_documents()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 338
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_maintenance_passes()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_maintenance_passes()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 349
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_shared()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_shared()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 355
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#Shortcut",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "Shortcut",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/kernel.ts",
+      "line": 372
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#SHORTCUTS",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "SHORTCUTS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/kernel.ts",
+      "line": 374
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#expandShortcut",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "expandShortcut",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/kernel.ts",
+      "line": 381,
+      "prose": "Expand a shortcut name to pattern + operation, or return null if not a shortcut."
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#normalizeHost",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "normalizeHost",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/kernel.ts",
+      "line": 388,
+      "prose": "Normalize a federation host: lowercase, strip scheme and any path."
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#isBlockedFederationHost",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "isBlockedFederationHost",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/kernel.ts",
+      "line": 510,
+      "prose": "True if a federation target points at a loopback, private, link-local, or\ninternal-only host. Such hosts can never be added to the allow-list and are\nrefused at resolve time - defense against SSRF and against an agent acting on\nprompt-injected content probing internal infrastructure or cloud metadata.\n\nThe host is normalized through the same URL parser fetch() uses, so the check\noperates on the exact host the network stack will contact (handles userinfo,\nports, IPv4 in any base, IPv6 brackets, case). Anything unparseable as a host\nfails closed (blocked). A public hostname whose DNS resolves to a private IP\ncannot be caught here (no DNS API on Workers); that residual is covered by the\nfederation consent allow-list and per-hop redirect re-validation."
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#scopeMatches",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "scopeMatches",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/kernel.ts",
+      "line": 542,
+      "prose": "Check if tokenScope grants access for requiredScope. Hierarchical prefix match with : boundary."
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#immutableFieldError",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "immutableFieldError",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/kernel.ts",
+      "line": 558,
+      "prose": "The immutability error for editing a single named facet on an existing entry,\nor null if the facet is freely editable. Covers both IMMUTABLE (rejected on\nany op) and IMMUTABLE_AFTER_CREATE (frozen after create). Used by the patch\npath, which edits one facet by name and so can't rely on applyKernelRules'\ntop-level-key scan."
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#applyKernelRules",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "applyKernelRules",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/kernel.ts",
+      "line": 566
+    },
+    {
+      "id": "f:entities/Hive/labels.ts",
+      "parent": "c:entities/Hive",
+      "label": "labels.ts",
+      "kind": "file",
+      "sub": "entities/Hive/labels.ts",
+      "path": "entities/Hive/labels.ts",
+      "prose": "Single source of truth for \"what does this entry look like as a string.\"\n\nUsed by both the backend (so /api/index can include a stable label) and the\nfrontend Svelte components (Canvas, SchemaViewer, LinkMap). If the algorithm\never needs to evolve, change it here once."
+    },
+    {
+      "id": "s:entities/Hive/labels.ts#LabelFacet",
+      "parent": "f:entities/Hive/labels.ts",
+      "label": "LabelFacet",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/labels.ts",
+      "line": 7
+    },
+    {
+      "id": "s:entities/Hive/labels.ts#deriveLabel",
+      "parent": "f:entities/Hive/labels.ts",
+      "label": "deriveLabel",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/labels.ts",
+      "line": 23,
+      "prose": "Derive a human-readable label for an entry. Returns the unbounded string;\ncallers truncate to fit their UI.\n\nPriority:\n  1. First non-empty value among LABEL_KEYS (name, title, label, key, context).\n  2. First text-type facet's value.\n  3. Falls back to \"#{id}\" if neither is available."
+    },
+    {
+      "id": "s:entities/Hive/labels.ts#truncate",
+      "parent": "f:entities/Hive/labels.ts",
+      "label": "truncate",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/labels.ts",
+      "line": 39,
+      "prose": "Truncate a string to `max` chars, appending an ellipsis if truncated."
+    },
+    {
+      "id": "f:entities/Hive/policy.ts",
+      "parent": "c:entities/Hive",
+      "label": "policy.ts",
+      "kind": "file",
+      "sub": "entities/Hive/policy.ts",
+      "path": "entities/Hive/policy.ts",
+      "prose": "Write-class policy — the single source of truth for \"which patterns can\nagents write, through which path, and what gate fires.\"\n\nThis question was previously answered hole-by-hole: a `CONSENT_GATED` dict in\nthe session layer, an `INTERNAL_WRITE_PROTECTED` set in the data layer, and\neleven independent `startsWith(\"_\")` checks scattered across kernel/data/hive/\nevolution/prime. Each was a separate map of the same territory, and a missed\ncell was a security hole (see the set_sharing, patch-bypass, ingress/upload,\nand register-token findings).\n\nHere the territory is modeled once. Every pattern has a WriteClass; every gate\n(consent round-trip, batch exclusion, ingress/upload eligibility, schema-\nevolution restriction, prime inclusion) is a pure derivation of it. A kernel\npattern with no declared class fails CLOSED (System — denied) so a newly added\nkernel pattern can never silently default to agent-writable through every path.\n\nThis module is a leaf: it imports nothing from the enforcement layers, so they\ncan all derive from it without cycles."
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#WriteClass",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "WriteClass",
+      "kind": "symbol",
+      "sub": "enum",
+      "path": "entities/Hive/policy.ts",
+      "line": 22
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#KERNEL_WRITE_POLICY",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "KERNEL_WRITE_POLICY",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/policy.ts",
+      "line": 70
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#isKernelPattern",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "isKernelPattern",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 165,
+      "prose": "The `_` namespace is reserved for the kernel (create_pattern refuses it), so\n a leading underscore is the exact, single definition of \"kernel pattern.\""
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#writeClass",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "writeClass",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 171,
+      "prose": "The write class of any pattern. Unclassified kernel patterns fail CLOSED\n (System) — a new `_` table added without a policy row is denied, not opened."
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#isInternalWriteProtected",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "isInternalWriteProtected",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 177,
+      "prose": "True for patterns the system manages itself — denied at the mutate engine."
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#isValidWriteTarget",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "isValidWriteTarget",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 184,
+      "prose": "True only for User-class patterns: the sole valid ingress/upload write target.\n Every kernel pattern — gated, open, or system — is refused, because HTTP write\n paths bypass the MCP consent layer and must never reach the kernel surface."
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#consentPolicy",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "consentPolicy",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 189,
+      "prose": "Consent configuration for a pattern, or null if it carries none."
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#primeIncluded",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "primeIncluded",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 194,
+      "prose": "True if this kernel pattern is surfaced in prime recall (most are excluded)."
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#isAuditExempt",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "isAuditExempt",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 199,
+      "prose": "True if this pattern is exempt from audit triggers (append-only logs)."
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#patchRejected",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "patchRejected",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 205,
+      "prose": "True if patch must be rejected for this pattern (any consent-gated pattern —\n patch skips the kernel validation hooks and the confirmation round-trip)."
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#consentRoundTripRequired",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "consentRoundTripRequired",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 212,
+      "prose": "Whether an escalating create/update/unarchive needs the confirmation\n round-trip, given the data being written (for on_expose visibility checks).\n patch_only patterns never round-trip; patch is handled by patchRejected."
+    },
+    {
+      "id": "f:entities/Hive/prime.ts",
+      "parent": "c:entities/Hive",
+      "label": "prime.ts",
+      "kind": "file",
+      "sub": "entities/Hive/prime.ts",
+      "path": "entities/Hive/prime.ts",
+      "prose": "Auto-associative priming layer\n\nPartial cue → full constellation. Embeds entries on write via Workers AI,\nqueries Vectorize for semantic nearest neighbors, follows links one hop.\n\nPure functions with env/db injected. HiveDO wires the lifecycle."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#PrimeContext",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "PrimeContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/prime.ts",
+      "line": 13
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#patternExists()",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "patternExists()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/prime.ts",
+      "line": 16
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#PrimeResult",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "PrimeResult",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/prime.ts",
+      "line": 19
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#MemoryPolicy",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "MemoryPolicy",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/prime.ts",
+      "line": 30
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#CONFLICT_SIMILARITY",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "CONFLICT_SIMILARITY",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/prime.ts",
+      "line": 42
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#getPatternClass",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "getPatternClass",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 48,
+      "prose": "A pattern's class: \"knowledge\" (default — recalled by meaning) or \"dataset\"\n (structured records aggregated by computation, exempt from the memory machinery)."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#getMemoryPolicy",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "getMemoryPolicy",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 70,
+      "prose": "Read a pattern's memory policy from _objects, applying opinionated defaults."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#decayMultiplier",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "decayMultiplier",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 89,
+      "prose": "Recall-weight multiplier: halves per half-life elapsed, floored so old-but-relevant survives."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#buildEmbedText",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "buildEmbedText",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 98,
+      "prose": "Build embeddable text from an entry's text/select facets."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#embedEntry",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "embedEntry",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 136,
+      "prose": "Embed an entry and upsert its vector. Fire-and-forget safe.\n A precomputed vector (e.g. from the write-time conflict check) skips the AI call."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#NeighborMatch",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "NeighborMatch",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/prime.ts",
+      "line": 167
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#findNeighbors",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "findNeighbors",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 178,
+      "prose": "Find same-pattern semantic neighbors of not-yet-written entry data.\n Returns matches ≥ CONFLICT_SIMILARITY plus the computed vector (reusable for\n the post-write upsert, avoiding a second AI call). Best-effort: any failure\n returns empty with no vector."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#removeEntry",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "removeEntry",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 216,
+      "prose": "Remove a vector when an entry is archived."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#prime",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "prime",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 226,
+      "prose": "Prime: partial cue activates a full constellation."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#parseDbDate",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "parseDbDate",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 357,
+      "prose": "SQLite datetime('now') emits \"YYYY-MM-DD HH:MM:SS\" in UTC with no zone marker — parse as UTC."
+    },
+    {
+      "id": "s:entities/Hive/prime.ts#followLinks",
+      "parent": "f:entities/Hive/prime.ts",
+      "label": "followLinks",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/prime.ts",
+      "line": 365,
+      "prose": "Follow foreign key links one hop from an entry."
+    },
+    {
+      "id": "f:entities/Hive/schema.ts",
+      "parent": "c:entities/Hive",
+      "label": "schema.ts",
+      "kind": "file",
+      "sub": "entities/Hive/schema.ts",
+      "path": "entities/Hive/schema.ts",
+      "prose": "Database initialization\n\nTable definitions, migrations, kernel pattern registration, and system doc seeding.\nCalled once per HiveDO construction via blockConcurrencyWhile.\n\nKernel tables are defined declaratively: DDL + description + facets co-located.\nInternal tables (not exposed to agents) are plain DDL."
+    },
+    {
+      "id": "s:entities/Hive/schema.ts#initializeSchema",
+      "parent": "f:entities/Hive/schema.ts",
+      "label": "initializeSchema",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/schema.ts",
+      "line": 561
+    },
+    {
+      "id": "s:entities/Hive/schema.ts#verifyWritePolicyTotality",
+      "parent": "f:entities/Hive/schema.ts",
+      "label": "verifyWritePolicyTotality",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/schema.ts",
+      "line": 1116,
+      "prose": "=== Integrity check: write-class policy totality ===\n\nEvery agent-facing kernel pattern must declare a write class in policy.ts.\nwriteClass() fails CLOSED (System — denied) for any unclassified `_` pattern,\nso a newly added kernel table is safe by default — but silently un-writable is\na bug, not a feature. This warns loudly at boot so a missing classification is\ncaught the moment the table ships, not when a reviewer finds the next hole.\nCode-vs-code (KERNEL_TABLES vs KERNEL_WRITE_POLICY) — no DB needed; exported so\nthe admission-matrix test asserts it statically too."
+    },
+    {
+      "id": "s:entities/Hive/schema.ts#ensureAuditTriggers",
+      "parent": "f:entities/Hive/schema.ts",
+      "label": "ensureAuditTriggers",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/schema.ts",
+      "line": 1134,
+      "prose": "Audit exemption (high-frequency append-only logs whose change history is the\ndata itself — auditing them would just churn the bounded _mutation_log) is a\nper-pattern behavior declared in the policy registry (policy.ts), alongside\nwrite class, so it's covered by the same boot-time totality check."
+    },
+    {
+      "id": "f:entities/Hive/transform.ts",
+      "parent": "c:entities/Hive",
+      "label": "transform.ts",
+      "kind": "file",
+      "sub": "entities/Hive/transform.ts",
+      "path": "entities/Hive/transform.ts",
+      "prose": "Transform DSL for ingress field mapping.\nExpressions: dot.path | transform arg | transform arg\nResolvers: foo.bar, $header.X-Name, $query.param, $body, $now, \"literal\"\nTransforms: truncate N, lower, upper, default \"value\", json, join \", \""
+    },
+    {
+      "id": "s:entities/Hive/transform.ts#TransformContext",
+      "parent": "f:entities/Hive/transform.ts",
+      "label": "TransformContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/transform.ts",
+      "line": 6
+    },
+    {
+      "id": "s:entities/Hive/transform.ts#evaluateExpression",
+      "parent": "f:entities/Hive/transform.ts",
+      "label": "evaluateExpression",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/transform.ts",
+      "line": 116,
+      "prose": "Evaluate a single DSL expression against a context."
+    },
+    {
+      "id": "s:entities/Hive/transform.ts#evaluateMapping",
+      "parent": "f:entities/Hive/transform.ts",
+      "label": "evaluateMapping",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/transform.ts",
+      "line": 128,
+      "prose": "Evaluate a field mapping (object of field→expression) against a context."
+    },
+    {
+      "id": "f:entities/Session/session.ts",
+      "parent": "c:entities/Session",
+      "label": "session.ts",
+      "kind": "file",
+      "sub": "entities/Session/session.ts",
+      "path": "entities/Session/session.ts"
+    },
+    {
+      "id": "s:entities/Session/session.ts#SessionDO",
+      "parent": "f:entities/Session/session.ts",
+      "label": "SessionDO",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "entities/Session/session.ts",
+      "line": 58
+    },
+    {
+      "id": "s:entities/Session/session.ts#getHive()",
+      "parent": "f:entities/Session/session.ts",
+      "label": "getHive()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Session/session.ts",
+      "line": 77
+    },
+    {
+      "id": "s:entities/Session/session.ts#init()",
+      "parent": "f:entities/Session/session.ts",
+      "label": "init()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Session/session.ts",
+      "line": 85
+    },
+    {
+      "id": "x:agents/mcp",
+      "label": "agents/mcp",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "x:@modelcontextprotocol/sdk/server/mcp.js",
+      "label": "@modelcontextprotocol/sdk/server/mcp.js",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "x:zod",
+      "label": "zod",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "f:entities/Session/tools.ts",
+      "parent": "c:entities/Session",
+      "label": "tools.ts",
+      "kind": "file",
+      "sub": "entities/Session/tools.ts",
+      "path": "entities/Session/tools.ts",
+      "prose": "Tool metadata — single source of truth for MCP registration and frontend display.\n\nsession.ts imports these for McpServer.tool() calls.\n/api/tools serves them to the web frontend."
+    },
+    {
+      "id": "s:entities/Session/tools.ts#ToolMeta",
+      "parent": "f:entities/Session/tools.ts",
+      "label": "ToolMeta",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Session/tools.ts",
+      "line": 8
+    },
+    {
+      "id": "s:entities/Session/tools.ts#TOOLS",
+      "parent": "f:entities/Session/tools.ts",
+      "label": "TOOLS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Session/tools.ts",
+      "line": 14
+    },
+    {
+      "id": "f:shared/Auth/credentials.ts",
+      "parent": "c:shared/Auth",
+      "label": "credentials.ts",
+      "kind": "file",
+      "sub": "shared/Auth/credentials.ts",
+      "path": "shared/Auth/credentials.ts",
+      "prose": "Credential infrastructure: passkey storage + access token operations\n\nPure functions that take a db accessor. HiveDO keeps thin RPC wrappers.\nAuth concerns separated from the cognitive substrate."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#StoredPasskeyRow",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "StoredPasskeyRow",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/Auth/credentials.ts",
+      "line": 19
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#hasPasskey",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "hasPasskey",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 27
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#getPasskeys",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "getPasskeys",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 32,
+      "prose": "All registered passkeys — the authentication candidate set."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#storePasskey",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "storePasskey",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 49,
+      "prose": "Store a member's passkey, replacing any existing credential for that same\nmember (per-member rotation — the original \"single credential, replaced on\nre-registration\" semantic, now scoped to one member). `member` is the member\nlabel, or null for the bootstrap owner credential."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#updatePasskeyCounter",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "updatePasskeyCounter",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 69,
+      "prose": "Bump the signature counter for a specific credential (clone detection)."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#findAccessToken",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "findAccessToken",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 76,
+      "prose": "Find a valid (non-archived, non-expired, non-consumed) access token."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#consumeToken",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "consumeToken",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 88,
+      "prose": "Mark a token as consumed (for single-use tokens)."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#validateAccessToken",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "validateAccessToken",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 96,
+      "prose": "Validate a token against a required scope. Consumes single-use tokens."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#resolveTokenActor",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "resolveTokenActor",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 111,
+      "prose": "Validate a token and resolve the actor (member) it authenticates as. Returns\nthe member label, or null if the token is invalid / out of scope / belongs to\na suspended-or-archived member. A token with no `member` resolves to the owner\nsentinel (legacy and headless tokens). Used by the OAuth external-token path\nto attribute the resulting session to a person."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#isMemberActive",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "isMemberActive",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 122,
+      "prose": "A member exists, is active, and not archived. The owner sentinel is always active."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#getRegisterToken",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "getRegisterToken",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 168,
+      "prose": "Register-token info for the approval page (does not require approval). Returns\nthe member + display fields and whether it has already been approved."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#resolveRegisterToken",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "resolveRegisterToken",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 182,
+      "prose": "Resolve a register token for the /setup flow. Adds the human-approval gate on\ntop of validateRegisterToken: an invite is inert until a member approves it\nvia passkey at /invite/{token}. This is the last line before a passkey is\nbound, so an unapproved (or tampered) token must not pass."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#approveRegisterToken",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "approveRegisterToken",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 197,
+      "prose": "Mark a register token approved (human-present passkey approval). Validates the\nsame invariants, then stamps approved_at via raw SQL — approved_at is IMMUTABLE\non the mutate path, so this is the only way it can be set. Returns the member\napproved, or null if the token is invalid / not a register token."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#validateAuthCode",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "validateAuthCode",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 208,
+      "prose": "Validate a token without consuming it (for reusable Bearer sessions)."
+    },
+    {
+      "id": "s:shared/Auth/credentials.ts#consumeAuthCode",
+      "parent": "f:shared/Auth/credentials.ts",
+      "label": "consumeAuthCode",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/credentials.ts",
+      "line": 213,
+      "prose": "Validate and consume a single-use token (for browser auth)."
+    },
+    {
+      "id": "f:shared/Auth/passkey.ts",
+      "parent": "c:shared/Auth",
+      "label": "passkey.ts",
+      "kind": "file",
+      "sub": "shared/Auth/passkey.ts",
+      "path": "shared/Auth/passkey.ts"
+    },
+    {
+      "id": "s:shared/Auth/passkey.ts#StoredPasskey",
+      "parent": "f:shared/Auth/passkey.ts",
+      "label": "StoredPasskey",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/Auth/passkey.ts",
+      "line": 16
+    },
+    {
+      "id": "s:shared/Auth/passkey.ts#beginRegistration",
+      "parent": "f:shared/Auth/passkey.ts",
+      "label": "beginRegistration",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/passkey.ts",
+      "line": 33
+    },
+    {
+      "id": "s:shared/Auth/passkey.ts#completeRegistration",
+      "parent": "f:shared/Auth/passkey.ts",
+      "label": "completeRegistration",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/passkey.ts",
+      "line": 57
+    },
+    {
+      "id": "s:shared/Auth/passkey.ts#beginAuthentication",
+      "parent": "f:shared/Auth/passkey.ts",
+      "label": "beginAuthentication",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/passkey.ts",
+      "line": 93
+    },
+    {
+      "id": "s:shared/Auth/passkey.ts#completeAuthentication",
+      "parent": "f:shared/Auth/passkey.ts",
+      "label": "completeAuthentication",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/passkey.ts",
+      "line": 113
+    },
+    {
+      "id": "s:shared/Auth/passkey.ts#setupPage",
+      "parent": "f:shared/Auth/passkey.ts",
+      "label": "setupPage",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/passkey.ts",
+      "line": 171,
+      "prose": "Passkey registration page. Shown at /setup?token=SECRET"
+    },
+    {
+      "id": "s:shared/Auth/passkey.ts#passkeyLoginPage",
+      "parent": "f:shared/Auth/passkey.ts",
+      "label": "passkeyLoginPage",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Auth/passkey.ts",
+      "line": 246,
+      "prose": "Login page — passkey-first with secret fallback"
+    },
+    {
+      "id": "x:@simplewebauthn/server",
+      "label": "@simplewebauthn/server",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "x:https://esm.sh/@simplewebauthn/browser@13",
+      "label": "https://esm.sh/@simplewebauthn/browser@13",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "f:shared/IO/extract.ts",
+      "parent": "c:shared/IO",
+      "label": "extract.ts",
+      "kind": "file",
+      "sub": "shared/IO/extract.ts",
+      "path": "shared/IO/extract.ts",
+      "prose": "Document text extraction: bytes → searchable text.\n\nThe extracted text lands in the _documents.extracted_text facet, where it's\ncovered by `search` (FTS over text facets) and `prime` (embedEntry embeds\ntext facets). So extraction is the only missing piece — indexing is free.\n\nTwo tiers run inline-cheap vs async-heavy:\n  - text-family (text/*, json, xml, csv, markdown): decode the bytes, no deps.\n  - PDF: unpdf (serverless pdf.js) — runs in workerd (spiked), but CPU-heavier,\n    so the caller runs it off the response path (waitUntil).\nAnything else (images, office docs) is unsupported for now."
+    },
+    {
+      "id": "s:shared/IO/extract.ts#TEXT_CHARS_CAP",
+      "parent": "f:shared/IO/extract.ts",
+      "label": "TEXT_CHARS_CAP",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/IO/extract.ts",
+      "line": 15,
+      "prose": "Cap stored text well under the 1 MB entry limit (length×2 bytes); enough to\ncover the searchable substance of most documents."
+    },
+    {
+      "id": "s:shared/IO/extract.ts#capText",
+      "parent": "f:shared/IO/extract.ts",
+      "label": "capText",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/extract.ts",
+      "line": 17
+    },
+    {
+      "id": "s:shared/IO/extract.ts#isTextLike",
+      "parent": "f:shared/IO/extract.ts",
+      "label": "isTextLike",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/extract.ts",
+      "line": 30,
+      "prose": "True for content types we can read directly as UTF-8 text."
+    },
+    {
+      "id": "s:shared/IO/extract.ts#isPdf",
+      "parent": "f:shared/IO/extract.ts",
+      "label": "isPdf",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/extract.ts",
+      "line": 38
+    },
+    {
+      "id": "s:shared/IO/extract.ts#decodeText",
+      "parent": "f:shared/IO/extract.ts",
+      "label": "decodeText",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/extract.ts",
+      "line": 43,
+      "prose": "Decode raw bytes as UTF-8 text (lossy on invalid sequences)."
+    },
+    {
+      "id": "s:shared/IO/extract.ts#extractPdfText",
+      "parent": "f:shared/IO/extract.ts",
+      "label": "extractPdfText",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/extract.ts",
+      "line": 48,
+      "prose": "Extract text from a PDF via unpdf (serverless pdf.js). Pages merged."
+    },
+    {
+      "id": "s:shared/IO/extract.ts#ExtractionStatus",
+      "parent": "f:shared/IO/extract.ts",
+      "label": "ExtractionStatus",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "shared/IO/extract.ts",
+      "line": 55
+    },
+    {
+      "id": "s:shared/IO/extract.ts#extractionPlan",
+      "parent": "f:shared/IO/extract.ts",
+      "label": "extractionPlan",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/extract.ts",
+      "line": 58,
+      "prose": "Classify what extraction a content type gets, without doing the work."
+    },
+    {
+      "id": "f:shared/IO/git.ts",
+      "parent": "c:shared/IO",
+      "label": "git.ts",
+      "kind": "file",
+      "sub": "shared/IO/git.ts",
+      "path": "shared/IO/git.ts",
+      "prose": "git.ts — Minimal git smart HTTP for read-only marketplace serving\n\nSynthesizes a virtual git repo from a file tree (path → content).\nImplements just enough of the git smart HTTP protocol for `git clone`.\nNo actual git repo on disk. No push support. No delta compression."
+    },
+    {
+      "id": "s:shared/IO/git.ts#FileTree",
+      "parent": "f:shared/IO/git.ts",
+      "label": "FileTree",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/IO/git.ts",
+      "line": 34
+    },
+    {
+      "id": "s:shared/IO/git.ts#synthesizeRepo",
+      "parent": "f:shared/IO/git.ts",
+      "label": "synthesizeRepo",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/git.ts",
+      "line": 83
+    },
+    {
+      "id": "s:shared/IO/git.ts#handleInfoRefs",
+      "parent": "f:shared/IO/git.ts",
+      "label": "handleInfoRefs",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/git.ts",
+      "line": 207
+    },
+    {
+      "id": "s:shared/IO/git.ts#handleUploadPack",
+      "parent": "f:shared/IO/git.ts",
+      "label": "handleUploadPack",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/git.ts",
+      "line": 224
+    },
+    {
+      "id": "s:shared/IO/git.ts#MarketplacePlugin",
+      "parent": "f:shared/IO/git.ts",
+      "label": "MarketplacePlugin",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/IO/git.ts",
+      "line": 259
+    },
+    {
+      "id": "s:shared/IO/git.ts#MarketplaceSkill",
+      "parent": "f:shared/IO/git.ts",
+      "label": "MarketplaceSkill",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/IO/git.ts",
+      "line": 269
+    },
+    {
+      "id": "s:shared/IO/git.ts#buildMarketplaceFiles",
+      "parent": "f:shared/IO/git.ts",
+      "label": "buildMarketplaceFiles",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/git.ts",
+      "line": 276
+    },
+    {
+      "id": "s:shared/IO/git.ts#handleMarketplaceGit",
+      "parent": "f:shared/IO/git.ts",
+      "label": "handleMarketplaceGit",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/git.ts",
+      "line": 358
+    },
+    {
+      "id": "x:node:crypto",
+      "label": "node:crypto",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "x:node:zlib",
+      "label": "node:zlib",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "f:shared/IO/publications.ts",
+      "parent": "c:shared/IO",
+      "label": "publications.ts",
+      "kind": "file",
+      "sub": "shared/IO/publications.ts",
+      "path": "shared/IO/publications.ts",
+      "prose": "Publication renderers: live pattern data → HTML / RSS / JSON / Markdown.\n\nA publication entry declares the projection; these functions derive the\ndocument at request time. Nothing rendered is ever stored — the page is a\nconsequence of current truth (\"data is destiny\" applied to publishing).\n\nThe template seam is deliberately small: {{facet}} substitution plus a few\nspecials. Template text passes through raw (owners may write markup);\nsubstituted VALUES are escaped in html/rss contexts. No logic, no loops."
+    },
+    {
+      "id": "s:shared/IO/publications.ts#PublicationRow",
+      "parent": "f:shared/IO/publications.ts",
+      "label": "PublicationRow",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/IO/publications.ts",
+      "line": 15
+    },
+    {
+      "id": "s:shared/IO/publications.ts#RenderContext",
+      "parent": "f:shared/IO/publications.ts",
+      "label": "RenderContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/IO/publications.ts",
+      "line": 24
+    },
+    {
+      "id": "s:shared/IO/publications.ts#Rendered",
+      "parent": "f:shared/IO/publications.ts",
+      "label": "Rendered",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/IO/publications.ts",
+      "line": 29
+    },
+    {
+      "id": "s:shared/IO/publications.ts#escapeHtml",
+      "parent": "f:shared/IO/publications.ts",
+      "label": "escapeHtml",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/publications.ts",
+      "line": 36
+    },
+    {
+      "id": "s:shared/IO/publications.ts#renderTemplate",
+      "parent": "f:shared/IO/publications.ts",
+      "label": "renderTemplate",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/publications.ts",
+      "line": 49,
+      "prose": "Substitute {{facet}} placeholders. Specials: _label, _uri, _id, _updated_at.\n Unknown placeholders become empty strings. `escape` is applied to VALUES only."
+    },
+    {
+      "id": "s:shared/IO/publications.ts#renderPublication",
+      "parent": "f:shared/IO/publications.ts",
+      "label": "renderPublication",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/publications.ts",
+      "line": 91
+    },
+    {
+      "id": "f:shared/IO/web.ts",
+      "parent": "c:shared/IO",
+      "label": "web.ts",
+      "kind": "file",
+      "sub": "shared/IO/web.ts",
+      "path": "shared/IO/web.ts",
+      "prose": "Web URL resolution via resolve()\n\nFetches web content through adapter dispatch, caches in _web_cache,\nembeds for prime recall. Pure functions with context injected."
+    },
+    {
+      "id": "s:shared/IO/web.ts#WebContext",
+      "parent": "f:shared/IO/web.ts",
+      "label": "WebContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/IO/web.ts",
+      "line": 11
+    },
+    {
+      "id": "s:shared/IO/web.ts#resolveWeb",
+      "parent": "f:shared/IO/web.ts",
+      "label": "resolveWeb",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/web.ts",
+      "line": 40
+    },
+    {
+      "id": "f:shared/Routing/router.ts",
+      "parent": "c:shared/Routing",
+      "label": "router.ts",
+      "kind": "file",
+      "sub": "shared/Routing/router.ts",
+      "path": "shared/Routing/router.ts"
+    },
+    {
+      "id": "s:shared/Routing/router.ts#Env",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "Env",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/Routing/router.ts",
+      "line": 6
+    },
+    {
+      "id": "s:shared/Routing/router.ts#Method",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "Method",
+      "kind": "symbol",
+      "sub": "enum",
+      "path": "shared/Routing/router.ts",
+      "line": 17
+    },
+    {
+      "id": "s:shared/Routing/router.ts#Auth",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "Auth",
+      "kind": "symbol",
+      "sub": "enum",
+      "path": "shared/Routing/router.ts",
+      "line": 23
+    },
+    {
+      "id": "s:shared/Routing/router.ts#RouteContext",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "RouteContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/Routing/router.ts",
+      "line": 31
+    },
+    {
+      "id": "s:shared/Routing/router.ts#RouteHandler",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "RouteHandler",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "shared/Routing/router.ts",
+      "line": 41
+    },
+    {
+      "id": "s:shared/Routing/router.ts#Route",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "Route",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/Routing/router.ts",
+      "line": 43
+    },
+    {
+      "id": "s:shared/Routing/router.ts#timingSafeEqual",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "timingSafeEqual",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Routing/router.ts",
+      "line": 59,
+      "prose": "Constant-time string comparison. Hashes both inputs to fixed-length digests\nand compares with a branch-free XOR accumulator, so timing does not leak the\nlength or content of the expected value. Use for any comparison against the\nmaster secret or an HMAC signature."
+    },
+    {
+      "id": "s:shared/Routing/router.ts#extractBasicPassword",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "extractBasicPassword",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Routing/router.ts",
+      "line": 72
+    },
+    {
+      "id": "s:shared/Routing/router.ts#revokeAllSessions",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "revokeAllSessions",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Routing/router.ts",
+      "line": 109,
+      "prose": "Revoke every existing session by bumping the stored epoch. Cookies embed the\nepoch they were minted under, and validateSession rejects any whose epoch no\nlonger matches — so the owner can invalidate all sessions (e.g. after a\nsuspected cookie theft) without rotating MNEMION_SECRET. KV is eventually\nconsistent, so global propagation can take up to ~60s."
+    },
+    {
+      "id": "s:shared/Routing/router.ts#createSessionCookie",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "createSessionCookie",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Routing/router.ts",
+      "line": 124
+    },
+    {
+      "id": "s:shared/Routing/router.ts#createRouter",
+      "parent": "f:shared/Routing/router.ts",
+      "label": "createRouter",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/Routing/router.ts",
+      "line": 199
+    },
+    {
+      "id": "f:shared/Routing/routes/auth.ts",
+      "parent": "c:shared/Routing",
+      "label": "auth.ts",
+      "kind": "file",
+      "sub": "shared/Routing/routes/auth.ts",
+      "path": "shared/Routing/routes/auth.ts"
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#authorize",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "authorize",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 78
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#authVerify",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "authVerify",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 108
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#setupPage",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "setupPage",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 156
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#setupBegin",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "setupBegin",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 167
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#setupComplete",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "setupComplete",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 185
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#invitePage",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "invitePage",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 329
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#inviteBegin",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "inviteBegin",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 343
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#inviteComplete",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "inviteComplete",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 359
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#passkeyBegin",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "passkeyBegin",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 407
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#passkeyComplete",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "passkeyComplete",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 431
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#loginPage",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "loginPage",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 584
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#loginBegin",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "loginBegin",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 592
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#loginComplete",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "loginComplete",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 604
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#loginVerify",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "loginVerify",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 646
+    },
+    {
+      "id": "s:shared/Routing/routes/auth.ts#revokeSessions",
+      "parent": "f:shared/Routing/routes/auth.ts",
+      "label": "revokeSessions",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/auth.ts",
+      "line": 673,
+      "prose": "POST /sessions/revoke — invalidate ALL browser sessions (Auth.SECRET gated).\nBumps the session epoch so every issued cookie stops validating, without\nrotating MNEMION_SECRET. Use after a suspected session-cookie compromise."
+    },
+    {
+      "id": "f:shared/Routing/routes/canvas.ts",
+      "parent": "c:shared/Routing",
+      "label": "canvas.ts",
+      "kind": "file",
+      "sub": "shared/Routing/routes/canvas.ts",
+      "path": "shared/Routing/routes/canvas.ts"
+    },
+    {
+      "id": "s:shared/Routing/routes/canvas.ts#canvasPage",
+      "parent": "f:shared/Routing/routes/canvas.ts",
+      "label": "canvasPage",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/canvas.ts",
+      "line": 9
+    },
+    {
+      "id": "s:shared/Routing/routes/canvas.ts#listCanvases",
+      "parent": "f:shared/Routing/routes/canvas.ts",
+      "label": "listCanvases",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/canvas.ts",
+      "line": 18
+    },
+    {
+      "id": "s:shared/Routing/routes/canvas.ts#saveCanvas",
+      "parent": "f:shared/Routing/routes/canvas.ts",
+      "label": "saveCanvas",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/canvas.ts",
+      "line": 38
+    },
+    {
+      "id": "s:shared/Routing/routes/canvas.ts#resolveUri",
+      "parent": "f:shared/Routing/routes/canvas.ts",
+      "label": "resolveUri",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/canvas.ts",
+      "line": 58
+    },
+    {
+      "id": "f:shared/Routing/routes/dev.ts",
+      "parent": "c:shared/Routing",
+      "label": "dev.ts",
+      "kind": "file",
+      "sub": "shared/Routing/routes/dev.ts",
+      "path": "shared/Routing/routes/dev.ts"
+    },
+    {
+      "id": "s:shared/Routing/routes/dev.ts#seedVectors",
+      "parent": "f:shared/Routing/routes/dev.ts",
+      "label": "seedVectors",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/dev.ts",
+      "line": 5,
+      "prose": "Seed vectors: embed all existing entries into Vectorize.\nGated behind Auth.SECRET — requires master secret."
+    },
+    {
+      "id": "s:shared/Routing/routes/dev.ts#seedTestData",
+      "parent": "f:shared/Routing/routes/dev.ts",
+      "label": "seedTestData",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/dev.ts",
+      "line": 13
+    },
+    {
+      "id": "f:shared/Routing/routes/io.ts",
+      "parent": "c:shared/Routing",
+      "label": "io.ts",
+      "kind": "file",
+      "sub": "shared/Routing/routes/io.ts",
+      "path": "shared/Routing/routes/io.ts"
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#serveSharedEntry",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "serveSharedEntry",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 9
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#serveOutput",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "serveOutput",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 50
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#servePublication",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "servePublication",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 88
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#receiveInput",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "receiveInput",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 128
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#upload",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "upload",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 166
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#uploadDocument",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "uploadDocument",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 175
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#serveDocument",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "serveDocument",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 225
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#exportPattern",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "exportPattern",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 319
+    },
+    {
+      "id": "x:fflate",
+      "label": "fflate",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "f:shared/Routing/routes/marketplace.ts",
+      "parent": "c:shared/Routing",
+      "label": "marketplace.ts",
+      "kind": "file",
+      "sub": "shared/Routing/routes/marketplace.ts",
+      "path": "shared/Routing/routes/marketplace.ts"
+    },
+    {
+      "id": "s:shared/Routing/routes/marketplace.ts#seedMarketplace",
+      "parent": "f:shared/Routing/routes/marketplace.ts",
+      "label": "seedMarketplace",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/marketplace.ts",
+      "line": 8
+    },
+    {
+      "id": "s:shared/Routing/routes/marketplace.ts#marketplaceToken",
+      "parent": "f:shared/Routing/routes/marketplace.ts",
+      "label": "marketplaceToken",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/marketplace.ts",
+      "line": 71
+    },
+    {
+      "id": "s:shared/Routing/routes/marketplace.ts#marketplaceGit",
+      "parent": "f:shared/Routing/routes/marketplace.ts",
+      "label": "marketplaceGit",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/marketplace.ts",
+      "line": 112
+    },
+    {
+      "id": "f:shared/Routing/routes/pages.ts",
+      "parent": "c:shared/Routing",
+      "label": "pages.ts",
+      "kind": "file",
+      "sub": "shared/Routing/routes/pages.ts",
+      "path": "shared/Routing/routes/pages.ts"
+    },
+    {
+      "id": "s:shared/Routing/routes/pages.ts#schemaPage",
+      "parent": "f:shared/Routing/routes/pages.ts",
+      "label": "schemaPage",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/pages.ts",
+      "line": 9
+    },
+    {
+      "id": "s:shared/Routing/routes/pages.ts#queryIndex",
+      "parent": "f:shared/Routing/routes/pages.ts",
+      "label": "queryIndex",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/pages.ts",
+      "line": 27
+    },
+    {
+      "id": "s:shared/Routing/routes/pages.ts#queryEntries",
+      "parent": "f:shared/Routing/routes/pages.ts",
+      "label": "queryEntries",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/pages.ts",
+      "line": 34
+    },
+    {
+      "id": "s:shared/Routing/routes/pages.ts#mutateEntry",
+      "parent": "f:shared/Routing/routes/pages.ts",
+      "label": "mutateEntry",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/pages.ts",
+      "line": 49
+    },
+    {
+      "id": "s:shared/Routing/routes/pages.ts#evolveSchema",
+      "parent": "f:shared/Routing/routes/pages.ts",
+      "label": "evolveSchema",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/pages.ts",
+      "line": 64
+    },
+    {
+      "id": "s:shared/Routing/routes/pages.ts#queryTools",
+      "parent": "f:shared/Routing/routes/pages.ts",
+      "label": "queryTools",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/pages.ts",
+      "line": 75
+    },
+    {
+      "id": "s:shared/Routing/routes/pages.ts#liveSocket",
+      "parent": "f:shared/Routing/routes/pages.ts",
+      "label": "liveSocket",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/pages.ts",
+      "line": 79
+    },
+    {
+      "id": "f:shared/core/constants.ts",
+      "parent": "c:.",
+      "label": "constants.ts",
+      "kind": "file",
+      "sub": "shared/core/constants.ts",
+      "path": "shared/core/constants.ts",
+      "prose": "Product identity — single source of truth for the URI scheme and product name.\nImport from here instead of hardcoding \"mnemion://\" in string literals."
+    },
+    {
+      "id": "s:shared/core/constants.ts#PRODUCT_NAME",
+      "parent": "f:shared/core/constants.ts",
+      "label": "PRODUCT_NAME",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/constants.ts",
+      "line": 4
+    },
+    {
+      "id": "s:shared/core/constants.ts#URI_SCHEME",
+      "parent": "f:shared/core/constants.ts",
+      "label": "URI_SCHEME",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/constants.ts",
+      "line": 5
+    },
+    {
+      "id": "s:shared/core/constants.ts#URI_PREFIX",
+      "parent": "f:shared/core/constants.ts",
+      "label": "URI_PREFIX",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/constants.ts",
+      "line": 6
+    },
+    {
+      "id": "s:shared/core/constants.ts#uri",
+      "parent": "f:shared/core/constants.ts",
+      "label": "uri",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/constants.ts",
+      "line": 9,
+      "prose": "Build a full URI from a path, e.g. uri(\"index\") → \"mnemion://index\""
+    },
+    {
+      "id": "s:shared/core/constants.ts#HIVE_ID",
+      "parent": "f:shared/core/constants.ts",
+      "label": "HIVE_ID",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/constants.ts",
+      "line": 24,
+      "prose": "=== Hive identity ===\n\nMnemion is single-hive-per-deploy: one shared store that one or more members\nauthenticate into. The hive's location (which Durable Object) is stable and\nindependent of who logs in — \"which hive\" and \"who am I\" are separate\nconcerns. HIVE_ID names the store; the actor (a member label) names the\nperson, carried separately in the session props.\n\nThe literal stays \"user:owner\" so existing single-owner deploys keep their\ndata: this is a rename for clarity, not a re-key. New deploys land on the\nsame DO name."
+    },
+    {
+      "id": "s:shared/core/constants.ts#OWNER_ACTOR",
+      "parent": "f:shared/core/constants.ts",
+      "label": "OWNER_ACTOR",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/constants.ts",
+      "line": 29,
+      "prose": "The sentinel member every hive has. The bootstrap passkey (registered with\nthe master secret) and any member-less legacy token resolve to this actor.\nAlways active; never suspended."
+    },
+    {
+      "id": "f:shared/core/dev-seed.ts",
+      "parent": "c:.",
+      "label": "dev-seed.ts",
+      "kind": "file",
+      "sub": "shared/core/dev-seed.ts",
+      "path": "shared/core/dev-seed.ts",
+      "prose": "Dev seed: realistic data for local development\n\nCalled from initializeSchema when DEV_SEED is set and no user patterns exist.\nUses raw SQL (runs inside blockConcurrencyWhile during DO construction)."
+    },
+    {
+      "id": "s:shared/core/dev-seed.ts#seedDevData",
+      "parent": "f:shared/core/dev-seed.ts",
+      "label": "seedDevData",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/dev-seed.ts",
+      "line": 49
+    },
+    {
+      "id": "f:shared/core/text.d.ts",
+      "parent": "c:.",
+      "label": "text.d.ts",
+      "kind": "file",
+      "sub": "shared/core/text.d.ts",
+      "path": "shared/core/text.d.ts"
+    },
+    {
+      "id": "f:src/index.ts",
+      "parent": "c:.",
+      "label": "index.ts",
+      "kind": "file",
+      "sub": "src/index.ts",
+      "path": "src/index.ts"
+    },
+    {
+      "id": "x:@cloudflare/workers-oauth-provider",
+      "label": "@cloudflare/workers-oauth-provider",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "f:vite.canvas.ts",
+      "parent": "c:.",
+      "label": "vite.canvas.ts",
+      "kind": "file",
+      "sub": "vite.canvas.ts",
+      "path": "vite.canvas.ts"
+    },
+    {
+      "id": "x:vite",
+      "label": "vite",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "x:@sveltejs/vite-plugin-svelte",
+      "label": "@sveltejs/vite-plugin-svelte",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "f:vite.config.ts",
+      "parent": "c:.",
+      "label": "vite.config.ts",
+      "kind": "file",
+      "sub": "vite.config.ts",
+      "path": "vite.config.ts"
+    },
+    {
+      "id": "f:vite.fragment.ts",
+      "parent": "c:.",
+      "label": "vite.fragment.ts",
+      "kind": "file",
+      "sub": "vite.fragment.ts",
+      "path": "vite.fragment.ts"
+    },
+    {
+      "id": "f:vite.preview.ts",
+      "parent": "c:.",
+      "label": "vite.preview.ts",
+      "kind": "file",
+      "sub": "vite.preview.ts",
+      "path": "vite.preview.ts"
+    }
+  ],
+  "edges": [
+    {
+      "id": "f:entities/Hive/hive.ts->x:cloudflare:workers:imports",
+      "source": "f:entities/Hive/hive.ts",
+      "target": "x:cloudflare:workers",
+      "kind": "imports"
+    },
+    {
+      "id": "f:entities/Hive/prime.ts->i:VECTORIZE:binds",
+      "source": "f:entities/Hive/prime.ts",
+      "target": "i:VECTORIZE",
+      "kind": "binds"
+    },
+    {
+      "id": "f:entities/Hive/prime.ts->i:AI:binds",
+      "source": "f:entities/Hive/prime.ts",
+      "target": "i:AI",
+      "kind": "binds"
+    },
+    {
+      "id": "f:entities/Session/session.ts->x:agents/mcp:imports",
+      "source": "f:entities/Session/session.ts",
+      "target": "x:agents/mcp",
+      "kind": "imports"
+    },
+    {
+      "id": "f:entities/Session/session.ts->x:@modelcontextprotocol/sdk/server/mcp.js:imports",
+      "source": "f:entities/Session/session.ts",
+      "target": "x:@modelcontextprotocol/sdk/server/mcp.js",
+      "kind": "imports"
+    },
+    {
+      "id": "f:entities/Session/session.ts->x:zod:imports",
+      "source": "f:entities/Session/session.ts",
+      "target": "x:zod",
+      "kind": "imports"
+    },
+    {
+      "id": "f:shared/Auth/passkey.ts->x:@simplewebauthn/server:imports",
+      "source": "f:shared/Auth/passkey.ts",
+      "target": "x:@simplewebauthn/server",
+      "kind": "imports"
+    },
+    {
+      "id": "f:shared/Auth/passkey.ts->x:https://esm.sh/@simplewebauthn/browser@13:imports",
+      "source": "f:shared/Auth/passkey.ts",
+      "target": "x:https://esm.sh/@simplewebauthn/browser@13",
+      "kind": "imports"
+    },
+    {
+      "id": "f:shared/IO/git.ts->x:node:crypto:imports",
+      "source": "f:shared/IO/git.ts",
+      "target": "x:node:crypto",
+      "kind": "imports"
+    },
+    {
+      "id": "f:shared/IO/git.ts->x:node:zlib:imports",
+      "source": "f:shared/IO/git.ts",
+      "target": "x:node:zlib",
+      "kind": "imports"
+    },
+    {
+      "id": "f:shared/Routing/router.ts->i:OAUTH_KV:binds",
+      "source": "f:shared/Routing/router.ts",
+      "target": "i:OAUTH_KV",
+      "kind": "binds"
+    },
+    {
+      "id": "f:shared/Routing/routes/auth.ts->x:https://esm.sh/@simplewebauthn/browser@13:imports",
+      "source": "f:shared/Routing/routes/auth.ts",
+      "target": "x:https://esm.sh/@simplewebauthn/browser@13",
+      "kind": "imports"
+    },
+    {
+      "id": "f:shared/Routing/routes/auth.ts->i:OAUTH_KV:binds",
+      "source": "f:shared/Routing/routes/auth.ts",
+      "target": "i:OAUTH_KV",
+      "kind": "binds"
+    },
+    {
+      "id": "f:shared/Routing/routes/io.ts->x:fflate:imports",
+      "source": "f:shared/Routing/routes/io.ts",
+      "target": "x:fflate",
+      "kind": "imports"
+    },
+    {
+      "id": "f:src/index.ts->x:@cloudflare/workers-oauth-provider:imports",
+      "source": "f:src/index.ts",
+      "target": "x:@cloudflare/workers-oauth-provider",
+      "kind": "imports"
+    },
+    {
+      "id": "f:vite.canvas.ts->x:vite:imports",
+      "source": "f:vite.canvas.ts",
+      "target": "x:vite",
+      "kind": "imports"
+    },
+    {
+      "id": "f:vite.canvas.ts->x:@sveltejs/vite-plugin-svelte:imports",
+      "source": "f:vite.canvas.ts",
+      "target": "x:@sveltejs/vite-plugin-svelte",
+      "kind": "imports"
+    },
+    {
+      "id": "f:vite.config.ts->x:vite:imports",
+      "source": "f:vite.config.ts",
+      "target": "x:vite",
+      "kind": "imports"
+    },
+    {
+      "id": "f:vite.config.ts->x:@sveltejs/vite-plugin-svelte:imports",
+      "source": "f:vite.config.ts",
+      "target": "x:@sveltejs/vite-plugin-svelte",
+      "kind": "imports"
+    },
+    {
+      "id": "f:vite.fragment.ts->x:vite:imports",
+      "source": "f:vite.fragment.ts",
+      "target": "x:vite",
+      "kind": "imports"
+    },
+    {
+      "id": "f:vite.preview.ts->x:vite:imports",
+      "source": "f:vite.preview.ts",
+      "target": "x:vite",
+      "kind": "imports"
+    },
+    {
+      "id": "f:vite.preview.ts->x:@sveltejs/vite-plugin-svelte:imports",
+      "source": "f:vite.preview.ts",
+      "target": "x:@sveltejs/vite-plugin-svelte",
+      "kind": "imports"
+    }
+  ],
+  "bindings": {
+    "entities": [
+      {
+        "name": "MCP_OBJECT",
+        "className": "SessionDO"
+      },
+      {
+        "name": "MNEMION_HIVE",
+        "className": "HiveDO"
+      }
+    ],
+    "stores": [
+      {
+        "binding": "OAUTH_KV",
+        "label": "OAUTH_KV",
+        "sub": "KV"
+      },
+      {
+        "binding": "VECTORIZE",
+        "label": "VECTORIZE",
+        "sub": "Vectorize"
+      },
+      {
+        "binding": "AI",
+        "label": "AI",
+        "sub": "Workers AI"
+      }
+    ],
+    "vars": {
+      "WORKER_HOST": "your-worker.workers.dev"
+    },
+    "meta": {
+      "entry": "src/index.ts",
+      "compat": "2025-04-01"
+    }
+  }
+}

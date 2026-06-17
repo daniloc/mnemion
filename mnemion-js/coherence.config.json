@@ -1,0 +1,10 @@
+{
+  "outputDir": "docs/coherence",
+  "entryDir": ".",
+  "tooling": [],
+  "ignore": ["node_modules", ".git", "dist", ".wrangler", ".coherence", "docs", "public", "__tests__", "pages", "system-docs"],
+  "codeExt": ["ts"],
+  "typecheck": ["npm", "run", "types"],
+  "language": "typescript",
+  "platform": "cloudflare"
+}

@@ -8,37 +8,62 @@ Persistent, evolving shared memory between a human and their AI agents. MCP serv
 
 ## Project structure
 
+Source is organized into **component directories**, each with a co-located
+`*.spec.md` (intent + `## works when` claims + protected `## why`). The
+coherence harness derives a graph/agent-map from the spec tree + code and
+verifies the specs haven't rotted (see "Coherence" below). `entities/` are the
+two Durable Objects + their domain logic; `shared/` are cross-cutting
+primitives; `src/` keeps the worker entry, the Svelte frontend, agent docs, and
+tests.
+
 ```
 project-docs/active/   Design documents (the "why" and "what")
 mnemion-js/            Cloudflare Worker — MCP server (the "how")
-  src/index.ts         Route table + OAuthProvider config (~60 lines)
-  src/router.ts        Declarative router: types, enums, pattern matching, dispatch
-  src/routes/auth.ts   /authorize, /auth/verify, passkey setup & authentication, /invite/:token approval
-  src/routes/io.ts     /o/entry/:pattern/:id shared entries, /o/:path egress, /p/:path publications, /f/:token|:id documents, /i/:path ingress, /upload/:token
-  src/routes/marketplace.ts  Token management, git endpoints (composes query + git adapter)
-  src/routes/dev.ts    Dev-only seed routes (Auth.DEV gated, inert in production)
-  src/routes/canvas.ts /canvas SSR page + /api/canvases, /api/canvas (list/save tldraw snapshots)
-  src/routes/pages.ts  Svelte SSR pages, /api/* JSON endpoints, WebSocket proxy
-  src/session.ts       SessionDO: McpAgent, MCP protocol handler (per-session DO)
-  src/hive.ts          HiveDO: DO shell — RPC wrappers, URI resolution, federation, WebSocket
-  src/data.ts          Query engine, mutation engine (CRUD), cross-pattern search
-  src/evolution.ts     Schema evolution: CHANGE_TYPES declaration table, propose/apply/revert
-  src/prime.ts         Auto-associative priming: Workers AI embeddings + Vectorize KNN
-  src/publications.ts  Publication renderers: live pattern data → HTML/RSS/JSON/markdown, template seam
-  src/web.ts           Web URL resolution adapter dispatch (Bluesky, browser-rendering); _web_cache
-  src/tools.ts         Tool metadata SSOT — feeds session.ts MCP registration and /api/tools
-  src/credentials.ts   Passkey CRUD, access token validation
-  src/kernel.ts        Pre-mutation hooks, immutable fields, scope matching
-  src/policy.ts        Write-class SSOT: KERNEL_WRITE_POLICY table; every consent/kernel/ingress gate derives from it
-  src/labels.ts        Single source of truth for "what does this entry look like" (deriveLabel, truncate)
-  src/schema.ts        DDL, migrations, kernel table declarations, system doc seeding
-  src/dev-seed.ts      DEV_SEED-gated realistic data population (raw SQL, runs in DO ctor)
-  src/passkey.ts       WebAuthn passkey registration + authentication
-  src/transform.ts     Transform DSL evaluator for ingress field mapping
-  src/git.ts           Git protocol adapter (file tree → git pack, used by marketplace)
-  src/constants.ts     Product identity (PRODUCT_NAME, URI_SCHEME, uri() helper)
+  Mnemion.spec.md      Root spec: OAuth-wrapped MCP server, one declarative route table
+  coherence.config.json  Coherence harness config (component dirs, adapters)
+
+  src/index.ts         Route table + OAuthProvider config (the worker entry; wrangler `main`)
+  src/pages/           Svelte components (SchemaViewer, HiveMap, LinkMap, Canvas, EntryDetail) + SSR + canvas/fragment entry points
   src/system-docs/     Markdown files with {{placeholder}} syntax, loaded at runtime
-  src/pages/           Svelte components (SchemaViewer, HiveMap, LinkMap, Canvas, EntryDetail) + SSR + canvas entry points
+  src/__tests__/       vitest (vitest-pool-workers)
+
+  entities/Hive/       (HiveDO — the per-user Durable Object; Hive.spec.md)
+    hive.ts            DO shell — RPC wrappers, URI resolution, federation, WebSocket
+    data.ts            Query engine, mutation engine (CRUD), cross-pattern search
+    kernel.ts          Pre-mutation hooks, immutable fields, scope matching
+    policy.ts          Write-class SSOT: KERNEL_WRITE_POLICY table; every consent/kernel/ingress gate derives from it
+    prime.ts           Auto-associative priming: Workers AI embeddings + Vectorize KNN
+    evolution.ts       Schema evolution: CHANGE_TYPES declaration table, propose/apply/revert
+    schema.ts          DDL, migrations, kernel table declarations, system doc seeding
+    labels.ts          Single source of truth for "what does this entry look like" (deriveLabel, truncate)
+    transform.ts       Transform DSL evaluator for ingress field mapping
+  entities/Session/    (SessionDO — per-session McpAgent; Session.spec.md)
+    session.ts         McpAgent, MCP protocol handler (per-session DO)
+    tools.ts           Tool metadata SSOT — feeds session.ts MCP registration and /api/tools
+
+  shared/Routing/      (Routing.spec.md)
+    router.ts          Declarative router: types, enums, pattern matching, dispatch
+    routes/auth.ts     /authorize, /auth/verify, passkey setup & authentication, /invite/:token approval
+    routes/io.ts       /o/entry shared entries, /o/:path egress, /p/:path publications, /f documents, /i ingress, /upload
+    routes/marketplace.ts  Token management, git endpoints (composes query + git adapter)
+    routes/dev.ts      Dev-only seed routes (Auth.DEV gated, inert in production)
+    routes/canvas.ts   /canvas SSR page + /api/canvases, /api/canvas
+    routes/pages.ts    Svelte SSR pages, /api/* JSON endpoints, WebSocket proxy
+  shared/Auth/         (Auth.spec.md)
+    credentials.ts     Passkey CRUD, access token validation
+    passkey.ts         WebAuthn passkey registration + authentication
+  shared/IO/           (IO.spec.md — adapters across the hive boundary)
+    publications.ts    Publication renderers: live pattern data → HTML/RSS/JSON/markdown, template seam
+    web.ts             Web URL resolution adapter dispatch (Bluesky, browser-rendering); _web_cache
+    git.ts             Git protocol adapter (file tree → git pack, used by marketplace)
+    extract.ts         Document text extraction (inline text, async PDF)
+  shared/core/
+    constants.ts       Product identity (PRODUCT_NAME, URI_SCHEME, uri() helper)
+    dev-seed.ts        DEV_SEED-gated realistic data population (raw SQL, runs in DO ctor)
+    text.d.ts          Ambient module decls for *.md / *.client.txt text imports
+
+  docs/coherence/      Generated: _graph.html, _overview.html, graph.json, why-proposals.md
+  AGENTS.md            Generated agent map (coherence overview)
   vite.config.ts       Main SSR + client build (SchemaViewer/HiveMap/LinkMap/EntryDetail)
   vite.canvas.ts       Separate build for canvas-client.client.txt → dist/canvas/
   scripts/setup.sh     First-run setup: generates secret, deploys, opens passkey registration
@@ -74,7 +99,7 @@ Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the wo
 
 ### Shared hive (multi-member)
 
-One hive, several people. Hive identity (which Durable Object) is decoupled from actor identity (which person): `HIVE_ID` (`src/constants.ts`, literal `"user:owner"` — a rename for clarity, not a re-key) names the single store every member authenticates into; the authenticated member's label rides in the OAuth session props as `actor`, separate from `hiveId`. Design doc: `project-docs/active/shared-hive.md`.
+One hive, several people. Hive identity (which Durable Object) is decoupled from actor identity (which person): `HIVE_ID` (`shared/core/constants.ts`, literal `"user:owner"` — a rename for clarity, not a re-key) names the single store every member authenticates into; the authenticated member's label rides in the OAuth session props as `actor`, separate from `hiveId`. Design doc: `project-docs/active/shared-hive.md`.
 
 - **Members** (`_members` kernel pattern): the roster. `label` (immutable handle, the join key for passkeys/tokens), `display_name`, `role` (`owner`|`member`), `status` (`active`|`suspended`). The `owner` member is seeded on boot and reserved. Creating a member is consent-gated at the MCP layer (it grants standing access to the whole hive).
 - **Invite flow**: (1) create the `_members` row with `label` + `display_name` (the inviting agent names them); (2) mint a `register`-scoped access token with `member: "<label>"` (forced single-use; the hook refuses `owner` and any non-active-roster member); (3) the token is minted **inert** — an existing member must approve it in person at `/invite/{token}` via passkey (master-secret fallback) before it works; (4) once approved, give the invitee its `/setup?token=...` URL, where they register their own passkey, bound to that member. The setup endpoints accept either the master secret (owner bootstrap) or an **approved** `register` token (invitee). The passkey approval — not the agent-satisfiable mutate round-trip — is the real human-consent gate: `approved_at` is IMMUTABLE on the mutate path and set only by the approval endpoint, so an agent acting on injected content can mint an invite but never activate it.
@@ -95,7 +120,7 @@ Mnemion uses biological vocabulary at every layer — API parameters, URIs, JSON
 
 ### Tools (7 total)
 
-Tool metadata is centralized in `src/tools.ts` (SSOT for `session.ts` MCP registration + `/api/tools` frontend):
+Tool metadata is centralized in `entities/Session/tools.ts` (SSOT for `session.ts` MCP registration + `/api/tools` frontend):
 
 - `prime` — auto-associative recall: pass conversational context, get semantically-nearest entries + one-hop links. Workers AI embeds entries on write, Vectorize indexes them, prime queries KNN. Relevance is weighted at read time: superseded entries demoted ×0.3 + annotated `superseded_by`; patterns with a memory-policy half-life decay by `0.5^(age/half_life)` where age runs from the later of `updated_at` and the last prime hit (`_entry_access_log` — recall is rehearsal). `raw_similarity` is kept alongside weighted `relevance`. A `maintenance` field appears when a cleanup pass is overdue.
 - `resolve` — read anything by `mnemion://` URI, including federated cross-hive URIs and `mnemion://web/<https-url>` for adapter-cached web fetches (escape hatch for platforms without resource support)
@@ -110,7 +135,7 @@ Tool metadata is centralized in `src/tools.ts` (SSOT for `session.ts` MCP regist
 Agent-defined HTTP endpoints, configured as entries:
 - **Shared entries** (`_shared`): `GET /o/entry/{pattern}/{id}` — serve entries marked public or unlisted
 - **Egress** (`_outputs`): `GET /o/{path}` — serve agent-constructed content at arbitrary paths
-- **Documents** (`_documents`): R2-backed file store. `_documents` entry holds agent metadata (title/description/tags/visibility) + system-managed blob bookkeeping (`r2_key`/`size`/`content_type`/`stored_at`, IMMUTABLE); bytes live in R2 (`DOCUMENTS` binding), never the hive. Two-step: `mutate _documents create` auto-mints a single-use `document`-scoped token and returns `upload_url`; `POST /f/{token}` streams to R2 (≤25 MB) and records the key. Served at `GET /f/{id}`, visibility-gated like `_shared` (private 404 / unlisted token `read:document:{id}` / public edge-cached). Archiving the entry deletes the R2 object (waitUntil). Non-private visibility is consent-gated (visibility-aware, like set_sharing). R2 key is fully random (non-enumerable). On upload, text is extracted into `extracted_text` (text-family inline via `src/extract.ts`; PDF via `unpdf` in `ctx.waitUntil`) and the entry re-embedded, so document contents are searchable (`search`) and recallable (`prime` — `_documents` is in prime's KERNEL_INCLUDE); `extraction_status` reports done/pending/failed/unsupported. Chunked embeddings for long docs are a future seam.
+- **Documents** (`_documents`): R2-backed file store. `_documents` entry holds agent metadata (title/description/tags/visibility) + system-managed blob bookkeeping (`r2_key`/`size`/`content_type`/`stored_at`, IMMUTABLE); bytes live in R2 (`DOCUMENTS` binding), never the hive. Two-step: `mutate _documents create` auto-mints a single-use `document`-scoped token and returns `upload_url`; `POST /f/{token}` streams to R2 (≤25 MB) and records the key. Served at `GET /f/{id}`, visibility-gated like `_shared` (private 404 / unlisted token `read:document:{id}` / public edge-cached). Archiving the entry deletes the R2 object (waitUntil). Non-private visibility is consent-gated (visibility-aware, like set_sharing). R2 key is fully random (non-enumerable). On upload, text is extracted into `extracted_text` (text-family inline via `shared/IO/extract.ts`; PDF via `unpdf` in `ctx.waitUntil`) and the entry re-embedded, so document contents are searchable (`search`) and recallable (`prime` — `_documents` is in prime's KERNEL_INCLUDE); `extraction_status` reports done/pending/failed/unsupported. Chunked embeddings for long docs are a future seam.
 - **Publications** (`_publications`): `GET /p/{path}` — live pattern projections rendered at request time (never stored). Formats: html (default styles + owner `css` override), rss, json, markdown (YAML frontmatter). Source query reuses the data.ts query engine (filters/facets/sort/limit pass through); superseded entries excluded by default. Per-entry `template` seam: `{{facet}}` + `{{_label}}`/`{{_uri}}`/`{{_id}}`/`{{_updated_at}}` — template text raw, substituted values HTML-escaped in html/rss. Source must be a user pattern (kernel patterns never publishable). Creation is consent-gated at the MCP layer like `_shared`. ETag = max(publication, served entries) `updated_at`; public responses edge-cached 60s.
 - **Ingress** (`_inputs`): `POST /i/{path}` — accept inbound data, create entries in target patterns with optional transform DSL
 
@@ -157,7 +182,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `_publications` — declarative outbound projections served at `/p/{path}`; rendering is always derived, never stored
 - `_documents` — file-store metadata (title/tags/visibility + system-managed r2_key/size/content_type/stored_at); bytes live in R2, served at `/f/{id}`
 - `_system_docs` — agent orientation docs (seeded from `src/system-docs/*.md`)
-- `_web_cache` — adapter-fetched web content (Bluesky threads 24h, browser-rendered markdown 30d). TTL = re-fetch horizon, not eviction: active content is retained indefinitely as memory; only superseded duplicates are GC'd (7-day grace, pinned excluded). A re-fetch that returns empty keeps the existing snapshot (snapshot protection in web.ts). `pinned` column + `resolve(retain: true)` freeze a snapshot forever (always served, never re-fetched/GC'd) until `retain: false`; pinning stays system-managed (`_web_cache` is write-class System in `src/policy.ts` — driven only through resolve, never agent mutate)
+- `_web_cache` — adapter-fetched web content (Bluesky threads 24h, browser-rendered markdown 30d). TTL = re-fetch horizon, not eviction: active content is retained indefinitely as memory; only superseded duplicates are GC'd (7-day grace, pinned excluded). A re-fetch that returns empty keeps the existing snapshot (snapshot protection in web.ts). `pinned` column + `resolve(retain: true)` freeze a snapshot forever (always served, never re-fetched/GC'd) until `retain: false`; pinning stays system-managed (`_web_cache` is write-class System in `entities/Hive/policy.ts` — driven only through resolve, never agent mutate)
 - `_canvases` — tldraw document snapshots for the Canvas spatial-thinking UI (full document state in the `snapshot` facet — do not modify directly; mutate via canvas tools/UI). Entry-type shapes inside the snapshot store **only references** (`{type: 'entry', pattern, entryId, x, y, w, h}`) — display label and facet preview are hydrated at render time from the live entry. Do not denormalize entry data into the snapshot; it goes stale.
 - `_fragment_access_log` — append-only log of prime hits per short-term fragment. Promotion to `_long_term_fragments` is COUNT(*)-derived from this log, not a stored counter. GC'd alongside fragments. Audit-exempt (high-frequency append-only).
 - `_entry_access_log` — append-only log of prime hits per user-pattern entry. Feeds decay (`last_touch`) and the stale view. Audit-exempt, write-protected, GC'd at 90 days.
@@ -195,7 +220,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `wrangler.toml` requires `compatibility_flags = ["nodejs_compat"]` for the agents package.
 - Kernel columns (`id`, `version`, `created_at`, `updated_at`, `archived_at`, `created_by`, `updated_by`) are auto-provided on every pattern. They cannot be defined via `propose_change`. `created_by`/`updated_by` are set by the mutate engine from the session actor (not facets, not caller-settable).
 - Structure is resources, operations are tools. If it describes what the organism is, it's a resource. If it changes what the organism is or retrieves dynamic content, it's a tool.
-- Product name and URI scheme are defined in `src/constants.ts`. Import `PRODUCT_NAME`, `URI_SCHEME`, `uri()` from there — never hardcode `"mnemion://"` in source.
+- Product name and URI scheme are defined in `shared/core/constants.ts`. Import `PRODUCT_NAME`, `URI_SCHEME`, `uri()` from there — never hardcode `"mnemion://"` in source.
 - `@simplewebauthn/server` is lazy-imported in `routes/auth.ts` to avoid `tslib` resolution issues in the vitest/workerd test environment.
 - System docs live in `src/system-docs/*.md` with YAML frontmatter (`slug`, `title`). Placeholders (`{{PRODUCT_NAME}}`, `{{uri:path}}`) are resolved at runtime by `resolveDocPlaceholders()` in schema.ts.
 - `wrangler.toml` has a `[[rules]]` entry to import `.md` files as text modules.
@@ -204,7 +229,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 
 `project-docs/data-is-destiny.md` is doctrine. Operational rules derived from it:
 
-- **Store truth once, derive its consequences.** Counts, summaries, labels, and previews are computed at read time, not stored as columns. The `entry_count`/`latest_activity` on `/api/index` are SQL-computed every call. Entry labels are derived via `src/labels.ts` (`deriveLabel`) wherever they're needed; never persisted.
+- **Store truth once, derive its consequences.** Counts, summaries, labels, and previews are computed at read time, not stored as columns. The `entry_count`/`latest_activity` on `/api/index` are SQL-computed every call. Entry labels are derived via `entities/Hive/labels.ts` (`deriveLabel`) wherever they're needed; never persisted.
 - **Snapshots store references, not denormalized data.** Canvas entry shapes hold `{pattern, entryId}` and hydrate from the live entry; `_fragment_access_log` is the source of promotion eligibility, not a stored counter.
 - **Audit logs are exempt** — `_mutation_log`, `_schema_history`, `_pending_changes` are point-in-time records on purpose.
 - **Caches are bounded with explicit invalidation policy** — `_web_cache` has per-adapter TTLs (re-fetch horizon) with superseded-duplicate GC; resolved content is retained as durable memory, not evicted on TTL. Vectorize embeddings are re-upserted on every mutate via `embedAfterMutate`.
@@ -221,18 +246,26 @@ Domain logic lives in pure-function modules with context injected. HiveDO builds
 
 ## Design principle: self-enforcing declarations
 
-The operational synthesis of the two principles above, for a codebase agents edit. Every invariant gets **one declarative home** (a table keyed by what it governs) that is simultaneously the spec an agent reads, the enforcement every gate derives from, and the oracle a totality check asserts completeness against — so spec, enforcement, and test can't drift. Five properties make a declaration self-enforcing: (1) one table, and it's data; (2) derive, never duplicate; (3) enforce at the chokepoint the invariant is about, not the convenient layer; (4) fail closed (absence → the safe state); (5) a totality check that fails loudly. Reference: `src/policy.ts` (write-class registry) + `verifyWritePolicyTotality` + `src/__tests__/policy.test.ts`. Full doctrine and checklists: `project-docs/active/self-enforcing-declarations.md`. Quality metric: minimize the number of files an agent must touch in lockstep to add a pattern/tool/route/invariant — drive it toward one. Not for effects (keep imperative), one-offs, or history (migrations/audit logs).
+The operational synthesis of the two principles above, for a codebase agents edit. Every invariant gets **one declarative home** (a table keyed by what it governs) that is simultaneously the spec an agent reads, the enforcement every gate derives from, and the oracle a totality check asserts completeness against — so spec, enforcement, and test can't drift. Five properties make a declaration self-enforcing: (1) one table, and it's data; (2) derive, never duplicate; (3) enforce at the chokepoint the invariant is about, not the convenient layer; (4) fail closed (absence → the safe state); (5) a totality check that fails loudly. Reference: `entities/Hive/policy.ts` (write-class registry) + `verifyWritePolicyTotality` + `src/__tests__/policy.test.ts`. Full doctrine and checklists: `project-docs/active/self-enforcing-declarations.md`. Quality metric: minimize the number of files an agent must touch in lockstep to add a pattern/tool/route/invariant — drive it toward one. Not for effects (keep imperative), one-offs, or history (migrations/audit logs).
+
+## Coherence (spec ↔ code)
+
+The same idea, tooled for docs. The [coherence harness](https://github.com/daniloc/coherence) (`coherence-harness`, a dev dep) derives a multi-resolution graph from the `*.spec.md` tree + the code, renders an outline (`docs/coherence/_graph.html`), an agent map (`AGENTS.md`, `docs/coherence/_overview.html`), and **verifies the specs haven't rotted** against the code.
+
+- **One spec per component directory.** Each `entities/*` and `shared/*` dir has a `*.spec.md`: a one-line intent, a `## works when` list of checkable claims (`X exists`, `X imports Y`, `typechecks`), and a protected `## why` (rationale — authored, never auto-generated; bootstrapped from git history in `docs/coherence/why-proposals.md`). The **what** is derivable from code; the **why** is not.
+- `npm run coherence:docs` regenerates the graph + agent map; `npm run coherence:verify` runs claims, the narrative evidence chain, and coverage (flags undocumented symbols / claimless / why-less components). Requires **Node ≥22** (same as wrangler).
+- When you move or rename a component, or change what it does, update its spec — `verify` is the check that the map still matches the territory. Keep `## why` current by hand; let the rest derive.
 
 ## Router architecture
 
-Declarative dispatch table in `src/router.ts`. Routes are matched in declaration order.
+Declarative dispatch table in `shared/Routing/router.ts`. Routes are matched in declaration order.
 
 - **`Method`** enum: `GET`, `POST`, `ANY`
 - **`Auth`** enum: `NONE` (default), `DEV` (no secret configured), `CONFIGURED` (secret required to exist), `SECRET` (Basic auth against master secret)
 - **`where`** constraints: regex validation on extracted params (e.g. `{ token: /^[a-fA-F0-9]+$/ }`)
 - **`RouteContext`**: `request`, `url`, `env`, `params`, `store` — passed to every handler
 
-Route handlers are grouped by domain in `src/routes/`. OAuthProvider intercepts `/mcp`, `/token`, `/register` before the dispatch table runs.
+Route handlers are grouped by domain in `shared/Routing/routes/`. OAuthProvider intercepts `/mcp`, `/token`, `/register` before the dispatch table runs.
 
 ## Svelte frontend
 
@@ -256,7 +289,11 @@ npm run dev          # build:pages + wrangler dev on :8787 (dev mode, no secret 
 npm run preview      # vite dev with mock data (frontend-only iteration, no worker)
 npm run build:pages  # main client + canvas client + SSR — all required before dev/deploy
 npm run types        # regenerate worker-configuration.d.ts from wrangler.toml
+npm run coherence:docs    # regenerate the spec graph + AGENTS.md (Node ≥22)
+npm run coherence:verify  # check specs/claims haven't rotted against the code (Node ≥22)
 ```
+
+**Node ≥22** is required for `wrangler` and the `coherence` bin. If your default is older, use a version manager (`nvm use 22`) for `deploy`/`types`/`coherence:*`.
 
 ## Testing
 

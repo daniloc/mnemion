@@ -12,7 +12,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "setup": "bash scripts/setup.sh",
-    "enable-documents": "bash scripts/enable-documents.sh"
+    "enable-documents": "bash scripts/enable-documents.sh",
+    "coherence:docs": "coherence docs",
+    "coherence:verify": "coherence verify",
+    "coherence:onboard": "coherence onboard"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.8.0",
@@ -30,6 +33,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.16.15",
     "@cloudflare/workers-types": "^4.20260615.1",
+    "coherence-harness": "github:daniloc/coherence",
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@types/node": "^25.9.3",
     "ai": "^6.0.206",
