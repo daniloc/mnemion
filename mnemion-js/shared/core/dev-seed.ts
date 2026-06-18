@@ -79,6 +79,17 @@ export function seedDevData(db: DB): void {
     { name: "tags", type: "text" },
   ]);
 
+  // A prose/knowledge pattern: entries are short essays, not records — the shape
+  // the document view is built for (title + a lead + headed prose sections).
+  pat(db, "frames", "Reusable thinking primitives — a frame, why it holds, and where it applies", "Capture a frame when a way of seeing earns reuse. Each is an essay: state it, explain the mechanism, ground it in cases.", [
+    { name: "title", type: "text", required: true },
+    { name: "observation", type: "text" },
+    { name: "resolution", type: "text" },
+    { name: "explains", type: "text" },
+    { name: "examples", type: "text" },
+    { name: "lineage", type: "text" },
+  ]);
+
   // --- Entries ---
 
   const g1 = ins(db, "goals", { title: "Ship the canvas feature", status: "active", notes: "Spatial thinking for Mnemion. SVG-based infinite canvas with notes, entries, links, and connections." });
@@ -104,6 +115,23 @@ export function seedDevData(db: DB): void {
   ins(db, "bookmarks", { url: "https://svelte.dev/docs/svelte/overview", title: "Svelte 5 docs", description: "Runes, snippets, SSR — the Svelte 5 way", tags: "svelte, reference" });
   ins(db, "bookmarks", { url: "https://modelcontextprotocol.io/", title: "MCP specification", description: "Model Context Protocol — tools, resources, prompts", tags: "mcp, reference" });
 
+  ins(db, "frames", {
+    title: "Constraints are the design",
+    observation: "A constraint is usually read as the thing you work around — the budget, the deadline, the platform limit, the legacy schema. But the durable design decisions almost never come from the space of free choices; they come from the constraints that close most of the space off. When everything is possible, nothing is decided. A hard limit collapses a thousand vague options into a few sharp ones, and the sharpness is what makes the result feel inevitable rather than arbitrary.",
+    resolution: "the constraint level, not the feature level",
+    explains: "Why the most admired products often emerge from the most starved conditions, and why teams with unlimited runway frequently ship mush. The constraint is doing the editorial work that taste would otherwise have to do by hand. Remove it and you remove the forcing function, not just the obstacle.",
+    examples: "The original Macintosh's tiny memory forced an interface economy that became its identity. Twitter's 140 characters made a writing form. A single-file architecture rule prevents the sprawl that a styleguide only nags about. In each case the limit was not survived — it was the source.",
+    lineage: "A recurring pattern across the design work here: the moments of clarity arrived when an option was taken away. Named as a frame so it can be reached for on purpose rather than rediscovered each time under pressure.",
+  });
+  ins(db, "frames", {
+    title: "The interface is a promise",
+    observation: "Every control a system exposes is a commitment about what it will do and what it will protect. A button is a promise that pressing it is safe to mean what it says; a field is a promise that what you type is the thing that gets stored. When the promise and the behavior diverge — the button that sometimes destroys, the field that silently truncates — the damage is not a bug, it is a broken contract, and trust does not degrade gracefully. It collapses.",
+    resolution: "the contract level (what is promised), above the implementation level (how it is met)",
+    explains: "Why small inconsistencies feel disproportionately bad, and why 'it technically works' is not a defense. Users build a model from the promises; a violation invalidates the model, not just the action. It also explains why the best interfaces feel calm: their promises are narrow and kept.",
+    examples: "An undo that doesn't cover every action teaches users to distrust undo entirely. A save indicator that lies once is never believed again. Conversely, a destructive action gated behind a real confirmation keeps a promise the layout already made.",
+    lineage: "Drawn from repeated cases where a technically-correct UI still felt untrustworthy. The throughline was always a promise the system made with its shape and broke with its behavior.",
+  });
+
   // --- Views (one of each shape, so the desk shows the palette's range) ---
   // Seeds are trusted (raw SQL, bypass the kernel hook) so they must be valid
   // against the palette: every facet named below is real on its pattern.
@@ -117,6 +145,9 @@ export function seedDevData(db: DB): void {
     config: JSON.stringify({ title: "title", subtitle: "tags", fields: ["body"] }) });
   ins(db, "_views", { pattern: "goals", name: "default", view_type: "list",
     config: JSON.stringify({ title: "title", secondary: "notes", meta: "status" }) });
+  ins(db, "_views", { pattern: "frames", name: "default", view_type: "document",
+    // observation reads as the lead; the rest as headed sections.
+    config: JSON.stringify({ title: "title", lead: "observation", sections: ["resolution", "explains", "examples", "lineage"] }) });
 
   // --- Links ---
 

@@ -1,4 +1,4 @@
-import { memo, useRef, useState, type FC } from 'react';
+import { memo, useRef, useState, useEffect, type FC } from 'react';
 import * as Select from '@radix-ui/react-select';
 import * as Dialog from '@radix-ui/react-dialog';
 import { store, useEntry, usePatternEntries, type Entry } from './store';
@@ -14,6 +14,7 @@ export interface ViewConfig {
   group_by?: string; title?: string; columns?: string[]; fields?: string[];
   subtitle?: string; secondary?: string; meta?: string; sort?: string;
   formats?: Record<string, string>;
+  hide?: string[];
 }
 // Every view component takes the same props; `view` is optional so the stack can
 // also serve as the no-view fallback.
@@ -24,6 +25,12 @@ const KERNEL_COLS = new Set(['id', 'version', 'created_at', 'updated_at', 'archi
 export function parseConfig(v?: ViewSpec | null): ViewConfig {
   if (!v?.config) return {};
   try { return JSON.parse(v.config) as ViewConfig; } catch { return {}; }
+}
+
+// Facet name → section heading: "why_it_works" → "Why it works". Documents read
+// as prose, so a section gets a humanized heading, not a raw mono field tag.
+function humanize(name: string): string {
+  return name.replace(/[_-]+/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
 }
 
 function valueOf(entry: Entry, name: string): string {
@@ -168,11 +175,12 @@ function DetailBody({ pattern, id, facets, cfg }: { pattern: string; id: number;
   const entry = useEntry(pattern, id);
   if (!entry) return null;
   const titleFacet = cfg.title ?? facets.find((f) => f.type === 'text')?.name;
+  const hide = new Set(cfg.hide ?? []);
   return (
     <>
       <Dialog.Title className="dialog-title">{(titleFacet && valueOf(entry, titleFacet)) || `${pattern} #${id}`}</Dialog.Title>
       <div className="dialog-fields">
-        {facets.filter((f) => !KERNEL_COLS.has(f.name) && f.name !== titleFacet && valueOf(entry, f.name)).map((f) => (
+        {facets.filter((f) => !KERNEL_COLS.has(f.name) && f.name !== titleFacet && !hide.has(f.name) && valueOf(entry, f.name)).map((f) => (
           <div className="field inline" key={f.name}>
             <div className="field-name">{f.name}</div>
             <div className="field-value"><FacetValue value={valueOf(entry, f.name)} type={f.type} facetFormat={f.format} viewFormat={cfg.formats?.[f.name]} pattern={pattern} id={id} facet={f.name} options={f.options} /></div>
@@ -197,8 +205,9 @@ export function TableView({ pattern, facets, view }: ViewProps) {
   const titleFacet = cfg.title ?? userFacets.find((f) => f.type === 'text')?.name;
   // Columns: configured facet names (kept only if real), else all user facets,
   // with the title facet pulled to the front.
+  const hide = new Set(cfg.hide ?? []);
   const declared = cfg.columns?.length ? cfg.columns.filter((c) => facets.some((f) => f.name === c)) : userFacets.map((f) => f.name);
-  const cols = titleFacet ? [titleFacet, ...declared.filter((c) => c !== titleFacet)] : declared;
+  const cols = (titleFacet ? [titleFacet, ...declared.filter((c) => c !== titleFacet)] : declared).filter((c) => !hide.has(c));
   const rows = cfg.sort
     ? [...entries].sort((a, b) => valueOf(a, cfg.sort!).localeCompare(valueOf(b, cfg.sort!)))
     : entries;
@@ -314,10 +323,11 @@ const GridCard = memo(function GridCard({ pattern, id, facets, cfg, onOpen }: { 
   const titleFacet = cfg.title ?? facets.find((f) => f.type === 'text')?.name;
   const title = titleFacet ? valueOf(entry, titleFacet) : `#${id}`;
   const subtitle = cfg.subtitle ? valueOf(entry, cfg.subtitle) : '';
+  const hide = new Set(cfg.hide ?? []);
   const fieldNames = cfg.fields?.length
     ? cfg.fields
     : facets.filter((f) => !KERNEL_COLS.has(f.name) && f.name !== titleFacet && f.name !== cfg.subtitle).map((f) => f.name);
-  const shown = fieldNames.filter((n) => valueOf(entry, n));
+  const shown = fieldNames.filter((n) => !hide.has(n) && valueOf(entry, n));
   return (
     <article className="card gcard" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
       <div className="card-title">{title || `#${id}`}</div>
@@ -379,6 +389,107 @@ const ListRow = memo(function ListRow({ pattern, id, facets, cfg, onOpen }: { pa
   );
 });
 
+// === Entry history (revision timeline from the audit log) ===
+interface Rev { at: string; operation: string; actor: string | null; changes: { facet: string; from: unknown; to: unknown }[]; }
+
+function EntryHistory({ pattern, id, title, open, onClose }: { pattern: string; id: number; title: string; open: boolean; onClose: () => void }) {
+  const [revs, setRevs] = useState<Rev[] | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    setRevs(null);
+    fetch(`/api/history/${pattern}/${id}`).then((r) => r.json()).then((d) => setRevs(d.revisions || [])).catch(() => setRevs([]));
+  }, [open, pattern, id]);
+  const label = (op: string) => (op === 'INSERT' ? 'created' : op === 'DELETE' ? 'archived' : 'edited');
+  return (
+    <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content className="dialog">
+          <Dialog.Title className="dialog-title">History · {title}</Dialog.Title>
+          {revs === null ? <div className="status">loading…</div> : revs.length === 0 ? <div className="status">No history recorded.</div> : (
+            <ol className="hist">
+              {revs.map((rev, i) => (
+                <li className="hist-rev" key={i}>
+                  <div className="hist-head">
+                    <span className={`hist-op ${rev.operation.toLowerCase()}`}>{label(rev.operation)}</span>
+                    <span className="hist-at">{rev.at}</span>
+                    {rev.actor && <span className="hist-actor">{rev.actor}</span>}
+                  </div>
+                  {rev.changes.length > 0 && (
+                    <div className="hist-changes">
+                      {rev.changes.map((c) => (
+                        <div className="hist-change" key={c.facet}>
+                          <div className="hist-facet">{humanize(c.facet)}</div>
+                          <div className="hist-val">{String(c.to ?? '')}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ol>
+          )}
+          <footer className="dialog-foot">
+            <span className="id">{revs ? `${revs.length} revision${revs.length === 1 ? '' : 's'}` : ''}</span>
+            <Dialog.Close className="dialog-close">close</Dialog.Close>
+          </footer>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+// === Document (long-form reading; each entry a document) ===
+export function DocumentView({ pattern, facets, view }: ViewProps) {
+  const entries = usePatternEntries(pattern);
+  if (entries.length === 0) return <div className="status">No entries yet.</div>;
+  const cfg = parseConfig(view);
+  return (
+    <div className="doc">
+      {entries.map((e) => (
+        <DocBlock key={e.id} pattern={pattern} id={e.id} facets={facets} cfg={cfg} />
+      ))}
+    </div>
+  );
+}
+
+const DocBlock = memo(function DocBlock({ pattern, id, facets, cfg }: { pattern: string; id: number; facets: Facet[]; cfg: ViewConfig }) {
+  const entry = useEntry(pattern, id);
+  const renders = useRenderCount();
+  const [histOpen, setHistOpen] = useState(false);
+  if (!entry) return null;
+  const titleFacet = cfg.title ?? facets.find((f) => f.type === 'text')?.name;
+  const leadFacet = cfg.lead;
+  const title = (titleFacet && valueOf(entry, titleFacet)) || `#${id}`;
+  const hide = new Set(cfg.hide ?? []);
+  const facetOf = (n: string) => facets.find((f) => f.name === n);
+  const sectionNames = (cfg.sections?.length ? cfg.sections : facets.filter((f) => !KERNEL_COLS.has(f.name)).map((f) => f.name))
+    .filter((n) => n !== titleFacet && n !== leadFacet && !hide.has(n) && facetOf(n) && valueOf(entry, n));
+  const render = (n: string) => {
+    const f = facetOf(n);
+    return <FacetValue value={valueOf(entry, n)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[n]} pattern={pattern} id={id} facet={n} options={f?.options} />;
+  };
+  return (
+    <article className="doc-block">
+      <h2 className="doc-title">{title}</h2>
+      {leadFacet && valueOf(entry, leadFacet) && <div className="doc-lead">{render(leadFacet)}</div>}
+      {sectionNames.map((n) => (
+        <section className="doc-section" key={n}>
+          <h3 className="doc-section-head">{humanize(n)}</h3>
+          <div className="doc-section-body">{render(n)}</div>
+        </section>
+      ))}
+      <footer className="doc-meta">
+        <span className="id">#{id}</span>
+        {entry.created_by ? <span>{String(entry.created_by)}</span> : null}
+        <button className="hist-btn" onClick={() => setHistOpen(true)}>history</button>
+        <span className="redraws" title="renders of this document">r{renders}</span>
+      </footer>
+      <EntryHistory pattern={pattern} id={id} title={title} open={histOpen} onClose={() => setHistOpen(false)} />
+    </article>
+  );
+});
+
 // === Radix Select — the status control ===
 function StatusSelect({ value, options, onChange }: { value: string; options: string[]; onChange: (v: string) => void }) {
   const opts = options.length ? options : [value].filter(Boolean);
@@ -414,4 +525,5 @@ export const COMPONENTS: Record<ViewTypeId, FC<ViewProps>> = {
   board: BoardView,
   table: TableView,
   list: ListView,
+  document: DocumentView,
 };

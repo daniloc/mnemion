@@ -127,3 +127,43 @@ describe("_views kernel validation", () => {
     expect((await view(store, { id, config: JSON.stringify({ columns: ["body", "title"] }) }, "update")).error).toBeFalsy();
   });
 });
+
+// === hide (universal facet suppression) + document config ===
+
+describe("hide + document config", () => {
+  const has = (n: string) => ["title", "lineage", "body", "observation"].includes(n);
+
+  it("accepts a document config (title/lead/sections) and a hide list", () => {
+    expect(validateViewSpec("document", JSON.stringify({ title: "title", lead: "observation", sections: ["body", "lineage"] }), has)).toEqual([]);
+    expect(validateViewSpec("document", JSON.stringify({ title: "title", hide: ["lineage"] }), has)).toEqual([]);
+  });
+  it("rejects hide referencing a missing facet", () => {
+    expect(validateViewSpec("table", JSON.stringify({ hide: ["ghost"] }), has).join()).toContain('facet "ghost"');
+  });
+  it("rejects a non-array hide", () => {
+    expect(validateViewSpec("table", JSON.stringify({ hide: "lineage" }), has).join()).toContain("array of facet names");
+  });
+});
+
+// === entry revision history (derived from the audit log) ===
+
+describe("getEntryHistory", () => {
+  it("returns revisions oldest→newest, each update diffed to the changed facet", async () => {
+    const store = getStore();
+    await createPattern(store, "essays", [{ name: "title", type: "text" }, { name: "body", type: "text" }]);
+    const created = JSON.parse(await store.mutate("essays", "create", JSON.stringify({ title: "T", body: "first" })));
+    const id = created.entry.id;
+    await store.mutate("essays", "update", JSON.stringify({ id, body: "second" }));
+    await store.mutate("essays", "update", JSON.stringify({ id, title: "T2" }));
+
+    const hist = JSON.parse(await store.getEntryHistory("essays", id));
+    expect(hist.count).toBe(3);
+    expect(hist.revisions[0].operation).toBe("INSERT");
+    expect(hist.revisions[0].changes).toEqual([]); // create is the starting point, not a diff
+    expect(hist.revisions[1].changes.map((c: any) => c.facet)).toEqual(["body"]);
+    expect(hist.revisions[1].changes[0].to).toBe("second");
+    expect(hist.revisions[2].changes.map((c: any) => c.facet)).toEqual(["title"]);
+    expect(hist.revisions[2].changes[0].from).toBe("T");
+    expect(hist.revisions[2].changes[0].to).toBe("T2");
+  });
+});

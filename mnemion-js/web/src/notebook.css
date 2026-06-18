@@ -359,6 +359,53 @@ body { background: var(--paper); font-family: var(--sans); color: var(--ink); -w
 .dt-lead { color: var(--ink); font-weight: 500; }
 .dt-id { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; width: 1%; }
 
+/* === Document view (long-form reading) === */
+.doc { max-width: 660px; }
+.doc-block { padding-bottom: 40px; margin-bottom: 40px; border-bottom: 1px solid var(--line); }
+.doc-block:last-child { border-bottom: none; margin-bottom: 0; }
+.doc-title {
+  font-family: var(--sans); font-weight: 650; font-size: 26px; line-height: 1.18;
+  letter-spacing: -0.02em; color: var(--ink); margin: 0 0 16px; text-wrap: balance;
+}
+.doc-lead {
+  font-size: 17px; line-height: 1.62; color: var(--ink); margin: 0 0 24px;
+  white-space: pre-wrap;
+}
+.doc-section { margin: 0 0 20px; }
+.doc-section:last-of-type { margin-bottom: 0; }
+.doc-section-head {
+  font-family: var(--sans); font-weight: 600; font-size: 13px;
+  color: var(--ink); margin: 0 0 5px;
+}
+.doc-section-body {
+  font-size: 15.5px; line-height: 1.72; color: var(--ink-2);
+  white-space: pre-wrap; word-break: break-word;
+}
+.doc-meta {
+  display: flex; align-items: center; gap: 12px; margin-top: 20px;
+  font-family: var(--mono); font-size: 10px; color: var(--ink-3);
+}
+.hist-btn {
+  font: inherit; appearance: none; -webkit-appearance: none;
+  border: 1px solid var(--line); border-radius: 4px; background: transparent;
+  color: var(--ink-3); padding: 1px 7px; cursor: pointer; text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.hist-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* === Entry history timeline === */
+.hist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 16px; max-height: 60vh; overflow-y: auto; }
+.hist-rev { border-left: 2px solid var(--line-strong); padding-left: 14px; }
+.hist-head { display: flex; align-items: baseline; gap: 10px; }
+.hist-op { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
+.hist-op.insert { color: #3a7d44; }
+.hist-op.delete { color: var(--ink-3); }
+.hist-at { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.hist-actor { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.hist-changes { margin: 9px 0 0; display: flex; flex-direction: column; gap: 12px; }
+.hist-facet { font-family: var(--sans); font-weight: 600; font-size: 12.5px; color: var(--ink); margin-bottom: 3px; }
+.hist-val { font-size: 14px; line-height: 1.62; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
+
 /* === Cards view (grid) === */
 .cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; align-items: start; }
 .gcard { cursor: pointer; transition: border-color 0.1s, transform 0.06s; }

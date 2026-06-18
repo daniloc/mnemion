@@ -958,6 +958,34 @@ export class HiveDO extends DurableObject {
     return JSON.stringify({ mutations: rows, count: rows.length }, null, 2);
   }
 
+  /** Revision history for one entry, oldest→newest: the audit log scoped to
+   *  (pattern, id), with each UPDATE diffed (changed facet: from → to) and
+   *  version/timestamp churn filtered out. The create is the first revision. */
+  async getEntryHistory(pattern: string, id: number): Promise<string> {
+    if (!this.patternExists(pattern)) return this.errorJson(`Pattern "${pattern}" does not exist`);
+    const rows = this.db.exec(
+      `SELECT operation, old_data, new_data, created_at FROM _mutation_log WHERE table_name = ? AND record_id = ? ORDER BY id ASC`,
+      pattern, id
+    ).toArray() as any[];
+    const IGNORE = new Set(["id", "version", "created_at", "updated_at", "archived_at", "created_by", "updated_by"]);
+    const parse = (s: string | null) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+    const revisions = rows.map((r) => {
+      const oldD = parse(r.old_data);
+      const newD = parse(r.new_data);
+      const snap = newD ?? oldD ?? {};
+      const actor = (newD?.updated_by ?? newD?.created_by ?? oldD?.updated_by) || null;
+      const changes: { facet: string; from: unknown; to: unknown }[] = [];
+      if (r.operation === "UPDATE" && oldD && newD) {
+        for (const k of Object.keys(newD)) {
+          if (IGNORE.has(k)) continue;
+          if (oldD[k] !== newD[k]) changes.push({ facet: k, from: oldD[k] ?? null, to: newD[k] ?? null });
+        }
+      }
+      return { at: r.created_at, operation: r.operation, actor, changes, snapshot: snap };
+    });
+    return JSON.stringify({ pattern, id, revisions, count: revisions.length }, null, 2);
+  }
+
   // === System docs ===
 
   private getSystemDocList(): string {

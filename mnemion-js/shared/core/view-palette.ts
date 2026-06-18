@@ -72,6 +72,15 @@ export const VIEW_PALETTE = {
       meta: { role: "facet", help: "small trailing meta on each row" },
     },
   },
+  document: {
+    label: "Document",
+    help: "Long-form reading: each entry as a document — a title heading, an optional lead paragraph, then its prose facets as headed sections with reading typography. For knowledge and essays, where entries are paragraphs, not records.",
+    config: {
+      title: { role: "facet", help: "facet rendered as the document heading" },
+      lead: { role: "facet", help: "facet rendered as an intro paragraph (no heading) under the title" },
+      sections: { role: "facets", help: "facets to render as headed sections, in order (default: all remaining text facets)" },
+    },
+  },
 } satisfies Record<string, ViewType>;
 
 export type ViewTypeId = keyof typeof VIEW_PALETTE;
@@ -96,7 +105,7 @@ export function describeViewPalette(): string {
   return `Views (view_type → config; * = required). config is a JSON object mapping the pattern's facets to roles — never name a facet the pattern lacks.
 ${lines.join("\n")}
 
-Any view may also carry "formats": { "<facet>": "<format>" } to override how a value renders (a facet's intrinsic format, set via set_facet_format, otherwise applies). ${describeFormatPalette()}`;
+Any view may also carry "formats": { "<facet>": "<format>" } to override how a value renders (a facet's intrinsic format, set via set_facet_format, otherwise applies), and "hide": ["<facet>", ...] to suppress facets (composes with the default ordering — hiding one needn't re-list the rest). ${describeFormatPalette()}`;
 }
 
 export interface ValidateOpts {
@@ -143,6 +152,16 @@ export function validateViewSpec(
       // `formats` is a universal override (every view): facet → value-format id.
       if (key === "formats") {
         errors.push(...validateFormatsMap(value, hasFacet));
+        continue;
+      }
+      // `hide` is a universal exclude (every view): facets to suppress. Composes
+      // with the default ordering, so "hide one" needn't re-list the rest.
+      if (key === "hide") {
+        if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+          errors.push("config.hide must be an array of facet names.");
+        } else if (hasFacet) {
+          for (const v of value as string[]) if (!hasFacet(v)) errors.push(`config.hide references facet "${v}" which the pattern does not have.`);
+        }
         continue;
       }
       const ks = vt?.config[key];
