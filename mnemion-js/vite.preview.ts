@@ -12,6 +12,6 @@ export default defineConfig({
   root: 'src/pages',
   server: {
     port: 5173,
-    open: '/preview.html',
+    open: '/render-preview.html',
   },
 });

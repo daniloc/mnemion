@@ -1,28 +1,5 @@
 import type { RouteHandler } from "../router";
 import { TOOLS } from "../../../entities/Session/tools";
-// @ts-ignore — compiled Svelte SSR bundle
-import { renderSchemaViewer } from "../../../dist/server/entry-server.mjs";
-// @ts-ignore — text import via wrangler rules
-// @ts-ignore — text import via wrangler rules (.client.txt → string)
-import clientScript from "../../../dist/client/entry-client.client.txt";
-
-export const schemaPage: RouteHandler = async (ctx) => {
-  const raw = await ctx.hive.getIndex();
-  const index = JSON.parse(raw);
-
-  const html = renderSchemaViewer(
-    {
-      patterns: index.patterns,
-      charter: index.charter ?? {},
-      guidance: index.guidance,
-    },
-    clientScript,
-  );
-
-  return new Response(html, {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
-};
 
 export const queryIndex: RouteHandler = async (ctx) => {
   const raw = await ctx.hive.getIndex();

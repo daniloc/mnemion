@@ -1,38 +1,19 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
-export default defineConfig(({ isSsrBuild }) => ({
-  plugins: [
-    svelte({
-      compilerOptions: {
-        css: 'injected',
-      },
-    }),
-  ],
-  ssr: {
-    // Bundle everything — no externals in Worker environment
-    noExternal: true,
+// Svelte SSR build for the remaining Svelte page: the Canvas (/canvas). The main
+// app is React (see vite.web.ts); the SchemaViewer SSR was retired when the
+// notebook moved to React. canvas-client is built by vite.canvas.ts; the MCP
+// render fragment by vite.fragment.ts.
+export default defineConfig({
+  plugins: [svelte({ compilerOptions: { css: 'injected' } })],
+  ssr: { noExternal: true },
+  build: {
+    ssr: true,
+    rollupOptions: {
+      input: { 'canvas-server': 'src/pages/canvas-server.ts' },
+      output: { format: 'es' },
+    },
+    outDir: 'dist/server',
   },
-  build: isSsrBuild
-    ? {
-        ssr: true,
-        rollupOptions: {
-          input: {
-            'entry-server': 'src/pages/entry-server.ts',
-            'canvas-server': 'src/pages/canvas-server.ts',
-          },
-          output: { format: 'es' },
-        },
-        outDir: 'dist/server',
-      }
-    : {
-        rollupOptions: {
-          input: 'src/pages/entry-client.ts',
-          output: {
-            entryFileNames: '[name].client.txt',
-            format: 'es',
-          },
-        },
-        outDir: 'dist/client',
-      },
-}));
+});

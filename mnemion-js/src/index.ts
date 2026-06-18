@@ -10,8 +10,8 @@ import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBeg
 import { serveSharedEntry, serveOutput, servePublication, receiveInput, upload, uploadDocument, serveDocument, exportPattern } from "../shared/Routing/routes/io";
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "../shared/Routing/routes/marketplace";
-// Pages
-import { schemaPage, queryIndex, queryEntries, queryTools, mutateEntry, evolveSchema, liveSocket } from "../shared/Routing/routes/pages";
+// Pages (JSON APIs the React SPA consumes)
+import { queryIndex, queryEntries, queryTools, mutateEntry, evolveSchema, liveSocket } from "../shared/Routing/routes/pages";
 // Canvas
 import { canvasPage, listCanvases, saveCanvas, resolveUri } from "../shared/Routing/routes/canvas";
 // Dev
@@ -54,8 +54,7 @@ const routes: Route[] = [
   { method: Method.GET,  pattern: "/f/:id",                where: { id: /^\d+$/ }, handler: serveDocument },
   { method: Method.GET,  pattern: "/export/:pattern",       auth: Auth.SESSION, handler: exportPattern },
 
-  // Pages
-  { method: Method.GET,  pattern: "/schema",               auth: Auth.SESSION, handler: schemaPage },
+  // Pages (JSON APIs for the React SPA; the SPA itself is served as static assets)
   { method: Method.GET,  pattern: "/api/index",            auth: Auth.SESSION, handler: queryIndex },
   { method: Method.GET,  pattern: "/api/tools",             auth: Auth.SESSION, handler: queryTools },
   { method: Method.GET,  pattern: "/api/query/:pattern",   auth: Auth.SESSION, handler: queryEntries },
@@ -86,7 +85,7 @@ const dispatch = createRouter(routes);
 const BACKEND_PREFIXES = [
   "/api", "/mcp", "/o/", "/p/", "/i/", "/f/", "/upload/", "/export/", "/ws",
   "/token", "/register", "/authorize", "/auth/", "/setup", "/login",
-  "/sessions/", "/invite/", "/marketplace", "/dev/", "/.well-known", "/schema", "/canvas",
+  "/sessions/", "/invite/", "/marketplace", "/dev/", "/.well-known", "/canvas",
 ];
 function isAppRoute(path: string): boolean {
   return !BACKEND_PREFIXES.some((p) => path === p || path.startsWith(p));
