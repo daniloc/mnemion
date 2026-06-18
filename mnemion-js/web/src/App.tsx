@@ -88,7 +88,17 @@ export default function App() {
           const msg = JSON.parse(e.data);
           if (msg.type !== 'changed') return;
           const changed: string[] = msg.patterns || [];
-          if (changed.includes('_schema') || changed.includes('_views')) { location.reload(); return; }
+          // UI structure changed — the agent reworked a view spec (_views) or the
+          // schema/a facet's format (_schema). Re-fetch the specs and re-render the
+          // open pattern IN PLACE: no reload. This is the live hyperdesk — the user
+          // watches their agent rework the UI. We also refresh `selected` so facet
+          // changes (e.g. set_facet_format) flow into the view's facets prop.
+          if (changed.includes('_schema') || changed.includes('_views')) {
+            const ps = await loadIndex();
+            const sel = selRef.current;
+            if (sel) { const fresh = ps.find((p) => p.name === sel.name); if (fresh) setSelected(fresh); }
+            return;
+          }
           // Surgical: patch exactly the changed entry in the store → only its card redraws.
           if (msg.delta && store.has(msg.delta.pattern)) store.applyDelta(msg.delta);
           // Keep sidebar counts/recency fresh (cheap); refetch entries only if we
