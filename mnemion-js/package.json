@@ -14,6 +14,7 @@
     "types": "wrangler types",
     "test": "vitest run",
     "test:watch": "vitest",
+    "mcp:smoke": "node scripts/mcp-smoke.mjs",
     "setup": "bash scripts/setup.sh",
     "enable-documents": "bash scripts/enable-documents.sh",
     "coherence:docs": "coherence docs",

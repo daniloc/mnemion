@@ -436,6 +436,12 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
   },
 };
 
+// The change types an agent may propose — the single source the MCP tool's
+// `change.type` enum derives from (session.ts), so a new change type is exposed
+// through MCP automatically and the protocol contract can't drift from the
+// engine's CHANGE_TYPES table.
+export const CHANGE_TYPE_NAMES = Object.keys(CHANGE_TYPES) as [string, ...string[]];
+
 // === Generic dispatchers ===
 
 // A change touches one pattern (or one entry within one). Returning the whole

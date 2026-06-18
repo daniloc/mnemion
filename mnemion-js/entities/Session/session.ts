@@ -15,6 +15,8 @@ import { z } from "zod";
 import type { HiveDO } from "../Hive/hive";
 import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID, OWNER_ACTOR } from "../../shared/core/constants";
 import { consentPolicy, patchRejected, consentRoundTripRequired } from "../Hive/policy";
+import { CHANGE_TYPE_NAMES } from "../Hive/evolution";
+import { FORMAT_IDS } from "../../shared/core/format-palette";
 import { TOOLS } from "./tools";
 import { FRAGMENT_CSS } from "../../src/pages/render-styles";
 // @ts-ignore — text import via wrangler [[rules]] (.client.txt → string). The
@@ -350,7 +352,9 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       {
         description: z.string().describe("Natural language description of the change"),
         change: z.object({
-          type: z.enum(["create_pattern", "add_facet", "set_sharing", "set_options", "set_doctrine", "set_memory_policy", "set_class", "archive_pattern", "unarchive_pattern"]).describe("Type of structural change"),
+          // Derived from the engine's CHANGE_TYPES (evolution.ts) so the MCP
+          // contract can't drift — a new change type is exposed here automatically.
+          type: z.enum(CHANGE_TYPE_NAMES).describe("Type of structural change"),
           pattern_name: z.string().optional().describe("Target pattern name"),
           pattern_description: z.string().optional().describe("Purpose of the pattern (for create_pattern)"),
           pattern_class: z.enum(["knowledge", "dataset"]).optional().describe('Pattern class (for create_pattern/set_class). "knowledge" (default): prose recalled by meaning via prime. "dataset": structured records with enforced types, aggregated by query — excluded from prime/decay/stale.'),
@@ -367,6 +371,8 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
             }).optional().describe("Foreign key link to another pattern"),
           })).optional().describe("Facets to create (for create_pattern or add_facet)"),
           facet_name: z.string().optional().describe("Target facet name (for set_options)"),
+          facet: z.string().optional().describe("Target facet name (for set_facet_format)"),
+          format: z.enum(FORMAT_IDS as [string, ...string[]]).nullable().optional().describe("Value render format for set_facet_format (null clears → render by type)"),
           options: z.array(z.string()).optional().describe("Allowed values (for set_options)"),
           entry_id: z.number().optional().describe("Entry ID (for set_sharing)"),
           visibility: z.enum(["public", "unlisted", "private"]).optional().describe("Sharing visibility (for set_sharing)"),

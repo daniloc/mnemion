@@ -99,7 +99,7 @@ Federation: use this to help the user access content on other hives.
     name: "propose_change",
     description: `Use this to help the user evolve the structure of their hive. Propose a structural change — validates and returns a preview without committing.
 
-Supports: create_pattern (with facets), add_facet (to existing pattern), set_sharing (entry-level HTTP visibility), set_options, set_doctrine, set_memory_policy, set_class, archive_pattern, unarchive_pattern.
+Supports: create_pattern (with facets), add_facet (to existing pattern), set_sharing (entry-level HTTP visibility), set_options, set_doctrine, set_memory_policy, set_class, set_facet_format (how a facet's value renders in the web app — pass facet + format), archive_pattern, unarchive_pattern.
 Facets can declare foreign key links to other patterns via the links parameter.
 Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 facets per pattern.
 
