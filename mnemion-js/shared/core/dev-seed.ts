@@ -10,7 +10,7 @@ type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one
 
 // === Helpers ===
 
-function pat(db: DB, name: string, desc: string, doctrine: string, facets: { name: string; type: string; required?: boolean; ref?: string }[]) {
+function pat(db: DB, name: string, desc: string, doctrine: string, facets: { name: string; type: string; required?: boolean; ref?: string; format?: string }[]) {
   const sqlTypes: Record<string, string> = { text: "TEXT", integer: "INTEGER", number: "REAL", boolean: "INTEGER", datetime: "TEXT", select: "TEXT" };
   const colDefs = facets.map(f => {
     let col = `"${f.name}" ${sqlTypes[f.type] || "TEXT"}`;
@@ -29,8 +29,8 @@ function pat(db: DB, name: string, desc: string, doctrine: string, facets: { nam
   db.exec("INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?)", name, desc, doctrine);
   for (const f of facets) {
     db.exec(
-      "INSERT INTO _fields (object_name, name, type, required, references_object) VALUES (?, ?, ?, ?, ?)",
-      name, f.name, f.type, f.required ? 1 : 0, f.ref ?? null
+      "INSERT INTO _fields (object_name, name, type, required, references_object, format) VALUES (?, ?, ?, ?, ?, ?)",
+      name, f.name, f.type, f.required ? 1 : 0, f.ref ?? null, f.format ?? null
     );
   }
   ensureAuditTriggers(db, name);
@@ -73,7 +73,7 @@ export function seedDevData(db: DB): void {
   ]);
 
   pat(db, "bookmarks", "Saved links with annotations", "Save URLs worth revisiting. Always include a reason — bare links are noise.", [
-    { name: "url", type: "text", required: true },
+    { name: "url", type: "text", required: true, format: "link" }, // intrinsic: clickable everywhere
     { name: "title", type: "text", required: true },
     { name: "description", type: "text" },
     { name: "tags", type: "text" },
@@ -110,7 +110,9 @@ export function seedDevData(db: DB): void {
   ins(db, "_views", { pattern: "tasks", name: "default", view_type: "board",
     config: JSON.stringify({ group_by: "status", title: "title", columns: ["todo", "in-progress", "done"] }) });
   ins(db, "_views", { pattern: "bookmarks", name: "default", view_type: "table",
-    config: JSON.stringify({ columns: ["title", "url", "tags"], title: "title", sort: "title" }) });
+    // url renders as a link from its intrinsic facet format; tags is overridden
+    // to chips at the view level — both sources of the resolve chain, one view.
+    config: JSON.stringify({ columns: ["title", "url", "tags"], title: "title", sort: "title", formats: { tags: "tags" } }) });
   ins(db, "_views", { pattern: "notes", name: "default", view_type: "cards",
     config: JSON.stringify({ title: "title", subtitle: "tags", fields: ["body"] }) });
   ins(db, "_views", { pattern: "goals", name: "default", view_type: "list",

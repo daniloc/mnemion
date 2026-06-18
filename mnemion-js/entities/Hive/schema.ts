@@ -1026,6 +1026,18 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   }
 
+  // --- v16: add format column to _fields (per-facet value rendering) ---
+  //
+  // Intrinsic render format for a facet (link/date/tags/…). Null → derived from
+  // the facet's type at read time (defaultFormatForType). The view layer can
+  // override per-facet; this is the facet's own default.
+  try {
+    const fieldCols = db.exec(`PRAGMA table_info("_fields")`).toArray() as any[];
+    if (!fieldCols.some((c: any) => c.name === "format")) {
+      db.exec(`ALTER TABLE "_fields" ADD COLUMN "format" TEXT`);
+    }
+  } catch {}
+
   // --- Seed the owner member ---
   //
   // Every hive has an "owner" — the founder, and the actor that the bootstrap

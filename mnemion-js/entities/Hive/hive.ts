@@ -55,6 +55,7 @@ export interface IndexFacetEntry {
   links?: string | null;
   options?: string[];
   readonly?: boolean;
+  format?: string;
 }
 
 // === Constants ===
@@ -388,6 +389,7 @@ export class HiveDO extends DurableObject {
           default: f.default_value != null ? JSON.parse(f.default_value) : null,
         };
         if (f.references_object) facet.links = f.references_object;
+        if (f.format) facet.format = f.format;
         return facet;
       }),
       kernel_columns: ["id", "version", "created_at", "updated_at", "archived_at"],
@@ -1266,6 +1268,7 @@ export class HiveDO extends DurableObject {
       };
       if (f.references_object) facet.links = f.references_object;
       if (f.options) facet.options = JSON.parse(f.options);
+      if (f.format) facet.format = f.format;
       if (IMMUTABLE[f.object_name]?.fields.includes(f.name)) facet.readonly = true;
       facetsByPattern.get(f.object_name)!.push(facet);
     }

@@ -3,14 +3,17 @@ import * as Select from '@radix-ui/react-select';
 import * as Dialog from '@radix-ui/react-dialog';
 import { store, useEntry, usePatternEntries, type Entry } from './store';
 import type { ViewTypeId } from '../../shared/core/view-palette';
+import { FacetValue } from './FacetValue';
 
-export interface Facet { name: string; type: string; options?: string[]; }
+export interface Facet { name: string; type: string; options?: string[]; format?: string; }
 export interface ViewSpec { pattern: string; name: string; view_type: string; config: string | null; }
 // Config keys across all view types (see VIEW_PALETTE). `columns` is facet names
-// for table, arbitrary column values for board.
+// for table, arbitrary column values for board. `formats` is the universal
+// per-facet value-render override (facet name → format id).
 export interface ViewConfig {
   group_by?: string; title?: string; columns?: string[]; fields?: string[];
   subtitle?: string; secondary?: string; meta?: string; sort?: string;
+  formats?: Record<string, string>;
 }
 // Every view component takes the same props; `view` is optional so the stack can
 // also serve as the no-view fallback.
@@ -172,7 +175,7 @@ function DetailBody({ pattern, id, facets, cfg }: { pattern: string; id: number;
         {facets.filter((f) => !KERNEL_COLS.has(f.name) && valueOf(entry, f.name)).map((f) => (
           <div className="field inline" key={f.name}>
             <div className="field-name">{f.name}</div>
-            <div className="field-value">{valueOf(entry, f.name)}</div>
+            <div className="field-value"><FacetValue value={valueOf(entry, f.name)} type={f.type} facetFormat={f.format} viewFormat={cfg.formats?.[f.name]} /></div>
           </div>
         ))}
       </div>
@@ -212,7 +215,7 @@ export function TableView({ pattern, facets, view }: ViewProps) {
           </thead>
           <tbody>
             {rows.map((e) => (
-              <TableRow key={e.id} pattern={pattern} id={e.id} cols={cols} onOpen={() => setOpenId(e.id)} />
+              <TableRow key={e.id} pattern={pattern} id={e.id} cols={cols} facets={facets} cfg={cfg} onOpen={() => setOpenId(e.id)} />
             ))}
           </tbody>
         </table>
@@ -222,16 +225,21 @@ export function TableView({ pattern, facets, view }: ViewProps) {
   );
 }
 
-const TableRow = memo(function TableRow({ pattern, id, cols, onOpen }: { pattern: string; id: number; cols: string[]; onOpen: () => void }) {
+const TableRow = memo(function TableRow({ pattern, id, cols, facets, cfg, onOpen }: { pattern: string; id: number; cols: string[]; facets: Facet[]; cfg: ViewConfig; onOpen: () => void }) {
   const entry = useEntry(pattern, id);
   const renders = useRenderCount();
   if (!entry) return null;
   return (
     <tr className="dt-row" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
       <td className="dt-id">#{id}<span className="redraws" title="renders of this row">r{renders}</span></td>
-      {cols.map((c, i) => (
-        <td key={c} className={i === 0 ? 'dt-lead' : undefined}>{valueOf(entry, c)}</td>
-      ))}
+      {cols.map((c, i) => {
+        const f = facets.find((x) => x.name === c);
+        return (
+          <td key={c} className={i === 0 ? 'dt-lead' : undefined}>
+            <FacetValue value={valueOf(entry, c)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[c]} />
+          </td>
+        );
+      })}
     </tr>
   );
 });

@@ -7,8 +7,11 @@
 //   - the web SPA dispatches to a component keyed by these same ids, and a
 //     compile-time Record<ViewTypeId, …> totality check binds the two
 //
-// Pure data, ZERO imports — it is bundled into BOTH the worker (server) and the
-// React SPA (client). Do not import anything environment-specific here.
+// Pure data — bundled into BOTH the worker (server) and the React SPA (client).
+// The only import is its sibling format-palette (also pure data, no env deps):
+// every view may carry a universal `formats` override map, validated against it.
+
+import { validateFormatsMap, describeFormatPalette } from "./format-palette";
 
 export type ConfigRole = "facet" | "facets" | "values" | "text";
 // facet  → value must name one facet of the target pattern
@@ -90,7 +93,10 @@ export function describeViewPalette(): string {
       .join(", ");
     return `- ${id}: ${v.help} config: ${keys || "(none)"}`;
   });
-  return `Views (view_type → config; * = required). config is a JSON object mapping the pattern's facets to roles — never name a facet the pattern lacks.\n${lines.join("\n")}`;
+  return `Views (view_type → config; * = required). config is a JSON object mapping the pattern's facets to roles — never name a facet the pattern lacks.
+${lines.join("\n")}
+
+Any view may also carry "formats": { "<facet>": "<format>" } to override how a value renders (a facet's intrinsic format, set via set_facet_format, otherwise applies). ${describeFormatPalette()}`;
 }
 
 export interface ValidateOpts {
@@ -134,6 +140,11 @@ export function validateViewSpec(
 
   if (obj) {
     for (const [key, value] of Object.entries(obj)) {
+      // `formats` is a universal override (every view): facet → value-format id.
+      if (key === "formats") {
+        errors.push(...validateFormatsMap(value, hasFacet));
+        continue;
+      }
       const ks = vt?.config[key];
       if (vt && !ks) {
         const valid = Object.keys(vt.config).join(", ") || "(none)";

@@ -303,6 +303,16 @@ body { background: var(--paper); }
 
 .status.note { color: var(--accent); }
 
+/* === Facet value formats === */
+.fv-link { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+.fv-link:hover { border-bottom-color: var(--accent); }
+.fv-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.fv-tag { font-family: var(--mono); font-size: 10px; line-height: 1.6; padding: 0 6px; border-radius: 3px; background: var(--paper-2); color: var(--ink-2); border: 1px solid var(--line); }
+.fv-date { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.fv-bool { font-weight: 600; }
+.fv-bool.on { color: #3a7d44; }
+.fv-bool.off { color: var(--ink-3); }
+
 /* === Table view === */
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--card); }
 .dtable { width: 100%; border-collapse: collapse; font-size: 13.5px; }
