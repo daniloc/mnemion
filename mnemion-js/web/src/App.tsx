@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import './notebook.css';
 import { store } from './store';
-import { BoardView, StackView, type Facet, type ViewSpec } from './views';
+import { COMPONENTS, StackView, type Facet, type ViewSpec } from './views';
+import { isViewType } from '../../shared/core/view-palette';
 
 interface Pattern {
   name: string;
@@ -117,6 +118,13 @@ export default function App() {
   const kernelPatterns = patterns.filter((p) => p.name.startsWith('_'));
   const charterEntries = Object.entries(charter).filter(([, v]) => v && String(v).trim());
   const selectedView = selected ? views.find((v) => v.pattern === selected.name) : undefined;
+  // Dispatch through the component palette, keyed by view_type. An unknown type
+  // (legacy/invalid row) falls back to the stack with a visible note rather than
+  // silently pretending — the registry, not a hidden ternary, is the contract.
+  const vt = selectedView?.view_type;
+  const View = vt && isViewType(vt) ? COMPONENTS[vt] : null;
+  const unknownView = !!selectedView && !View;
+  const wide = vt === 'board' || vt === 'table';
 
   return (
     <div className={`shell${menuOpen ? ' menu-open' : ''}`}>
@@ -156,7 +164,7 @@ export default function App() {
 
       <button className="scrim" aria-label="close menu" onClick={() => setMenuOpen(false)} />
 
-      <main className={`main${selectedView?.view_type === 'board' ? ' main-wide' : ''}`}>
+      <main className={`main${wide ? ' main-wide' : ''}`}>
         {!selected ? (
           <section className="cover">
             <div className="cover-mark">mnemion</div>
@@ -185,10 +193,13 @@ export default function App() {
             </header>
             {loading ? (
               <div className="status">loading…</div>
-            ) : selectedView?.view_type === 'board' ? (
-              <BoardView pattern={selected.name} facets={selected.facets} view={selectedView} />
+            ) : View ? (
+              <View pattern={selected.name} facets={selected.facets} view={selectedView} />
             ) : (
-              <StackView pattern={selected.name} facets={selected.facets} />
+              <>
+                {unknownView && <div className="status note">view_type “{vt}” isn’t available — showing the default stack.</div>}
+                <StackView pattern={selected.name} facets={selected.facets} />
+              </>
             )}
           </section>
         )}

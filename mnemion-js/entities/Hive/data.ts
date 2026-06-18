@@ -425,6 +425,17 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         `SELECT 1 FROM "_members" WHERE label = ? AND status = 'active' AND archived_at IS NULL`,
         label
       ).toArray().length > 0,
+    entryField: (pattern, id, field) => {
+      // pattern/field are interpolated (identifiers can't be bound); guard them.
+      // Callers pass trusted literals, but validate as defense in depth.
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(pattern) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) return null;
+      try {
+        const row = ctx.db.exec(`SELECT "${field}" AS v FROM "${pattern}" WHERE id = ?`, id).toArray()[0];
+        return row ? row.v : null;
+      } catch {
+        return null;
+      }
+    },
   };
   const ruled = applyKernelRules(patternName, operation, data, kernelCtx);
   if ('error' in ruled) return ruled;

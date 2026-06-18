@@ -1,11 +1,20 @@
-import { memo, useRef, useState } from 'react';
+import { memo, useRef, useState, type FC } from 'react';
 import * as Select from '@radix-ui/react-select';
 import * as Dialog from '@radix-ui/react-dialog';
 import { store, useEntry, usePatternEntries, type Entry } from './store';
+import type { ViewTypeId } from '../../shared/core/view-palette';
 
 export interface Facet { name: string; type: string; options?: string[]; }
 export interface ViewSpec { pattern: string; name: string; view_type: string; config: string | null; }
-export interface ViewConfig { group_by?: string; title?: string; columns?: string[]; fields?: string[]; }
+// Config keys across all view types (see VIEW_PALETTE). `columns` is facet names
+// for table, arbitrary column values for board.
+export interface ViewConfig {
+  group_by?: string; title?: string; columns?: string[]; fields?: string[];
+  subtitle?: string; secondary?: string; meta?: string; sort?: string;
+}
+// Every view component takes the same props; `view` is optional so the stack can
+// also serve as the no-view fallback.
+export interface ViewProps { pattern: string; facets: Facet[]; view?: ViewSpec | null; }
 
 const KERNEL_COLS = new Set(['id', 'version', 'created_at', 'updated_at', 'archived_at', 'created_by', 'updated_by']);
 
@@ -42,7 +51,7 @@ function useRenderCount(): number {
 }
 
 // === Board ===
-export function BoardView({ pattern, facets, view }: { pattern: string; facets: Facet[]; view: ViewSpec }) {
+export function BoardView({ pattern, facets, view }: ViewProps) {
   const entries = usePatternEntries(pattern);
   const [openId, setOpenId] = useState<number | null>(null);
   const [dropCol, setDropCol] = useState<string | null>(null);
@@ -176,8 +185,59 @@ function DetailBody({ pattern, id, facets, cfg }: { pattern: string; id: number;
   );
 }
 
+// === Table (dense rows × facet columns) ===
+export function TableView({ pattern, facets, view }: ViewProps) {
+  const entries = usePatternEntries(pattern);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const cfg = parseConfig(view);
+  const userFacets = facets.filter((f) => !KERNEL_COLS.has(f.name));
+  const titleFacet = cfg.title ?? userFacets.find((f) => f.type === 'text')?.name;
+  // Columns: configured facet names (kept only if real), else all user facets,
+  // with the title facet pulled to the front.
+  const declared = cfg.columns?.length ? cfg.columns.filter((c) => facets.some((f) => f.name === c)) : userFacets.map((f) => f.name);
+  const cols = titleFacet ? [titleFacet, ...declared.filter((c) => c !== titleFacet)] : declared;
+  const rows = cfg.sort
+    ? [...entries].sort((a, b) => valueOf(a, cfg.sort!).localeCompare(valueOf(b, cfg.sort!)))
+    : entries;
+  if (entries.length === 0) return <div className="status">No entries yet.</div>;
+  return (
+    <>
+      <div className="table-wrap">
+        <table className="dtable">
+          <thead>
+            <tr>
+              <th className="dt-id">#</th>
+              {cols.map((c) => <th key={c}>{c}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((e) => (
+              <TableRow key={e.id} pattern={pattern} id={e.id} cols={cols} onOpen={() => setOpenId(e.id)} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <DetailDialog pattern={pattern} id={openId} facets={facets} cfg={cfg} onClose={() => setOpenId(null)} />
+    </>
+  );
+}
+
+const TableRow = memo(function TableRow({ pattern, id, cols, onOpen }: { pattern: string; id: number; cols: string[]; onOpen: () => void }) {
+  const entry = useEntry(pattern, id);
+  const renders = useRenderCount();
+  if (!entry) return null;
+  return (
+    <tr className="dt-row" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
+      <td className="dt-id">#{id}<span className="redraws" title="renders of this row">r{renders}</span></td>
+      {cols.map((c, i) => (
+        <td key={c} className={i === 0 ? 'dt-lead' : undefined}>{valueOf(entry, c)}</td>
+      ))}
+    </tr>
+  );
+});
+
 // === default Stack (notebook blocks) ===
-export function StackView({ pattern, facets }: { pattern: string; facets: Facet[] }) {
+export function StackView({ pattern, facets }: ViewProps) {
   const entries = usePatternEntries(pattern);
   if (entries.length === 0) return <div className="status">No entries yet.</div>;
   return (
@@ -243,3 +303,17 @@ function StatusSelect({ value, options, onChange }: { value: string; options: st
     </Select.Root>
   );
 }
+
+// === The component palette ===
+//
+// One entry per view_type, keyed by the same ids as VIEW_PALETTE (the SSOT in
+// shared/core/view-palette.ts). Typing this as Record<ViewTypeId, …> makes the
+// compiler the totality check: add a view type to the palette and this won't
+// compile until it has a component; remove one and the stray key won't compile.
+// (cards/list are the interim stack until their real components land.)
+export const COMPONENTS: Record<ViewTypeId, FC<ViewProps>> = {
+  cards: StackView,
+  board: BoardView,
+  table: TableView,
+  list: StackView,
+};

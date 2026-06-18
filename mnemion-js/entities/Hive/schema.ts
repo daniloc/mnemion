@@ -18,6 +18,7 @@
 import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/constants";
 import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
+import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
 import { KERNEL_WRITE_POLICY, isAuditExempt } from "./policy";
 
 // System docs — imported as raw text, placeholders resolved at load time
@@ -544,15 +545,15 @@ Adding a member is a two-step invite: (1) create the member here with label + di
   },
   {
     name: "_views",
-    description: `Agent-authored UI views. Each entry adapts how a pattern's entries are rendered in the web app: a view_type (the layout) plus a config that maps the pattern's facets to UI roles. The owner's agent customizes the desk by writing these — e.g. render "tasks" as a board grouped by status.
+    description: `Agent-authored UI views. Each entry adapts how a pattern's entries are rendered in the web app: a view_type (the layout) plus a config that maps the pattern's facets to UI roles. The owner's agent customizes the desk by writing these — e.g. render "tasks" as a board grouped by status. Set name "default" for a pattern's primary view; one view per (pattern, name). The config is declarative data interpreted against a fixed component palette, never code.
 
-view_type: "board" (kanban columns, group_by a facet), "table", "list", or "cards" (default block stack). config is JSON; for board: {"group_by": "<facet>", "title": "<facet>", "columns"?: ["todo","doing","done"]}. Set name "default" for a pattern's primary view.`,
-    doctrine: `Author a view when the human wants a pattern rendered as something other than the default stacked blocks — a task board, a table, a list. Map facets to roles in config; never invent facets the pattern lacks. The config is declarative data, not code: the web app interprets it against a fixed component palette. One view per (pattern, name); use name "default" for the pattern's primary view.`,
+${describeViewPalette()}`,
+    doctrine: `Author a view when the human wants a pattern rendered as something other than the default ${DEFAULT_VIEW_TYPE}. Map facets to roles in config; never invent facets the pattern lacks — the kernel rejects a view that names a missing facet, an unknown view_type, or a malformed config. The config is declarative data, not code: the web app interprets it against a fixed component palette. One view per (pattern, name); use name "default" for the pattern's primary view.`,
     ddl: `CREATE TABLE IF NOT EXISTS "_views" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "pattern" TEXT NOT NULL,
       "name" TEXT NOT NULL DEFAULT 'default',
-      "view_type" TEXT NOT NULL DEFAULT 'cards',
+      "view_type" TEXT NOT NULL DEFAULT '${DEFAULT_VIEW_TYPE}',
       "config" TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -565,7 +566,7 @@ view_type: "board" (kanban columns, group_by a facet), "table", "list", or "card
     facets: [
       { name: "pattern", type: "text", required: true },
       { name: "name", type: "text", required: false },
-      { name: "view_type", type: "select", required: false, options: ["board", "table", "list", "cards"] },
+      { name: "view_type", type: "select", required: false, options: VIEW_TYPES },
       { name: "config", type: "text", required: false },
     ],
   },

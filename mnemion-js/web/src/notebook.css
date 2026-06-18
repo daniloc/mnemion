@@ -299,6 +299,32 @@ body { background: var(--paper); }
 }
 .card-foot .redraws { margin-left: 4px; }
 .block-meta .redraws { margin-left: 8px; }
+.dt-id .redraws { margin-left: 6px; }
+
+.status.note { color: var(--accent); }
+
+/* === Table view === */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--card); }
+.dtable { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.dtable thead th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
+}
+.dtable td { padding: 9px 14px; border-bottom: 1px solid var(--line); color: var(--ink-2); vertical-align: top; }
+.dtable tbody tr:last-child td { border-bottom: none; }
+.dt-row { cursor: pointer; transition: background 0.08s; }
+.dt-row:hover { background: var(--paper-2); }
+.dt-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.dt-lead { color: var(--ink); font-weight: 500; }
+.dt-id { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; width: 1%; }
 
 /* drag + drop */
 .card { cursor: grab; transition: box-shadow 120ms ease, border-color 120ms ease, transform 120ms ease; }

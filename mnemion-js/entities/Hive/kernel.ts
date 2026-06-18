@@ -14,6 +14,7 @@
 // policy.ts so the boundary cannot drift between layers.
 
 import { isKernelPattern, isValidWriteTarget } from "./policy";
+import { validateViewSpec, DEFAULT_VIEW_TYPE } from "../../shared/core/view-palette";
 
 export interface KernelContext {
   patternExists(name: string): boolean;
@@ -21,6 +22,10 @@ export interface KernelContext {
   entryExists(pattern: string, id: number): boolean;
   /** An active, non-archived member with this label exists in the roster. */
   memberActive(label: string): boolean;
+  /** Read one column of one entry — used to resolve a row's existing values when
+   *  a partial update doesn't carry them (e.g. a _views config edit that omits
+   *  the target pattern). Returns null if the row/column is absent. */
+  entryField(pattern: string, id: number, field: string): unknown;
 }
 
 type HookResult = Record<string, unknown> | { error: true; message: string };
@@ -376,6 +381,43 @@ const ON_CREATE: Record<string, CreateHook> = {
   },
 };
 
+// === Write hooks — validate on create AND update (not just create) ===
+//
+// For kernel tables whose payload must stay valid through edits, not only at
+// birth. _views is the case: an agent authors a view, then refines its config —
+// both must validate against the view palette (the SSOT in view-palette.ts), so
+// a malformed or facet-missing spec is refused at the mutate chokepoint rather
+// than silently degrading in the renderer.
+type WriteHook = (data: Record<string, unknown>, operation: string, ctx: KernelContext) => HookResult;
+
+const ON_WRITE: Record<string, WriteHook> = {
+  _views(data, operation, ctx) {
+    const isCreate = operation === "create";
+    // A partial update carries only the changed fields; the rest stay on the
+    // existing row. Resolve the EFFECTIVE pattern and view_type (payload ?? row)
+    // so config roles + facet references can be checked even when the update
+    // touches config alone.
+    const fromRow = (field: string): string | null =>
+      typeof data.id === "number" ? ((v) => (typeof v === "string" ? v : null))(ctx.entryField("_views", data.id as number, field)) : null;
+
+    const target = typeof data.pattern === "string" ? (data.pattern as string) : (isCreate ? null : fromRow("pattern"));
+    if (target && !ctx.patternExists(target)) {
+      return { error: true, message: `View targets pattern "${target}", which does not exist.` };
+    }
+    const hasFacet = target ? (name: string) => ctx.facetMeta(target, name) != null : null;
+
+    const viewType = isCreate
+      ? ((data.view_type as string) ?? DEFAULT_VIEW_TYPE)
+      : (typeof data.view_type === "string" ? data.view_type : (fromRow("view_type") ?? undefined));
+
+    const errors = validateViewSpec(viewType, data.config as string | null | undefined, hasFacet, { enforceRequired: isCreate });
+    if (errors.length) {
+      return { error: true, message: `Invalid view spec: ${errors.join(" ")}` };
+    }
+    return data;
+  },
+};
+
 // === Mutate shortcuts — kernel-level aliases for common operations ===
 
 export interface Shortcut { pattern: string; operation: string }
@@ -596,6 +638,10 @@ export function applyKernelRules(
 
   if (operation === "create" && ON_CREATE[pattern]) {
     return ON_CREATE[pattern](data, ctx);
+  }
+
+  if (operation !== "archive" && ON_WRITE[pattern]) {
+    return ON_WRITE[pattern](data, operation, ctx);
   }
 
   return data;
