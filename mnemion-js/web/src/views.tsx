@@ -172,7 +172,7 @@ function DetailBody({ pattern, id, facets, cfg }: { pattern: string; id: number;
     <>
       <Dialog.Title className="dialog-title">{(titleFacet && valueOf(entry, titleFacet)) || `${pattern} #${id}`}</Dialog.Title>
       <div className="dialog-fields">
-        {facets.filter((f) => !KERNEL_COLS.has(f.name) && valueOf(entry, f.name)).map((f) => (
+        {facets.filter((f) => !KERNEL_COLS.has(f.name) && f.name !== titleFacet && valueOf(entry, f.name)).map((f) => (
           <div className="field inline" key={f.name}>
             <div className="field-name">{f.name}</div>
             <div className="field-value"><FacetValue value={valueOf(entry, f.name)} type={f.type} facetFormat={f.format} viewFormat={cfg.formats?.[f.name]} pattern={pattern} id={id} facet={f.name} options={f.options} /></div>
