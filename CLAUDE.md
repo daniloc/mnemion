@@ -282,18 +282,41 @@ Route handlers are grouped by domain in `shared/Routing/routes/`. OAuthProvider 
 
 ## Development
 
+The web app is **React + Vite** (`web/`), served by the worker as static assets
+(the `ASSETS` binding, `dist/web`). The worker owns `/mcp`, `/api/*`, `/o /p /f
+/i`, OAuth; everything else falls through to the SPA shell (`src/index.ts`
+`BACKEND_PREFIXES`). Canvas (`/canvas`) and the MCP render fragment are the only
+remaining Svelte (their own vite builds). The legacy Svelte-SSR notebook is retired.
+
 ```bash
 cd mnemion-js
 npm install
-npm run dev          # build:pages + wrangler dev on :8787 (dev mode, no secret needed)
-npm run preview      # vite dev with mock data (frontend-only iteration, no worker)
-npm run build:pages  # main client + canvas client + SSR — all required before dev/deploy
+npm run dev          # concurrently: wrangler dev (DOs + DEV_SEED data, :8787) +
+                     # Vite HMR (:5173, proxies /api + /ws to the worker). Open :5173.
+npm run build:web    # React SPA → dist/web
+npm run build:pages  # canvas client + MCP fragment + canvas SSR (the Svelte remnants)
 npm run types        # regenerate worker-configuration.d.ts from wrangler.toml
-npm run coherence:docs    # regenerate the spec graph + AGENTS.md (Node ≥22)
-npm run coherence:verify  # check specs/claims haven't rotted against the code (Node ≥22)
+npm run coherence:docs / coherence:verify   # spec graph + rot check (Node ≥22)
+
+# Seed a local dev hive with your REAL data (when you want realistic content):
+npm run pull-hive https://<your-host> <*-token>   # once → dev-data/hive.json
+npm run dev                                        # then, in another terminal:
+npm run import-hive                                # loads it into the local hive
 ```
 
-**Node ≥22** is required for `wrangler` and the `coherence` bin. If your default is older, use a version manager (`nvm use 22`) for `deploy`/`types`/`coherence:*`.
+**Node ≥22** is required for `wrangler` and the `coherence` bin. If your default is older, use a version manager (`nvm use 22`) for `deploy`/`types`/`dev:worker`/`coherence:*`.
+
+### Agent-authored views (hyperdesk)
+
+The web app renders each pattern per an optional agent-authored **view spec** in
+the `_views` kernel pattern: a `view_type` (`board`/`table`/`list`/`cards`) + a
+declarative `config` mapping facets to UI roles (e.g. board `{group_by, title}`).
+The agent writes these via `mutate` — declarative data interpreted against a
+fixed React component palette (`web/src/views.tsx`), never code. The SPA holds
+entries in a normalized store (`web/src/store.ts`, `useSyncExternalStore`); a
+mutate broadcasts a granular delta `{pattern, op, id, entry}` over `/ws`, which
+patches one entry so only its `React.memo`'d card re-renders (the faint `r{n}`
+badge is the visible proof).
 
 ## Testing
 
