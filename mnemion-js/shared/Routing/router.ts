@@ -22,6 +22,7 @@ export interface Env {
   WORKER_HOST?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;
+  ASSETS?: Fetcher;  // static-assets binding for the React SPA (dist/web)
 }
 
 export enum Method {

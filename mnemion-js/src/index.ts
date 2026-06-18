@@ -79,12 +79,33 @@ const routes: Route[] = [
 
 const dispatch = createRouter(routes);
 
+// Backend path prefixes the worker owns. Anything else is a browser route that
+// resolves to the React SPA shell. (Static asset files — /assets/* etc. — are
+// served by the runtime before the worker runs; only unmatched paths reach
+// here, so a 404 on a non-backend GET means "serve the SPA".)
+const BACKEND_PREFIXES = [
+  "/api", "/mcp", "/o/", "/p/", "/i/", "/f/", "/upload/", "/export/", "/ws",
+  "/token", "/register", "/authorize", "/auth/", "/setup", "/login",
+  "/sessions/", "/invite/", "/marketplace", "/dev/", "/.well-known", "/schema", "/canvas",
+];
+function isAppRoute(path: string): boolean {
+  return !BACKEND_PREFIXES.some((p) => path === p || path.startsWith(p));
+}
+
+async function handle(request: Request, env: Env): Promise<Response> {
+  const res = await dispatch(request, env);
+  if (res.status === 404 && request.method === "GET" && env.ASSETS && isAppRoute(new URL(request.url).pathname)) {
+    return env.ASSETS.fetch(new Request(new URL("/index.html", request.url), { headers: request.headers }));
+  }
+  return res;
+}
+
 // === Export ===
 
 export default new OAuthProvider({
   apiRoute: "/mcp",
   apiHandler: SessionDO.serve("/mcp"),
-  defaultHandler: { fetch: (request: Request, env: Env) => dispatch(request, env) },
+  defaultHandler: { fetch: (request: Request, env: Env) => handle(request, env) },
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",

@@ -7,7 +7,15 @@ compatibility_flags = ["nodejs_compat"]
 # for one-click installs): ensures the Vectorize index exists (Vectorize is not
 # auto-provisioned), then builds the Svelte client/SSR bundles the worker imports.
 [build]
-command = "bash scripts/ensure-vectorize.sh; npm run build:pages"
+command = "bash scripts/ensure-vectorize.sh; npm run build:pages && npm run build:web"
+
+# Static assets: the React SPA (dist/web). The runtime serves matching files
+# before the worker; unmatched paths fall through to the worker, which serves
+# the SPA shell for browser routes (see src/index.ts) and the API/MCP routes
+# as before. binding = ASSETS lets the worker fetch index.html for that fallback.
+[assets]
+directory = "./dist/web"
+binding = "ASSETS"
 
 
 [vars]
@@ -87,6 +95,10 @@ name = "mnemion-test"
 
 [env.test.vars]
 WORKER_HOST = "your-test-worker.workers.dev"
+
+[env.test.assets]
+directory = "./dist/web"
+binding = "ASSETS"
 
 [[env.test.kv_namespaces]]
 binding = "OAUTH_KV"

@@ -2,13 +2,22 @@ import { env, SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 
 describe("HTTP Routes (unauthenticated)", () => {
-  it("returns 404 for root", async () => {
+  it("serves the SPA shell at root", async () => {
+    // Unmatched browser GETs fall through to the React SPA (dist/web).
     const res = await SELF.fetch("https://test.local/");
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
   });
 
-  it("returns 404 for unknown paths", async () => {
+  it("serves the SPA shell for unknown browser routes (client-side routing)", async () => {
     const res = await SELF.fetch("https://test.local/random/path");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+  });
+
+  it("still returns 404 for unknown backend (API) paths", async () => {
+    // Backend prefixes are never shadowed by the SPA fallback.
+    const res = await SELF.fetch("https://test.local/api/does-not-exist");
     expect(res.status).toBe(404);
   });
 
