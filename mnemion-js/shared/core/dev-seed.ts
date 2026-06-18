@@ -174,8 +174,14 @@ export function seedDevData(db: DB): void {
       { type: "heading", text: "This week", width: "full" },
       { type: "metric", pattern: "tweets", metric: "engagement", agg: "sum", label: "Total engagement", width: "third" },
       { type: "metric", pattern: "tweets", agg: "count", label: "Posts", width: "third" },
-      { type: "metric", pattern: "tasks", agg: "count", label: "Tasks", width: "third" },
+      { type: "metric", pattern: "tasks", agg: "count", label: "Open tasks", width: "third" },
       { type: "chart", pattern: "tweets", group_by: "year", metric: "engagement", agg: "sum", width: "full" },
+      { type: "heading", text: "The board", width: "full" },
+      { type: "view", pattern: "tasks", width: "full" }, // embeds tasks as its own default view (the board)
+      { type: "heading", text: "Recent notes", width: "half" },
+      { type: "heading", text: "A goal", width: "half" },
+      { type: "list", pattern: "notes", limit: 4, width: "half" },
+      { type: "entry", pattern: "goals", id: 1, width: "half" },
     ]) });
 
   ins(db, "tweets", { summary: "helping a senior fix a laptop she overpaid for", faves: 27608, retweets: 4200, engagement: 132368, year: 2022 });

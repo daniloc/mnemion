@@ -383,6 +383,12 @@ body { background: var(--paper); font-family: var(--sans); color: var(--ink); -w
 .metric { border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 18px 20px; }
 .metric-num { font-family: var(--sans); font-weight: 650; font-size: 34px; letter-spacing: -0.02em; color: var(--ink); font-variant-numeric: tabular-nums; line-height: 1.1; }
 .metric-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); margin-top: 6px; }
+.block-embed { border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 16px; }
+.entry-card-title { font-family: var(--sans); font-weight: 650; font-size: 17px; color: var(--ink); margin-bottom: 12px; }
+.block-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.block-list-row { padding: 9px 2px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 14px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.block-list-row:last-child { border-bottom: none; }
+.block-list-row:hover { color: var(--accent); }
 
 /* === View tabs (a pattern with several views) === */
 .view-tabs { display: flex; gap: 6px; margin-top: 14px; }

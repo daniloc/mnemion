@@ -227,7 +227,7 @@ export default function App() {
             <header className="pattern-head">
               <h1>{selectedPage.title || selectedPage.name}</h1>
             </header>
-            <PageView page={selectedPage} />
+            <PageView page={selectedPage} patterns={patterns} views={views} />
           </section>
         ) : !selected ? (
           <section className="cover">

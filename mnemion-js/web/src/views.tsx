@@ -491,6 +491,31 @@ export function PeekDialog({ pattern, id, facets, onClose }: { pattern: string; 
   );
 }
 
+// === Entry card (one entry's facets, inline — used by the page `entry` block) ===
+export function EntryCard({ pattern, id, facets }: { pattern: string; id: number; facets: Facet[] }) {
+  const [entry, setEntry] = useState<Entry | null>(null);
+  useEffect(() => {
+    setEntry(null);
+    fetch(`/api/query/${pattern}?filter=${encodeURIComponent('id=' + id)}&limit=1`)
+      .then((r) => r.json()).then((d) => setEntry((d.entries || [])[0] ?? null)).catch(() => setEntry(null));
+  }, [pattern, id]);
+  const titleFacet = facets.find((f) => f.type === 'text')?.name;
+  if (!entry) return <div className="status">loading…</div>;
+  return (
+    <div className="entry-card">
+      {titleFacet && <div className="entry-card-title">{valueOf(entry, titleFacet) || `${pattern} #${id}`}</div>}
+      <div className="dialog-fields">
+        {facets.filter((f) => !KERNEL_COLS.has(f.name) && f.name !== titleFacet && valueOf(entry, f.name)).map((f) => (
+          <div className="field inline" key={f.name}>
+            <div className="field-name">{f.name}</div>
+            <div className="field-value"><FacetValue value={valueOf(entry, f.name)} type={f.type} facetFormat={f.format} pattern={pattern} id={id} facet={f.name} options={f.options} linksTo={f.links} /></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // === Document (long-form reading; each entry a document) ===
 export function DocumentView({ pattern, facets, view }: ViewProps) {
   const entries = usePatternEntries(pattern);
