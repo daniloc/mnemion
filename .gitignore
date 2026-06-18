@@ -30,5 +30,3 @@ worker-configuration.d.ts
 # coherence transient job files (generated docs in docs/coherence are committed)
 mnemion-js/.coherence/
 
-# Pulled real hive data for local dev — never commit
-mnemion-js/dev-data/
