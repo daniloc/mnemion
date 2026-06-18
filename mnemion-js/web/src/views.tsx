@@ -3,6 +3,7 @@ import * as Select from '@radix-ui/react-select';
 import * as Dialog from '@radix-ui/react-dialog';
 import { store, useEntry, usePatternEntries, type Entry } from './store';
 import type { ViewTypeId } from '../../shared/core/view-palette';
+import { resolveFormat } from '../../shared/core/format-palette';
 import { FacetValue } from './FacetValue';
 
 export interface Facet { name: string; type: string; options?: string[]; format?: string; }
@@ -31,6 +32,13 @@ export function parseConfig(v?: ViewSpec | null): ViewConfig {
 // as prose, so a section gets a humanized heading, not a raw mono field tag.
 function humanize(name: string): string {
   return name.replace(/[_-]+/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+}
+
+// A column renders/sorts as a number when its resolved format is `number`
+// (integer/number facets get it by default; any facet can opt in via format).
+function isNumericCol(facets: Facet[], cfg: ViewConfig, name: string): boolean {
+  const f = facets.find((x) => x.name === name);
+  return resolveFormat(cfg.formats?.[name], f?.format, f?.type) === 'number';
 }
 
 function valueOf(entry: Entry, name: string): string {
@@ -208,8 +216,17 @@ export function TableView({ pattern, facets, view }: ViewProps) {
   const hide = new Set(cfg.hide ?? []);
   const declared = cfg.columns?.length ? cfg.columns.filter((c) => facets.some((f) => f.name === c)) : userFacets.map((f) => f.name);
   const cols = (titleFacet ? [titleFacet, ...declared.filter((c) => c !== titleFacet)] : declared).filter((c) => !hide.has(c));
-  const rows = cfg.sort
-    ? [...entries].sort((a, b) => valueOf(a, cfg.sort!).localeCompare(valueOf(b, cfg.sort!)))
+  // sort: "facet" ascending, "-facet" descending; numeric facets compare as
+  // numbers, not lexically (so 132368 outranks 99).
+  const sortKey = cfg.sort?.replace(/^-/, '');
+  const sortDesc = cfg.sort?.startsWith('-') ?? false;
+  const sortNum = sortKey ? isNumericCol(facets, cfg, sortKey) : false;
+  const rows = sortKey
+    ? [...entries].sort((a, b) => {
+        const av = valueOf(a, sortKey), bv = valueOf(b, sortKey);
+        const cmp = sortNum ? (Number(av) || 0) - (Number(bv) || 0) : av.localeCompare(bv);
+        return sortDesc ? -cmp : cmp;
+      })
     : entries;
   if (entries.length === 0) return <div className="status">No entries yet.</div>;
   return (
@@ -219,7 +236,7 @@ export function TableView({ pattern, facets, view }: ViewProps) {
           <thead>
             <tr>
               <th className="dt-id">#</th>
-              {cols.map((c) => <th key={c}>{c}</th>)}
+              {cols.map((c) => <th key={c} className={isNumericCol(facets, cfg, c) ? 'dt-num' : undefined}>{c}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -243,8 +260,9 @@ const TableRow = memo(function TableRow({ pattern, id, cols, facets, cfg, onOpen
       <td className="dt-id">#{id}<span className="redraws" title="renders of this row">r{renders}</span></td>
       {cols.map((c, i) => {
         const f = facets.find((x) => x.name === c);
+        const cls = [i === 0 ? 'dt-lead' : '', isNumericCol(facets, cfg, c) ? 'dt-num' : ''].filter(Boolean).join(' ') || undefined;
         return (
-          <td key={c} className={i === 0 ? 'dt-lead' : undefined}>
+          <td key={c} className={cls}>
             <FacetValue value={valueOf(entry, c)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[c]} pattern={pattern} id={id} facet={c} options={f?.options} />
           </td>
         );

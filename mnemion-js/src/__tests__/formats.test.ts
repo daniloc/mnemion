@@ -44,6 +44,8 @@ describe("resolveFormat", () => {
   it("defaultFormatForType maps type → format", () => {
     expect(defaultFormatForType("datetime")).toBe("date");
     expect(defaultFormatForType("boolean")).toBe("boolean");
+    expect(defaultFormatForType("integer")).toBe("number");
+    expect(defaultFormatForType("number")).toBe("number");
     expect(defaultFormatForType("text")).toBe("text");
     expect(defaultFormatForType(undefined)).toBe("text");
   });

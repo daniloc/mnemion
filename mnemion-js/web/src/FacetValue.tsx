@@ -65,6 +65,13 @@ const BoolValue: FC<FormatProps> = ({ value }) => {
   return <span className={`fv-bool ${truthy ? 'on' : 'off'}`}>{truthy ? '✓' : '✗'}</span>;
 };
 
+const numberFmt = new Intl.NumberFormat();
+const NumberValue: FC<FormatProps> = ({ value }) => {
+  const n = Number(value);
+  if (value === '' || !isFinite(n)) return <>{value}</>;
+  return <span className="fv-num">{numberFmt.format(n)}</span>;
+};
+
 // Interactive: an inline dropdown that changes the value (optimistic patch +
 // mutate, the live socket echoes it back). Options = declared facet options
 // unioned with the values already in use, so a plain text facet (e.g. status)
@@ -101,6 +108,7 @@ const FORMAT_COMPONENTS: Record<FormatId, FC<FormatProps>> = {
   date: DateValue,
   boolean: BoolValue,
   select: SelectValue,
+  number: NumberValue,
 };
 
 export function FacetValue({ value, type, facetFormat, viewFormat, pattern, id, facet, options }: FormatProps & {

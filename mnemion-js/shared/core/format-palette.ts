@@ -26,6 +26,7 @@ export const FORMAT_PALETTE = {
   date: { label: "Date", help: "Render a timestamp as a friendly relative date." },
   boolean: { label: "Boolean", help: "Render a truthy/falsy value as ✓ / ✗." },
   select: { label: "Select", help: "An interactive dropdown that changes the value inline (options: the facet's declared options, else the values already in use)." },
+  number: { label: "Number", help: "Format with thousands separators; right-aligned and sorted numerically (not lexically) in tables. The default for integer/number facets." },
 } satisfies Record<string, FormatType>;
 
 export type FormatId = keyof typeof FORMAT_PALETTE;
@@ -43,8 +44,15 @@ export function defaultFormatForType(type: string | undefined): FormatId {
   switch (type) {
     case "datetime": return "date";
     case "boolean": return "boolean";
+    case "integer":
+    case "number": return "number";
     default: return "text";
   }
+}
+
+/** Whether a resolved format sorts and aligns as a number (table concerns). */
+export function isNumericFormat(format: FormatId): boolean {
+  return format === "number";
 }
 
 // The resolve chain: view override ?? facet intrinsic ?? type default. Unknown

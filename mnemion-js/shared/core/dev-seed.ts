@@ -90,6 +90,17 @@ export function seedDevData(db: DB): void {
     { name: "lineage", type: "text" },
   ]);
 
+  // A dataset: numeric metrics for analysis, not prose. Stresses numeric
+  // rendering (separators, right-align) and numeric sort.
+  pat(db, "tweets", "Posts and their engagement — tabular data for analysis, not prose", "Record a post with its metrics. Aggregate by year or engagement.", [
+    { name: "summary", type: "text", required: true },
+    { name: "faves", type: "integer" },
+    { name: "retweets", type: "integer" },
+    { name: "engagement", type: "integer" },
+    { name: "year", type: "integer" },
+  ]);
+  db.exec("UPDATE _objects SET pattern_class = 'dataset' WHERE name = 'tweets'");
+
   // --- Entries ---
 
   const g1 = ins(db, "goals", { title: "Ship the canvas feature", status: "active", notes: "Spatial thinking for Mnemion. SVG-based infinite canvas with notes, entries, links, and connections." });
@@ -148,6 +159,18 @@ export function seedDevData(db: DB): void {
   ins(db, "_views", { pattern: "frames", name: "default", view_type: "document",
     // observation reads as the lead; the rest as headed sections.
     config: JSON.stringify({ title: "title", lead: "observation", sections: ["resolution", "explains", "examples", "lineage"] }) });
+  ins(db, "_views", { pattern: "tweets", name: "default", view_type: "table",
+    // integer facets render as numbers (separators, right-aligned) by default;
+    // sort by engagement descending — numerically, not lexically.
+    config: JSON.stringify({ columns: ["summary", "faves", "retweets", "engagement", "year"], title: "summary", sort: "-engagement" }) });
+
+  ins(db, "tweets", { summary: "helping a senior fix a laptop she overpaid for", faves: 27608, retweets: 4200, engagement: 132368, year: 2022 });
+  ins(db, "tweets", { summary: "if only there were a word for a religious travel ban", faves: 18696, retweets: 9800, engagement: 33090, year: 2017 });
+  ins(db, "tweets", { summary: "the line outside Silicon Valley Bank wraps the building", faves: 3476, retweets: 1100, engagement: 14800, year: 2023 });
+  ins(db, "tweets", { summary: "a quiet observation about interfaces as promises", faves: 2210, retweets: 540, engagement: 8700, year: 2025 });
+  ins(db, "tweets", { summary: "the wizard isn't code generation, it's feeling rescued", faves: 1540, retweets: 330, engagement: 6100, year: 2025 });
+  ins(db, "tweets", { summary: "a small thread on why constraints make better design", faves: 980, retweets: 210, engagement: 4300, year: 2024 });
+  ins(db, "tweets", { summary: "shipping notes from a long week of migrations", faves: 412, retweets: 55, engagement: 1800, year: 2026 });
 
   // --- Links ---
 

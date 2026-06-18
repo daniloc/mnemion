@@ -358,6 +358,8 @@ body { background: var(--paper); font-family: var(--sans); color: var(--ink); -w
 .dt-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .dt-lead { color: var(--ink); font-weight: 500; }
 .dt-id { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; width: 1%; }
+.dtable th.dt-num, .dtable td.dt-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fv-num { font-variant-numeric: tabular-nums; }
 
 /* === Document view (long-form reading) === */
 .doc { max-width: 660px; }
