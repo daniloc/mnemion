@@ -52,6 +52,17 @@ class LiveStore {
     return this.patterns.has(pattern);
   }
 
+  /** Optimistically merge a patch into one entry (e.g. a drag changes status).
+   *  The server's WS echo arrives moments later and overwrites with the truth. */
+  patchEntry(pattern: string, id: number, patch: Record<string, unknown>) {
+    const s = this.patterns.get(pattern);
+    const cur = s?.byId.get(id);
+    if (!s || !cur) return;
+    s.byId.set(id, { ...cur, ...patch });
+    this.rebuild(s);     // grouping may move the card to another column
+    this.notifyEntry(s, id);
+  }
+
   /** Apply a single granular change from the live socket. */
   applyDelta(d: { pattern: string; op: string; id: number; entry: Entry | null }) {
     const s = this.patterns.get(d.pattern);
