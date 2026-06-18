@@ -26,11 +26,16 @@ export const BLOCK_PALETTE = {
     agg: { role: "agg", help: "count | sum | avg | min | max (default: sum when a metric is set, else count)" },
     label: { role: "text", help: "caption shown under the number" },
   } },
-  chart: { label: "Chart", help: "A bar chart of an aggregate grouped by a facet.", config: {
+  chart: { label: "Chart", help: "A bar/line/area chart of an aggregate grouped by a facet.", config: {
     pattern: { role: "pattern", required: true, help: "pattern to chart" },
-    group_by: { role: "facet", required: true, help: "facet to group bars by" },
-    metric: { role: "facet", help: "numeric facet to aggregate (omit to count rows)" },
-    agg: { role: "agg", help: "aggregate function (default: sum when a metric is set, else count)" },
+    mark: { role: "text", help: "bar | line | area (default: bar)" },
+    x: { role: "facet", help: "facet for the x-axis (alias: group_by)" },
+    y: { role: "facet", help: "numeric facet for the y-axis (alias: metric; omit to count rows)" },
+    group_by: { role: "facet", help: "alias for x" },
+    metric: { role: "facet", help: "alias for y" },
+    agg: { role: "agg", help: "aggregate function (default: sum when y is set, else count)" },
+    title: { role: "text", help: "chart title" },
+    caption: { role: "text", help: "caption below the chart" },
   } },
   view: { label: "View", help: "Embed a pattern rendered as one of its views (board, table, document…). Extra keys (group_by, columns, sort…) pass through as the view's config.", config: {
     pattern: { role: "pattern", required: true, help: "pattern to embed" },

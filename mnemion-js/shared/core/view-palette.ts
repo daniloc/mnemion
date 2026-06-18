@@ -83,11 +83,16 @@ export const VIEW_PALETTE = {
   },
   chart: {
     label: "Chart",
-    help: "A bar chart of an aggregate — group entries by a facet and measure them. For datasets you want to SEE the shape of, not read. Pairs well with a table view of the same pattern.",
+    help: "A bar/line/area chart of an aggregate — group entries by a facet (x) and measure them (y). For datasets you want to SEE the shape of, not read. Pairs well with a table view of the same pattern.",
     config: {
-      group_by: { role: "facet", required: true, help: "facet to group bars by (the category axis); bucket a datetime with facet:unit, e.g. created_at:month" },
-      metric: { role: "facet", help: "numeric facet to aggregate (omit to count rows)" },
-      agg: { role: "text", help: "aggregate function: count | sum | avg | min | max (default: sum when a metric is set, else count)" },
+      mark: { role: "text", help: "bar | line | area (default: bar). Use line/area for a value over time." },
+      x: { role: "facet", help: "facet for the x-axis / categories; bucket a datetime with facet:unit, e.g. created_at:month" },
+      y: { role: "facet", help: "numeric facet for the y-axis (omit to count rows)" },
+      group_by: { role: "facet", help: "alias for x" },
+      metric: { role: "facet", help: "alias for y" },
+      agg: { role: "text", help: "aggregate function: count | sum | avg | min | max (default: sum when y is set, else count)" },
+      title: { role: "text", help: "chart title — free text that carries the argument" },
+      caption: { role: "text", help: "caption below the chart" },
     },
   },
 } satisfies Record<string, ViewType>;

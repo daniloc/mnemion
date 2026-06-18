@@ -71,10 +71,9 @@ function MetricBlock({ block }: { block: Block }) {
 
 function ChartBlock({ block }: { block: Block }) {
   const pattern = String(block.pattern || '');
-  const view: ViewSpec = {
-    pattern, name: 'block', view_type: 'chart',
-    config: JSON.stringify({ group_by: block.group_by, metric: block.metric, agg: block.agg }),
-  };
+  // pass every chart key (mark/x/y/agg/title/caption…) through as the view config.
+  const { type: _t, width: _w, pattern: _p, ...cfg } = block;
+  const view: ViewSpec = { pattern, name: 'block', view_type: 'chart', config: JSON.stringify(cfg) };
   return <div className="block-card"><ChartView pattern={pattern} facets={[]} view={view} /></div>;
 }
 

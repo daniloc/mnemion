@@ -164,9 +164,9 @@ export function seedDevData(db: DB): void {
     // sort by engagement descending — numerically, not lexically.
     config: JSON.stringify({ columns: ["summary", "faves", "retweets", "engagement", "year"], title: "summary", sort: "-engagement" }) });
   ins(db, "_views", { pattern: "tweets", name: "by year", view_type: "chart",
-    // a second view of the same dataset: total engagement per year (the switcher
-    // surfaces both — table to read rows, chart to see the shape).
-    config: JSON.stringify({ group_by: "year", metric: "engagement", agg: "sum" }) });
+    // a second view of the same dataset, as a line (a value over time) with a
+    // headline — the "data shitpost" shape.
+    config: JSON.stringify({ mark: "line", x: "year", y: "engagement", agg: "sum", title: "Engagement by year", caption: "sum of engagement per year" }) });
 
   // --- Pages: an agent-composed dashboard referencing several patterns ---
   ins(db, "_pages", { name: "Pulse", path: "pulse", title: "Pulse",
@@ -175,7 +175,7 @@ export function seedDevData(db: DB): void {
       { type: "metric", pattern: "tweets", metric: "engagement", agg: "sum", label: "Total engagement", width: "third" },
       { type: "metric", pattern: "tweets", agg: "count", label: "Posts", width: "third" },
       { type: "metric", pattern: "tasks", agg: "count", label: "Open tasks", width: "third" },
-      { type: "chart", pattern: "tweets", group_by: "year", metric: "engagement", agg: "sum", width: "full" },
+      { type: "chart", pattern: "tweets", mark: "bar", x: "year", y: "engagement", agg: "sum", title: "Engagement by year", width: "full" },
       { type: "heading", text: "The board", width: "full" },
       { type: "view", pattern: "tasks", width: "full" }, // embeds tasks as its own default view (the board)
       { type: "heading", text: "Recent notes", width: "half" },

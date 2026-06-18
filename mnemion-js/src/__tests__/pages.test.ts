@@ -44,7 +44,7 @@ describe("validateBlocks", () => {
     expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets", group_by: "nope" }]), ctx).join()).toContain('facet "nope"');
   });
   it("enforces required keys, valid width, valid agg", () => {
-    expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets" }]), ctx).join()).toContain("group_by is required");
+    expect(validateBlocks(JSON.stringify([{ type: "chart" }]), ctx).join()).toContain("pattern is required");
     expect(validateBlocks(JSON.stringify([{ type: "heading", text: "x", width: "huge" }]), ctx).join()).toContain("width must be");
     expect(validateBlocks(JSON.stringify([{ type: "metric", pattern: "tweets", agg: "median" }]), ctx).join()).toContain("one of");
   });

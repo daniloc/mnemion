@@ -413,6 +413,17 @@ body { background: var(--paper); font-family: var(--sans); color: var(--ink); -w
 .chart-bar { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .chart-val { font-family: var(--mono); font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
 
+/* === Chart (Recharts, editorial) === */
+.chart2 { margin: 0; max-width: 820px; }
+.chart2-title { font-family: var(--sans); font-weight: 650; font-size: 18px; letter-spacing: -0.01em; color: var(--ink); margin-bottom: 14px; line-height: 1.25; text-wrap: balance; }
+.chart2-canvas { width: 100%; }
+.chart2-caption { font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); margin-top: 12px; }
+.chart2-tip { background: var(--ink); color: var(--paper); padding: 7px 11px; border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,0.2); }
+.chart2-tip-x { font-family: var(--mono); font-size: 10px; opacity: 0.65; margin-bottom: 1px; }
+.chart2-tip-v { font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; }
+.recharts-cartesian-axis-tick text { font-family: var(--mono); }
+.recharts-surface { overflow: visible; }
+
 /* === Document view (long-form reading) === */
 .doc { max-width: 660px; }
 .doc-block { padding-bottom: 40px; margin-bottom: 40px; border-bottom: 1px solid var(--line); }

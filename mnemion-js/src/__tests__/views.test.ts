@@ -161,13 +161,12 @@ describe("getEntryLabel", () => {
 
 describe("chart config", () => {
   const has = (n: string) => ["year", "engagement"].includes(n);
-  it("accepts group_by + metric + agg", () => {
+  it("accepts the mark/x/y spec (and the group_by/metric aliases)", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ mark: "line", x: "year", y: "engagement", agg: "sum", title: "Engagement by year" }), has)).toEqual([]);
     expect(validateViewSpec("chart", JSON.stringify({ group_by: "year", metric: "engagement", agg: "sum" }), has)).toEqual([]);
   });
-  it("requires group_by", () => {
-    expect(validateViewSpec("chart", JSON.stringify({ metric: "engagement" }), has, { enforceRequired: true }).join()).toContain("group_by is required");
-  });
-  it("rejects a group_by that isn't a real facet", () => {
+  it("rejects an x/group_by that isn't a real facet", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ x: "ghost" }), has).join()).toContain('facet "ghost"');
     expect(validateViewSpec("chart", JSON.stringify({ group_by: "ghost" }), has).join()).toContain('facet "ghost"');
   });
 });
