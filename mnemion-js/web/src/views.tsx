@@ -268,7 +268,7 @@ const StackBlock = memo(function StackBlock({ pattern, id, facets, i }: { patter
       const value = valueOf(entry, f.name);
       const lead = !leadTaken && f.type === 'text';
       if (lead) leadTaken = true;
-      return { name: f.name, value, lead, long: value.length > 88 || value.includes('\n') };
+      return { name: f.name, value, lead, long: value.length > 88 || value.includes('\n'), type: f.type, format: f.format };
     });
   return (
     <article className="block" style={{ ['--i' as any]: i }}>
@@ -276,7 +276,7 @@ const StackBlock = memo(function StackBlock({ pattern, id, facets, i }: { patter
         {fields.map((f) => (
           <div className={`field${f.lead ? ' lead' : f.long ? ' long' : ' inline'}`} key={f.name}>
             <div className="field-name">{f.name}</div>
-            <div className="field-value">{f.value}</div>
+            <div className="field-value"><FacetValue value={f.value} type={f.type} facetFormat={f.format} /></div>
           </div>
         ))}
       </div>
@@ -322,12 +322,15 @@ const GridCard = memo(function GridCard({ pattern, id, facets, cfg, onOpen }: { 
     <article className="card gcard" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
       <div className="card-title">{title || `#${id}`}</div>
       {subtitle && <div className="gcard-sub">{subtitle}</div>}
-      {shown.slice(0, 4).map((n) => (
-        <div className="card-field" key={n}>
-          <span className="card-field-name">{n}</span>
-          <span className="card-field-value">{valueOf(entry, n)}</span>
-        </div>
-      ))}
+      {shown.slice(0, 4).map((n) => {
+        const f = facets.find((x) => x.name === n);
+        return (
+          <div className="card-field" key={n}>
+            <span className="card-field-name">{n}</span>
+            <span className="card-field-value"><FacetValue value={valueOf(entry, n)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[n]} /></span>
+          </div>
+        );
+      })}
       <footer className="card-foot">
         <span className="card-id">#{id}</span>
         <span className="redraws" title="renders of this card">r{renders}</span>
@@ -360,14 +363,16 @@ const ListRow = memo(function ListRow({ pattern, id, facets, cfg, onOpen }: { pa
   if (!entry) return null;
   const titleFacet = cfg.title ?? facets.find((f) => f.type === 'text')?.name;
   const primary = titleFacet ? valueOf(entry, titleFacet) : `#${id}`;
+  const secFacet = cfg.secondary ? facets.find((f) => f.name === cfg.secondary) : undefined;
+  const metaFacet = cfg.meta ? facets.find((f) => f.name === cfg.meta) : undefined;
   const secondary = cfg.secondary ? valueOf(entry, cfg.secondary) : '';
   const meta = cfg.meta ? valueOf(entry, cfg.meta) : '';
   return (
     <div className="list-row" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
       <span className="lr-primary">{primary || `#${id}`}</span>
-      {secondary && <span className="lr-secondary">{secondary}</span>}
+      {secondary && <span className="lr-secondary"><FacetValue value={secondary} type={secFacet?.type} facetFormat={secFacet?.format} viewFormat={cfg.formats?.[cfg.secondary!]} /></span>}
       <span className="lr-tail">
-        {meta && <span className="lr-meta">{meta}</span>}
+        {meta && <span className="lr-meta"><FacetValue value={meta} type={metaFacet?.type} facetFormat={metaFacet?.format} viewFormat={cfg.formats?.[cfg.meta!]} /></span>}
         <span className="redraws" title="renders of this row">r{renders}</span>
       </span>
     </div>

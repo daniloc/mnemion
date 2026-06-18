@@ -15,6 +15,7 @@
 import { PRODUCT_NAME, uri } from "../../shared/core/constants";
 import { ensureAuditTriggers } from "./schema";
 import { isKernelPattern } from "./policy";
+import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
 import type { StoreIndex, IndexFacetEntry } from "./hive";
 
 // === Types ===
@@ -362,6 +363,35 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       db.exec(
         "UPDATE _objects SET memory_policy = ? WHERE name = ?",
         change.policy ? JSON.stringify(change.policy) : null, change.pattern_name
+      );
+    },
+  },
+
+  set_facet_format: {
+    validate(change, ctx, preview) {
+      if (!change.pattern_name) return "pattern_name is required for set_facet_format";
+      if (!ctx.patternExists(change.pattern_name))
+        return `Pattern "${change.pattern_name}" does not exist`;
+      if (isKernelPattern(change.pattern_name))
+        return `Facet formats apply to user patterns, not kernel pattern "${change.pattern_name}"`;
+      if (!change.facet) return "facet is required for set_facet_format";
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      if (!pat?.facets.some((f) => f.name === change.facet))
+        return `Facet "${change.facet}" does not exist on "${change.pattern_name}"`;
+      if (change.format === null) return null; // explicit clear → derive from type
+      if (typeof change.format !== "string" || !isFormat(change.format))
+        return `format must be one of: ${FORMAT_IDS.join(", ")} (or null to clear)`;
+      return null;
+    },
+    preview(change, preview) {
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      const facet = pat?.facets.find((f) => f.name === change.facet);
+      if (facet) facet.format = change.format ?? undefined;
+    },
+    apply(change, { db }) {
+      db.exec(
+        "UPDATE _fields SET format = ? WHERE object_name = ? AND name = ?",
+        change.format ?? null, change.pattern_name, change.facet
       );
     },
   },
