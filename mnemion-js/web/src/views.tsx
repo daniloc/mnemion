@@ -281,6 +281,91 @@ const StackBlock = memo(function StackBlock({ pattern, id, facets, i }: { patter
   );
 });
 
+// === Cards (responsive grid; the default) ===
+export function CardsView({ pattern, facets, view }: ViewProps) {
+  const entries = usePatternEntries(pattern);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const cfg = parseConfig(view);
+  if (entries.length === 0) return <div className="status">No entries yet.</div>;
+  return (
+    <>
+      <div className="cards-grid">
+        {entries.map((e) => (
+          <GridCard key={e.id} pattern={pattern} id={e.id} facets={facets} cfg={cfg} onOpen={() => setOpenId(e.id)} />
+        ))}
+      </div>
+      <DetailDialog pattern={pattern} id={openId} facets={facets} cfg={cfg} onClose={() => setOpenId(null)} />
+    </>
+  );
+}
+
+const GridCard = memo(function GridCard({ pattern, id, facets, cfg, onOpen }: { pattern: string; id: number; facets: Facet[]; cfg: ViewConfig; onOpen: () => void }) {
+  const entry = useEntry(pattern, id);
+  const renders = useRenderCount();
+  if (!entry) return null;
+  const titleFacet = cfg.title ?? facets.find((f) => f.type === 'text')?.name;
+  const title = titleFacet ? valueOf(entry, titleFacet) : `#${id}`;
+  const subtitle = cfg.subtitle ? valueOf(entry, cfg.subtitle) : '';
+  const fieldNames = cfg.fields?.length
+    ? cfg.fields
+    : facets.filter((f) => !KERNEL_COLS.has(f.name) && f.name !== titleFacet && f.name !== cfg.subtitle).map((f) => f.name);
+  const shown = fieldNames.filter((n) => valueOf(entry, n));
+  return (
+    <article className="card gcard" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
+      <div className="card-title">{title || `#${id}`}</div>
+      {subtitle && <div className="gcard-sub">{subtitle}</div>}
+      {shown.slice(0, 4).map((n) => (
+        <div className="card-field" key={n}>
+          <span className="card-field-name">{n}</span>
+          <span className="card-field-value">{valueOf(entry, n)}</span>
+        </div>
+      ))}
+      <footer className="card-foot">
+        <span className="card-id">#{id}</span>
+        <span className="redraws" title="renders of this card">r{renders}</span>
+      </footer>
+    </article>
+  );
+});
+
+// === List (compact one-line rows) ===
+export function ListView({ pattern, facets, view }: ViewProps) {
+  const entries = usePatternEntries(pattern);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const cfg = parseConfig(view);
+  if (entries.length === 0) return <div className="status">No entries yet.</div>;
+  return (
+    <>
+      <div className="list">
+        {entries.map((e) => (
+          <ListRow key={e.id} pattern={pattern} id={e.id} facets={facets} cfg={cfg} onOpen={() => setOpenId(e.id)} />
+        ))}
+      </div>
+      <DetailDialog pattern={pattern} id={openId} facets={facets} cfg={cfg} onClose={() => setOpenId(null)} />
+    </>
+  );
+}
+
+const ListRow = memo(function ListRow({ pattern, id, facets, cfg, onOpen }: { pattern: string; id: number; facets: Facet[]; cfg: ViewConfig; onOpen: () => void }) {
+  const entry = useEntry(pattern, id);
+  const renders = useRenderCount();
+  if (!entry) return null;
+  const titleFacet = cfg.title ?? facets.find((f) => f.type === 'text')?.name;
+  const primary = titleFacet ? valueOf(entry, titleFacet) : `#${id}`;
+  const secondary = cfg.secondary ? valueOf(entry, cfg.secondary) : '';
+  const meta = cfg.meta ? valueOf(entry, cfg.meta) : '';
+  return (
+    <div className="list-row" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
+      <span className="lr-primary">{primary || `#${id}`}</span>
+      {secondary && <span className="lr-secondary">{secondary}</span>}
+      <span className="lr-tail">
+        {meta && <span className="lr-meta">{meta}</span>}
+        <span className="redraws" title="renders of this row">r{renders}</span>
+      </span>
+    </div>
+  );
+});
+
 // === Radix Select — the status control ===
 function StatusSelect({ value, options, onChange }: { value: string; options: string[]; onChange: (v: string) => void }) {
   const opts = options.length ? options : [value].filter(Boolean);
@@ -312,8 +397,8 @@ function StatusSelect({ value, options, onChange }: { value: string; options: st
 // compile until it has a component; remove one and the stray key won't compile.
 // (cards/list are the interim stack until their real components land.)
 export const COMPONENTS: Record<ViewTypeId, FC<ViewProps>> = {
-  cards: StackView,
+  cards: CardsView,
   board: BoardView,
   table: TableView,
-  list: StackView,
+  list: ListView,
 };

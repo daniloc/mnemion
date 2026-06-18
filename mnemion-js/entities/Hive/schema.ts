@@ -82,7 +82,7 @@ interface KernelTable {
   facets: KernelFacet[];
 }
 
-const KERNEL_TABLES: KernelTable[] = [
+export const KERNEL_TABLES: KernelTable[] = [
   {
     name: "_access_tokens",
     description: `Unified access tokens. Token auto-generated on create. Scope controls what the token can do — hierarchical prefix matching (e.g. "read" matches "read:entry:axioms:7"). Constraints holds scope-specific JSON (e.g. upload target). Single-use tokens are consumed on first use.

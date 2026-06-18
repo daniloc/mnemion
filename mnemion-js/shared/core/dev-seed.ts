@@ -104,6 +104,18 @@ export function seedDevData(db: DB): void {
   ins(db, "bookmarks", { url: "https://svelte.dev/docs/svelte/overview", title: "Svelte 5 docs", description: "Runes, snippets, SSR — the Svelte 5 way", tags: "svelte, reference" });
   ins(db, "bookmarks", { url: "https://modelcontextprotocol.io/", title: "MCP specification", description: "Model Context Protocol — tools, resources, prompts", tags: "mcp, reference" });
 
+  // --- Views (one of each shape, so the desk shows the palette's range) ---
+  // Seeds are trusted (raw SQL, bypass the kernel hook) so they must be valid
+  // against the palette: every facet named below is real on its pattern.
+  ins(db, "_views", { pattern: "tasks", name: "default", view_type: "board",
+    config: JSON.stringify({ group_by: "status", title: "title", columns: ["todo", "in-progress", "done"] }) });
+  ins(db, "_views", { pattern: "bookmarks", name: "default", view_type: "table",
+    config: JSON.stringify({ columns: ["title", "url", "tags"], title: "title", sort: "title" }) });
+  ins(db, "_views", { pattern: "notes", name: "default", view_type: "cards",
+    config: JSON.stringify({ title: "title", subtitle: "tags", fields: ["body"] }) });
+  ins(db, "_views", { pattern: "goals", name: "default", view_type: "list",
+    config: JSON.stringify({ title: "title", secondary: "notes", meta: "status" }) });
+
   // --- Links ---
 
   ins(db, "_links", { source_pattern: "tasks", source_id: 1, target_pattern: "notes", target_id: 3, label: "inspired-by" });
