@@ -11,7 +11,7 @@ import { serveSharedEntry, serveOutput, servePublication, receiveInput, upload, 
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "../shared/Routing/routes/marketplace";
 // Pages (JSON APIs the React SPA consumes)
-import { queryIndex, queryEntries, queryTools, queryHistory, mutateEntry, evolveSchema, liveSocket } from "../shared/Routing/routes/pages";
+import { queryIndex, queryEntries, queryTools, queryHistory, queryLabel, mutateEntry, evolveSchema, liveSocket } from "../shared/Routing/routes/pages";
 // Canvas
 import { canvasPage, listCanvases, saveCanvas, resolveUri } from "../shared/Routing/routes/canvas";
 // Dev
@@ -59,6 +59,7 @@ const routes: Route[] = [
   { method: Method.GET,  pattern: "/api/tools",             auth: Auth.SESSION, handler: queryTools },
   { method: Method.GET,  pattern: "/api/query/:pattern",   auth: Auth.SESSION, handler: queryEntries },
   { method: Method.GET,  pattern: "/api/history/:pattern/:id", auth: Auth.SESSION, where: { id: /^\d+$/ }, handler: queryHistory },
+  { method: Method.GET,  pattern: "/api/label/:pattern/:id",   auth: Auth.SESSION, where: { id: /^\d+$/ }, handler: queryLabel },
   { method: Method.POST, pattern: "/api/mutate/:pattern",  auth: Auth.SESSION, handler: mutateEntry },
   { method: Method.POST, pattern: "/api/evolve",           auth: Auth.SESSION, handler: evolveSchema },
   { method: Method.GET,  pattern: "/ws",                   auth: Auth.SESSION, handler: liveSocket },

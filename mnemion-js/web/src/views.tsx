@@ -6,7 +6,7 @@ import type { ViewTypeId } from '../../shared/core/view-palette';
 import { resolveFormat } from '../../shared/core/format-palette';
 import { FacetValue } from './FacetValue';
 
-export interface Facet { name: string; type: string; options?: string[]; format?: string; }
+export interface Facet { name: string; type: string; options?: string[]; format?: string; links?: string; }
 export interface ViewSpec { pattern: string; name: string; view_type: string; config: string | null; }
 // Config keys across all view types (see VIEW_PALETTE). `columns` is facet names
 // for table, arbitrary column values for board. `formats` is the universal
@@ -39,7 +39,7 @@ function humanize(name: string): string {
 // (integer/number facets get it by default; any facet can opt in via format).
 function isNumericCol(facets: Facet[], cfg: ViewConfig, name: string): boolean {
   const f = facets.find((x) => x.name === name);
-  return resolveFormat(cfg.formats?.[name], f?.format, f?.type) === 'number';
+  return resolveFormat(cfg.formats?.[name], f?.format, f?.type, !!f?.links) === 'number';
 }
 
 function valueOf(entry: Entry, name: string): string {
@@ -192,7 +192,7 @@ function DetailBody({ pattern, id, facets, cfg }: { pattern: string; id: number;
         {facets.filter((f) => !KERNEL_COLS.has(f.name) && f.name !== titleFacet && !hide.has(f.name) && valueOf(entry, f.name)).map((f) => (
           <div className="field inline" key={f.name}>
             <div className="field-name">{f.name}</div>
-            <div className="field-value"><FacetValue value={valueOf(entry, f.name)} type={f.type} facetFormat={f.format} viewFormat={cfg.formats?.[f.name]} pattern={pattern} id={id} facet={f.name} options={f.options} /></div>
+            <div className="field-value"><FacetValue value={valueOf(entry, f.name)} type={f.type} facetFormat={f.format} viewFormat={cfg.formats?.[f.name]} pattern={pattern} id={id} facet={f.name} options={f.options} linksTo={f.links} /></div>
           </div>
         ))}
       </div>
@@ -264,7 +264,7 @@ const TableRow = memo(function TableRow({ pattern, id, cols, facets, cfg, onOpen
         const cls = [i === 0 ? 'dt-lead' : '', isNumericCol(facets, cfg, c) ? 'dt-num' : ''].filter(Boolean).join(' ') || undefined;
         return (
           <td key={c} className={cls}>
-            <FacetValue value={valueOf(entry, c)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[c]} pattern={pattern} id={id} facet={c} options={f?.options} />
+            <FacetValue value={valueOf(entry, c)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[c]} pattern={pattern} id={id} facet={c} options={f?.options} linksTo={f?.links} />
           </td>
         );
       })}
@@ -296,7 +296,7 @@ const StackBlock = memo(function StackBlock({ pattern, id, facets, i }: { patter
       const value = valueOf(entry, f.name);
       const lead = !leadTaken && f.type === 'text';
       if (lead) leadTaken = true;
-      return { name: f.name, value, lead, long: value.length > 88 || value.includes('\n'), type: f.type, format: f.format, options: f.options };
+      return { name: f.name, value, lead, long: value.length > 88 || value.includes('\n'), type: f.type, format: f.format, options: f.options, links: f.links };
     });
   return (
     <article className="block" style={{ ['--i' as any]: i }}>
@@ -304,7 +304,7 @@ const StackBlock = memo(function StackBlock({ pattern, id, facets, i }: { patter
         {fields.map((f) => (
           <div className={`field${f.lead ? ' lead' : f.long ? ' long' : ' inline'}`} key={f.name}>
             <div className="field-name">{f.name}</div>
-            <div className="field-value"><FacetValue value={f.value} type={f.type} facetFormat={f.format} pattern={pattern} id={id} facet={f.name} options={f.options} /></div>
+            <div className="field-value"><FacetValue value={f.value} type={f.type} facetFormat={f.format} pattern={pattern} id={id} facet={f.name} options={f.options} linksTo={f.links} /></div>
           </div>
         ))}
       </div>
@@ -356,7 +356,7 @@ const GridCard = memo(function GridCard({ pattern, id, facets, cfg, onOpen }: { 
         return (
           <div className="card-field" key={n}>
             <span className="card-field-name">{n}</span>
-            <span className="card-field-value"><FacetValue value={valueOf(entry, n)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[n]} pattern={pattern} id={id} facet={n} options={f?.options} /></span>
+            <span className="card-field-value"><FacetValue value={valueOf(entry, n)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[n]} pattern={pattern} id={id} facet={n} options={f?.options} linksTo={f?.links} /></span>
           </div>
         );
       })}
@@ -399,9 +399,9 @@ const ListRow = memo(function ListRow({ pattern, id, facets, cfg, onOpen }: { pa
   return (
     <div className="list-row" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
       <span className="lr-primary">{primary || `#${id}`}</span>
-      {secondary && <span className="lr-secondary"><FacetValue value={secondary} type={secFacet?.type} facetFormat={secFacet?.format} viewFormat={cfg.formats?.[cfg.secondary!]} pattern={pattern} id={id} facet={cfg.secondary} options={secFacet?.options} /></span>}
+      {secondary && <span className="lr-secondary"><FacetValue value={secondary} type={secFacet?.type} facetFormat={secFacet?.format} viewFormat={cfg.formats?.[cfg.secondary!]} pattern={pattern} id={id} facet={cfg.secondary} options={secFacet?.options} linksTo={secFacet?.links} /></span>}
       <span className="lr-tail">
-        {meta && <span className="lr-meta"><FacetValue value={meta} type={metaFacet?.type} facetFormat={metaFacet?.format} viewFormat={cfg.formats?.[cfg.meta!]} pattern={pattern} id={id} facet={cfg.meta} options={metaFacet?.options} /></span>}
+        {meta && <span className="lr-meta"><FacetValue value={meta} type={metaFacet?.type} facetFormat={metaFacet?.format} viewFormat={cfg.formats?.[cfg.meta!]} pattern={pattern} id={id} facet={cfg.meta} options={metaFacet?.options} linksTo={metaFacet?.links} /></span>}
         <span className="redraws" title="renders of this row">r{renders}</span>
       </span>
     </div>
@@ -458,6 +458,39 @@ function EntryHistory({ pattern, id, title, open, onClose }: { pattern: string; 
   );
 }
 
+// === Peek (read-only popup of a referenced entry; opened via reference click) ===
+export function PeekDialog({ pattern, id, facets, onClose }: { pattern: string; id: number; facets: Facet[]; onClose: () => void }) {
+  const [entry, setEntry] = useState<Entry | null>(null);
+  useEffect(() => {
+    setEntry(null);
+    fetch(`/api/query/${pattern}?filter=${encodeURIComponent('id=' + id)}&limit=1`)
+      .then((r) => r.json()).then((d) => setEntry((d.entries || [])[0] ?? null)).catch(() => setEntry(null));
+  }, [pattern, id]);
+  const titleFacet = facets.find((f) => f.type === 'text')?.name;
+  const title = entry && titleFacet ? valueOf(entry, titleFacet) : `${pattern} #${id}`;
+  return (
+    <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content className="dialog">
+          <Dialog.Title className="dialog-title">{title}</Dialog.Title>
+          {!entry ? <div className="status">loading…</div> : (
+            <div className="dialog-fields">
+              {facets.filter((f) => !KERNEL_COLS.has(f.name) && f.name !== titleFacet && valueOf(entry, f.name)).map((f) => (
+                <div className="field inline" key={f.name}>
+                  <div className="field-name">{f.name}</div>
+                  <div className="field-value"><FacetValue value={valueOf(entry, f.name)} type={f.type} facetFormat={f.format} pattern={pattern} id={id} facet={f.name} options={f.options} linksTo={f.links} /></div>
+                </div>
+              ))}
+            </div>
+          )}
+          <footer className="dialog-foot"><span className="id">{pattern} #{id}</span><Dialog.Close className="dialog-close">close</Dialog.Close></footer>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 // === Document (long-form reading; each entry a document) ===
 export function DocumentView({ pattern, facets, view }: ViewProps) {
   const entries = usePatternEntries(pattern);
@@ -486,7 +519,7 @@ const DocBlock = memo(function DocBlock({ pattern, id, facets, cfg }: { pattern:
     .filter((n) => n !== titleFacet && n !== leadFacet && !hide.has(n) && facetOf(n) && valueOf(entry, n));
   const render = (n: string) => {
     const f = facetOf(n);
-    return <FacetValue value={valueOf(entry, n)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[n]} pattern={pattern} id={id} facet={n} options={f?.options} />;
+    return <FacetValue value={valueOf(entry, n)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[n]} pattern={pattern} id={id} facet={n} options={f?.options} linksTo={f?.links} />;
   };
   return (
     <article className="doc-block">

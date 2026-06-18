@@ -145,6 +145,18 @@ describe("hide + document config", () => {
   });
 });
 
+// === reference label endpoint ===
+
+describe("getEntryLabel", () => {
+  it("returns the entry's derived label (what a reference shows)", async () => {
+    const store = getStore();
+    await createPattern(store, "objectives", [{ name: "title", type: "text" }]);
+    const e = JSON.parse(await store.mutate("objectives", "create", JSON.stringify({ title: "Ship it" })));
+    expect(JSON.parse(await store.getEntryLabel("objectives", e.entry.id)).label).toBe("Ship it");
+    expect(JSON.parse(await store.getEntryLabel("objectives", 9999)).missing).toBe(true);
+  });
+});
+
 // === chart view config ===
 
 describe("chart config", () => {

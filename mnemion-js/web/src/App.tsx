@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import './notebook.css';
 import { store } from './store';
-import { COMPONENTS, StackView, type Facet, type ViewSpec } from './views';
+import { COMPONENTS, StackView, PeekDialog, type Facet, type ViewSpec } from './views';
 import { isViewType } from '../../shared/core/view-palette';
 
 interface Pattern {
@@ -39,6 +39,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<string | null>(null); // which named view is showing
+  const [peek, setPeek] = useState<{ pattern: string; id: number } | null>(null); // referenced-entry popup
 
   const selRef = useRef<Pattern | null>(null);
   selRef.current = selected;
@@ -124,6 +125,17 @@ export default function App() {
     });
     connect();
     return () => { closed = true; clearTimeout(reconnect); ws?.close(); };
+  }, []);
+
+  // A reference (foreign-key facet) fires this event to open the target entry as
+  // a read-only peek — wherever the reference is rendered, in any view.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      if (d.pattern && d.id != null) setPeek({ pattern: String(d.pattern), id: Number(d.id) });
+    };
+    window.addEventListener('mnemion:open-entry', handler);
+    return () => window.removeEventListener('mnemion:open-entry', handler);
   }, []);
 
   const userPatterns = patterns.filter((p) => !p.name.startsWith('_'));
@@ -228,6 +240,7 @@ export default function App() {
           </section>
         )}
       </main>
+      {peek && <PeekDialog pattern={peek.pattern} id={peek.id} facets={patterns.find((p) => p.name === peek.pattern)?.facets || []} onClose={() => setPeek(null)} />}
     </div>
   );
 }

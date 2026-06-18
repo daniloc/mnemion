@@ -17,6 +17,7 @@ import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass } from "./policy";
+import { deriveLabel } from "./labels";
 import * as cred from "../../shared/Auth/credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
@@ -984,6 +985,20 @@ export class HiveDO extends DurableObject {
       return { at: r.created_at, operation: r.operation, actor, changes, snapshot: snap };
     });
     return JSON.stringify({ pattern, id, revisions, count: revisions.length }, null, 2);
+  }
+
+  /** The display label for one entry — what a reference to it should show
+   *  (deriveLabel: title-ish facet, else #id). Used by reference-format chips. */
+  async getEntryLabel(pattern: string, id: number): Promise<string> {
+    if (!this.patternExists(pattern)) return JSON.stringify({ label: `#${id}` });
+    try {
+      const row = this.db.exec(`SELECT * FROM "${pattern}" WHERE id = ? AND archived_at IS NULL`, id).toArray()[0];
+      if (!row) return JSON.stringify({ label: `#${id}`, missing: true });
+      const facets = this.db.exec(`SELECT name, type FROM _fields WHERE object_name = ? ORDER BY id`, pattern).toArray() as any[];
+      return JSON.stringify({ label: deriveLabel(row as any, facets) });
+    } catch {
+      return JSON.stringify({ label: `#${id}` });
+    }
   }
 
   // === System docs ===

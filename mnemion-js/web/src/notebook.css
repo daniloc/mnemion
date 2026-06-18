@@ -333,6 +333,14 @@ body { background: var(--paper); font-family: var(--sans); color: var(--ink); -w
   cursor: pointer; white-space: nowrap; text-align: left;
 }
 .fv-select:hover, .fv-select[data-state="open"] { border-color: var(--line-strong); background: var(--paper-2); }
+.fv-ref {
+  font: inherit; appearance: none; -webkit-appearance: none; cursor: pointer;
+  display: inline-flex; align-items: baseline; gap: 3px; text-align: left;
+  border: none; background: transparent; padding: 0;
+  color: var(--accent); border-bottom: 1px solid var(--accent-tint);
+}
+.fv-ref:hover { border-bottom-color: var(--accent); }
+.fv-ref-arrow { font-size: 9px; opacity: 0.55; }
 .fv-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .fv-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 

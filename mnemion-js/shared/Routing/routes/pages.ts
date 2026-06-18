@@ -65,6 +65,12 @@ export const queryHistory: RouteHandler = async (ctx) => {
   return new Response(result, { headers: { "Content-Type": "application/json" } });
 };
 
+export const queryLabel: RouteHandler = async (ctx) => {
+  const id = parseInt(ctx.params.id, 10);
+  const result = await ctx.hive.getEntryLabel(ctx.params.pattern, id);
+  return new Response(result, { headers: { "Content-Type": "application/json" } });
+};
+
 export const liveSocket: RouteHandler = async (ctx) => {
   if (ctx.request.headers.get("Upgrade") !== "websocket") {
     return new Response("Expected WebSocket", { status: 426 });
