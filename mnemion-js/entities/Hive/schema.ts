@@ -19,6 +19,7 @@ import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/con
 import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
+import { describeBlockPalette } from "../../shared/core/block-palette";
 import { KERNEL_WRITE_POLICY, isAuditExempt } from "./policy";
 
 // System docs — imported as raw text, placeholders resolved at load time
@@ -568,6 +569,33 @@ ${describeViewPalette()}`,
       { name: "name", type: "text", required: false },
       { name: "view_type", type: "select", required: false, options: VIEW_TYPES },
       { name: "config", type: "text", required: false },
+    ],
+  },
+  {
+    name: "_pages",
+    description: `Agent-authored pages — arbitrary compositions that reference any patterns and entries. A page is a list of blocks (metric, chart, an embedded pattern view, a specific entry, prose) arranged in a grid. Build one when the human wants a dashboard or an overview you didn't pre-design. Set a unique "path" (slug) per page.
+
+${describeBlockPalette()}`,
+    doctrine: `Compose a page when the human wants a custom dashboard or overview across patterns. Blocks are declarative data interpreted against a fixed component palette — never code. Reference real patterns/entries; the kernel rejects a page that names a missing pattern, facet, or an unknown block type.`,
+    ddl: `CREATE TABLE IF NOT EXISTS "_pages" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "name" TEXT NOT NULL,
+      "path" TEXT NOT NULL,
+      "title" TEXT,
+      "blocks" TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_pages_path_active" ON "_pages" ("path") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "name", type: "text", required: true },
+      { name: "path", type: "text", required: true },
+      { name: "title", type: "text", required: false },
+      { name: "blocks", type: "text", required: false },
     ],
   },
   {

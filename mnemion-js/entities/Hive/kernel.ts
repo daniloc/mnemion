@@ -15,6 +15,7 @@
 
 import { isKernelPattern, isValidWriteTarget } from "./policy";
 import { validateViewSpec, DEFAULT_VIEW_TYPE } from "../../shared/core/view-palette";
+import { validateBlocks } from "../../shared/core/block-palette";
 
 export interface KernelContext {
   patternExists(name: string): boolean;
@@ -413,6 +414,18 @@ const ON_WRITE: Record<string, WriteHook> = {
     const errors = validateViewSpec(viewType, data.config as string | null | undefined, hasFacet, { enforceRequired: isCreate });
     if (errors.length) {
       return { error: true, message: `Invalid view spec: ${errors.join(" ")}` };
+    }
+    return data;
+  },
+
+  _pages(data, _operation, ctx) {
+    if (data.blocks === undefined) return data; // a partial update not touching blocks
+    const errors = validateBlocks(data.blocks as string | null, {
+      patternExists: (p) => ctx.patternExists(p),
+      hasFacet: (p, f) => ctx.facetMeta(p, f) != null,
+    });
+    if (errors.length) {
+      return { error: true, message: `Invalid page: ${errors.join(" ")}` };
     }
     return data;
   },

@@ -135,9 +135,18 @@ export class HiveDO extends DurableObject {
       ).toArray() as any[];
     } catch { /* table may not exist on a very old install */ }
 
+    // Agent-authored pages (block compositions / dashboards).
+    let pages: any[] = [];
+    try {
+      pages = this.db.exec(
+        `SELECT name, path, title, blocks FROM "_pages" WHERE archived_at IS NULL ORDER BY id`
+      ).toArray() as any[];
+    } catch { /* table may not exist on a very old install */ }
+
     return JSON.stringify({
       ...index,
       views,
+      pages,
       system_docs: uri("_system/"),
     }, null, 2);
   }

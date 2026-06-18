@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import './notebook.css';
 import { store } from './store';
 import { COMPONENTS, StackView, PeekDialog, type Facet, type ViewSpec } from './views';
+import { PageView, type Page } from './PageView';
 import { isViewType } from '../../shared/core/view-palette';
 
 interface Pattern {
@@ -34,8 +35,10 @@ export default function App() {
   const [charter, setCharter] = useState<Record<string, string>>({});
   const [guidance, setGuidance] = useState('');
   const [views, setViews] = useState<ViewSpec[]>([]);
+  const [pages, setPages] = useState<Page[]>([]);
   const [ready, setReady] = useState(false);
   const [selected, setSelected] = useState<Pattern | null>(null);
+  const [selectedPagePath, setSelectedPagePath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<string | null>(null); // which named view is showing
@@ -50,6 +53,7 @@ export default function App() {
 
   async function selectPattern(p: Pattern) {
     setSelected(p);
+    setSelectedPagePath(null);
     setActiveView(null); // reset to the pattern's default view
     setMenuOpen(false);
     pushHash(p.name);
@@ -64,7 +68,14 @@ export default function App() {
   const selectRef = useRef(selectPattern);
   selectRef.current = selectPattern;
 
-  function goCover() { setSelected(null); setMenuOpen(false); pushHash(); }
+  function selectPage(p: Page) {
+    setSelectedPagePath(p.path);
+    setSelected(null);
+    setMenuOpen(false);
+    pushHash(`page:${p.path}`);
+  }
+
+  function goCover() { setSelected(null); setSelectedPagePath(null); setMenuOpen(false); pushHash(); }
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -79,6 +90,7 @@ export default function App() {
       setCharter(idx.charter || {});
       setGuidance(idx.guidance || '');
       setViews(idx.views || []);
+      setPages(idx.pages || []);
       return idx.patterns || [];
     }
 
@@ -96,10 +108,12 @@ export default function App() {
           // open pattern IN PLACE: no reload. This is the live hyperdesk — the user
           // watches their agent rework the UI. We also refresh `selected` so facet
           // changes (e.g. set_facet_format) flow into the view's facets prop.
-          if (changed.includes('_schema') || changed.includes('_views')) {
+          if (changed.includes('_schema') || changed.includes('_views') || changed.includes('_pages')) {
             const ps = await loadIndex();
             const sel = selRef.current;
             if (sel) { const fresh = ps.find((p) => p.name === sel.name); if (fresh) setSelected(fresh); }
+            // the open page is derived from `pages` (refreshed by loadIndex), so it
+            // re-renders in place with no extra work.
             return;
           }
           // Surgical: patch exactly the changed entry in the store → only its card redraws.
@@ -121,7 +135,8 @@ export default function App() {
     loadIndex().then((ps) => {
       setReady(true);
       const name = location.hash.slice(1);
-      if (name) { const m = ps.find((p) => p.name === name); if (m) selectRef.current(m); }
+      if (name.startsWith('page:')) { setSelectedPagePath(name.slice(5)); }
+      else if (name) { const m = ps.find((p) => p.name === name); if (m) selectRef.current(m); }
     });
     connect();
     return () => { closed = true; clearTimeout(reconnect); ws?.close(); };
@@ -143,6 +158,9 @@ export default function App() {
   const charterEntries = Object.entries(charter).filter(([, v]) => v && String(v).trim());
   // A pattern can carry several views (a table AND a chart, say). Show the active
   // one, defaulting to the view named "default", else the first.
+  // A page is derived from `pages` by its path, so a mutate to _pages re-renders
+  // the open page in place (pages refresh via loadIndex).
+  const selectedPage = selectedPagePath ? pages.find((p) => p.path === selectedPagePath) ?? null : null;
   const patternViews = selected ? views.filter((v) => v.pattern === selected.name) : [];
   const selectedView = patternViews.find((v) => v.name === activeView) ?? patternViews.find((v) => v.name === 'default') ?? patternViews[0];
   // Dispatch through the component palette, keyed by view_type. An unknown type
@@ -151,7 +169,7 @@ export default function App() {
   const vt = selectedView?.view_type;
   const View = vt && isViewType(vt) ? COMPONENTS[vt] : null;
   const unknownView = !!selectedView && !View;
-  const wide = vt === 'board' || vt === 'table' || vt === 'chart';
+  const wide = !!selectedPage || vt === 'board' || vt === 'table' || vt === 'chart';
 
   return (
     <div className={`shell${menuOpen ? ' menu-open' : ''}`}>
@@ -174,6 +192,18 @@ export default function App() {
             </button>
           ))}
         </nav>
+        {pages.length > 0 && (
+          <>
+            <div className="group-label">pages</div>
+            <nav className="patterns pages-nav">
+              {pages.map((p) => (
+                <button key={p.path} className={`pat${selectedPage?.path === p.path ? ' active' : ''}`} onClick={() => selectPage(p)}>
+                  <span className="pat-name">{p.name}</span>
+                </button>
+              ))}
+            </nav>
+          </>
+        )}
         {kernelPatterns.length > 0 && (
           <>
             <div className="group-label">system</div>
@@ -192,7 +222,14 @@ export default function App() {
       <button className="scrim" aria-label="close menu" onClick={() => setMenuOpen(false)} />
 
       <main className={`main${wide ? ' main-wide' : ''}`}>
-        {!selected ? (
+        {selectedPage ? (
+          <section className="pattern-view">
+            <header className="pattern-head">
+              <h1>{selectedPage.title || selectedPage.name}</h1>
+            </header>
+            <PageView page={selectedPage} />
+          </section>
+        ) : !selected ? (
           <section className="cover">
             <div className="cover-mark">mnemion</div>
             {guidance && <p className="cover-lede">{guidance}</p>}

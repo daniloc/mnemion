@@ -168,6 +168,16 @@ export function seedDevData(db: DB): void {
     // surfaces both — table to read rows, chart to see the shape).
     config: JSON.stringify({ group_by: "year", metric: "engagement", agg: "sum" }) });
 
+  // --- Pages: an agent-composed dashboard referencing several patterns ---
+  ins(db, "_pages", { name: "Pulse", path: "pulse", title: "Pulse",
+    blocks: JSON.stringify([
+      { type: "heading", text: "This week", width: "full" },
+      { type: "metric", pattern: "tweets", metric: "engagement", agg: "sum", label: "Total engagement", width: "third" },
+      { type: "metric", pattern: "tweets", agg: "count", label: "Posts", width: "third" },
+      { type: "metric", pattern: "tasks", agg: "count", label: "Tasks", width: "third" },
+      { type: "chart", pattern: "tweets", group_by: "year", metric: "engagement", agg: "sum", width: "full" },
+    ]) });
+
   ins(db, "tweets", { summary: "helping a senior fix a laptop she overpaid for", faves: 27608, retweets: 4200, engagement: 132368, year: 2022 });
   ins(db, "tweets", { summary: "if only there were a word for a religious travel ban", faves: 18696, retweets: 9800, engagement: 33090, year: 2017 });
   ins(db, "tweets", { summary: "the line outside Silicon Valley Bank wraps the building", faves: 3476, retweets: 1100, engagement: 14800, year: 2023 });
