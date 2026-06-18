@@ -15,7 +15,7 @@ import { queryIndex, queryEntries, queryTools, mutateEntry, evolveSchema, liveSo
 // Canvas
 import { canvasPage, listCanvases, saveCanvas, resolveUri } from "../shared/Routing/routes/canvas";
 // Dev
-import { seedTestData, seedVectors } from "../shared/Routing/routes/dev";
+import { seedTestData, seedVectors, exportHive, importHive } from "../shared/Routing/routes/dev";
 
 // Re-export DO classes for wrangler
 export { SessionDO, HiveDO };
@@ -53,6 +53,7 @@ const routes: Route[] = [
   { method: Method.POST, pattern: "/f/:token",             where: { token: /^[a-fA-F0-9]+$/ }, handler: uploadDocument },
   { method: Method.GET,  pattern: "/f/:id",                where: { id: /^\d+$/ }, handler: serveDocument },
   { method: Method.GET,  pattern: "/export/:pattern",       auth: Auth.SESSION, handler: exportPattern },
+  { method: Method.GET,  pattern: "/export",                handler: exportHive },
 
   // Pages (JSON APIs for the React SPA; the SPA itself is served as static assets)
   { method: Method.GET,  pattern: "/api/index",            auth: Auth.SESSION, handler: queryIndex },
@@ -70,6 +71,7 @@ const routes: Route[] = [
 
   // Dev / Admin
   { method: Method.ANY,  pattern: "/dev/seed",              auth: Auth.DEV, handler: seedTestData },
+  { method: Method.POST, pattern: "/dev/import",            auth: Auth.DEV, handler: importHive },
   { method: Method.ANY,  pattern: "/dev/seed-vectors",      auth: Auth.SECRET, handler: seedVectors },
   { method: Method.ANY,  pattern: "/dev/seed-marketplace", auth: Auth.DEV, handler: seedMarketplace },
   { method: Method.ANY,  pattern: "/marketplace/token",    auth: Auth.SECRET, handler: marketplaceToken },

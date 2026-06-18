@@ -10,6 +10,8 @@
     "dev:worker": "wrangler dev --var DEV_SEED:true --port 8787",
     "dev:app": "vite dev --config vite.web.ts",
     "dev:built": "npm run build:pages && npm run build:web && wrangler dev --var DEV_SEED:true",
+    "pull-hive": "node scripts/pull-hive.mjs",
+    "import-hive": "node scripts/import-hive.mjs",
     "deploy": "npm run build:pages && npm run build:web && wrangler deploy",
     "types": "wrangler types",
     "test": "vitest run",

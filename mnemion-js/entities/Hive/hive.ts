@@ -402,6 +402,53 @@ export class HiveDO extends DurableObject {
     return JSON.stringify({ history: rows, count: rows.length }, null, 2);
   }
 
+  // === Hive export / import (for seeding a local dev hive with real data) ===
+
+  /** Dump every user pattern (schema + active entries) plus the view specs, as
+   *  JSON. Token-gated at the route (a `*` access token). The bytes never
+   *  include kernel tables except _views. */
+  async exportHive(): Promise<string> {
+    const objs = this.db.exec("SELECT name, description, doctrine FROM _objects WHERE archived_at IS NULL").toArray() as any[];
+    const out: { patterns: any[]; entries: Record<string, any[]>; views: any[] } = { patterns: [], entries: {}, views: [] };
+    for (const o of objs) {
+      if (o.name.startsWith("_")) continue;
+      const facets = (this.db.exec(
+        "SELECT name, type, required, options FROM _fields WHERE object_name = ? ORDER BY id", o.name
+      ).toArray() as any[]).map((f) => ({ name: f.name, type: f.type, required: !!f.required, ...(f.options ? { options: JSON.parse(f.options) } : {}) }));
+      out.patterns.push({ name: o.name, description: o.description, doctrine: o.doctrine, facets });
+      out.entries[o.name] = this.db.exec(`SELECT * FROM "${o.name}" WHERE archived_at IS NULL`).toArray() as any[];
+    }
+    try { out.views = this.db.exec(`SELECT pattern, name, view_type, config FROM "_views" WHERE archived_at IS NULL`).toArray() as any[]; } catch { /* no _views */ }
+    return JSON.stringify(out);
+  }
+
+  /** Load an exported hive into THIS (dev) hive, reusing the validated
+   *  create_pattern + mutate paths. Skips patterns that already exist. */
+  async importHive(json: string): Promise<string> {
+    const data = JSON.parse(json);
+    const ctx = this.dataCtx();
+    let patterns = 0, entries = 0;
+    for (const p of data.patterns || []) {
+      if (!p.name || p.name.startsWith("_")) continue;
+      if (!this.patternExists(p.name)) {
+        const proposed = JSON.parse(await this.proposeChange(`import ${p.name}`, JSON.stringify({
+          type: "create_pattern", pattern_name: p.name,
+          pattern_description: p.description || "", doctrine: p.doctrine || "imported", facets: p.facets || [],
+        })));
+        if (!proposed.error) { await this.applyChange(proposed.change_id); patterns++; }
+      }
+      for (const e of (data.entries?.[p.name] || [])) {
+        const { id, version, created_at, updated_at, archived_at, created_by, updated_by, ...facets } = e;
+        const r = data.executeMutate(ctx, p.name, "create", facets);
+        if (!r.error) entries++;
+      }
+    }
+    for (const v of data.views || []) {
+      try { data.executeMutate(ctx, "_views", "create", v); } catch { /* skip dup */ }
+    }
+    return JSON.stringify({ imported: true, patterns, entries });
+  }
+
   async getEntry(patternName: string, entryId: number): Promise<string> {
     if (!this.patternExists(patternName))
       return this.errorJson(`Pattern "${patternName}" does not exist`);

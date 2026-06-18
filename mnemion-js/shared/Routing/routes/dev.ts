@@ -1,5 +1,27 @@
 import type { RouteHandler } from "../router";
 
+// Export the whole hive (user patterns + entries + view specs) as JSON, so a
+// local dev hive can be seeded with real data. Gated by a `*` access token in
+// the Authorization header (mint one with mutate _access_tokens {scope:"*"}),
+// NOT by a session — so a script can pull headlessly. See scripts/pull-hive.mjs.
+export const exportHive: RouteHandler = async (ctx) => {
+  const auth = ctx.request.headers.get("Authorization");
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!token) return new Response("Unauthorized — send a Bearer `*` access token", { status: 401 });
+  const actor = await ctx.hive.resolveTokenActor(token, "*");
+  if (!actor) return new Response("Forbidden — token invalid or out of scope", { status: 403 });
+  const json = await ctx.hive.exportHive();
+  return new Response(json, { headers: { "content-type": "application/json" } });
+};
+
+// Load an exported hive into a LOCAL dev hive. Auth.DEV — only reachable when no
+// secret is configured (i.e. `wrangler dev`), never in production.
+export const importHive: RouteHandler = async (ctx) => {
+  const body = await ctx.request.text();
+  const result = await ctx.hive.importHive(body);
+  return new Response(result, { headers: { "content-type": "application/json" } });
+};
+
 // Seed vectors: embed all existing entries into Vectorize.
 // Gated behind Auth.SECRET — requires master secret.
 export const seedVectors: RouteHandler = async (ctx) => {
