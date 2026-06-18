@@ -543,6 +543,33 @@ Adding a member is a two-step invite: (1) create the member here with label + di
     ],
   },
   {
+    name: "_views",
+    description: `Agent-authored UI views. Each entry adapts how a pattern's entries are rendered in the web app: a view_type (the layout) plus a config that maps the pattern's facets to UI roles. The owner's agent customizes the desk by writing these — e.g. render "tasks" as a board grouped by status.
+
+view_type: "board" (kanban columns, group_by a facet), "table", "list", or "cards" (default block stack). config is JSON; for board: {"group_by": "<facet>", "title": "<facet>", "columns"?: ["todo","doing","done"]}. Set name "default" for a pattern's primary view.`,
+    doctrine: `Author a view when the human wants a pattern rendered as something other than the default stacked blocks — a task board, a table, a list. Map facets to roles in config; never invent facets the pattern lacks. The config is declarative data, not code: the web app interprets it against a fixed component palette. One view per (pattern, name); use name "default" for the pattern's primary view.`,
+    ddl: `CREATE TABLE IF NOT EXISTS "_views" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "pattern" TEXT NOT NULL,
+      "name" TEXT NOT NULL DEFAULT 'default',
+      "view_type" TEXT NOT NULL DEFAULT 'cards',
+      "config" TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_views_pattern_name_active" ON "_views" ("pattern", "name") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "pattern", type: "text", required: true },
+      { name: "name", type: "text", required: false },
+      { name: "view_type", type: "select", required: false, options: ["board", "table", "list", "cards"] },
+      { name: "config", type: "text", required: false },
+    ],
+  },
+  {
     name: "_system_docs",
     description: "System documentation for agent orientation. Editable but requires confirmation. Set content to null to restore defaults.",
     doctrine: "Read before acting. Edit content only when the human requests it. Set content to null to restore defaults. Never modify default_content.",

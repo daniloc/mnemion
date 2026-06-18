@@ -125,8 +125,17 @@ export class HiveDO extends DurableObject {
       return b.latest_activity.localeCompare(a.latest_activity);
     });
 
+    // Agent-authored view specs (web app renders patterns per these).
+    let views: any[] = [];
+    try {
+      views = this.db.exec(
+        `SELECT pattern, name, view_type, config FROM "_views" WHERE archived_at IS NULL`
+      ).toArray() as any[];
+    } catch { /* table may not exist on a very old install */ }
+
     return JSON.stringify({
       ...index,
+      views,
       system_docs: uri("_system/"),
     }, null, 2);
   }
@@ -504,7 +513,9 @@ export class HiveDO extends DurableObject {
         ];
         result.overlap_guidance = "Advisory only — the entry was created. If it duplicates or replaces an existing entry, consider updating that entry instead, or link supersession: mutate(pattern: \"link\", data: {source: \"" + patternName + "/" + result.entry?.id + "\", target: \"" + patternName + "/{old_id}\", label: \"supersedes\"}).";
       }
-      this.broadcastChange([patternName]);
+      // Granular delta so the UI can patch one element instead of refetching the
+      // whole pattern — the heart of "only the element the agent changed redraws".
+      this.broadcastChange([patternName], { op: operation, id: result.entry?.id ?? parsed.id, entry: result.entry ?? null });
       this.embedAfterMutate(patternName, operation, result.entry?.id, conflictCheck?.vector ?? undefined);
       if (patternName === "_system_tasks" && operation === "create") {
         await this.runTask(result.entry.id, result.entry.task);
@@ -1583,8 +1594,12 @@ export class HiveDO extends DurableObject {
     // Cleanup handled automatically by runtime
   }
 
-  private broadcastChange(patterns: string[]) {
-    const msg = JSON.stringify({ type: "changed", patterns });
+  private broadcastChange(patterns: string[], delta?: { op: string; id: unknown; entry: unknown }) {
+    const msg = JSON.stringify({
+      type: "changed",
+      patterns,
+      ...(delta ? { delta: { pattern: patterns[0], op: delta.op, id: delta.id, entry: delta.entry } } : {}),
+    });
     for (const ws of this.ctx.getWebSockets()) {
       try { ws.send(msg); } catch { /* dead socket, runtime will clean up */ }
     }

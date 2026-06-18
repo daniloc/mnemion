@@ -150,6 +150,7 @@ export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
   _short_term_fragments: { class: WriteClass.Open, primeInclude: true }, // working memory surfaces in recall
   _maintenance_passes: { class: WriteClass.Open },
   _canvases: { class: WriteClass.Open },
+  _views: { class: WriteClass.Open }, // agent-authored UI view specs; owner-facing, not exposed externally
   // Promotion from _short_term_fragments is the intended writer, but direct
   // agent writes have never been denied — kept Open to preserve that behavior.
   _long_term_fragments: { class: WriteClass.Open, primeInclude: true }, // consolidated memory surfaces in recall

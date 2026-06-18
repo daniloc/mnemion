@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './notebook.css';
+import { store } from './store';
+import { BoardView, StackView, type Facet, type ViewSpec } from './views';
 
-interface Facet { name: string; type: string; }
 interface Pattern {
   name: string;
   description: string;
@@ -9,9 +10,6 @@ interface Pattern {
   entry_count: number;
   latest_activity?: string | null;
 }
-type Entry = Record<string, unknown>;
-
-const KERNEL_COLS = new Set(['id', 'version', 'created_at', 'updated_at', 'archived_at', 'created_by', 'updated_by']);
 
 function parseDate(val: unknown): Date | null {
   if (!val) return null;
@@ -29,24 +27,17 @@ function relativeTime(val: unknown): string {
   if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d`;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
-function fullTime(val: unknown): string {
-  const d = parseDate(val);
-  if (!d) return String(val ?? '');
-  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-    + ' · ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-}
 
 export default function App() {
   const [patterns, setPatterns] = useState<Pattern[]>([]);
   const [charter, setCharter] = useState<Record<string, string>>({});
   const [guidance, setGuidance] = useState('');
+  const [views, setViews] = useState<ViewSpec[]>([]);
   const [ready, setReady] = useState(false);
   const [selected, setSelected] = useState<Pattern | null>(null);
-  const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // refs so the long-lived WebSocket handler reads current state without re-subscribing
   const selRef = useRef<Pattern | null>(null);
   selRef.current = selected;
 
@@ -56,30 +47,21 @@ export default function App() {
 
   async function selectPattern(p: Pattern) {
     setSelected(p);
-    setEntries([]);
     setMenuOpen(false);
     pushHash(p.name);
     setLoading(true);
     try {
       const res = await fetch(`/api/query/${p.name}`);
       const data = await res.json();
-      setEntries(data.entries || []);
-    } catch {
-      setEntries([]);
-    }
+      store.load(p.name, data.entries || []);
+    } catch { store.load(p.name, []); }
     setLoading(false);
   }
   const selectRef = useRef(selectPattern);
   selectRef.current = selectPattern;
 
-  function goCover() {
-    setSelected(null);
-    setEntries([]);
-    setMenuOpen(false);
-    pushHash();
-  }
+  function goCover() { setSelected(null); setMenuOpen(false); pushHash(); }
 
-  // Load the index (the SPA has no SSR props), restore deep-link, connect live updates.
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnect: ReturnType<typeof setTimeout>;
@@ -92,6 +74,7 @@ export default function App() {
       setPatterns(idx.patterns || []);
       setCharter(idx.charter || {});
       setGuidance(idx.guidance || '');
+      setViews(idx.views || []);
       return idx.patterns || [];
     }
 
@@ -104,12 +87,16 @@ export default function App() {
           const msg = JSON.parse(e.data);
           if (msg.type !== 'changed') return;
           const changed: string[] = msg.patterns || [];
-          if (changed.includes('_schema')) { location.reload(); return; }
-          const fresh = await loadIndex();
+          if (changed.includes('_schema') || changed.includes('_views')) { location.reload(); return; }
+          // Surgical: patch exactly the changed entry in the store → only its card redraws.
+          if (msg.delta && store.has(msg.delta.pattern)) store.applyDelta(msg.delta);
+          // Keep sidebar counts/recency fresh (cheap); refetch entries only if we
+          // can't patch (coarse change to the open pattern, e.g. a batch).
+          loadIndex();
           const sel = selRef.current;
-          if (sel && changed.includes(sel.name)) {
-            const f = fresh.find((p) => p.name === sel.name);
-            if (f) selectRef.current(f);
+          if (!msg.delta && sel && changed.includes(sel.name)) {
+            const res = await fetch(`/api/query/${sel.name}`);
+            store.load(sel.name, (await res.json()).entries || []);
           }
         } catch { /* ignore */ }
       };
@@ -129,38 +116,18 @@ export default function App() {
   const userPatterns = patterns.filter((p) => !p.name.startsWith('_'));
   const kernelPatterns = patterns.filter((p) => p.name.startsWith('_'));
   const charterEntries = Object.entries(charter).filter(([, v]) => v && String(v).trim());
-
-  function fields(entry: Entry) {
-    if (!selected) return [];
-    const out: { name: string; value: string; lead: boolean; long: boolean }[] = [];
-    let leadTaken = false;
-    for (const f of selected.facets) {
-      if (KERNEL_COLS.has(f.name)) continue;
-      const raw = entry[f.name];
-      if (raw === null || raw === undefined || raw === '') continue;
-      const value = f.type === 'datetime' ? fullTime(raw) : f.type === 'boolean' ? (raw ? 'yes' : 'no') : String(raw);
-      const long = value.length > 88 || value.includes('\n');
-      const lead = !leadTaken && f.type === 'text';
-      if (lead) leadTaken = true;
-      out.push({ name: f.name, value, lead, long });
-    }
-    return out;
-  }
+  const selectedView = selected ? views.find((v) => v.pattern === selected.name) : undefined;
 
   return (
     <div className={`shell${menuOpen ? ' menu-open' : ''}`}>
       <header className="topbar">
-        <button className="menu-btn" onClick={() => setMenuOpen((o) => !o)} aria-label="patterns">
-          <span /><span /><span />
-        </button>
+        <button className="menu-btn" onClick={() => setMenuOpen((o) => !o)} aria-label="patterns"><span /><span /><span /></button>
         <button className="wordmark mobile-word" onClick={goCover}>mnemion</button>
         <span className="topbar-current">{selected?.name ?? ''}</span>
       </header>
 
       <aside className="sidebar">
-        <button className="wordmark" onClick={goCover}>
-          mnemion<span className="wordmark-sub">a notebook</span>
-        </button>
+        <button className="wordmark" onClick={goCover}>mnemion<span className="wordmark-sub">a notebook</span></button>
         <nav className="patterns">
           {userPatterns.map((p) => (
             <button key={p.name} className={`pat${selected?.name === p.name ? ' active' : ''}`} onClick={() => selectPattern(p)}>
@@ -189,7 +156,7 @@ export default function App() {
 
       <button className="scrim" aria-label="close menu" onClick={() => setMenuOpen(false)} />
 
-      <main className="main">
+      <main className={`main${selectedView?.view_type === 'board' ? ' main-wide' : ''}`}>
         {!selected ? (
           <section className="cover">
             <div className="cover-mark">mnemion</div>
@@ -209,34 +176,19 @@ export default function App() {
             <header className="pattern-head">
               <h1>{selected.name}</h1>
               <div className="pattern-sub">
-                <span className="ct">{selected.entry_count} {selected.entry_count === 1 ? 'entry' : 'entries'}</span>
+                <span className="ct">
+                  {selected.entry_count} {selected.entry_count === 1 ? 'entry' : 'entries'}
+                  {selectedView ? ` · ${selectedView.view_type}` : ''}
+                </span>
                 {selected.description && <span className="desc">{selected.description}</span>}
               </div>
             </header>
             {loading ? (
               <div className="status">loading…</div>
-            ) : entries.length === 0 ? (
-              <div className="status">No entries yet.</div>
+            ) : selectedView?.view_type === 'board' ? (
+              <BoardView pattern={selected.name} facets={selected.facets} view={selectedView} />
             ) : (
-              <div className="stack">
-                {entries.map((entry, i) => (
-                  <article className="block" key={String(entry.id)} style={{ '--i': Math.min(i, 12) } as CSSProperties}>
-                    <div className="block-fields">
-                      {fields(entry).map((f, j) => (
-                        <div key={j} className={`field${f.lead ? ' lead' : f.long ? ' long' : ' inline'}`}>
-                          <div className="field-name">{f.name}</div>
-                          <div className="field-value">{f.value}</div>
-                        </div>
-                      ))}
-                    </div>
-                    <footer className="block-meta">
-                      <span className="id">#{String(entry.id)}</span>
-                      {entry.updated_at ? <span title={fullTime(entry.updated_at)}>{relativeTime(entry.updated_at)}</span> : null}
-                      {entry.created_by ? <span className="author">{String(entry.created_by)}</span> : null}
-                    </footer>
-                  </article>
-                ))}
-              </div>
+              <StackView pattern={selected.name} facets={selected.facets} />
             )}
           </section>
         )}

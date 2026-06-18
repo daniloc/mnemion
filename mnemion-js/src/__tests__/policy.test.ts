@@ -40,6 +40,7 @@ const EXPECTED: Record<string, WriteClass> = {
   _short_term_fragments: WriteClass.Open,
   _maintenance_passes: WriteClass.Open,
   _canvases: WriteClass.Open,
+  _views: WriteClass.Open,
   _long_term_fragments: WriteClass.Open,
   // System-only — never agent-writable
   _web_cache: WriteClass.System,

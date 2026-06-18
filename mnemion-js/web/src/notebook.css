@@ -206,6 +206,100 @@ body { background: var(--paper); }
 .block-meta .id { color: var(--ink-2); }
 .block-meta .author { margin-left: auto; }
 
+/* ---------- board view ---------- */
+.main-wide .pattern-view { max-width: none; padding: 64px 40px 120px; }
+
+.board {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: 12px;
+}
+.board-col {
+  flex: 0 0 264px;
+  background: rgba(0, 0, 0, 0.015);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  min-height: 80px;
+}
+.board-col-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 4px 6px 12px;
+}
+.board-col-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.board-col-count { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.board-col-body { display: flex; flex-direction: column; gap: 8px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 12px 13px 8px;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+}
+.card-title { font-size: 14px; line-height: 1.4; color: var(--ink); margin-bottom: 7px; }
+.card-field { display: flex; gap: 8px; font-size: 11.5px; line-height: 1.45; margin-top: 3px; }
+.card-field-name { font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); min-width: 52px; padding-top: 1px; }
+.card-field-value { color: var(--ink-2); word-break: break-word; }
+.card-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.card-id { font-family: var(--mono); font-size: 10px; color: var(--ink-3); margin-left: auto; }
+
+/* Radix Select — the status control (first palette primitive) */
+.status-pill {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--accent);
+  background: var(--accent-tint);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 3px 9px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+.status-pill:hover { border-color: var(--accent); }
+.status-menu {
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 8px 28px rgba(20, 18, 14, 0.16);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.status-item {
+  padding: 6px 12px 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--ink-2);
+  outline: none;
+}
+.status-item[data-highlighted] { background: var(--paper-2); color: var(--ink); }
+
+/* surgical-update proof badge: only the redrawn card's counter ticks */
+.redraws {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+}
+.card-foot .redraws { margin-left: 4px; }
+.block-meta .redraws { margin-left: 8px; }
+
 /* ---------- mobile ---------- */
 .topbar { display: none; }
 .scrim { display: none; }
