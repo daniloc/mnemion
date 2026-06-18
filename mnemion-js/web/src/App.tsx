@@ -38,6 +38,7 @@ export default function App() {
   const [selected, setSelected] = useState<Pattern | null>(null);
   const [loading, setLoading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [activeView, setActiveView] = useState<string | null>(null); // which named view is showing
 
   const selRef = useRef<Pattern | null>(null);
   selRef.current = selected;
@@ -48,6 +49,7 @@ export default function App() {
 
   async function selectPattern(p: Pattern) {
     setSelected(p);
+    setActiveView(null); // reset to the pattern's default view
     setMenuOpen(false);
     pushHash(p.name);
     setLoading(true);
@@ -127,14 +129,17 @@ export default function App() {
   const userPatterns = patterns.filter((p) => !p.name.startsWith('_'));
   const kernelPatterns = patterns.filter((p) => p.name.startsWith('_'));
   const charterEntries = Object.entries(charter).filter(([, v]) => v && String(v).trim());
-  const selectedView = selected ? views.find((v) => v.pattern === selected.name) : undefined;
+  // A pattern can carry several views (a table AND a chart, say). Show the active
+  // one, defaulting to the view named "default", else the first.
+  const patternViews = selected ? views.filter((v) => v.pattern === selected.name) : [];
+  const selectedView = patternViews.find((v) => v.name === activeView) ?? patternViews.find((v) => v.name === 'default') ?? patternViews[0];
   // Dispatch through the component palette, keyed by view_type. An unknown type
   // (legacy/invalid row) falls back to the stack with a visible note rather than
   // silently pretending — the registry, not a hidden ternary, is the contract.
   const vt = selectedView?.view_type;
   const View = vt && isViewType(vt) ? COMPONENTS[vt] : null;
   const unknownView = !!selectedView && !View;
-  const wide = vt === 'board' || vt === 'table';
+  const wide = vt === 'board' || vt === 'table' || vt === 'chart';
 
   return (
     <div className={`shell${menuOpen ? ' menu-open' : ''}`}>
@@ -200,6 +205,15 @@ export default function App() {
                 </span>
                 {selected.description && <span className="desc">{selected.description}</span>}
               </div>
+              {patternViews.length > 1 && (
+                <div className="view-tabs">
+                  {patternViews.map((v) => (
+                    <button key={v.name} className={`view-tab${selectedView?.name === v.name ? ' active' : ''}`} onClick={() => setActiveView(v.name)}>
+                      {v.name === 'default' ? v.view_type : v.name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </header>
             {loading ? (
               <div className="status">loading…</div>

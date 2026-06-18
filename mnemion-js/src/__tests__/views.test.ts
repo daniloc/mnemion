@@ -145,6 +145,21 @@ describe("hide + document config", () => {
   });
 });
 
+// === chart view config ===
+
+describe("chart config", () => {
+  const has = (n: string) => ["year", "engagement"].includes(n);
+  it("accepts group_by + metric + agg", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ group_by: "year", metric: "engagement", agg: "sum" }), has)).toEqual([]);
+  });
+  it("requires group_by", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ metric: "engagement" }), has, { enforceRequired: true }).join()).toContain("group_by is required");
+  });
+  it("rejects a group_by that isn't a real facet", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ group_by: "ghost" }), has).join()).toContain('facet "ghost"');
+  });
+});
+
 // === entry revision history (derived from the audit log) ===
 
 describe("getEntryHistory", () => {

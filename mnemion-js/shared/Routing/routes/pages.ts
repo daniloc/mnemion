@@ -12,11 +12,17 @@ export const queryEntries: RouteHandler = async (ctx) => {
   // Optional knobs from query string. Repeat ?filter=... for multiple AND'd filters.
   const filters = ctx.url.searchParams.getAll("filter");
   const facets = ctx.url.searchParams.get("facets") ?? "";
-  const sort = ctx.url.searchParams.get("sort") ?? "-updated_at";
   const limit = parseInt(ctx.url.searchParams.get("limit") ?? "100", 10) || 100;
   const filterJson = filters.length > 0 ? JSON.stringify(filters) : "";
+  // Aggregation passthrough: group_by + aggregate switch the engine into analysis
+  // mode (the chart view uses this). The row-sort default (-updated_at) isn't a
+  // valid aggregate output column, so default to no sort when aggregating.
+  const groupBy = ctx.url.searchParams.get("group_by") ?? "";
+  const aggregate = ctx.url.searchParams.get("aggregate") ?? "";
+  const aggregating = !!(groupBy || aggregate);
+  const sort = ctx.url.searchParams.get("sort") ?? (aggregating ? "" : "-updated_at");
   const result = await ctx.hive.query(
-    ctx.params.pattern, filterJson, facets, sort, limit, false
+    ctx.params.pattern, filterJson, facets, sort, limit, false, groupBy, aggregate
   );
   return new Response(result, {
     headers: { "Content-Type": "application/json" },

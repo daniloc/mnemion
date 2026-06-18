@@ -14,6 +14,7 @@ export interface ViewSpec { pattern: string; name: string; view_type: string; co
 export interface ViewConfig {
   group_by?: string; title?: string; columns?: string[]; fields?: string[];
   subtitle?: string; secondary?: string; meta?: string; sort?: string;
+  metric?: string; agg?: string;
   formats?: Record<string, string>;
   hide?: string[];
 }
@@ -508,6 +509,44 @@ const DocBlock = memo(function DocBlock({ pattern, id, facets, cfg }: { pattern:
   );
 });
 
+// === Chart (aggregate bar chart) ===
+export function ChartView({ pattern, view }: ViewProps) {
+  const entries = usePatternEntries(pattern); // subscribe → re-aggregate when the data changes (live)
+  const cfg = parseConfig(view);
+  const groupBy = cfg.group_by;
+  const metricFacet = cfg.metric;
+  const agg = cfg.agg || (metricFacet ? 'sum' : 'count');
+  const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
+  useEffect(() => {
+    if (!groupBy) { setRows([]); return; }
+    const aggregate = JSON.stringify([{ fn: agg, ...(metricFacet ? { facet: metricFacet } : {}), as: 'value' }]);
+    const url = `/api/query/${pattern}?group_by=${encodeURIComponent(groupBy)}&aggregate=${encodeURIComponent(aggregate)}&sort=-value&limit=50`;
+    let live = true;
+    fetch(url).then((r) => r.json()).then((d) => { if (live) setRows(d.rows || []); }).catch(() => { if (live) setRows([]); });
+    return () => { live = false; };
+  }, [pattern, groupBy, metricFacet, agg, entries]);
+  if (!groupBy) return <div className="status">This chart needs a group_by facet.</div>;
+  if (rows === null) return <div className="status">loading…</div>;
+  if (rows.length === 0) return <div className="status">No data to chart.</div>;
+  const max = Math.max(...rows.map((r) => Number(r.value) || 0), 1);
+  const nf = new Intl.NumberFormat();
+  return (
+    <div className="chart">
+      <div className="chart-cap">{agg}{metricFacet ? ` of ${metricFacet}` : ''} by {groupBy}</div>
+      {rows.map((r, i) => {
+        const v = Number(r.value) || 0;
+        return (
+          <div className="chart-row" key={i}>
+            <div className="chart-label">{String(r[groupBy] ?? '—')}</div>
+            <div className="chart-track"><div className="chart-bar" style={{ width: `${Math.max((v / max) * 100, 1.5)}%` }} /></div>
+            <div className="chart-val">{nf.format(v)}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // === Radix Select — the status control ===
 function StatusSelect({ value, options, onChange }: { value: string; options: string[]; onChange: (v: string) => void }) {
   const opts = options.length ? options : [value].filter(Boolean);
@@ -544,4 +583,5 @@ export const COMPONENTS: Record<ViewTypeId, FC<ViewProps>> = {
   table: TableView,
   list: ListView,
   document: DocumentView,
+  chart: ChartView,
 };

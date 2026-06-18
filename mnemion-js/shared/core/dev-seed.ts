@@ -163,6 +163,10 @@ export function seedDevData(db: DB): void {
     // integer facets render as numbers (separators, right-aligned) by default;
     // sort by engagement descending — numerically, not lexically.
     config: JSON.stringify({ columns: ["summary", "faves", "retweets", "engagement", "year"], title: "summary", sort: "-engagement" }) });
+  ins(db, "_views", { pattern: "tweets", name: "by year", view_type: "chart",
+    // a second view of the same dataset: total engagement per year (the switcher
+    // surfaces both — table to read rows, chart to see the shape).
+    config: JSON.stringify({ group_by: "year", metric: "engagement", agg: "sum" }) });
 
   ins(db, "tweets", { summary: "helping a senior fix a laptop she overpaid for", faves: 27608, retweets: 4200, engagement: 132368, year: 2022 });
   ins(db, "tweets", { summary: "if only there were a word for a religious travel ban", faves: 18696, retweets: 9800, engagement: 33090, year: 2017 });

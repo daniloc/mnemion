@@ -81,6 +81,15 @@ export const VIEW_PALETTE = {
       sections: { role: "facets", help: "facets to render as headed sections, in order (default: all remaining text facets)" },
     },
   },
+  chart: {
+    label: "Chart",
+    help: "A bar chart of an aggregate — group entries by a facet and measure them. For datasets you want to SEE the shape of, not read. Pairs well with a table view of the same pattern.",
+    config: {
+      group_by: { role: "facet", required: true, help: "facet to group bars by (the category axis); bucket a datetime with facet:unit, e.g. created_at:month" },
+      metric: { role: "facet", help: "numeric facet to aggregate (omit to count rows)" },
+      agg: { role: "text", help: "aggregate function: count | sum | avg | min | max (default: sum when a metric is set, else count)" },
+    },
+  },
 } satisfies Record<string, ViewType>;
 
 export type ViewTypeId = keyof typeof VIEW_PALETTE;
