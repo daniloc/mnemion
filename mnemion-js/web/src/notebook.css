@@ -15,7 +15,10 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
-body { background: var(--paper); }
+/* Base typography on the document root, not a layout container — so portaled UI
+   (Radix Dialog/Select render to document.body, outside .shell) inherits the app
+   font instead of falling back to the browser serif. Containers do layout only. */
+body { background: var(--paper); font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; }
 ::selection { background: var(--accent-tint); color: var(--ink); }
 
 .shell {
@@ -312,14 +315,26 @@ body { background: var(--paper); }
 .fv-bool { font-weight: 600; }
 .fv-bool.on { color: #3a7d44; }
 .fv-bool.off { color: var(--ink-3); }
+/* Quiet-by-default: in a dense table/list a chooser must read as the plain value
+   and only reveal its affordance (soft background + caret) on hover/focus, so it
+   defers to the data instead of dominating it. (The board has its own pill — that
+   context is spacious and the pill is the point.) */
+/* A thin, light outline is the only at-rest affordance — clearly a control,
+   without the weight of a filled pill or a caret. The lighter --line (vs
+   --line-strong) keeps it quiet; no fill, nowrap, baseline-aligned so it sits in
+   the row, not on it. Hover/open deepens the border + adds a soft background. */
 .fv-select {
-  font: inherit; font-size: 12.5px;
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 2px 10px; border: 1px solid var(--line-strong); border-radius: 999px;
-  background: var(--paper-2); color: var(--ink); cursor: pointer; line-height: 1.7;
+  font: inherit;
+  appearance: none; -webkit-appearance: none;
+  display: inline-flex; align-items: baseline;
+  padding: 1px 8px; max-width: 100%;
+  border: 1px solid var(--line); border-radius: 6px; box-shadow: none;
+  background: transparent; color: inherit;
+  cursor: pointer; white-space: nowrap; text-align: left;
 }
-.fv-select:hover, .fv-select[data-state="open"] { border-color: var(--accent); }
-.fv-select::after { content: "▾"; font-size: 9px; color: var(--ink-3); }
+.fv-select:hover, .fv-select[data-state="open"] { border-color: var(--line-strong); background: var(--paper-2); }
+.fv-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fv-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* === Table view === */
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--card); }
