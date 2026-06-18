@@ -312,6 +312,14 @@ body { background: var(--paper); }
 .fv-bool { font-weight: 600; }
 .fv-bool.on { color: #3a7d44; }
 .fv-bool.off { color: var(--ink-3); }
+.fv-select {
+  font: inherit; font-size: 12.5px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 10px; border: 1px solid var(--line-strong); border-radius: 999px;
+  background: var(--paper-2); color: var(--ink); cursor: pointer; line-height: 1.7;
+}
+.fv-select:hover, .fv-select[data-state="open"] { border-color: var(--accent); }
+.fv-select::after { content: "▾"; font-size: 9px; color: var(--ink-3); }
 
 /* === Table view === */
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--card); }

@@ -25,6 +25,7 @@ export const FORMAT_PALETTE = {
   tags: { label: "Tags", help: "Split a comma-separated value into chips." },
   date: { label: "Date", help: "Render a timestamp as a friendly relative date." },
   boolean: { label: "Boolean", help: "Render a truthy/falsy value as ✓ / ✗." },
+  select: { label: "Select", help: "An interactive dropdown that changes the value inline (options: the facet's declared options, else the values already in use)." },
 } satisfies Record<string, FormatType>;
 
 export type FormatId = keyof typeof FORMAT_PALETTE;

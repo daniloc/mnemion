@@ -175,7 +175,7 @@ function DetailBody({ pattern, id, facets, cfg }: { pattern: string; id: number;
         {facets.filter((f) => !KERNEL_COLS.has(f.name) && valueOf(entry, f.name)).map((f) => (
           <div className="field inline" key={f.name}>
             <div className="field-name">{f.name}</div>
-            <div className="field-value"><FacetValue value={valueOf(entry, f.name)} type={f.type} facetFormat={f.format} viewFormat={cfg.formats?.[f.name]} /></div>
+            <div className="field-value"><FacetValue value={valueOf(entry, f.name)} type={f.type} facetFormat={f.format} viewFormat={cfg.formats?.[f.name]} pattern={pattern} id={id} facet={f.name} options={f.options} /></div>
           </div>
         ))}
       </div>
@@ -236,7 +236,7 @@ const TableRow = memo(function TableRow({ pattern, id, cols, facets, cfg, onOpen
         const f = facets.find((x) => x.name === c);
         return (
           <td key={c} className={i === 0 ? 'dt-lead' : undefined}>
-            <FacetValue value={valueOf(entry, c)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[c]} />
+            <FacetValue value={valueOf(entry, c)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[c]} pattern={pattern} id={id} facet={c} options={f?.options} />
           </td>
         );
       })}
@@ -268,7 +268,7 @@ const StackBlock = memo(function StackBlock({ pattern, id, facets, i }: { patter
       const value = valueOf(entry, f.name);
       const lead = !leadTaken && f.type === 'text';
       if (lead) leadTaken = true;
-      return { name: f.name, value, lead, long: value.length > 88 || value.includes('\n'), type: f.type, format: f.format };
+      return { name: f.name, value, lead, long: value.length > 88 || value.includes('\n'), type: f.type, format: f.format, options: f.options };
     });
   return (
     <article className="block" style={{ ['--i' as any]: i }}>
@@ -276,7 +276,7 @@ const StackBlock = memo(function StackBlock({ pattern, id, facets, i }: { patter
         {fields.map((f) => (
           <div className={`field${f.lead ? ' lead' : f.long ? ' long' : ' inline'}`} key={f.name}>
             <div className="field-name">{f.name}</div>
-            <div className="field-value"><FacetValue value={f.value} type={f.type} facetFormat={f.format} /></div>
+            <div className="field-value"><FacetValue value={f.value} type={f.type} facetFormat={f.format} pattern={pattern} id={id} facet={f.name} options={f.options} /></div>
           </div>
         ))}
       </div>
@@ -327,7 +327,7 @@ const GridCard = memo(function GridCard({ pattern, id, facets, cfg, onOpen }: { 
         return (
           <div className="card-field" key={n}>
             <span className="card-field-name">{n}</span>
-            <span className="card-field-value"><FacetValue value={valueOf(entry, n)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[n]} /></span>
+            <span className="card-field-value"><FacetValue value={valueOf(entry, n)} type={f?.type} facetFormat={f?.format} viewFormat={cfg.formats?.[n]} pattern={pattern} id={id} facet={n} options={f?.options} /></span>
           </div>
         );
       })}
@@ -370,9 +370,9 @@ const ListRow = memo(function ListRow({ pattern, id, facets, cfg, onOpen }: { pa
   return (
     <div className="list-row" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
       <span className="lr-primary">{primary || `#${id}`}</span>
-      {secondary && <span className="lr-secondary"><FacetValue value={secondary} type={secFacet?.type} facetFormat={secFacet?.format} viewFormat={cfg.formats?.[cfg.secondary!]} /></span>}
+      {secondary && <span className="lr-secondary"><FacetValue value={secondary} type={secFacet?.type} facetFormat={secFacet?.format} viewFormat={cfg.formats?.[cfg.secondary!]} pattern={pattern} id={id} facet={cfg.secondary} options={secFacet?.options} /></span>}
       <span className="lr-tail">
-        {meta && <span className="lr-meta"><FacetValue value={meta} type={metaFacet?.type} facetFormat={metaFacet?.format} viewFormat={cfg.formats?.[cfg.meta!]} /></span>}
+        {meta && <span className="lr-meta"><FacetValue value={meta} type={metaFacet?.type} facetFormat={metaFacet?.format} viewFormat={cfg.formats?.[cfg.meta!]} pattern={pattern} id={id} facet={cfg.meta} options={metaFacet?.options} /></span>}
         <span className="redraws" title="renders of this row">r{renders}</span>
       </span>
     </div>

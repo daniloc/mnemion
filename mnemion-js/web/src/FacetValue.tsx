@@ -1,10 +1,22 @@
 import { type FC } from 'react';
+import * as Select from '@radix-ui/react-select';
 import { resolveFormat, type FormatId } from '../../shared/core/format-palette';
+import { store, usePatternEntries } from './store';
 
 // Renders one facet value per its resolved format (view override ?? facet
-// intrinsic ?? type default). The renderer registry is typed Record<FormatId,…>
-// so the compiler enforces that every format in the palette has a renderer —
-// the same totality trick the view palette uses for layouts.
+// intrinsic ?? type default). Most formats are read-only displays; `select` is
+// interactive — a dropdown that writes the change back. The renderer registry is
+// typed Record<FormatId,…> so the compiler enforces a renderer per palette format.
+//
+// Interactive renderers need write context (pattern/id/facet); read-only ones
+// ignore it. All renderers share FormatProps so the registry stays total.
+export interface FormatProps {
+  value: string;
+  pattern?: string;
+  id?: number;
+  facet?: string;
+  options?: string[]; // declared facet options (select-typed facets), if any
+}
 
 function relDate(v: string): string {
   const s = String(v);
@@ -19,12 +31,18 @@ function relDate(v: string): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-const TextValue: FC<{ value: string }> = ({ value }) => <>{value}</>;
+async function writeFacet(pattern: string, id: number, facet: string, value: string) {
+  await fetch(`/api/mutate/${pattern}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ operation: 'update', data: { id, [facet]: value } }),
+  });
+}
 
-const LinkValue: FC<{ value: string }> = ({ value }) => {
+const TextValue: FC<FormatProps> = ({ value }) => <>{value}</>;
+
+const LinkValue: FC<FormatProps> = ({ value }) => {
   const href = /^(https?:|mailto:)/.test(value) ? value : `https://${value}`;
-  // stopPropagation so following the link doesn't also trigger the row/card's
-  // open-detail click.
   return (
     <a className="fv-link" href={href} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>
       {value}
@@ -32,7 +50,7 @@ const LinkValue: FC<{ value: string }> = ({ value }) => {
   );
 };
 
-const TagsValue: FC<{ value: string }> = ({ value }) => (
+const TagsValue: FC<FormatProps> = ({ value }) => (
   <span className="fv-tags">
     {value.split(',').map((t) => t.trim()).filter(Boolean).map((t) => (
       <span className="fv-tag" key={t}>{t}</span>
@@ -40,30 +58,58 @@ const TagsValue: FC<{ value: string }> = ({ value }) => (
   </span>
 );
 
-const DateValue: FC<{ value: string }> = ({ value }) => (
-  <span className="fv-date" title={value}>{relDate(value)}</span>
-);
+const DateValue: FC<FormatProps> = ({ value }) => <span className="fv-date" title={value}>{relDate(value)}</span>;
 
-const BoolValue: FC<{ value: string }> = ({ value }) => {
+const BoolValue: FC<FormatProps> = ({ value }) => {
   const truthy = !['', '0', 'false', 'no', 'null', 'off'].includes(String(value).trim().toLowerCase());
   return <span className={`fv-bool ${truthy ? 'on' : 'off'}`}>{truthy ? '✓' : '✗'}</span>;
 };
 
-const FORMAT_COMPONENTS: Record<FormatId, FC<{ value: string }>> = {
+// Interactive: an inline dropdown that changes the value (optimistic patch +
+// mutate, the live socket echoes it back). Options = declared facet options
+// unioned with the values already in use, so a plain text facet (e.g. status)
+// becomes a chooser with no schema change.
+const SelectValue: FC<FormatProps> = ({ value, pattern, id, facet, options }) => {
+  const entries = usePatternEntries(pattern ?? '');
+  if (!pattern || id == null || !facet) return <>{value}</>; // no write context → plain
+  const opts = new Set(options ?? []);
+  for (const e of entries) { const v = e[facet]; if (v != null && v !== '') opts.add(String(v)); }
+  if (value) opts.add(value);
+  const onChange = (v: string) => { store.patchEntry(pattern, id, { [facet]: v }); void writeFacet(pattern, id, facet, v); };
+  return (
+    <Select.Root value={value} onValueChange={onChange}>
+      <Select.Trigger className="fv-select" aria-label={facet} onClick={(e) => e.stopPropagation()}>
+        <Select.Value placeholder="—" />
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content className="status-menu" position="popper" sideOffset={4}>
+          <Select.Viewport>
+            {[...opts].map((o) => (
+              <Select.Item className="status-item" value={o} key={o}><Select.ItemText>{o}</Select.ItemText></Select.Item>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
+  );
+};
+
+const FORMAT_COMPONENTS: Record<FormatId, FC<FormatProps>> = {
   text: TextValue,
   link: LinkValue,
   tags: TagsValue,
   date: DateValue,
   boolean: BoolValue,
+  select: SelectValue,
 };
 
-export function FacetValue({ value, type, facetFormat, viewFormat }: {
-  value: string;
+export function FacetValue({ value, type, facetFormat, viewFormat, pattern, id, facet, options }: FormatProps & {
   type?: string;
   facetFormat?: string | null;
   viewFormat?: string | null;
 }) {
-  if (value === '' || value == null) return null;
-  const Renderer = FORMAT_COMPONENTS[resolveFormat(viewFormat, facetFormat, type)];
-  return <Renderer value={value} />;
+  const fmt = resolveFormat(viewFormat, facetFormat, type);
+  if ((value === '' || value == null) && fmt !== 'select') return null;
+  const Renderer = FORMAT_COMPONENTS[fmt];
+  return <Renderer value={value} pattern={pattern} id={id} facet={facet} options={options} />;
 }
