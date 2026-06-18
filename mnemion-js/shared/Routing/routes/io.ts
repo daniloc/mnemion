@@ -85,6 +85,21 @@ export const serveOutput: RouteHandler = async (ctx) => {
 
 // === Publications: GET /p/:path — render live pattern data via _publications ===
 
+// Public page (a _pages entry with visibility=public): server-rendered HTML with
+// charts as inline SVG + OG meta. renderPublicPage returns null for missing or
+// non-public pages — a positive allow-list, like publications.
+export const servePage: RouteHandler = async (ctx) => {
+  const html = await ctx.hive.renderPublicPage(ctx.params.path);
+  if (html == null) return new Response("Not found", { status: 404 });
+  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=60" } });
+};
+
+export const servePageOg: RouteHandler = async (ctx) => {
+  const svg = await ctx.hive.renderPageOgSvg(ctx.params.path);
+  if (svg == null) return new Response("Not found", { status: 404 });
+  return new Response(svg, { headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=300" } });
+};
+
 export const servePublication: RouteHandler = async (ctx) => {
   const raw = await ctx.hive.resolvePublication(ctx.params.path);
   const result = JSON.parse(raw);

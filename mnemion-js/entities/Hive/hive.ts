@@ -18,6 +18,8 @@ import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass } from "./policy";
 import { deriveLabel } from "./labels";
+import { chartToSvg, chartOgSvg, type Datum } from "../../shared/core/chart-svg";
+import PUBLIC_PAGE_CSS from "./public-page.css";
 import * as cred from "../../shared/Auth/credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
@@ -58,6 +60,7 @@ export interface IndexFacetEntry {
   readonly?: boolean;
   format?: string;
 }
+
 
 // === Constants ===
 
@@ -1008,6 +1011,85 @@ export class HiveDO extends DurableObject {
     } catch {
       return JSON.stringify({ label: `#${id}` });
     }
+  }
+
+  // === Public pages (server-rendered HTML + OG card, for sharing) ===
+
+  private escHtml(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  /** Aggregate rows for a block (reuses the query engine: group_by x, agg y). */
+  private async aggRows(pattern: string, x: string | undefined, y: string | undefined, agg: string | undefined, sort: string): Promise<any[]> {
+    const fn = agg || (y ? "sum" : "count");
+    const aggregate = JSON.stringify([{ fn, ...(y ? { facet: y } : {}), as: "value" }]);
+    try {
+      const r = JSON.parse(await this.query(pattern, "", "", sort || "", 200, false, x || "", aggregate));
+      return r.rows || [];
+    } catch { return []; }
+  }
+
+  private async renderBlockHtml(b: any): Promise<string> {
+    const w = b.width === "half" ? "w-half" : b.width === "third" ? "w-third" : "w-full";
+    const e = (v: unknown) => this.escHtml(String(v ?? ""));
+    switch (b.type) {
+      case "heading": return `<h2 class="pb-h ${w}">${e(b.text)}</h2>`;
+      case "text": return `<p class="pb-t ${w}">${e(b.text)}</p>`;
+      case "metric": {
+        const rows = await this.aggRows(b.pattern, undefined, b.metric, b.agg, "");
+        const v = rows[0] ? Number(rows[0].value) : null;
+        return `<div class="pb-metric ${w}"><div class="pb-metric-n">${v == null ? "—" : new Intl.NumberFormat("en").format(v)}</div><div class="pb-metric-l">${e(b.label)}</div></div>`;
+      }
+      case "chart": {
+        const x = b.x || b.group_by, y = b.y || b.metric, mark = b.mark || "bar";
+        const sort = mark === "line" || mark === "area" ? x : "-value";
+        const rows = await this.aggRows(b.pattern, x, y, b.agg, sort);
+        const data: Datum[] = rows.map((r: any) => ({ label: String(r[x] ?? ""), value: Number(r.value) || 0 }));
+        const svg = data.length ? chartToSvg(mark, data) : `<div class="pb-empty">no data</div>`;
+        return `<figure class="pb-chart ${w}">${b.title ? `<figcaption class="pb-chart-t">${e(b.title)}</figcaption>` : ""}<div class="pb-chart-c">${svg}</div>${b.caption ? `<figcaption class="pb-chart-cap">${e(b.caption)}</figcaption>` : ""}</figure>`;
+      }
+      default: return ""; // embeds (view/entry/list) aren't served on public pages yet
+    }
+  }
+
+  private getPublicPageRow(path: string): any | null {
+    try {
+      return this.db.exec(`SELECT name, title, description, blocks FROM "_pages" WHERE path = ? AND visibility = 'public' AND archived_at IS NULL`, path).toArray()[0] ?? null;
+    } catch { return null; }
+  }
+
+  async renderPublicPage(path: string): Promise<string | null> {
+    const row = this.getPublicPageRow(path);
+    if (!row) return null;
+    let blocks: any[] = [];
+    try { blocks = JSON.parse(row.blocks || "[]"); } catch { /* */ }
+    const parts: string[] = [];
+    for (const b of blocks) parts.push(await this.renderBlockHtml(b));
+    const title = this.escHtml(row.title || row.name);
+    const desc = this.escHtml(row.description || "");
+    const og = `/page/${encodeURIComponent(path)}/og.svg`;
+    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title>
+<meta property="og:title" content="${title}">
+${desc ? `<meta property="og:description" content="${desc}"><meta name="description" content="${desc}">` : ""}
+<meta property="og:type" content="article"><meta property="og:image" content="${og}">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="${og}">
+<style>${PUBLIC_PAGE_CSS}</style></head>
+<body><main class="pb"><h1 class="pb-title">${title}</h1>${desc ? `<p class="pb-desc">${desc}</p>` : ""}<div class="pb-grid">${parts.join("")}</div><footer class="pb-foot">made with Mnemion</footer></main></body></html>`;
+  }
+
+  async renderPageOgSvg(path: string): Promise<string | null> {
+    const row = this.getPublicPageRow(path);
+    if (!row) return null;
+    let blocks: any[] = [];
+    try { blocks = JSON.parse(row.blocks || "[]"); } catch { /* */ }
+    const chart = blocks.find((b: any) => b.type === "chart");
+    if (!chart) return null;
+    const x = chart.x || chart.group_by, y = chart.y || chart.metric, mark = chart.mark || "bar";
+    const sort = mark === "line" || mark === "area" ? x : "-value";
+    const rows = await this.aggRows(chart.pattern, x, y, chart.agg, sort);
+    const data: Datum[] = rows.map((r: any) => ({ label: String(r[x] ?? ""), value: Number(r.value) || 0 }));
+    return chartOgSvg(row.title || row.name, mark, data);
   }
 
   // === System docs ===

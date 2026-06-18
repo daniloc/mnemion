@@ -62,6 +62,7 @@ export default defineConfig({
       '/auth': backend(),
       '/o': backend(),
       '/p': backend(),
+      '/page': backend(),
       '/f': backend(),
     },
   },

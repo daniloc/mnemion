@@ -126,6 +126,13 @@ type = "Text"
 globs = ["**/*.md"]
 fallthrough = true
 
+# Import .css as text (for inlining into server-rendered public-page HTML). Only
+# worker-imported CSS hits this; the Vite web build handles its own CSS separately.
+[[rules]]
+type = "Text"
+globs = ["**/*.css"]
+fallthrough = true
+
 # Import compiled client bundles as text (for inlining into SSR HTML)
 [[rules]]
 type = "Text"

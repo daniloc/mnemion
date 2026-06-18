@@ -1,0 +1,31 @@
+/* Styling for server-rendered public pages — editorial, matches the notebook
+   aesthetic (one accent, generous whitespace). Inlined into each page's <style>
+   at render time so the page is self-contained. (A future hook lets the hive
+   owner override this per-hive / per-page.) */
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500&display=swap');
+
+* { box-sizing: border-box; }
+body { margin: 0; background: #f1efe8; color: #1b1a16; font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+
+.pb { max-width: 840px; margin: 0 auto; padding: 56px 24px 80px; }
+.pb-title { font-size: 34px; font-weight: 650; letter-spacing: -0.02em; margin: 0 0 12px; line-height: 1.15; text-wrap: balance; }
+.pb-desc { font-size: 18px; line-height: 1.6; color: #514d45; margin: 0 0 36px; max-width: 60ch; }
+
+.pb-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 24px; align-items: start; }
+.w-full { grid-column: span 6; }
+.w-half { grid-column: span 3; }
+.w-third { grid-column: span 2; }
+@media (max-width: 640px) { .pb-grid > * { grid-column: span 6 !important; } }
+
+.pb-h { font-size: 20px; font-weight: 650; margin: 14px 0 0; }
+.pb-t { font-size: 16px; line-height: 1.6; color: #514d45; margin: 0; }
+
+.pb-metric { border: 1px solid #dcd8cd; border-radius: 10px; background: #fbfaf6; padding: 20px; }
+.pb-metric-n { font-size: 38px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.pb-metric-l { font-family: 'Spline Sans Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #8b867b; margin-top: 6px; }
+
+.pb-chart { border: 1px solid #dcd8cd; border-radius: 10px; background: #fbfaf6; padding: 22px; margin: 0; }
+.pb-chart-t { font-size: 19px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 14px; line-height: 1.25; }
+.pb-chart-cap { font-family: 'Spline Sans Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #8b867b; margin-top: 12px; }
+
+.pb-foot { margin-top: 48px; font-family: 'Spline Sans Mono', ui-monospace, monospace; font-size: 11px; color: #8b867b; }

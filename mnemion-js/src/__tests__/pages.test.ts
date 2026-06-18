@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
 import { validateBlocks, BLOCK_TYPES, isBlockType } from "../../shared/core/block-palette";
+import { consentRoundTripRequired } from "../../entities/Hive/policy";
 
 function getStore(): DurableObjectStub<HiveDO> {
   const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);
@@ -77,5 +78,14 @@ describe("_pages kernel validation", () => {
 
     expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "B", path: "b", blocks: JSON.stringify([{ type: "chart", pattern: "data", group_by: "ghost" }]) }))).message).toContain('facet "ghost"');
     expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "B2", path: "b2", blocks: JSON.stringify([{ type: "metric", pattern: "ghosts" }]) }))).message).toContain("does not exist");
+  });
+});
+
+// Publishing a page (visibility public) is consent-gated; private edits aren't.
+describe("_pages publish consent (on_expose)", () => {
+  it("gates going public, not ordinary edits", () => {
+    expect(consentRoundTripRequired("_pages", "update", { visibility: "public" })).toBe(true);
+    expect(consentRoundTripRequired("_pages", "update", { visibility: "private" })).toBe(false);
+    expect(consentRoundTripRequired("_pages", "update", { blocks: "[]" })).toBe(false);
   });
 });

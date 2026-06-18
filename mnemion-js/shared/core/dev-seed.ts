@@ -184,6 +184,19 @@ export function seedDevData(db: DB): void {
       { type: "entry", pattern: "goals", id: 1, width: "half" },
     ]) });
 
+  // A PUBLIC page — a "data shitpost": opinionated title + description + a chart,
+  // served at /page/engagement with OG unfurl. (visibility=public, so it serves
+  // over HTTP without auth.)
+  ins(db, "_pages", { name: "Engagement", path: "engagement", visibility: "public",
+    title: "Old posts don't die — they compound",
+    description: "Total engagement by year across my posts. One 2022 thread still dwarfs everything since.",
+    blocks: JSON.stringify([
+      { type: "metric", pattern: "tweets", metric: "engagement", agg: "sum", label: "Total engagement", width: "third" },
+      { type: "metric", pattern: "tweets", agg: "count", label: "Posts", width: "third" },
+      { type: "chart", pattern: "tweets", mark: "line", x: "year", y: "engagement", agg: "sum", title: "Engagement by year", caption: "sum of engagement per year", width: "full" },
+      { type: "text", text: "One viral thread in 2022 carries more engagement than every year since combined.", width: "full" },
+    ]) });
+
   ins(db, "tweets", { summary: "helping a senior fix a laptop she overpaid for", faves: 27608, retweets: 4200, engagement: 132368, year: 2022 });
   ins(db, "tweets", { summary: "if only there were a word for a religious travel ban", faves: 18696, retweets: 9800, engagement: 33090, year: 2017 });
   ins(db, "tweets", { summary: "the line outside Silicon Valley Bank wraps the building", faves: 3476, retweets: 1100, engagement: 14800, year: 2023 });
