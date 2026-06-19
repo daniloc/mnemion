@@ -38,6 +38,8 @@ export interface DataContext {
    *  kernel target, so the boundary lives at this one chokepoint rather than
    *  being re-checked at each call site. Defaults to trusted (internal callers). */
   trusted: boolean;
+  /** Whether this read entered through a SERVED/untrusted path (public page, /o, /p, federation, OG) rather than the authenticated owner/member session. Served reads may only touch USER patterns — the engine refuses any kernel pattern, so the boundary lives at this one chokepoint rather than at each serve sink. Defaults to false (trusted owner reads). */
+  served?: boolean;
 }
 
 // === Constants ===
@@ -194,6 +196,9 @@ export function query(
   groupBy: string = "",
   aggregateJson: string = "",
 ): string {
+  if (ctx.served && isKernelPattern(patternName))
+    return errorJson(`Pattern "${patternName}" is not readable on a public/served surface.`);
+
   if (!ctx.patternExists(patternName))
     return errorJson(`Pattern "${patternName}" does not exist.${suggestPattern(patternName, ctx)}`);
 
@@ -698,9 +703,14 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
 export function search(ctx: DataContext, term: string, objectsJson: string, limit_: number): string {
   const limit = Math.min(limit_ || 20, LIMITS.QUERY_ROWS);
-  const targetObjects = objectsJson
+  let targetObjects = objectsJson
     ? JSON.parse(objectsJson) as string[]
     : (ctx.db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[]).map((r: any) => r.name);
+
+  // Served/untrusted full-text search may never surface kernel patterns
+  // (secrets/roster/control tables) — mirror prime's kernel exclusion. An
+  // explicit served search naming only kernel targets simply returns nothing.
+  if (ctx.served) targetObjects = targetObjects.filter((name: string) => !isKernelPattern(name));
 
   const results: { pattern: string; entry: any; matched_facets: string[] }[] = [];
 

@@ -69,7 +69,24 @@ if [ -z "$WORKER_URL" ]; then
   echo "Could not detect worker URL from deploy output."
   echo "Your master secret has been set. Construct your setup URL manually:"
   echo "  https://<your-worker>.workers.dev/setup?token=$SECRET"
+  echo "  Also set WORKER_HOST to your host so capability URLs are pinned:"
+  echo "    npx wrangler deploy --var WORKER_HOST:<your-host>   (or set it in wrangler.toml)"
 else
+  # Pin WORKER_HOST to the real deployed host. The instance treats WORKER_HOST as
+  # authoritative for generated URLs (upload_url / page_url / og_image / instance
+  # doc) and ignores the inbound Host header when it's set — so an attacker can't
+  # poison those URLs via a spoofed Host on an unauthenticated request. Without
+  # this pin the instance falls back to the observed host (dev behavior).
+  WORKER_HOST_VALUE="${WORKER_URL#https://}"
+  echo ""
+  echo "Pinning WORKER_HOST=${WORKER_HOST_VALUE} in wrangler.toml..."
+  if grep -q '^WORKER_HOST *=' wrangler.toml; then
+    # portable in-place edit (BSD/GNU sed differ on -i)
+    sed "s|^WORKER_HOST *=.*|WORKER_HOST = \"${WORKER_HOST_VALUE}\"|" wrangler.toml > wrangler.toml.tmp && mv wrangler.toml.tmp wrangler.toml
+    echo "  Redeploying with the pinned host..."
+    npx wrangler deploy >/dev/null 2>&1 && echo "  Done." || echo "  (redeploy skipped/failed — run 'npm run deploy' to apply)"
+  fi
+
   SETUP_URL="${WORKER_URL}/setup?token=${SECRET}"
   echo ""
   echo "========================================="

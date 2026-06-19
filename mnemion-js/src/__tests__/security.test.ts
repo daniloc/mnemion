@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
+import { query } from "../../entities/Hive/data";
 
 // Regression guards for the security review fixes. These exercise the mutate /
 // evolution chokepoints (RPC = below the consent layer, runs the kernel hooks),
@@ -41,6 +42,34 @@ describe("escalation: access-token attribution can't be forged", () => {
     const r = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "*" })));
     expect(r.error).toBeFalsy();
     expect(r.entry?.token).toBeTruthy();
+  });
+});
+
+describe("token at rest: stored hashed, raw authenticates", () => {
+  it("stores a SHA-256 digest (not the raw token), and the raw still validates", async () => {
+    const store = getStore();
+    const r = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "*" })));
+    const raw = r.entry.token as string;
+    expect(raw).toBeTruthy();
+    // the column holds the digest (64 hex), not the raw 32-hex token
+    const got = JSON.parse(await store.query("_access_tokens", JSON.stringify([`id=${r.entry.id}`]), "", "", 1, false, "", ""));
+    const stored = got.entries[0].token as string;
+    expect(stored).not.toBe(raw);
+    expect(stored).toMatch(/^[0-9a-f]{64}$/);
+    // the raw token (shown once) still authenticates; a wrong one does not
+    expect(await store.validateAccessToken(raw, "*")).toBe(true);
+    expect(await store.validateAccessToken(raw + "x", "*")).toBe(false);
+  });
+});
+
+describe("read boundary: a served read refuses kernel patterns at the engine", () => {
+  // The chokepoint mirrors the write side: ctx.served + kernel pattern → refused
+  // before any DB access, so every serve sink inherits the boundary.
+  const servedCtx = (): any => ({ served: true });
+  it("served query of a kernel pattern is refused (owner reads are unaffected)", () => {
+    const r = JSON.parse(query(servedCtx(), "_access_tokens", "", "", "", 10, false, "", ""));
+    expect(r.error).toBeTruthy();
+    expect(JSON.stringify(r)).toContain("served");
   });
 });
 

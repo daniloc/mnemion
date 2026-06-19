@@ -83,7 +83,30 @@ export class HiveDO extends DurableObject {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       initializeSchema(this.db, env);
+      await this.migrateTokenHashes();
     });
+  }
+
+  /** Hash any access token still stored in the clear (minted before hashing-at-
+   *  rest). Raw tokens are 32 hex chars; SHA-256 digests are 64 — so anything
+   *  not 64-long is a legacy plaintext token we hash in place, keeping it valid.
+   *  Runs once per cold start; a no-op after the first pass. */
+  private async migrateTokenHashes(): Promise<void> {
+    let rows: any[] = [];
+    try { rows = this.db.exec(`SELECT id, token FROM "_access_tokens" WHERE length(token) != 64`).toArray() as any[]; }
+    catch { return; } // table may not exist yet on a brand-new hive
+    for (const r of rows) {
+      if (typeof r.token !== "string") continue;
+      this.db.exec(`UPDATE "_access_tokens" SET token = ? WHERE id = ?`, await cred.hashToken(r.token), r.id);
+    }
+  }
+
+  /** Replace a freshly-minted token's stored value with its SHA-256 digest. The
+   *  SQL default generated the raw token (now on `entry.token`); we keep the raw
+   *  on the entry for the one-time response and store only the hash. */
+  private async persistTokenHash(entry: any): Promise<void> {
+    if (typeof entry?.token !== "string" || entry.token.length === 64) return;
+    this.db.exec(`UPDATE "_access_tokens" SET token = ? WHERE id = ?`, await cred.hashToken(entry.token), entry.id);
   }
 
   private currentHost(): string {
@@ -495,6 +518,22 @@ export class HiveDO extends DurableObject {
     };
   }
 
+  /** A read context for SERVED/untrusted surfaces (public page, /o, /p, OG,
+   *  federation). The one read trust-boundary: the engine refuses any kernel
+   *  pattern for a served read, so a serve path physically cannot reach
+   *  `_access_tokens`/`_members`/etc. — mirroring how `!trusted` confines
+   *  untrusted writes. New serve sinks inherit the boundary by using this. */
+  private servedDataCtx(): data.DataContext {
+    return { ...this.dataCtx(), served: true };
+  }
+
+  /** query() for a served/untrusted surface — refuses kernel patterns at the
+   *  engine. Every public/OG/publication read goes through this, so the kernel
+   *  read-boundary lives at one chokepoint instead of a check per serve sink. */
+  private servedQuery(patternName: string, filterJson: string, facets: string, sortField: string, limit: number, countOnly: boolean, groupBy: string, aggregateJson: string): string {
+    return data.query(this.servedDataCtx(), patternName, filterJson, facets, sortField, limit, countOnly, groupBy, aggregateJson);
+  }
+
   /** A pattern's class: "dataset" (structured records) or "knowledge" (default). */
   private patternClass(name: string): "knowledge" | "dataset" {
     return priming.getPatternClass(this.db, name);
@@ -551,6 +590,11 @@ export class HiveDO extends DurableObject {
       if (patternName === "_system_tasks" && operation === "create") {
         await this.runTask(result.entry.id, result.entry.task);
       }
+      // A freshly-minted access token is stored hashed at rest; the raw value
+      // stays on result.entry for the one-time response.
+      if (patternName === "_access_tokens" && operation === "create" && result.entry) {
+        await this.persistTokenHash(result.entry);
+      }
       // A new document entry is born with its single-use upload ticket — the
       // bytes are POSTed to upload_url, which records r2_key/size on the entry.
       if (patternName === "_documents" && operation === "create" && result.entry && !result.entry.r2_key) {
@@ -559,8 +603,9 @@ export class HiveDO extends DurableObject {
           constraints: JSON.stringify({ document_id: result.entry.id }),
         });
         if (!tok.error && tok.entry?.token) {
-          result.upload_token = tok.entry.token;
+          result.upload_token = tok.entry.token; // raw, shown once
           result.upload_url = this.instanceUrl(`f/${tok.entry.token}`);
+          await this.persistTokenHash(tok.entry); // store only the digest
         }
         // Minting the token is pure DB; the bytes need R2. If it isn't enabled,
         // say so plainly rather than handing back an upload_url that 503s.
@@ -594,7 +639,7 @@ export class HiveDO extends DurableObject {
    *  and burn the single-use token. The route has already streamed the bytes to
    *  R2; on any failure here it deletes that orphaned object. */
   async consumeDocumentUpload(token: string, r2Key: string, contentType: string, size: number): Promise<string> {
-    const accessToken = cred.findAccessToken(this.db, token);
+    const accessToken = await cred.findAccessToken(this.db, token);
     if (!accessToken) return this.errorJson("Invalid or expired upload token");
     if (!cred.scopeMatches(accessToken.scope, "document")) return this.errorJson("Token does not have document scope");
 
@@ -714,13 +759,15 @@ export class HiveDO extends DurableObject {
   }
 
   async consumeUpload(token: string, content: string): Promise<string> {
+    // Tokens are stored hashed; hash the presented value to look it up.
+    const tokenHash = await cred.hashToken(token);
     // Check for consumed token first (findAccessToken excludes consumed)
     const consumed = this.db.exec(
-      `SELECT 1 FROM "_access_tokens" WHERE token = ? AND consumed_at IS NOT NULL`, token
+      `SELECT 1 FROM "_access_tokens" WHERE token = ? AND consumed_at IS NOT NULL`, tokenHash
     ).toArray();
     if (consumed.length > 0) return this.errorJson("Upload token has already been used");
 
-    const accessToken = cred.findAccessToken(this.db, token);
+    const accessToken = await cred.findAccessToken(this.db, token);
     if (!accessToken) return this.errorJson("Invalid or expired upload token");
     if (!cred.scopeMatches(accessToken.scope, "upload")) return this.errorJson("Token does not have upload scope");
 
@@ -1046,12 +1093,10 @@ export class HiveDO extends DurableObject {
   /** Aggregate rows for a block (reuses the query engine: group_by x, agg y).
    *  Still used by the metric block (no x) — chart blocks go through chartData. */
   private async aggRows(pattern: string, x: string | undefined, y: string | undefined, agg: string | undefined, sort: string): Promise<any[]> {
-    // Serve-time backstop: public pages must never read kernel control tables.
-    // A pre-existing/smuggled block pointing at one renders nothing, not data.
-    if (isKernelPattern(pattern)) return [];
     const aggregate = aggSpec(agg || (y ? "sum" : "count"), y);
     try {
-      const r = JSON.parse(await this.query(pattern, "", "", sort || "", 200, false, x || "", aggregate));
+      // servedQuery refuses kernel patterns at the engine — the one read-boundary.
+      const r = JSON.parse(this.servedQuery(pattern, "", "", sort || "", 200, false, x || "", aggregate));
       return r.rows || [];
     } catch { return []; }
   }
@@ -1065,22 +1110,22 @@ export class HiveDO extends DurableObject {
    *  alias the engine emits — passing the full field as the sort field is what
    *  the engine rejected, flattening bucketed charts to empty. */
   private async chartData(b: any): Promise<ChartPayload> {
-    // Serve-time backstop: kernel control tables never render on public pages.
-    if (isKernelPattern(b?.pattern)) return { multi: false, data: [] };
     const rc = resolveChart(b);
     const q = chartQuery(rc);
     try {
+      // servedQuery refuses kernel patterns — protects the OG path too, which
+      // reaches chartData without renderBlockHtml's per-block guard.
       if (q.kind === "scatter") {
-        const r = JSON.parse(await this.query(b.pattern, "", q.facets ?? "", "", q.limit, false, "", ""));
+        const r = JSON.parse(this.servedQuery(b.pattern, "", q.facets ?? "", "", q.limit, false, "", ""));
         const data = (r.entries || []).map((e: any) => ({ label: String(e[rc.x!] ?? ""), value: Number(e[rc.y!]) || 0 }));
         return { multi: false, data };
       }
       if (q.kind === "series") {
-        const r = JSON.parse(await this.query(b.pattern, "", "", q.sort ?? "", q.limit, false, q.group_by ?? "", q.aggregate ?? ""));
+        const r = JSON.parse(this.servedQuery(b.pattern, "", "", q.sort ?? "", q.limit, false, q.group_by ?? "", q.aggregate ?? ""));
         const { rows, keys } = pivotSeries(r.rows || [], rc.x!, rc.series!);
         return { multi: true, data: { xKey: rc.x!, rows, keys } };
       }
-      const r = JSON.parse(await this.query(b.pattern, "", "", q.sort ?? "", q.limit, false, q.group_by ?? "", q.aggregate ?? ""));
+      const r = JSON.parse(this.servedQuery(b.pattern, "", "", q.sort ?? "", q.limit, false, q.group_by ?? "", q.aggregate ?? ""));
       const data = (r.rows || []).map((row: any) => ({ label: String(row[rc.x!] ?? ""), value: Number(row.value) || 0 }));
       return { multi: false, data };
     } catch {
@@ -1679,7 +1724,7 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
 
     // Live projection: run the stored query against current truth
     const queryRaw = data.query(
-      this.dataCtx(), pub.source_pattern,
+      this.servedDataCtx(), pub.source_pattern, // served boundary: refuses a kernel source
       pub.filters || "", pub.facets || "", pub.sort || "-updated_at",
       pub.limit || 50, false,
     );

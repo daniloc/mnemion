@@ -2,6 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { fetchMock } from "./fetch-mock";
 import { describe, it, expect, beforeEach } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
+import { hashToken } from "../../shared/Auth/credentials";
 
 function getStore(): DurableObjectStub<HiveDO> {
   const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);
@@ -1292,12 +1293,12 @@ describe("kernel-target write boundary", () => {
     // Defense in depth: simulate a pre-fix token by writing the row directly,
     // then confirm consumeUpload still refuses (it uses raw UPDATE, not executeMutate).
     const store = getStore();
-    let token = "";
+    const token = "deadbeefdeadbeefdeadbeefdeadbeef";
+    const stored = await hashToken(token); // tokens are stored hashed at rest
     await runInDurableObject(store, async (_i, state) => {
-      token = "deadbeefdeadbeefdeadbeefdeadbeef";
       state.storage.sql.exec(
         `INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'upload', ?, 1)`,
-        token, JSON.stringify({ target_pattern: "_web_cache", target_id: 1, target_facet: "content", mode: "replace" })
+        stored, JSON.stringify({ target_pattern: "_web_cache", target_id: 1, target_facet: "content", mode: "replace" })
       );
     });
     const result = JSON.parse(await store.consumeUpload(token, "poisoned"));

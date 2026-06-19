@@ -83,11 +83,23 @@ export function updatePasskeyCounter(db: DB, credentialId: string, counter: numb
 
 // === Access tokens ===
 
-/** Find a valid (non-archived, non-expired, non-consumed) access token. */
-export function findAccessToken(db: DB, token: string): any | null {
+/** SHA-256 hex of a token. Access tokens are stored HASHED at rest — the raw
+ *  token is shown once at mint, and every lookup hashes the presented value and
+ *  compares digests. So a read of an `_access_tokens` row (a query, a search hit,
+ *  a leaked DO snapshot) discloses only a digest, never a usable bearer. This is
+ *  the architectural stance that neuters the whole "token reached a serve sink"
+ *  class regardless of which sink leaks. */
+export async function hashToken(raw: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Find a valid (non-archived, non-expired, non-consumed) access token. Hashes
+ *  the presented token and matches against the stored digest. */
+export async function findAccessToken(db: DB, token: string): Promise<any | null> {
   const rows = db.exec(
     `SELECT * FROM "_access_tokens" WHERE token = ? AND archived_at IS NULL AND consumed_at IS NULL`,
-    token
+    await hashToken(token)
   ).toArray() as any[];
   if (rows.length === 0) return null;
   const row = rows[0];
@@ -104,8 +116,8 @@ export function consumeToken(db: DB, id: number): void {
 }
 
 /** Validate a token against a required scope. Consumes single-use tokens. */
-export function validateAccessToken(db: DB, token: string, requiredScope: string): boolean {
-  const accessToken = findAccessToken(db, token);
+export async function validateAccessToken(db: DB, token: string, requiredScope: string): Promise<boolean> {
+  const accessToken = await findAccessToken(db, token);
   if (!accessToken) return false;
   if (!scopeMatches(accessToken.scope, requiredScope)) return false;
   if (accessToken.single_use) consumeToken(db, accessToken.id);
@@ -119,8 +131,8 @@ export function validateAccessToken(db: DB, token: string, requiredScope: string
  * sentinel (legacy and headless tokens). Used by the OAuth external-token path
  * to attribute the resulting session to a person.
  */
-export function resolveTokenActor(db: DB, token: string, requiredScope: string): string | null {
-  const accessToken = findAccessToken(db, token);
+export async function resolveTokenActor(db: DB, token: string, requiredScope: string): Promise<string | null> {
+  const accessToken = await findAccessToken(db, token);
   if (!accessToken) return null;
   if (!scopeMatches(accessToken.scope, requiredScope)) return null;
   const member: string | null = accessToken.member ?? null;
@@ -146,10 +158,10 @@ export function isMemberActive(db: DB, member: string): boolean {
  * non-archived roster member. Returns null otherwise. Does NOT check approval —
  * callers layer that on (see getRegisterToken / resolveRegisterToken).
  */
-function validateRegisterToken(db: DB, token: string): {
+async function validateRegisterToken(db: DB, token: string): Promise<{
   row: any; member: string; userName: string; userDisplayName: string;
-} | null {
-  const row = findAccessToken(db, token);
+} | null> {
+  const row = await findAccessToken(db, token);
   if (!row) return null;
   // Must be register-scoped specifically — a wildcard API token is not a setup link.
   if (row.scope !== "register") return null;
@@ -176,10 +188,10 @@ function validateRegisterToken(db: DB, token: string): {
  * Register-token info for the approval page (does not require approval). Returns
  * the member + display fields and whether it has already been approved.
  */
-export function getRegisterToken(db: DB, token: string): {
+export async function getRegisterToken(db: DB, token: string): Promise<{
   id: number; member: string; userName: string; userDisplayName: string; approved: boolean;
-} | null {
-  const v = validateRegisterToken(db, token);
+} | null> {
+  const v = await validateRegisterToken(db, token);
   if (!v) return null;
   return { id: v.row.id, member: v.member, userName: v.userName, userDisplayName: v.userDisplayName, approved: !!v.row.approved_at };
 }
@@ -190,10 +202,10 @@ export function getRegisterToken(db: DB, token: string): {
  * via passkey at /invite/{token}. This is the last line before a passkey is
  * bound, so an unapproved (or tampered) token must not pass.
  */
-export function resolveRegisterToken(db: DB, token: string): {
+export async function resolveRegisterToken(db: DB, token: string): Promise<{
   id: number; member: string; userName: string; userDisplayName: string;
-} | null {
-  const v = validateRegisterToken(db, token);
+} | null> {
+  const v = await validateRegisterToken(db, token);
   if (!v) return null;
   if (!v.row.approved_at) return null;
   return { id: v.row.id, member: v.member, userName: v.userName, userDisplayName: v.userDisplayName };
@@ -205,8 +217,8 @@ export function resolveRegisterToken(db: DB, token: string): {
  * on the mutate path, so this is the only way it can be set. Returns the member
  * approved, or null if the token is invalid / not a register token.
  */
-export function approveRegisterToken(db: DB, token: string): { member: string } | null {
-  const v = validateRegisterToken(db, token);
+export async function approveRegisterToken(db: DB, token: string): Promise<{ member: string } | null> {
+  const v = await validateRegisterToken(db, token);
   if (!v) return null;
   db.exec(
     `UPDATE "_access_tokens" SET approved_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
@@ -216,13 +228,13 @@ export function approveRegisterToken(db: DB, token: string): { member: string } 
 }
 
 /** Validate a token without consuming it (for reusable Bearer sessions). */
-export function validateAuthCode(db: DB, code: string): boolean {
-  return findAccessToken(db, code) !== null;
+export async function validateAuthCode(db: DB, code: string): Promise<boolean> {
+  return (await findAccessToken(db, code)) !== null;
 }
 
 /** Validate and consume a single-use token (for browser auth). */
-export function consumeAuthCode(db: DB, code: string): boolean {
-  const accessToken = findAccessToken(db, code);
+export async function consumeAuthCode(db: DB, code: string): Promise<boolean> {
+  const accessToken = await findAccessToken(db, code);
   if (!accessToken) return false;
   if (accessToken.single_use) consumeToken(db, accessToken.id);
   return true;

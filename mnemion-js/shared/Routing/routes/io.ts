@@ -49,10 +49,14 @@ export const serveSharedEntry: RouteHandler = async (ctx) => {
 
 // Egress content is agent-authored and served first-party (same origin as the
 // owner's authenticated session). An agent-chosen Content-Type of text/html or
-// image/svg+xml turns stored content into stored XSS that can steal the owner's
-// session cookie and drive /api/*. So we never reflect an arbitrary
-// attacker-chosen active type: only inert types pass through as-is; everything
-// else (incl. text/html, image/svg+xml, missing) is forced to text/plain.
+// image/svg+xml turns stored content into stored XSS that could steal the
+// owner's session cookie and drive /api/* — so served agent content must be
+// inert. We classify the (parameter-stripped) base type into three buckets:
+//   - inert types (SAFE_OUTPUT_MIME) pass through as-is.
+//   - active/renderable types (text/html, application/xhtml+xml, image/svg+xml,
+//     text/xml) DO render — the documented text/html egress feature — but are
+//     neutered with `Content-Security-Policy: sandbox` (see ACTIVE_OUTPUT_MIME).
+//   - anything else / missing is forced to text/plain.
 // `nosniff` on every /o response stops the browser sniffing text/plain into HTML.
 const SAFE_OUTPUT_MIME = new Set([
   "text/plain",
@@ -65,6 +69,19 @@ const SAFE_OUTPUT_MIME = new Set([
   "image/gif",
   "image/webp",
   "image/avif",
+]);
+
+// Active/renderable types we allow but make inert via `Content-Security-Policy:
+// sandbox`. `sandbox` (with no allow-tokens) treats the response as a unique
+// opaque origin: scripts don't run, forms are disabled, and same-origin access
+// (cookies, /api/*) is severed — so agent-authored HTML/SVG renders for the
+// documented text/html egress feature yet can't execute script or steal the
+// owner's session. This is the floor that lets active egress be safe.
+const ACTIVE_OUTPUT_MIME = new Set([
+  "text/html",
+  "application/xhtml+xml",
+  "image/svg+xml",
+  "text/xml",
 ]);
 
 export const serveOutput: RouteHandler = async (ctx) => {
@@ -94,18 +111,29 @@ export const serveOutput: RouteHandler = async (ctx) => {
     return new Response(null, { status: 304 });
   }
 
-  const mime = SAFE_OUTPUT_MIME.has(result.mime_type)
-    ? result.mime_type
-    : "text/plain; charset=utf-8";
+  // Normalize on the base type (strip ;charset etc.) for classification, but
+  // serve the ORIGINAL mime_type when allowed so a legit `application/json;
+  // charset=utf-8` keeps its charset instead of being downgraded.
+  const base = String(result.mime_type || "").split(";")[0].trim().toLowerCase();
 
-  return new Response(result.content, {
-    headers: {
-      "Content-Type": mime,
-      "X-Content-Type-Options": "nosniff",
-      "ETag": etag,
-      "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
-    },
-  });
+  const headers: Record<string, string> = {
+    "X-Content-Type-Options": "nosniff",
+    "ETag": etag,
+    "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
+  };
+
+  if (SAFE_OUTPUT_MIME.has(base)) {
+    headers["Content-Type"] = result.mime_type;
+  } else if (ACTIVE_OUTPUT_MIME.has(base)) {
+    // Render the agent's HTML/SVG, but `sandbox` makes it inert (no script, no
+    // forms, unique opaque origin → no cookie/same-origin access).
+    headers["Content-Type"] = result.mime_type;
+    headers["Content-Security-Policy"] = "sandbox";
+  } else {
+    headers["Content-Type"] = "text/plain; charset=utf-8";
+  }
+
+  return new Response(result.content, { headers });
 };
 
 // === Publications: GET /p/:path — render live pattern data via _publications ===
