@@ -18,7 +18,8 @@ import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass } from "./policy";
 import { deriveLabel } from "./labels";
-import { chartToSvg, chartOgSvg, type Datum } from "../../shared/core/chart-svg";
+import { renderChartSvg, chartOgSvg, type ChartPayload } from "../../shared/core/chart-svg";
+import { pivotSeries, ROUND_MARKS } from "../../shared/core/chart-spec";
 import PUBLIC_PAGE_CSS from "./public-page.css";
 import * as cred from "../../shared/Auth/credentials";
 import * as evo from "./evolution";
@@ -552,6 +553,18 @@ export class HiveDO extends DurableObject {
           result.documents_note = "File storage (R2) is not enabled on this instance — the metadata entry was created, but uploading bytes to upload_url will fail until R2 is enabled. Everything else works without it.";
         }
       }
+      // A page is born (or re-saved) → hand back the link to give the human, so
+      // the agent never has to guess the host or the public-vs-private route.
+      // Public pages serve over HTTP at /page/{path} (+ OG card); private pages
+      // (the default) open only in the signed-in app at /#page:{path}. Derived
+      // from currentHost() + visibility, never stored — same shape as upload_url.
+      if (patternName === "_pages" && (operation === "create" || operation === "update") && result.entry?.path) {
+        const isPublic = result.entry.visibility === "public";
+        const base = `https://${this.currentHost()}`;
+        result.page_url = isPublic ? `${base}/page/${result.entry.path}` : `${base}/#page:${result.entry.path}`;
+        if (isPublic) result.og_image = `${base}/page/${result.entry.path}/og.png`;
+        else result.page_note = "Private page — only you, signed in, can open this link. Publishing it (visibility: public) is consent-gated.";
+      }
       // Archiving a document frees its R2 object — the metadata and the blob die together.
       if (archivedDocKey && this.env.DOCUMENTS) {
         this.ctx.waitUntil(this.env.DOCUMENTS.delete(archivedDocKey).catch(() => {}));
@@ -1029,19 +1042,29 @@ export class HiveDO extends DurableObject {
     } catch { return []; }
   }
 
-  /** Resolve a chart block's data: raw x,y points for scatter; an aggregate
-   *  otherwise. Returns the {label,value} shape both server renderers expect. */
-  private async chartData(b: any): Promise<Datum[]> {
-    const x = b.x || b.group_by, y = b.y || b.metric, mark = b.mark || "bar";
+  /** Resolve a chart block's data into the payload both server renderers expect:
+   *  raw x,y points for scatter; a pivoted multi-series set when `series` is set
+   *  (non-round marks); a flat aggregate otherwise (incl. pie/donut). */
+  private async chartData(b: any): Promise<ChartPayload> {
+    const x = b.x || b.group_by, y = b.y || b.metric, series = b.series, mark = b.mark || "bar";
     if (mark === "scatter") {
       try {
         const r = JSON.parse(await this.query(b.pattern, "", `${x ?? ""},${y ?? ""}`, "", 500, false, "", ""));
-        return (r.entries || []).map((e: any) => ({ label: String(e[x] ?? ""), value: Number(e[y]) || 0 }));
-      } catch { return []; }
+        return { multi: false, data: (r.entries || []).map((e: any) => ({ label: String(e[x] ?? ""), value: Number(e[y]) || 0 })) };
+      } catch { return { multi: false, data: [] }; }
+    }
+    if (series && x && !ROUND_MARKS.has(mark)) {
+      // aggregate over x AND series → long rows → pivot to per-series columns.
+      const aggregate = JSON.stringify([{ fn: b.agg || (y ? "sum" : "count"), ...(y ? { facet: y } : {}), as: "value" }]);
+      try {
+        const r = JSON.parse(await this.query(b.pattern, "", "", x, 500, false, `${x},${series}`, aggregate));
+        const { rows, keys } = pivotSeries(r.rows || [], x, series, "value");
+        return { multi: true, data: { xKey: x, rows, keys } };
+      } catch { return { multi: true, data: { xKey: x, rows: [], keys: [] } }; }
     }
     const sort = mark === "line" || mark === "area" ? x : "-value";
     const rows = await this.aggRows(b.pattern, x, y, b.agg, sort);
-    return rows.map((r: any) => ({ label: String(r[x] ?? ""), value: Number(r.value) || 0 }));
+    return { multi: false, data: rows.map((r: any) => ({ label: String(r[x] ?? ""), value: Number(r.value) || 0 })) };
   }
 
   private async renderBlockHtml(b: any): Promise<string> {
@@ -1056,8 +1079,9 @@ export class HiveDO extends DurableObject {
         return `<div class="pb-metric ${w}"><div class="pb-metric-n">${v == null ? "—" : new Intl.NumberFormat("en").format(v)}</div><div class="pb-metric-l">${e(b.label)}</div></div>`;
       }
       case "chart": {
-        const data = await this.chartData(b);
-        const svg = data.length ? chartToSvg(b.mark || "bar", data) : `<div class="pb-empty">no data</div>`;
+        const payload = await this.chartData(b);
+        const has = payload.multi ? payload.data.rows.length : payload.data.length;
+        const svg = has ? renderChartSvg(b.mark || "bar", payload, { stack: b.stack === true }) : `<div class="pb-empty">no data</div>`;
         return `<figure class="pb-chart ${w}">${b.title ? `<figcaption class="pb-chart-t">${e(b.title)}</figcaption>` : ""}<div class="pb-chart-c">${svg}</div>${b.caption ? `<figcaption class="pb-chart-cap">${e(b.caption)}</figcaption>` : ""}</figure>`;
       }
       default: return ""; // embeds (view/entry/list) aren't served on public pages yet
@@ -1098,7 +1122,7 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
     const chart = blocks.find((b: any) => b.type === "chart");
     if (!chart) return null;
     const data = await this.chartData(chart);
-    return chartOgSvg(row.title || row.name, chart.mark || "bar", data);
+    return chartOgSvg(row.title || row.name, chart.mark || "bar", data, chart.stack === true);
   }
 
   // === System docs ===

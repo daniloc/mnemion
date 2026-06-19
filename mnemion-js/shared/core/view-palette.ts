@@ -13,11 +13,12 @@
 
 import { validateFormatsMap, describeFormatPalette } from "./format-palette";
 
-export type ConfigRole = "facet" | "facets" | "values" | "text";
+export type ConfigRole = "facet" | "facets" | "values" | "text" | "flag";
 // facet  → value must name one facet of the target pattern
 // facets → value must be an array of facet names
 // values → value must be an array of arbitrary strings (e.g. board column order)
 // text   → value must be a free string
+// flag   → value must be a boolean (e.g. stack the series)
 
 export interface ConfigKey {
   role: ConfigRole;
@@ -83,11 +84,13 @@ export const VIEW_PALETTE = {
   },
   chart: {
     label: "Chart",
-    help: "A bar/line/area chart of an aggregate — group entries by a facet (x) and measure them (y). For datasets you want to SEE the shape of, not read. Pairs well with a table view of the same pattern.",
+    help: "A chart of an aggregate — group entries by a facet (x) and measure them (y). For datasets you want to SEE the shape of, not read. Pairs well with a table view of the same pattern.",
     config: {
-      mark: { role: "text", help: "bar | line | area | scatter (default: bar). line/area for a value over a numeric/time x (spaced to scale); scatter plots x vs y per entry (no aggregation)." },
-      x: { role: "facet", help: "facet for the x-axis / categories; bucket a datetime with facet:unit, e.g. created_at:month" },
-      y: { role: "facet", help: "numeric facet for the y-axis (omit to count rows)" },
+      mark: { role: "text", help: "bar | line | area | scatter | pie | donut (default: bar). line/area for a value over a numeric/time x (spaced to scale); scatter plots x vs y per entry (no aggregation); pie/donut show parts of a whole (x = slice label, y = size)." },
+      x: { role: "facet", help: "facet for the x-axis / categories (pie/donut: the slice label); bucket a datetime with facet:unit, e.g. created_at:month" },
+      y: { role: "facet", help: "numeric facet to measure (omit to count rows)" },
+      series: { role: "facet", help: "split into multiple colored series by this facet's values — adds a legend (bar/line/area). Aggregates over x AND series." },
+      stack: { role: "flag", help: "stack the series into one total instead of placing them side by side (bar/area; needs series)" },
       group_by: { role: "facet", help: "alias for x" },
       metric: { role: "facet", help: "alias for y" },
       agg: { role: "text", help: "aggregate function: count | sum | avg | min | max (default: sum when y is set, else count)" },
@@ -195,6 +198,8 @@ export function validateViewSpec(
         if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) errors.push(`config.${key} must be an array of strings.`);
       } else if (ks.role === "text") {
         if (typeof value !== "string") errors.push(`config.${key} must be a string.`);
+      } else if (ks.role === "flag") {
+        if (typeof value !== "boolean") errors.push(`config.${key} must be true or false.`);
       }
     }
   }

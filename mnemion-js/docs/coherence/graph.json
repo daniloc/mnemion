@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-17 00:51Z",
+  "generatedAt": "2026-06-19 04:23Z",
   "root": "mnemion-js",
   "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
   "nodes": [
@@ -148,7 +148,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/data.ts",
-      "line": 688
+      "line": 699
     },
     {
       "id": "f:entities/Hive/evolution.ts",
@@ -167,7 +167,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/evolution.ts",
-      "line": 24
+      "line": 25
     },
     {
       "id": "s:entities/Hive/evolution.ts#patternExists()",
@@ -176,7 +176,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/evolution.ts",
-      "line": 26
+      "line": 27
     },
     {
       "id": "s:entities/Hive/evolution.ts#entryExists()",
@@ -185,7 +185,17 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/evolution.ts",
-      "line": 27
+      "line": 28
+    },
+    {
+      "id": "s:entities/Hive/evolution.ts#CHANGE_TYPE_NAMES",
+      "parent": "f:entities/Hive/evolution.ts",
+      "label": "CHANGE_TYPE_NAMES",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/evolution.ts",
+      "line": 443,
+      "prose": "The change types an agent may propose — the single source the MCP tool's\n`change.type` enum derives from (session.ts), so a new change type is exposed\nthrough MCP automatically and the protocol contract can't drift from the\nengine's CHANGE_TYPES table."
     },
     {
       "id": "s:entities/Hive/evolution.ts#proposeChange",
@@ -194,7 +204,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/evolution.ts",
-      "line": 483
+      "line": 519
     },
     {
       "id": "s:entities/Hive/evolution.ts#applyChange",
@@ -203,7 +213,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/evolution.ts",
-      "line": 516
+      "line": 552
     },
     {
       "id": "s:entities/Hive/evolution.ts#revertChange",
@@ -212,7 +222,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/evolution.ts",
-      "line": 572
+      "line": 608
     },
     {
       "id": "f:entities/Hive/hive.ts",
@@ -231,7 +241,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/hive.ts",
-      "line": 30
+      "line": 34
     },
     {
       "id": "s:entities/Hive/hive.ts#IndexPatternEntry",
@@ -240,7 +250,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/hive.ts",
-      "line": 38
+      "line": 42
     },
     {
       "id": "s:entities/Hive/hive.ts#IndexFacetEntry",
@@ -249,7 +259,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/hive.ts",
-      "line": 50
+      "line": 54
     },
     {
       "id": "s:entities/Hive/hive.ts#HiveDO",
@@ -258,7 +268,7 @@
       "kind": "symbol",
       "sub": "class",
       "path": "entities/Hive/hive.ts",
-      "line": 65
+      "line": 71
     },
     {
       "id": "s:entities/Hive/hive.ts#db()",
@@ -267,7 +277,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 71
+      "line": 77
     },
     {
       "id": "s:entities/Hive/hive.ts#currentHost()",
@@ -276,7 +286,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 82
+      "line": 88
     },
     {
       "id": "s:entities/Hive/hive.ts#getIndex()",
@@ -285,7 +295,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 88
+      "line": 94
     },
     {
       "id": "s:entities/Hive/hive.ts#getCharter()",
@@ -294,7 +304,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 134
+      "line": 158
     },
     {
       "id": "s:entities/Hive/hive.ts#getRecentActivity()",
@@ -303,7 +313,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 143
+      "line": 167
     },
     {
       "id": "s:entities/Hive/hive.ts#getMaintenanceStatus()",
@@ -312,7 +322,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 188
+      "line": 212
     },
     {
       "id": "s:entities/Hive/hive.ts#computeMaintenanceStatus()",
@@ -321,7 +331,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 192
+      "line": 216
     },
     {
       "id": "s:entities/Hive/hive.ts#getStaleEntries()",
@@ -330,7 +340,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 240
+      "line": 264
     },
     {
       "id": "s:entities/Hive/hive.ts#evoCtx()",
@@ -339,7 +349,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 309
+      "line": 333
     },
     {
       "id": "s:entities/Hive/hive.ts#proposeChange()",
@@ -348,7 +358,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 317
+      "line": 341
     },
     {
       "id": "s:entities/Hive/hive.ts#getPendingChange()",
@@ -357,7 +367,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 324,
+      "line": 348,
       "prose": "Peek at a pending change's spec without applying it — lets the SessionDO\ndecide whether the change needs a consent round-trip (e.g. set_sharing to a\nnon-private visibility, which publishes an entry over HTTP)."
     },
     {
@@ -367,7 +377,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 335
+      "line": 359
     },
     {
       "id": "s:entities/Hive/hive.ts#revertChange()",
@@ -376,7 +386,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 343
+      "line": 367
     },
     {
       "id": "s:entities/Hive/hive.ts#getSchema()",
@@ -385,7 +395,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 353
+      "line": 377
     },
     {
       "id": "s:entities/Hive/hive.ts#getHistory()",
@@ -394,7 +404,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 388
+      "line": 413
     },
     {
       "id": "s:entities/Hive/hive.ts#getEntry()",
@@ -403,7 +413,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 396
+      "line": 421
     },
     {
       "id": "s:entities/Hive/hive.ts#listPatterns()",
@@ -412,7 +422,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 429
+      "line": 454
     },
     {
       "id": "s:entities/Hive/hive.ts#dataCtx()",
@@ -421,7 +431,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 436
+      "line": 461
     },
     {
       "id": "s:entities/Hive/hive.ts#patternClass()",
@@ -430,7 +440,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 459,
+      "line": 484,
       "prose": "A pattern's class: \"dataset\" (structured records) or \"knowledge\" (default)."
     },
     {
@@ -440,7 +450,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 463
+      "line": 488
     },
     {
       "id": "s:entities/Hive/hive.ts#mutate()",
@@ -449,7 +459,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 467
+      "line": 492
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeDocumentUpload()",
@@ -458,7 +468,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 542,
+      "line": 581,
       "prose": "Record a completed upload: bind the R2 key + metadata to the document entry\n and burn the single-use token. The route has already streamed the bytes to\n R2; on any failure here it deletes that orphaned object."
     },
     {
@@ -468,7 +478,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 572,
+      "line": 611,
       "prose": "Record extracted text + status on a document, then re-embed so the text\n joins prime recall (search already covers the facet). Called by the upload\n route after it pulls text from the bytes (inline for text, async for PDF)."
     },
     {
@@ -478,7 +488,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 596,
+      "line": 635,
       "prose": "Schedule async PDF text extraction inside the DO (which has a real\n waitUntil — the route ctx does not). Marks pending, then reads the blob\n back from R2, extracts, and records. Returns immediately; the work\n outlives the RPC via ctx.waitUntil. Best-effort: failures land as status."
     },
     {
@@ -488,7 +498,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 620,
+      "line": 659,
       "prose": "Resolve a document for serving. Returns found:false until bytes exist."
     },
     {
@@ -498,7 +508,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 632
+      "line": 671
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeUpload()",
@@ -507,7 +517,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 662
+      "line": 701
     },
     {
       "id": "s:entities/Hive/hive.ts#webCtx()",
@@ -516,7 +526,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 737
+      "line": 776
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveWeb()",
@@ -525,7 +535,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 741
+      "line": 780
     },
     {
       "id": "s:entities/Hive/hive.ts#resolve()",
@@ -534,7 +544,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 765
+      "line": 804
     },
     {
       "id": "s:entities/Hive/hive.ts#federatedResolve()",
@@ -543,7 +553,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 835
+      "line": 874
     },
     {
       "id": "s:entities/Hive/hive.ts#search()",
@@ -552,7 +562,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 928
+      "line": 967
     },
     {
       "id": "s:entities/Hive/hive.ts#getMutationLog()",
@@ -561,7 +571,92 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 934
+      "line": 973
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getEntryHistory()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getEntryHistory()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 990,
+      "prose": "Revision history for one entry, oldest→newest: the audit log scoped to\n (pattern, id), with each UPDATE diffed (changed facet: from → to) and\n version/timestamp churn filtered out. The create is the first revision."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getEntryLabel()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getEntryLabel()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1017,
+      "prose": "The display label for one entry — what a reference to it should show\n (deriveLabel: title-ish facet, else #id). Used by reference-format chips."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#escHtml()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "escHtml()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1031
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#aggRows()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "aggRows()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1036,
+      "prose": "Aggregate rows for a block (reuses the query engine: group_by x, agg y)."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#chartData()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "chartData()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1048,
+      "prose": "Resolve a chart block's data into the payload both server renderers expect:\n raw x,y points for scatter; a pivoted multi-series set when `series` is set\n (non-round marks); a flat aggregate otherwise (incl. pie/donut)."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#renderBlockHtml()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "renderBlockHtml()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1070
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#getPublicPageRow()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "getPublicPageRow()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1091
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#renderPublicPage()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "renderPublicPage()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1097
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#renderPageOgSvg()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "renderPageOgSvg()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 1117
     },
     {
       "id": "s:entities/Hive/hive.ts#getSystemDocList()",
@@ -570,7 +665,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 950
+      "line": 1130
     },
     {
       "id": "s:entities/Hive/hive.ts#getSystemDoc()",
@@ -579,7 +674,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 963
+      "line": 1143
     },
     {
       "id": "s:entities/Hive/hive.ts#renderInstanceDoc()",
@@ -588,7 +683,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 993
+      "line": 1173
     },
     {
       "id": "s:entities/Hive/hive.ts#computeStorageStats()",
@@ -597,7 +692,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1006
+      "line": 1186
     },
     {
       "id": "s:entities/Hive/hive.ts#runTask()",
@@ -606,7 +701,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1037
+      "line": 1217
     },
     {
       "id": "s:entities/Hive/hive.ts#primeCtx()",
@@ -615,7 +710,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1067
+      "line": 1247
     },
     {
       "id": "s:entities/Hive/hive.ts#embedAfterMutate()",
@@ -624,7 +719,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1075
+      "line": 1255
     },
     {
       "id": "s:entities/Hive/hive.ts#prime()",
@@ -633,7 +728,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1087
+      "line": 1272
     },
     {
       "id": "s:entities/Hive/hive.ts#seedVectors()",
@@ -642,7 +737,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1207
+      "line": 1392
     },
     {
       "id": "s:entities/Hive/hive.ts#getCurrentIndex()",
@@ -651,7 +746,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1231
+      "line": 1416
     },
     {
       "id": "s:entities/Hive/hive.ts#isFederationHostAllowed()",
@@ -660,7 +755,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1282,
+      "line": 1468,
       "prose": "True if `host` has been explicitly approved for federation (active _federation_hosts row)."
     },
     {
@@ -670,7 +765,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1293
+      "line": 1479
     },
     {
       "id": "s:entities/Hive/hive.ts#entryExists()",
@@ -679,7 +774,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1299
+      "line": 1485
     },
     {
       "id": "s:entities/Hive/hive.ts#hasKernelVersion()",
@@ -688,7 +783,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1308,
+      "line": 1494,
       "prose": "True if the table's `version` column is the kernel auto-increment, not a user field."
     },
     {
@@ -698,7 +793,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1327,
+      "line": 1513,
       "prose": "Two-phase consent that survives session churn. First call with a key arms\n it (10-minute TTL) and returns false — the caller should surface the\n confirmation message. Re-issuing the same key while armed consumes it and\n returns true — the caller proceeds. Durable in DO storage because\n sessionless MCP clients land every call on a fresh SessionDO, where an\n in-memory set can never complete the handshake. The consent signal is the\n deliberate re-issue of identical arguments; the TTL bounds how long an\n armed confirmation can wait. Fails closed: storage errors never confirm."
     },
     {
@@ -708,7 +803,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1348
+      "line": 1534
     },
     {
       "id": "s:entities/Hive/hive.ts#getPasskeys()",
@@ -717,7 +812,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1349
+      "line": 1535
     },
     {
       "id": "s:entities/Hive/hive.ts#storePasskey()",
@@ -726,7 +821,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1350
+      "line": 1536
     },
     {
       "id": "s:entities/Hive/hive.ts#updatePasskeyCounter()",
@@ -735,7 +830,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1353
+      "line": 1539
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAccessToken()",
@@ -744,7 +839,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1354
+      "line": 1540
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveTokenActor()",
@@ -753,7 +848,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1357
+      "line": 1543
     },
     {
       "id": "s:entities/Hive/hive.ts#isMemberActive()",
@@ -762,7 +857,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1360
+      "line": 1546
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveRegisterToken()",
@@ -771,7 +866,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1361
+      "line": 1547
     },
     {
       "id": "s:entities/Hive/hive.ts#getRegisterToken()",
@@ -780,7 +875,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1362
+      "line": 1548
     },
     {
       "id": "s:entities/Hive/hive.ts#approveRegisterToken()",
@@ -789,7 +884,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1363
+      "line": 1549
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAccessToken()",
@@ -798,7 +893,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1364
+      "line": 1550
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAuthCode()",
@@ -807,7 +902,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1365
+      "line": 1551
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAuthCode()",
@@ -816,7 +911,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1366
+      "line": 1552
     },
     {
       "id": "s:entities/Hive/hive.ts#exportPattern()",
@@ -825,7 +920,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1370
+      "line": 1556
     },
     {
       "id": "s:entities/Hive/hive.ts#getSharedEntry()",
@@ -834,7 +929,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1413
+      "line": 1599
     },
     {
       "id": "s:entities/Hive/hive.ts#resolvePublication()",
@@ -843,7 +938,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1436
+      "line": 1622
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveOutput()",
@@ -852,7 +947,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1502
+      "line": 1688
     },
     {
       "id": "s:entities/Hive/hive.ts#getInputVisibility()",
@@ -861,7 +956,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1515
+      "line": 1701
     },
     {
       "id": "s:entities/Hive/hive.ts#processInput()",
@@ -870,7 +965,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1528
+      "line": 1714
     },
     {
       "id": "s:entities/Hive/hive.ts#fetch()",
@@ -879,7 +974,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1565
+      "line": 1751
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketMessage()",
@@ -888,7 +983,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1578
+      "line": 1764
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketClose()",
@@ -897,7 +992,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1582
+      "line": 1768
     },
     {
       "id": "s:entities/Hive/hive.ts#broadcastChange()",
@@ -906,7 +1001,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1586
+      "line": 1772
     },
     {
       "id": "s:entities/Hive/hive.ts#errorJson()",
@@ -915,7 +1010,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1593
+      "line": 1783
     },
     {
       "id": "x:cloudflare:workers",
@@ -940,7 +1035,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/kernel.ts",
-      "line": 18
+      "line": 20
     },
     {
       "id": "s:entities/Hive/kernel.ts#patternExists()",
@@ -949,7 +1044,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 19
+      "line": 21
     },
     {
       "id": "s:entities/Hive/kernel.ts#facetMeta()",
@@ -958,7 +1053,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 20
+      "line": 22
     },
     {
       "id": "s:entities/Hive/kernel.ts#entryExists()",
@@ -967,7 +1062,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 21
+      "line": 23
     },
     {
       "id": "s:entities/Hive/kernel.ts#memberActive()",
@@ -976,8 +1071,18 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 23,
+      "line": 25,
       "prose": "An active, non-archived member with this label exists in the roster."
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#entryField()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "entryField()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 29,
+      "prose": "Read one column of one entry — used to resolve a row's existing values when\n a partial update doesn't carry them (e.g. a _views config edit that omits\n the target pattern). Returns null if the row/column is absent."
     },
     {
       "id": "s:entities/Hive/kernel.ts#IMMUTABLE",
@@ -986,7 +1091,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/kernel.ts",
-      "line": 35
+      "line": 41
     },
     {
       "id": "s:entities/Hive/kernel.ts#IMMUTABLE_AFTER_CREATE",
@@ -995,7 +1100,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/kernel.ts",
-      "line": 57,
+      "line": 63,
       "prose": "=== Immutable-after-create fields — set once at create, frozen thereafter ===\n\nDistinct from IMMUTABLE (rejected on every op): these define a token's\ncapability and are validated by the create hook, but must never be repointed\nby a later update/unarchive. Freezing scope/member/constraints/token closes the\ndefense-in-depth gap where an update could repoint an existing token (e.g. to\na different member) without re-passing the create-time validation."
     },
     {
@@ -1005,7 +1110,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 82
+      "line": 88
     },
     {
       "id": "s:entities/Hive/kernel.ts#_members()",
@@ -1014,7 +1119,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 193
+      "line": 199
     },
     {
       "id": "s:entities/Hive/kernel.ts#_outputs()",
@@ -1023,7 +1128,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 211
+      "line": 217
     },
     {
       "id": "s:entities/Hive/kernel.ts#_inputs()",
@@ -1032,7 +1137,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 221
+      "line": 227
     },
     {
       "id": "s:entities/Hive/kernel.ts#_links()",
@@ -1041,7 +1146,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 242
+      "line": 248
     },
     {
       "id": "s:entities/Hive/kernel.ts#_short_term_fragments()",
@@ -1050,7 +1155,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 276
+      "line": 282
     },
     {
       "id": "s:entities/Hive/kernel.ts#_web_cache()",
@@ -1059,7 +1164,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 281
+      "line": 287
     },
     {
       "id": "s:entities/Hive/kernel.ts#_canvases()",
@@ -1068,7 +1173,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 289
+      "line": 295
     },
     {
       "id": "s:entities/Hive/kernel.ts#_system_tasks()",
@@ -1077,7 +1182,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 295
+      "line": 301
     },
     {
       "id": "s:entities/Hive/kernel.ts#_federation_hosts()",
@@ -1086,7 +1191,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 302
+      "line": 308
     },
     {
       "id": "s:entities/Hive/kernel.ts#_publications()",
@@ -1095,7 +1200,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 317
+      "line": 323
     },
     {
       "id": "s:entities/Hive/kernel.ts#_documents()",
@@ -1104,7 +1209,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 347
+      "line": 353
     },
     {
       "id": "s:entities/Hive/kernel.ts#_maintenance_passes()",
@@ -1113,7 +1218,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 358
+      "line": 364
     },
     {
       "id": "s:entities/Hive/kernel.ts#_shared()",
@@ -1122,7 +1227,25 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 364
+      "line": 370
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_views()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_views()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 395
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#_pages()",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "_pages()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/kernel.ts",
+      "line": 421
     },
     {
       "id": "s:entities/Hive/kernel.ts#Shortcut",
@@ -1131,7 +1254,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/kernel.ts",
-      "line": 381
+      "line": 436
     },
     {
       "id": "s:entities/Hive/kernel.ts#SHORTCUTS",
@@ -1140,7 +1263,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/kernel.ts",
-      "line": 383
+      "line": 438
     },
     {
       "id": "s:entities/Hive/kernel.ts#expandShortcut",
@@ -1149,7 +1272,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 390,
+      "line": 445,
       "prose": "Expand a shortcut name to pattern + operation, or return null if not a shortcut."
     },
     {
@@ -1159,7 +1282,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 397,
+      "line": 452,
       "prose": "Normalize a federation host: lowercase, strip scheme and any path."
     },
     {
@@ -1169,7 +1292,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 519,
+      "line": 574,
       "prose": "True if a federation target points at a loopback, private, link-local, or\ninternal-only host. Such hosts can never be added to the allow-list and are\nrefused at resolve time - defense against SSRF and against an agent acting on\nprompt-injected content probing internal infrastructure or cloud metadata.\n\nThe host is normalized through the same URL parser fetch() uses, so the check\noperates on the exact host the network stack will contact (handles userinfo,\nports, IPv4 in any base, IPv6 brackets, case). Anything unparseable as a host\nfails closed (blocked). A public hostname whose DNS resolves to a private IP\ncannot be caught here (no DNS API on Workers); that residual is covered by the\nfederation consent allow-list and per-hop redirect re-validation."
     },
     {
@@ -1179,7 +1302,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 551,
+      "line": 606,
       "prose": "Check if tokenScope grants access for requiredScope. Hierarchical prefix match with : boundary."
     },
     {
@@ -1189,7 +1312,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 567,
+      "line": 622,
       "prose": "The immutability error for editing a single named facet on an existing entry,\nor null if the facet is freely editable. Covers both IMMUTABLE (rejected on\nany op) and IMMUTABLE_AFTER_CREATE (frozen after create). Used by the patch\npath, which edits one facet by name and so can't rely on applyKernelRules'\ntop-level-key scan."
     },
     {
@@ -1199,7 +1322,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 575
+      "line": 630
     },
     {
       "id": "f:entities/Hive/labels.ts",
@@ -1275,7 +1398,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 174,
+      "line": 185,
       "prose": "The `_` namespace is reserved for the kernel (create_pattern refuses it), so\n a leading underscore is the exact, single definition of \"kernel pattern.\""
     },
     {
@@ -1285,7 +1408,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 180,
+      "line": 191,
       "prose": "The write class of any pattern. Unclassified kernel patterns fail CLOSED\n (System) — a new `_` table added without a policy row is denied, not opened."
     },
     {
@@ -1295,7 +1418,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 186,
+      "line": 197,
       "prose": "True for patterns the system manages itself — denied at the mutate engine."
     },
     {
@@ -1305,7 +1428,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 193,
+      "line": 204,
       "prose": "True only for User-class patterns: the sole valid ingress/upload write target.\n Every kernel pattern — gated, open, or system — is refused, because HTTP write\n paths bypass the MCP consent layer and must never reach the kernel surface."
     },
     {
@@ -1315,7 +1438,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 198,
+      "line": 209,
       "prose": "Consent configuration for a pattern, or null if it carries none."
     },
     {
@@ -1325,7 +1448,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 203,
+      "line": 214,
       "prose": "True if this kernel pattern is surfaced in prime recall (most are excluded)."
     },
     {
@@ -1335,7 +1458,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 208,
+      "line": 219,
       "prose": "True if this pattern is exempt from audit triggers (append-only logs)."
     },
     {
@@ -1345,7 +1468,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 214,
+      "line": 225,
       "prose": "True if patch must be rejected for this pattern (any consent-gated pattern —\n patch skips the kernel validation hooks and the confirmation round-trip)."
     },
     {
@@ -1355,7 +1478,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 221,
+      "line": 232,
       "prose": "Whether an escalating create/update/unarchive needs the confirmation\n round-trip, given the data being written (for on_expose visibility checks).\n patch_only patterns never round-trip; patch is handled by patchRejected."
     },
     {
@@ -1533,13 +1656,22 @@
       "why": "Kernel tables are declared once (DDL + description + facets co-located)\nso the surface is visible by scanning one array, and re-registered into\n_objects/_fields on every boot so an existing install's kernel docs track the\ncode on deploy. Boot runs two loud integrity checks — verifyFieldsIntegrity\n(DDL vs _fields drift) and verifyWritePolicyTotality (every kernel table has\na write-class) — that warn rather than throw, because a degraded boot is\nrecoverable but a refusing one is not. Migrations are an append-only\nprocedural pile by necessity: point-in-time history is not derivable."
     },
     {
+      "id": "s:entities/Hive/schema.ts#KERNEL_TABLES",
+      "parent": "f:entities/Hive/schema.ts",
+      "label": "KERNEL_TABLES",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/schema.ts",
+      "line": 86
+    },
+    {
       "id": "s:entities/Hive/schema.ts#initializeSchema",
       "parent": "f:entities/Hive/schema.ts",
       "label": "initializeSchema",
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 570
+      "line": 630
     },
     {
       "id": "s:entities/Hive/schema.ts#verifyWritePolicyTotality",
@@ -1548,7 +1680,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 1125,
+      "line": 1197,
       "prose": "=== Integrity check: write-class policy totality ===\n\nEvery agent-facing kernel pattern must declare a write class in policy.ts.\nwriteClass() fails CLOSED (System — denied) for any unclassified `_` pattern,\nso a newly added kernel table is safe by default — but silently un-writable is\na bug, not a feature. This warns loudly at boot so a missing classification is\ncaught the moment the table ships, not when a reviewer finds the next hole.\nCode-vs-code (KERNEL_TABLES vs KERNEL_WRITE_POLICY) — no DB needed; exported so\nthe admission-matrix test asserts it statically too."
     },
     {
@@ -1558,7 +1690,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 1143,
+      "line": 1215,
       "prose": "Audit exemption (high-frequency append-only logs whose change history is the\ndata itself — auditing them would just churn the bounded _mutation_log) is a\nper-pattern behavior declared in the policy registry (policy.ts), alongside\nwrite class, so it's covered by the same boot-time totality check."
     },
     {
@@ -1617,7 +1749,7 @@
       "kind": "symbol",
       "sub": "class",
       "path": "entities/Session/session.ts",
-      "line": 69
+      "line": 71
     },
     {
       "id": "s:entities/Session/session.ts#getHive()",
@@ -1626,7 +1758,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Session/session.ts",
-      "line": 88
+      "line": 90
     },
     {
       "id": "s:entities/Session/session.ts#init()",
@@ -1635,7 +1767,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Session/session.ts",
-      "line": 96
+      "line": 98
     },
     {
       "id": "x:agents/mcp",
@@ -2110,6 +2242,36 @@
       "sub": "module"
     },
     {
+      "id": "f:shared/IO/og-png.ts",
+      "parent": "c:shared/IO",
+      "label": "og-png.ts",
+      "kind": "file",
+      "sub": "shared/IO/og-png.ts",
+      "path": "shared/IO/og-png.ts",
+      "prose": "SVG → PNG on the worker, no browser. resvg is pure WASM (the rasterizer half of\nthe @vercel/og stack); it needs font bytes supplied since workerd has no system\nfonts, so we embed the two we use. Used to turn an OG card SVG into a PNG that\nunfurls everywhere."
+    },
+    {
+      "id": "s:shared/IO/og-png.ts#svgToPng",
+      "parent": "f:shared/IO/og-png.ts",
+      "label": "svgToPng",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/IO/og-png.ts",
+      "line": 17
+    },
+    {
+      "id": "x:@resvg/resvg-wasm",
+      "label": "@resvg/resvg-wasm",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "x:@resvg/resvg-wasm/index_bg.wasm",
+      "label": "@resvg/resvg-wasm/index_bg.wasm",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
       "id": "f:shared/IO/publications.ts",
       "parent": "c:shared/IO",
       "label": "publications.ts",
@@ -2228,7 +2390,7 @@
       "kind": "symbol",
       "sub": "enum",
       "path": "shared/Routing/router.ts",
-      "line": 27
+      "line": 28
     },
     {
       "id": "s:shared/Routing/router.ts#Auth",
@@ -2237,7 +2399,7 @@
       "kind": "symbol",
       "sub": "enum",
       "path": "shared/Routing/router.ts",
-      "line": 33
+      "line": 34
     },
     {
       "id": "s:shared/Routing/router.ts#RouteContext",
@@ -2246,7 +2408,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "shared/Routing/router.ts",
-      "line": 41
+      "line": 42
     },
     {
       "id": "s:shared/Routing/router.ts#RouteHandler",
@@ -2255,7 +2417,7 @@
       "kind": "symbol",
       "sub": "type",
       "path": "shared/Routing/router.ts",
-      "line": 51
+      "line": 52
     },
     {
       "id": "s:shared/Routing/router.ts#Route",
@@ -2264,7 +2426,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "shared/Routing/router.ts",
-      "line": 53
+      "line": 54
     },
     {
       "id": "s:shared/Routing/router.ts#timingSafeEqual",
@@ -2273,7 +2435,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/Routing/router.ts",
-      "line": 69,
+      "line": 70,
       "prose": "Constant-time string comparison. Hashes both inputs to fixed-length digests\nand compares with a branch-free XOR accumulator, so timing does not leak the\nlength or content of the expected value. Use for any comparison against the\nmaster secret or an HMAC signature."
     },
     {
@@ -2283,7 +2445,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/Routing/router.ts",
-      "line": 82
+      "line": 83
     },
     {
       "id": "s:shared/Routing/router.ts#revokeAllSessions",
@@ -2292,7 +2454,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/Routing/router.ts",
-      "line": 119,
+      "line": 120,
       "prose": "Revoke every existing session by bumping the stored epoch. Cookies embed the\nepoch they were minted under, and validateSession rejects any whose epoch no\nlonger matches — so the owner can invalidate all sessions (e.g. after a\nsuspected cookie theft) without rotating MNEMION_SECRET. KV is eventually\nconsistent, so global propagation can take up to ~60s."
     },
     {
@@ -2302,7 +2464,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/Routing/router.ts",
-      "line": 134
+      "line": 135
     },
     {
       "id": "s:shared/Routing/router.ts#createRouter",
@@ -2311,7 +2473,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/Routing/router.ts",
-      "line": 209
+      "line": 210
     },
     {
       "id": "f:shared/Routing/routes/auth.ts",
@@ -2555,13 +2717,42 @@
       "line": 50
     },
     {
+      "id": "s:shared/Routing/routes/io.ts#servePage",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "servePage",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 91,
+      "prose": "Public page (a _pages entry with visibility=public): server-rendered HTML with\ncharts as inline SVG + OG meta. renderPublicPage returns null for missing or\nnon-public pages — a positive allow-list, like publications."
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#servePageOg",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "servePageOg",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 97
+    },
+    {
+      "id": "s:shared/Routing/routes/io.ts#servePageOgPng",
+      "parent": "f:shared/Routing/routes/io.ts",
+      "label": "servePageOgPng",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/io.ts",
+      "line": 104,
+      "prose": "PNG OG card (rasterized from the SVG via resvg) — the robust unfurl image."
+    },
+    {
       "id": "s:shared/Routing/routes/io.ts#servePublication",
       "parent": "f:shared/Routing/routes/io.ts",
       "label": "servePublication",
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/io.ts",
-      "line": 88
+      "line": 116
     },
     {
       "id": "s:shared/Routing/routes/io.ts#receiveInput",
@@ -2570,7 +2761,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/io.ts",
-      "line": 128
+      "line": 156
     },
     {
       "id": "s:shared/Routing/routes/io.ts#upload",
@@ -2579,7 +2770,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/io.ts",
-      "line": 166
+      "line": 194
     },
     {
       "id": "s:shared/Routing/routes/io.ts#uploadDocument",
@@ -2588,7 +2779,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/io.ts",
-      "line": 175
+      "line": 203
     },
     {
       "id": "s:shared/Routing/routes/io.ts#serveDocument",
@@ -2597,7 +2788,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/io.ts",
-      "line": 225
+      "line": 253
     },
     {
       "id": "s:shared/Routing/routes/io.ts#exportPattern",
@@ -2606,7 +2797,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/io.ts",
-      "line": 319
+      "line": 347
     },
     {
       "id": "x:fflate",
@@ -2658,22 +2849,13 @@
       "path": "shared/Routing/routes/pages.ts"
     },
     {
-      "id": "s:shared/Routing/routes/pages.ts#schemaPage",
-      "parent": "f:shared/Routing/routes/pages.ts",
-      "label": "schemaPage",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "shared/Routing/routes/pages.ts",
-      "line": 9
-    },
-    {
       "id": "s:shared/Routing/routes/pages.ts#queryIndex",
       "parent": "f:shared/Routing/routes/pages.ts",
       "label": "queryIndex",
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/pages.ts",
-      "line": 27
+      "line": 4
     },
     {
       "id": "s:shared/Routing/routes/pages.ts#queryEntries",
@@ -2682,7 +2864,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/pages.ts",
-      "line": 34
+      "line": 11
     },
     {
       "id": "s:shared/Routing/routes/pages.ts#mutateEntry",
@@ -2691,7 +2873,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/pages.ts",
-      "line": 49
+      "line": 32
     },
     {
       "id": "s:shared/Routing/routes/pages.ts#evolveSchema",
@@ -2700,7 +2882,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/pages.ts",
-      "line": 64
+      "line": 47
     },
     {
       "id": "s:shared/Routing/routes/pages.ts#queryTools",
@@ -2709,7 +2891,25 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/pages.ts",
-      "line": 75
+      "line": 58
+    },
+    {
+      "id": "s:shared/Routing/routes/pages.ts#queryHistory",
+      "parent": "f:shared/Routing/routes/pages.ts",
+      "label": "queryHistory",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/pages.ts",
+      "line": 62
+    },
+    {
+      "id": "s:shared/Routing/routes/pages.ts#queryLabel",
+      "parent": "f:shared/Routing/routes/pages.ts",
+      "label": "queryLabel",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/Routing/routes/pages.ts",
+      "line": 68
     },
     {
       "id": "s:shared/Routing/routes/pages.ts#liveSocket",
@@ -2718,7 +2918,286 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/Routing/routes/pages.ts",
-      "line": 79
+      "line": 74
+    },
+    {
+      "id": "f:shared/core/block-palette.ts",
+      "parent": "c:.",
+      "label": "block-palette.ts",
+      "kind": "file",
+      "sub": "shared/core/block-palette.ts",
+      "path": "shared/core/block-palette.ts",
+      "prose": "The block palette — the declarative vocabulary for composing a page (a _pages\nentry). A page is { blocks: Block[] }; each block is { type, ...config, width? },\nvalidated against this palette (fail-closed) and rendered against a fixed\ncomponent set in the SPA. The same safe boundary as the view/format palettes,\none level up: arbitrary COMPOSITION (any blocks, any order, referencing any\npattern/entry), never arbitrary CODE.\n\nPure data, zero env-specific imports — bundled into both the worker (validation)\nand the SPA (rendering)."
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#BlockRole",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "BlockRole",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "shared/core/block-palette.ts",
+      "line": 11
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#BlockConfigKey",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "BlockConfigKey",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/block-palette.ts",
+      "line": 13
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#BlockType",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "BlockType",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/block-palette.ts",
+      "line": 14
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#BLOCK_PALETTE",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "BLOCK_PALETTE",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/block-palette.ts",
+      "line": 16
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#BlockTypeId",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "BlockTypeId",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "shared/core/block-palette.ts",
+      "line": 58
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#BLOCK_TYPES",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "BLOCK_TYPES",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/block-palette.ts",
+      "line": 59
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#isBlockType",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "isBlockType",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/block-palette.ts",
+      "line": 60
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#BlockValidationCtx",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "BlockValidationCtx",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/block-palette.ts",
+      "line": 67
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#validateBlocks",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "validateBlocks",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/block-palette.ts",
+      "line": 74,
+      "prose": "Validate a page's `blocks` JSON against the palette + the hive (pattern/facet\nreferences). Returns [] when valid. Empty/absent blocks = a valid (empty) page."
+    },
+    {
+      "id": "s:shared/core/block-palette.ts#describeBlockPalette",
+      "parent": "f:shared/core/block-palette.ts",
+      "label": "describeBlockPalette",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/block-palette.ts",
+      "line": 127
+    },
+    {
+      "id": "f:shared/core/chart-spec.ts",
+      "parent": "c:.",
+      "label": "chart-spec.ts",
+      "kind": "file",
+      "sub": "shared/core/chart-spec.ts",
+      "path": "shared/core/chart-spec.ts",
+      "prose": "The chart vocabulary shared by BOTH renderers — the in-hive Recharts renderer\n(web/src/Chart.tsx) and the server SVG renderer (chart-svg.ts, public pages +\nOG cards). One home for: the mark set, the categorical color palette (so the\nsame dataset reads identically in-hive and on a published page), and the\nlong→wide pivot that turns multi-dimension aggregate rows into per-series\ncolumns. Pure data, zero env deps — bundled into both worker and SPA."
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#CHART_MARKS",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "CHART_MARKS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/chart-spec.ts",
+      "line": 8
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#ChartMark",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "ChartMark",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "shared/core/chart-spec.ts",
+      "line": 9
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#CONTINUOUS_MARKS",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "CONTINUOUS_MARKS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/chart-spec.ts",
+      "line": 12,
+      "prose": "Mark categories — which machinery a mark needs. Derived from, never duplicated."
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#ROUND_MARKS",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "ROUND_MARKS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/chart-spec.ts",
+      "line": 13
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#STACKABLE_MARKS",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "STACKABLE_MARKS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/chart-spec.ts",
+      "line": 14
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#isChartMark",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "isChartMark",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/chart-spec.ts",
+      "line": 16
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#SERIES_COLORS",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "SERIES_COLORS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/chart-spec.ts",
+      "line": 22,
+      "prose": "Categorical palette — the notebook accent first, then a tuned spread that holds\nup on the warm paper background (#f1efe8). Cycled by index for series/slices."
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#seriesColor",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "seriesColor",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/chart-spec.ts",
+      "line": 35
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#compactNum",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "compactNum",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/chart-spec.ts",
+      "line": 41,
+      "prose": "Compact number formatting shared by axes, labels, and tooltips (no Intl on the\nserver SVG path — keep one deterministic implementation)."
+    },
+    {
+      "id": "s:shared/core/chart-spec.ts#pivotSeries",
+      "parent": "f:shared/core/chart-spec.ts",
+      "label": "pivotSeries",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/chart-spec.ts",
+      "line": 54,
+      "prose": "Long rows [{ [xKey]: x, [seriesKey]: s, [valueKey]: v }, ...] from a two-facet\naggregate → wide rows [{ [xKey]: x, [s1]: v, [s2]: v, ... }] plus the ordered\nlist of series keys (first-seen order). Missing cells are 0-filled so stacked\nmarks and multi-line charts don't tear. x order is first-seen (the caller\nsorts the aggregate by x, so this preserves it)."
+    },
+    {
+      "id": "f:shared/core/chart-svg.ts",
+      "parent": "c:.",
+      "label": "chart-svg.ts",
+      "kind": "file",
+      "sub": "shared/core/chart-svg.ts",
+      "path": "shared/core/chart-svg.ts",
+      "prose": "The SERVER renderer for a chart spec: pure SVG string, no DOM, no deps. Same\nspec + palette as the in-hive Recharts renderer (web/src/Chart.tsx, both derive\nfrom chart-spec.ts) — this one produces static SVG for published pages and OG\ncards. Marks: bar | line | area | scatter | pie | donut, single- or multi-series\n(grouped/stacked), with a legend."
+    },
+    {
+      "id": "s:shared/core/chart-svg.ts#Datum",
+      "parent": "f:shared/core/chart-svg.ts",
+      "label": "Datum",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/chart-svg.ts",
+      "line": 10
+    },
+    {
+      "id": "s:shared/core/chart-svg.ts#SeriesData",
+      "parent": "f:shared/core/chart-svg.ts",
+      "label": "SeriesData",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/chart-svg.ts",
+      "line": 13,
+      "prose": "Multi-series payload: wide rows (one per x) with one numeric column per series\nkey, already pivoted (chart-spec.pivotSeries) and sorted by x."
+    },
+    {
+      "id": "s:shared/core/chart-svg.ts#ChartPayload",
+      "parent": "f:shared/core/chart-svg.ts",
+      "label": "ChartPayload",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "shared/core/chart-svg.ts",
+      "line": 14
+    },
+    {
+      "id": "s:shared/core/chart-svg.ts#ChartSvgOpts",
+      "parent": "f:shared/core/chart-svg.ts",
+      "label": "ChartSvgOpts",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/chart-svg.ts",
+      "line": 18
+    },
+    {
+      "id": "s:shared/core/chart-svg.ts#renderChartSvg",
+      "parent": "f:shared/core/chart-svg.ts",
+      "label": "renderChartSvg",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/chart-svg.ts",
+      "line": 27,
+      "prose": "=== Unified entry: dispatch a payload to the right mark renderer ============\n`mark` selects the shape; `payload.multi` selects single vs grouped/stacked."
+    },
+    {
+      "id": "s:shared/core/chart-svg.ts#chartToSvg",
+      "parent": "f:shared/core/chart-svg.ts",
+      "label": "chartToSvg",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/chart-svg.ts",
+      "line": 45,
+      "prose": "=== Single-series: bar | line | area | scatter =============================="
+    },
+    {
+      "id": "s:shared/core/chart-svg.ts#chartOgSvg",
+      "parent": "f:shared/core/chart-svg.ts",
+      "label": "chartOgSvg",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/chart-svg.ts",
+      "line": 271,
+      "prose": "A standalone OG card: wrapped title + the chart, at social dimensions\n(1200×630). The chart is rendered at the card's exact pixel size (with larger\nlabels) and placed with a plain translate — no nested-svg scaling, which not\nevery SVG renderer handles the same way."
     },
     {
       "id": "f:shared/core/constants.ts",
@@ -2805,12 +3284,228 @@
       "line": 49
     },
     {
+      "id": "f:shared/core/format-palette.ts",
+      "parent": "c:.",
+      "label": "format-palette.ts",
+      "kind": "file",
+      "sub": "shared/core/format-palette.ts",
+      "path": "shared/core/format-palette.ts",
+      "prose": "The format palette — the single declarative home for how a facet's VALUE is\nrendered (its presentation), distinct from the view palette (which governs\nlayout) and from config roles (which govern a facet's job in a layout).\n\nA facet's effective format is resolved from three sources, most specific first:\n  1. the view's per-facet override   (config.formats[facet] — desk choice)\n  2. the facet's intrinsic format    (_fields.format — the data's nature)\n  3. a default derived from its type  (datetime → date, etc.)\n\nLike view-palette.ts: pure data, ZERO imports, bundled into BOTH the worker\n(schema enum + validation) and the SPA (a Record<FormatId,…> renderer registry\nwhose compile-time totality binds the two)."
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#FormatType",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "FormatType",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/format-palette.ts",
+      "line": 14
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#FORMAT_PALETTE",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "FORMAT_PALETTE",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/format-palette.ts",
+      "line": 22,
+      "prose": "Add a format here and the enum, the agent contract, and validation pick it up;\nthe SPA won't compile until it has a matching renderer (Record<FormatId,…>)."
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#FormatId",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "FormatId",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "shared/core/format-palette.ts",
+      "line": 33
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#FORMAT_IDS",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "FORMAT_IDS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/format-palette.ts",
+      "line": 35
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#isFormat",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "isFormat",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/format-palette.ts",
+      "line": 37
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#defaultFormatForType",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "defaultFormatForType",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/format-palette.ts",
+      "line": 44,
+      "prose": "The default rendering for a facet that carries no explicit format — derived\nfrom its declared type, so a datetime is friendly and a boolean is a check\nwithout anyone having to say so. Truth (the type) drives presentation."
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#isNumericFormat",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "isNumericFormat",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/format-palette.ts",
+      "line": 55,
+      "prose": "Whether a resolved format sorts and aligns as a number (table concerns)."
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#resolveFormat",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "resolveFormat",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/format-palette.ts",
+      "line": 64,
+      "prose": "The resolve chain: view override ?? facet intrinsic ?? foreign-key reference ??\ntype default. A declared foreign key (hasLink) wins over the type default — an\nFK facet is a reference by nature — but an explicit format still overrides it.\nUnknown ids fall through (a stale format never crashes a render — it degrades\nto the next source), so the resolver always returns a real FormatId."
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#validateFormatsMap",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "validateFormatsMap",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/format-palette.ts",
+      "line": 79,
+      "prose": "Validate a view's per-facet `formats` override map: an object of\nfacet-name → format-id. `hasFacet` null = pattern unknown → skip the\nfacet-existence check (format-id checks still run). Returns [] when valid."
+    },
+    {
+      "id": "s:shared/core/format-palette.ts#describeFormatPalette",
+      "parent": "f:shared/core/format-palette.ts",
+      "label": "describeFormatPalette",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/format-palette.ts",
+      "line": 98,
+      "prose": "Agent-facing prose, generated from the palette so the contract can't drift\nfrom what's enforced. Embedded in the _views + set_facet_format docs."
+    },
+    {
       "id": "f:shared/core/text.d.ts",
       "parent": "c:.",
       "label": "text.d.ts",
       "kind": "file",
       "sub": "shared/core/text.d.ts",
       "path": "shared/core/text.d.ts"
+    },
+    {
+      "id": "f:shared/core/view-palette.ts",
+      "parent": "c:.",
+      "label": "view-palette.ts",
+      "kind": "file",
+      "sub": "shared/core/view-palette.ts",
+      "path": "shared/core/view-palette.ts",
+      "prose": "The view palette — the single declarative home for the UI shapes an agent can\nauthor for a pattern. This is the SSOT the rest of the system derives from:\n  - schema.ts derives the _views `view_type` enum + the agent-facing contract\n    (describeViewPalette) from it\n  - kernel.ts validates every _views write against it (validateViewSpec),\n    fail-closed at the mutate chokepoint\n  - the web SPA dispatches to a component keyed by these same ids, and a\n    compile-time Record<ViewTypeId, …> totality check binds the two\n\nPure data — bundled into BOTH the worker (server) and the React SPA (client).\nThe only import is its sibling format-palette (also pure data, no env deps):\nevery view may carry a universal `formats` override map, validated against it."
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#ConfigRole",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "ConfigRole",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "shared/core/view-palette.ts",
+      "line": 16
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#ConfigKey",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "ConfigKey",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/view-palette.ts",
+      "line": 23
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#ViewType",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "ViewType",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/view-palette.ts",
+      "line": 29
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#VIEW_PALETTE",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "VIEW_PALETTE",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/view-palette.ts",
+      "line": 39,
+      "prose": "The palette. Add a view type here and the enum, the agent contract, and the\nvalidator all pick it up; the client won't compile until it has a matching\ncomponent (Record<ViewTypeId, …>). One table, derive the rest."
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#ViewTypeId",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "ViewTypeId",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "shared/core/view-palette.ts",
+      "line": 103
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#VIEW_TYPES",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "VIEW_TYPES",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/view-palette.ts",
+      "line": 105
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#DEFAULT_VIEW_TYPE",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "DEFAULT_VIEW_TYPE",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "shared/core/view-palette.ts",
+      "line": 106
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#isViewType",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "isViewType",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/view-palette.ts",
+      "line": 108
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#describeViewPalette",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "describeViewPalette",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/view-palette.ts",
+      "line": 114,
+      "prose": "Agent-facing prose, generated from the palette so the contract can never drift\nfrom what the validator enforces. Embedded in the _views schema description."
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#ValidateOpts",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "ValidateOpts",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "shared/core/view-palette.ts",
+      "line": 128
+    },
+    {
+      "id": "s:shared/core/view-palette.ts#validateViewSpec",
+      "parent": "f:shared/core/view-palette.ts",
+      "label": "validateViewSpec",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "shared/core/view-palette.ts",
+      "line": 137,
+      "prose": "Validate a view spec against the palette and, when the target pattern's facets\nare known, against those facets. `hasFacet` null = pattern unknown (e.g. a\npartial update that doesn't carry the pattern) → facet-existence checks are\nskipped, structural checks still run. Returns [] when valid."
     },
     {
       "id": "f:src/index.ts",
@@ -2869,6 +3564,156 @@
       "kind": "file",
       "sub": "vite.preview.ts",
       "path": "vite.preview.ts"
+    },
+    {
+      "id": "f:vite.web.ts",
+      "parent": "c:.",
+      "label": "vite.web.ts",
+      "kind": "file",
+      "sub": "vite.web.ts",
+      "path": "vite.web.ts"
+    },
+    {
+      "id": "x:@vitejs/plugin-react",
+      "label": "@vitejs/plugin-react",
+      "kind": "external",
+      "sub": "module"
+    },
+    {
+      "id": "f:web/src/store.ts",
+      "parent": "c:.",
+      "label": "store.ts",
+      "kind": "file",
+      "sub": "web/src/store.ts",
+      "path": "web/src/store.ts"
+    },
+    {
+      "id": "s:web/src/store.ts#Entry",
+      "parent": "f:web/src/store.ts",
+      "label": "Entry",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "web/src/store.ts",
+      "line": 9
+    },
+    {
+      "id": "s:web/src/store.ts#ensure()",
+      "parent": "f:web/src/store.ts",
+      "label": "ensure()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 26
+    },
+    {
+      "id": "s:web/src/store.ts#rebuild()",
+      "parent": "f:web/src/store.ts",
+      "label": "rebuild()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 32
+    },
+    {
+      "id": "s:web/src/store.ts#notifyEntry()",
+      "parent": "f:web/src/store.ts",
+      "label": "notifyEntry()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 38
+    },
+    {
+      "id": "s:web/src/store.ts#load()",
+      "parent": "f:web/src/store.ts",
+      "label": "load()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 43,
+      "prose": "Replace a pattern's entries (initial load or coarse refetch)."
+    },
+    {
+      "id": "s:web/src/store.ts#has()",
+      "parent": "f:web/src/store.ts",
+      "label": "has()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 51
+    },
+    {
+      "id": "s:web/src/store.ts#patchEntry()",
+      "parent": "f:web/src/store.ts",
+      "label": "patchEntry()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 57,
+      "prose": "Optimistically merge a patch into one entry (e.g. a drag changes status).\n The server's WS echo arrives moments later and overwrites with the truth."
+    },
+    {
+      "id": "s:web/src/store.ts#applyDelta()",
+      "parent": "f:web/src/store.ts",
+      "label": "applyDelta()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 67,
+      "prose": "Apply a single granular change from the live socket."
+    },
+    {
+      "id": "s:web/src/store.ts#getOrdered()",
+      "parent": "f:web/src/store.ts",
+      "label": "getOrdered()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 92
+    },
+    {
+      "id": "s:web/src/store.ts#getEntry()",
+      "parent": "f:web/src/store.ts",
+      "label": "getEntry()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 102
+    },
+    {
+      "id": "s:web/src/store.ts#store",
+      "parent": "f:web/src/store.ts",
+      "label": "store",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "web/src/store.ts",
+      "line": 108
+    },
+    {
+      "id": "s:web/src/store.ts#usePatternEntries",
+      "parent": "f:web/src/store.ts",
+      "label": "usePatternEntries",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "web/src/store.ts",
+      "line": 111,
+      "prose": "Ordered entries for a pattern — re-renders only when the set/order changes."
+    },
+    {
+      "id": "s:web/src/store.ts#useEntry",
+      "parent": "f:web/src/store.ts",
+      "label": "useEntry",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "web/src/store.ts",
+      "line": 119,
+      "prose": "A single entry — re-renders only when THAT entry changes."
+    },
+    {
+      "id": "x:react",
+      "label": "react",
+      "kind": "external",
+      "sub": "module"
     }
   ],
   "edges": [
@@ -2930,6 +3775,18 @@
       "id": "f:shared/IO/git.ts->x:node:zlib:imports",
       "source": "f:shared/IO/git.ts",
       "target": "x:node:zlib",
+      "kind": "imports"
+    },
+    {
+      "id": "f:shared/IO/og-png.ts->x:@resvg/resvg-wasm:imports",
+      "source": "f:shared/IO/og-png.ts",
+      "target": "x:@resvg/resvg-wasm",
+      "kind": "imports"
+    },
+    {
+      "id": "f:shared/IO/og-png.ts->x:@resvg/resvg-wasm/index_bg.wasm:imports",
+      "source": "f:shared/IO/og-png.ts",
+      "target": "x:@resvg/resvg-wasm/index_bg.wasm",
       "kind": "imports"
     },
     {
@@ -3002,6 +3859,24 @@
       "id": "f:vite.preview.ts->x:@sveltejs/vite-plugin-svelte:imports",
       "source": "f:vite.preview.ts",
       "target": "x:@sveltejs/vite-plugin-svelte",
+      "kind": "imports"
+    },
+    {
+      "id": "f:vite.web.ts->x:vite:imports",
+      "source": "f:vite.web.ts",
+      "target": "x:vite",
+      "kind": "imports"
+    },
+    {
+      "id": "f:vite.web.ts->x:@vitejs/plugin-react:imports",
+      "source": "f:vite.web.ts",
+      "target": "x:@vitejs/plugin-react",
+      "kind": "imports"
+    },
+    {
+      "id": "f:web/src/store.ts->x:react:imports",
+      "source": "f:web/src/store.ts",
+      "target": "x:react",
       "kind": "imports"
     }
   ],

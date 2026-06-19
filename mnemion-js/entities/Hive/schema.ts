@@ -576,7 +576,7 @@ ${describeViewPalette()}`,
     description: `Agent-authored pages — arbitrary compositions that reference any patterns and entries. A page is a list of blocks (metric, chart, an embedded pattern view, a specific entry, prose) arranged in a grid. Build one when the human wants a dashboard or an overview you didn't pre-design. Set a unique "path" (slug) per page.
 
 ${describeBlockPalette()}`,
-    doctrine: `Compose a page when the human wants a custom dashboard or overview across patterns. Blocks are declarative data interpreted against a fixed component palette — never code. Reference real patterns/entries; the kernel rejects a page that names a missing pattern, facet, or an unknown block type.`,
+    doctrine: `Compose a page when the human wants a custom dashboard or overview across patterns. Blocks are declarative data interpreted against a fixed component palette — never code. Reference real patterns/entries; the kernel rejects a page that names a missing pattern, facet, or an unknown block type. The create/update response carries page_url — give it to the human so they can open the page. Pages are private by default (page_url opens only in the signed-in app); set visibility: public to serve it over the web at /page/{path} with an OG unfurl card (og_image) — that flip is consent-gated.`,
     ddl: `CREATE TABLE IF NOT EXISTS "_pages" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "name" TEXT NOT NULL,

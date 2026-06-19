@@ -21,7 +21,7 @@ async function createPattern(store: DurableObjectStub<HiveDO>, name: string, fac
 describe("validateBlocks", () => {
   const ctx = {
     patternExists: (p: string) => ["tweets", "tasks"].includes(p),
-    hasFacet: (p: string, f: string) => p === "tweets" && ["engagement", "year"].includes(f),
+    hasFacet: (p: string, f: string) => p === "tweets" && ["engagement", "year", "faves", "platform"].includes(f),
   };
 
   it("accepts a valid dashboard of mixed blocks", () => {
@@ -48,6 +48,13 @@ describe("validateBlocks", () => {
     expect(validateBlocks(JSON.stringify([{ type: "chart" }]), ctx).join()).toContain("pattern is required");
     expect(validateBlocks(JSON.stringify([{ type: "heading", text: "x", width: "huge" }]), ctx).join()).toContain("width must be");
     expect(validateBlocks(JSON.stringify([{ type: "metric", pattern: "tweets", agg: "median" }]), ctx).join()).toContain("one of");
+  });
+  it("accepts a multi-series / stacked chart block, rejects a bad stack flag", () => {
+    expect(validateBlocks(JSON.stringify([
+      { type: "chart", pattern: "tweets", mark: "area", x: "year", y: "engagement", series: "platform", stack: true, width: "full" },
+    ]), ctx)).toEqual([]);
+    expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets", x: "year", series: "ghost" }]), ctx).join()).toContain('facet "ghost"');
+    expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets", x: "year", stack: "yes" }]), ctx).join()).toContain("true or false");
   });
   it("rejects non-array / non-JSON blocks", () => {
     expect(validateBlocks(JSON.stringify({ type: "heading" }), ctx).join()).toContain("must be a JSON array");
@@ -78,6 +85,23 @@ describe("_pages kernel validation", () => {
 
     expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "B", path: "b", blocks: JSON.stringify([{ type: "chart", pattern: "data", group_by: "ghost" }]) }))).message).toContain('facet "ghost"');
     expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "B2", path: "b2", blocks: JSON.stringify([{ type: "metric", pattern: "ghosts" }]) }))).message).toContain("does not exist");
+  });
+
+  it("hands back a link the agent can give the human (private → app deep-link, public → web URL + OG)", async () => {
+    const store = getStore();
+    // private (default): page_url is the signed-in app hash route, plus a note; no og_image
+    const priv = JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "P", path: "p" })));
+    expect(priv.error).toBeFalsy();
+    expect(priv.page_url).toMatch(/\/#page:p$/);
+    expect(priv.page_note).toContain("Private");
+    expect(priv.og_image).toBeUndefined();
+
+    // public: page_url is the web route, og_image is the unfurl card, no private note
+    const pub = JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "Q", path: "q", visibility: "public" })));
+    expect(pub.error).toBeFalsy();
+    expect(pub.page_url).toMatch(/\/page\/q$/);
+    expect(pub.og_image).toMatch(/\/page\/q\/og\.png$/);
+    expect(pub.page_note).toBeUndefined();
   });
 });
 

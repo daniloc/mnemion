@@ -1,13 +1,16 @@
-import { ResponsiveContainer, BarChart, Bar, LineChart, Line, AreaChart, Area, ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
+import type { ReactElement } from 'react';
+import { ResponsiveContainer, BarChart, Bar, LineChart, Line, AreaChart, Area, ScatterChart, Scatter, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
+import { seriesColor, pivotSeries, ROUND_MARKS } from '../../shared/core/chart-spec';
 
 // A chart is a declarative spec → a renderer. This is the in-hive (client)
-// renderer, Recharts styled to the notebook aesthetic: one accent, no chartjunk,
-// a title that carries the argument. The SAME spec drives any future server/OG
-// renderer — the spec is the contract, the renderer is swappable.
+// renderer, Recharts styled to the notebook aesthetic: one accent (or the shared
+// categorical palette for multiple series/slices), no chartjunk, a title that
+// carries the argument. The SAME spec + palette drive the server/OG SVG renderer
+// (shared/core/chart-svg.ts) — the spec is the contract, the renderer is swappable.
 
-export const CHART_MARKS = ['bar', 'line', 'area'] as const;
+export { CHART_MARKS } from '../../shared/core/chart-spec';
 export interface ChartSpec {
-  mark?: string; x?: string; y?: string; series?: string; agg?: string;
+  mark?: string; x?: string; y?: string; series?: string; stack?: boolean; agg?: string;
   title?: string; caption?: string;
 }
 type Row = Record<string, unknown>;
@@ -19,32 +22,90 @@ const MONO = "'Spline Sans Mono', ui-monospace, monospace";
 const compact = (v: unknown) => new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(v));
 const full = (v: unknown) => new Intl.NumberFormat('en').format(Number(v));
 
-function Tip({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: unknown }) {
+function Tip({ active, payload, label }: { active?: boolean; payload?: { name?: string; value: number; color?: string }[]; label?: unknown }) {
   if (!active || !payload?.length) return null;
   return (
     <div className="chart2-tip">
       <div className="chart2-tip-x">{String(label)}</div>
-      <div className="chart2-tip-v">{full(payload[0].value)}</div>
+      {payload.map((p, i) => (
+        <div className="chart2-tip-v" key={i}>
+          {p.name && payload.length > 1 && <span style={{ color: p.color }}>{p.name}: </span>}
+          {full(p.value)}
+        </div>
+      ))}
     </div>
   );
 }
 
+const legendStyle = { fontFamily: MONO, fontSize: 11, color: C.ink3 } as const;
+
 export function Chart({ spec, data }: { spec: ChartSpec; data: Row[] }) {
   const x = spec.x || 'x';
   const mark = spec.mark || 'bar';
-  // line/area/scatter plot over a continuous axis; when x parses as numbers, use a
-  // numeric x-axis so values space to scale (e.g. years), not equally.
-  const continuous = mark === 'line' || mark === 'area' || mark === 'scatter';
-  const xNumeric = continuous && data.length > 0 && data.every((d) => isFinite(Number((d as Record<string, unknown>)[x])));
-  const rows = xNumeric ? data.map((d) => ({ ...d, [x]: Number((d as Record<string, unknown>)[x]) })) : data;
+  const figure = (chart: ReactElement, h = 300) => (
+    <figure className="chart2">
+      {spec.title && <figcaption className="chart2-title">{spec.title}</figcaption>}
+      <div className="chart2-canvas">
+        <ResponsiveContainer width="100%" height={h}>{chart}</ResponsiveContainer>
+      </div>
+      {spec.caption && <figcaption className="chart2-caption">{spec.caption}</figcaption>}
+    </figure>
+  );
+
+  // === Pie / donut — parts of a whole, no axes ===
+  if (ROUND_MARKS.has(mark)) {
+    const slices = data.map((d) => ({ name: String(d[x] ?? ''), value: Number(d.value) || 0 })).filter((d) => d.value > 0);
+    return figure(
+      <PieChart>
+        <Tooltip content={<Tip />} />
+        <Legend wrapperStyle={legendStyle} iconType="circle" />
+        <Pie data={slices} dataKey="value" nameKey="name" innerRadius={mark === 'donut' ? '55%' : 0} outerRadius="80%" paddingAngle={1} isAnimationActive={false} stroke={C.line} strokeWidth={1}>
+          {slices.map((_, i) => <Cell key={i} fill={seriesColor(i)} />)}
+        </Pie>
+      </PieChart>, 320,
+    );
+  }
+
   const axis = { stroke: C.ink3, tick: { fill: C.ink3, fontSize: 11, fontFamily: MONO } as const, tickLine: false } as const;
   const margin = { top: 8, right: 14, bottom: 4, left: 2 };
   const grid = <CartesianGrid stroke={C.line} vertical={false} />;
-  const xa = <XAxis dataKey={x} {...(xNumeric ? { type: 'number' as const, domain: ['dataMin', 'dataMax'] as [string, string] } : {})} {...axis} axisLine={{ stroke: C.line }} />;
   const ya = <YAxis {...axis} axisLine={false} tickFormatter={compact} width={42} />;
   const tip = <Tooltip cursor={{ fill: 'rgba(27,26,22,0.04)' }} content={<Tip />} />;
 
-  let chart;
+  // line/area/scatter plot over a continuous axis; when x parses as numbers, use a
+  // numeric x-axis so values space to scale (e.g. years), not equally.
+  const continuous = mark === 'line' || mark === 'area' || mark === 'scatter';
+  const sampleRows = data;
+  const xNumeric = continuous && sampleRows.length > 0 && sampleRows.every((d) => isFinite(Number(d[x])));
+  const numAxis = xNumeric ? { type: 'number' as const, domain: ['dataMin', 'dataMax'] as [string, string] } : {};
+  const xa = <XAxis dataKey={x} {...numAxis} {...axis} axisLine={{ stroke: C.line }} />;
+
+  // === Multi-series — pivot long rows [{x, series, value}] → wide + keys ===
+  if (spec.series && (mark === 'bar' || mark === 'line' || mark === 'area')) {
+    const { rows, keys } = pivotSeries(data, x, spec.series);
+    const wide = xNumeric ? rows.map((r) => ({ ...r, [x]: Number(r[x]) })) : rows;
+    const legend = <Legend wrapperStyle={legendStyle} iconType="circle" />;
+    if (mark === 'bar') {
+      return figure(
+        <BarChart data={wide} margin={margin}>{grid}{xa}{ya}{tip}{legend}
+          {keys.map((k, i) => <Bar key={k} dataKey={k} stackId={spec.stack ? 's' : undefined} fill={seriesColor(i)} radius={spec.stack ? 0 : [2, 2, 0, 0]} maxBarSize={64} isAnimationActive={false} />)}
+        </BarChart>);
+    }
+    if (mark === 'area') {
+      return figure(
+        <AreaChart data={wide} margin={margin}>{grid}{xa}{ya}{tip}{legend}
+          {keys.map((k, i) => <Area key={k} dataKey={k} stackId={spec.stack ? 's' : undefined} stroke={seriesColor(i)} strokeWidth={2} fill={seriesColor(i)} fillOpacity={spec.stack ? 0.5 : 0.15} isAnimationActive={false} />)}
+        </AreaChart>);
+    }
+    return figure(
+      <LineChart data={wide} margin={margin}>{grid}{xa}{ya}{tip}{legend}
+        {keys.map((k, i) => <Line key={k} type="monotone" dataKey={k} stroke={seriesColor(i)} strokeWidth={2.5} dot={{ r: 2.5, fill: seriesColor(i), strokeWidth: 0 }} activeDot={{ r: 4.5 }} isAnimationActive={false} />)}
+      </LineChart>);
+  }
+
+  // === Single series ===
+  const rows = xNumeric ? data.map((d) => ({ ...d, [x]: Number(d[x]) })) : data;
+  let chart: ReactElement;
   if (mark === 'scatter') {
     chart = (
       <ScatterChart margin={margin}>{grid}{xa}
@@ -72,14 +133,5 @@ export function Chart({ spec, data }: { spec: ChartSpec; data: Row[] }) {
       </BarChart>
     );
   }
-
-  return (
-    <figure className="chart2">
-      {spec.title && <figcaption className="chart2-title">{spec.title}</figcaption>}
-      <div className="chart2-canvas">
-        <ResponsiveContainer width="100%" height={300}>{chart}</ResponsiveContainer>
-      </div>
-      {spec.caption && <figcaption className="chart2-caption">{spec.caption}</figcaption>}
-    </figure>
-  );
+  return figure(chart);
 }

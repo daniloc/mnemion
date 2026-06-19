@@ -17,7 +17,7 @@ _works when:_
 - README.md exists at root
 - src/index.ts imports @cloudflare/workers-oauth-provider
 
-_files:_ `constants.ts`, `dev-seed.ts`, `text.d.ts`, `index.ts`, `vite.canvas.ts`, `vite.config.ts`, `vite.fragment.ts`, `vite.preview.ts`
+_files:_ `block-palette.ts`, `chart-spec.ts`, `chart-svg.ts`, `constants.ts`, `dev-seed.ts`, `format-palette.ts`, `text.d.ts`, `view-palette.ts`, `index.ts`, `vite.canvas.ts`, `vite.config.ts`, `vite.fragment.ts`, `vite.preview.ts`, `vite.web.ts`, `store.ts`
 
 ### Hive  `entities/Hive`
 The single per-user Durable Object that owns all SQLite data and funnels every agent write through one kernel-enforced chokepoint.
@@ -68,7 +68,7 @@ _works when:_
 - git.ts exists at this node
 - extract.ts exists at this node
 
-_files:_ `extract.ts`, `git.ts`, `publications.ts`, `web.ts`
+_files:_ `extract.ts`, `git.ts`, `og-png.ts`, `publications.ts`, `web.ts`
 
 ### Routing  `shared/Routing`
 Declarative HTTP dispatch and session machinery: pattern-matched route table plus constant-time, revocable session auth helpers.
@@ -118,6 +118,7 @@ mnemion-js/
 │  ├─ IO/  ●
 │  │  ├─ extract.ts
 │  │  ├─ git.ts
+│  │  ├─ og-png.ts
 │  │  ├─ publications.ts
 │  │  └─ web.ts
 │  ├─ Routing/  ●
@@ -130,14 +131,23 @@ mnemion-js/
 │  │  │  └─ pages.ts
 │  │  └─ router.ts
 │  └─ core/
+│     ├─ block-palette.ts
+│     ├─ chart-spec.ts
+│     ├─ chart-svg.ts
 │     ├─ constants.ts
 │     ├─ dev-seed.ts
-│     └─ text.d.ts
+│     ├─ format-palette.ts
+│     ├─ text.d.ts
+│     └─ view-palette.ts
 ├─ src/
 │  └─ index.ts
+├─ web/
+│  └─ src/
+│     └─ store.ts
 ├─ vite.canvas.ts
 ├─ vite.config.ts
 ├─ vite.fragment.ts
-└─ vite.preview.ts
+├─ vite.preview.ts
+└─ vite.web.ts
 ```
 

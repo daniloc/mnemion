@@ -8,7 +8,7 @@
 // Pure data, zero env-specific imports — bundled into both the worker (validation)
 // and the SPA (rendering).
 
-export type BlockRole = "text" | "pattern" | "facet" | "agg" | "id" | "viewtype" | "number";
+export type BlockRole = "text" | "pattern" | "facet" | "agg" | "id" | "viewtype" | "number" | "flag";
 
 export interface BlockConfigKey { role: BlockRole; required?: boolean; help: string; }
 export interface BlockType { label: string; help: string; config: Record<string, BlockConfigKey>; }
@@ -26,11 +26,13 @@ export const BLOCK_PALETTE = {
     agg: { role: "agg", help: "count | sum | avg | min | max (default: sum when a metric is set, else count)" },
     label: { role: "text", help: "caption shown under the number" },
   } },
-  chart: { label: "Chart", help: "A bar/line/area chart of an aggregate grouped by a facet.", config: {
+  chart: { label: "Chart", help: "A chart of an aggregate grouped by a facet.", config: {
     pattern: { role: "pattern", required: true, help: "pattern to chart" },
-    mark: { role: "text", help: "bar | line | area | scatter (default: bar)" },
-    x: { role: "facet", help: "facet for the x-axis (alias: group_by)" },
-    y: { role: "facet", help: "numeric facet for the y-axis (alias: metric; omit to count rows)" },
+    mark: { role: "text", help: "bar | line | area | scatter | pie | donut (default: bar)" },
+    x: { role: "facet", help: "facet for the x-axis / slice label (alias: group_by)" },
+    y: { role: "facet", help: "numeric facet to measure (alias: metric; omit to count rows)" },
+    series: { role: "facet", help: "split into colored series by this facet (bar/line/area; adds a legend)" },
+    stack: { role: "flag", help: "stack the series instead of side-by-side (bar/area; needs series)" },
     group_by: { role: "facet", help: "alias for x" },
     metric: { role: "facet", help: "alias for y" },
     agg: { role: "agg", help: "aggregate function (default: sum when y is set, else count)" },
@@ -112,6 +114,9 @@ export function validateBlocks(blocksRaw: string | null | undefined, ctx: BlockV
         case "id":
         case "number":
           if (typeof v !== "number" && !(typeof v === "string" && /^\d+$/.test(v))) errors.push(`${at}.${key} must be a number.`);
+          break;
+        case "flag":
+          if (typeof v !== "boolean") errors.push(`${at}.${key} must be true or false.`);
           break;
       }
     }

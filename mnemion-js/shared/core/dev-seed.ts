@@ -98,6 +98,7 @@ export function seedDevData(db: DB): void {
     { name: "retweets", type: "integer" },
     { name: "engagement", type: "integer" },
     { name: "year", type: "integer" },
+    { name: "platform", type: "text" }, // categorical → series / pie / donut dimension
   ]);
   db.exec("UPDATE _objects SET pattern_class = 'dataset' WHERE name = 'tweets'");
 
@@ -171,6 +172,19 @@ export function seedDevData(db: DB): void {
     // a third view: scatter — does fave count predict total engagement? raw
     // points, one per post (no aggregation).
     config: JSON.stringify({ mark: "scatter", x: "faves", y: "engagement", title: "Do faves predict reach?", caption: "one point per post" }) });
+  ins(db, "_views", { pattern: "tweets", name: "by platform", view_type: "chart",
+    // multi-series STACKED area: engagement per year split by platform — the
+    // stack reads as the year's total while showing each platform's share.
+    config: JSON.stringify({ mark: "area", x: "year", y: "engagement", series: "platform", stack: true, title: "Engagement by year & platform", caption: "stacked — each band is a platform" }) });
+  ins(db, "_views", { pattern: "tweets", name: "faves × platform", view_type: "chart",
+    // multi-series GROUPED bar: faves per year, one bar per platform side by side.
+    config: JSON.stringify({ mark: "bar", x: "year", y: "faves", series: "platform", title: "Faves by year, by platform", caption: "grouped — bars side by side" }) });
+  ins(db, "_views", { pattern: "tweets", name: "platform mix", view_type: "chart",
+    // DONUT: share of total engagement by platform (parts of a whole).
+    config: JSON.stringify({ mark: "donut", x: "platform", y: "engagement", title: "Where the engagement lives", caption: "share of total engagement" }) });
+  ins(db, "_views", { pattern: "tweets", name: "post share", view_type: "chart",
+    // PIE: how many posts per platform (count, no measure).
+    config: JSON.stringify({ mark: "pie", x: "platform", title: "Posts per platform", caption: "count of posts" }) });
 
   // --- Pages: an agent-composed dashboard referencing several patterns ---
   ins(db, "_pages", { name: "Pulse", path: "pulse", title: "Pulse",
@@ -180,6 +194,8 @@ export function seedDevData(db: DB): void {
       { type: "metric", pattern: "tweets", agg: "count", label: "Posts", width: "third" },
       { type: "metric", pattern: "tasks", agg: "count", label: "Open tasks", width: "third" },
       { type: "chart", pattern: "tweets", mark: "bar", x: "year", y: "engagement", agg: "sum", title: "Engagement by year", width: "full" },
+      { type: "chart", pattern: "tweets", mark: "donut", x: "platform", y: "engagement", agg: "sum", title: "Engagement by platform", width: "half" },
+      { type: "chart", pattern: "tweets", mark: "bar", x: "year", y: "faves", series: "platform", title: "Faves by platform", width: "half" },
       { type: "heading", text: "The board", width: "full" },
       { type: "view", pattern: "tasks", width: "full" }, // embeds tasks as its own default view (the board)
       { type: "heading", text: "Recent notes", width: "half" },
@@ -201,13 +217,30 @@ export function seedDevData(db: DB): void {
       { type: "text", text: "One viral thread in 2022 carries more engagement than every year since combined.", width: "full" },
     ]) });
 
-  ins(db, "tweets", { summary: "helping a senior fix a laptop she overpaid for", faves: 27608, retweets: 4200, engagement: 132368, year: 2022 });
-  ins(db, "tweets", { summary: "if only there were a word for a religious travel ban", faves: 18696, retweets: 9800, engagement: 33090, year: 2017 });
-  ins(db, "tweets", { summary: "the line outside Silicon Valley Bank wraps the building", faves: 3476, retweets: 1100, engagement: 14800, year: 2023 });
-  ins(db, "tweets", { summary: "a quiet observation about interfaces as promises", faves: 2210, retweets: 540, engagement: 8700, year: 2025 });
-  ins(db, "tweets", { summary: "the wizard isn't code generation, it's feeling rescued", faves: 1540, retweets: 330, engagement: 6100, year: 2025 });
-  ins(db, "tweets", { summary: "a small thread on why constraints make better design", faves: 980, retweets: 210, engagement: 4300, year: 2024 });
-  ins(db, "tweets", { summary: "shipping notes from a long week of migrations", faves: 412, retweets: 55, engagement: 1800, year: 2026 });
+  // A second PUBLIC page exercising the multi-series machinery end to end: a
+  // stacked area (drives the OG card), a donut, and a grouped bar — the "many
+  // platforms, one audience" story. Served at /page/platforms.
+  ins(db, "_pages", { name: "Platforms", path: "platforms", visibility: "public",
+    title: "I didn't leave Twitter — my audience did",
+    description: "Engagement by year, stacked by platform. You can watch the migration happen in the bands.",
+    blocks: JSON.stringify([
+      { type: "chart", pattern: "tweets", mark: "area", x: "year", y: "engagement", series: "platform", stack: true, title: "Engagement by year & platform", caption: "stacked bands — each platform's share of the year", width: "full" },
+      { type: "chart", pattern: "tweets", mark: "donut", x: "platform", y: "engagement", agg: "sum", title: "Lifetime engagement share", width: "half" },
+      { type: "chart", pattern: "tweets", mark: "bar", x: "year", y: "faves", series: "platform", title: "Faves by year & platform", width: "half" },
+      { type: "text", text: "The 2022 spike was all one platform. By 2025 the bands tell a different story.", width: "full" },
+    ]) });
+
+  ins(db, "tweets", { summary: "helping a senior fix a laptop she overpaid for", faves: 27608, retweets: 4200, engagement: 132368, year: 2022, platform: "twitter" });
+  ins(db, "tweets", { summary: "if only there were a word for a religious travel ban", faves: 18696, retweets: 9800, engagement: 33090, year: 2017, platform: "twitter" });
+  ins(db, "tweets", { summary: "the line outside Silicon Valley Bank wraps the building", faves: 3476, retweets: 1100, engagement: 14800, year: 2023, platform: "twitter" });
+  ins(db, "tweets", { summary: "live-tweeting a deploy that would not go green", faves: 900, retweets: 200, engagement: 5200, year: 2023, platform: "twitter" });
+  ins(db, "tweets", { summary: "a small thread on why constraints make better design", faves: 980, retweets: 210, engagement: 4300, year: 2024, platform: "twitter" });
+  ins(db, "tweets", { summary: "first week posting on a new network", faves: 600, retweets: 40, engagement: 2600, year: 2024, platform: "bluesky" });
+  ins(db, "tweets", { summary: "a quiet observation about interfaces as promises", faves: 2210, retweets: 540, engagement: 8700, year: 2025, platform: "bluesky" });
+  ins(db, "tweets", { summary: "the wizard isn't code generation, it's feeling rescued", faves: 1540, retweets: 330, engagement: 6100, year: 2025, platform: "threads" });
+  ins(db, "tweets", { summary: "a hot take that aged badly within the hour", faves: 800, retweets: 120, engagement: 3200, year: 2025, platform: "twitter" });
+  ins(db, "tweets", { summary: "shipping notes from a long week of migrations", faves: 412, retweets: 55, engagement: 1800, year: 2026, platform: "bluesky" });
+  ins(db, "tweets", { summary: "threads keeps suggesting i post and i keep obliging", faves: 520, retweets: 30, engagement: 2400, year: 2026, platform: "threads" });
 
   // --- Links ---
 

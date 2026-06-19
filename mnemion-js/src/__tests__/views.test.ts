@@ -160,7 +160,7 @@ describe("getEntryLabel", () => {
 // === chart view config ===
 
 describe("chart config", () => {
-  const has = (n: string) => ["year", "engagement"].includes(n);
+  const has = (n: string) => ["year", "engagement", "faves", "platform"].includes(n);
   it("accepts the mark/x/y spec (and the group_by/metric aliases)", () => {
     expect(validateViewSpec("chart", JSON.stringify({ mark: "line", x: "year", y: "engagement", agg: "sum", title: "Engagement by year" }), has)).toEqual([]);
     expect(validateViewSpec("chart", JSON.stringify({ group_by: "year", metric: "engagement", agg: "sum" }), has)).toEqual([]);
@@ -168,6 +168,17 @@ describe("chart config", () => {
   it("rejects an x/group_by that isn't a real facet", () => {
     expect(validateViewSpec("chart", JSON.stringify({ x: "ghost" }), has).join()).toContain('facet "ghost"');
     expect(validateViewSpec("chart", JSON.stringify({ group_by: "ghost" }), has).join()).toContain('facet "ghost"');
+  });
+  it("accepts a series facet + stack flag (multi-series)", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ mark: "area", x: "year", y: "engagement", series: "platform", stack: true }), has)).toEqual([]);
+  });
+  it("rejects a series that isn't a real facet, and a non-boolean stack", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ x: "year", series: "ghost" }), has).join()).toContain('facet "ghost"');
+    expect(validateViewSpec("chart", JSON.stringify({ x: "year", stack: "yes" }), has).join()).toContain("true or false");
+  });
+  it("accepts pie/donut (slice label + measure)", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ mark: "pie", x: "platform" }), has)).toEqual([]);
+    expect(validateViewSpec("chart", JSON.stringify({ mark: "donut", x: "platform", y: "engagement" }), has)).toEqual([]);
   });
 });
 

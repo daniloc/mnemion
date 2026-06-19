@@ -16,7 +16,7 @@ export interface ViewConfig {
   group_by?: string; title?: string; columns?: string[]; fields?: string[];
   subtitle?: string; secondary?: string; meta?: string; sort?: string;
   metric?: string; agg?: string;
-  mark?: string; x?: string; y?: string; series?: string; caption?: string;
+  mark?: string; x?: string; y?: string; series?: string; stack?: boolean; caption?: string;
   formats?: Record<string, string>;
   hide?: string[];
 }
@@ -576,31 +576,40 @@ export function ChartView({ pattern, view }: ViewProps) {
   const cfg = parseConfig(view);
   const x = cfg.x || cfg.group_by;
   const y = cfg.y || cfg.metric;
+  const series = cfg.series;
   const agg = cfg.agg || (y ? 'sum' : 'count');
   const mark = cfg.mark || 'bar';
+  const round = mark === 'pie' || mark === 'donut';
   const [data, setData] = useState<Record<string, unknown>[] | null>(null);
   useEffect(() => {
     if (!x) { setData([]); return; }
     let live = true;
+    const done = (rows: Record<string, unknown>[]) => { if (live) setData(rows); };
+    const fail = () => { if (live) setData([]); };
+    const aggregate = JSON.stringify([{ fn: agg, ...(y ? { facet: y } : {}), as: 'value' }]);
     if (mark === 'scatter') {
       // raw points: x,y per entry, no aggregation
       const facets = [x, y].filter(Boolean).join(',');
       fetch(`/api/query/${pattern}?facets=${encodeURIComponent(facets)}&limit=500`)
         .then((r) => r.json())
-        .then((d) => { if (live) setData((d.entries || []).map((e: Record<string, unknown>) => ({ [x]: e[x], value: y ? e[y] : 0 }))); })
-        .catch(() => { if (live) setData([]); });
+        .then((d) => done((d.entries || []).map((e: Record<string, unknown>) => ({ [x]: e[x], value: y ? e[y] : 0 })))).catch(fail);
+    } else if (series && !round) {
+      // multi-series: aggregate over x AND series → long rows, pivoted in Chart.
+      const gb = encodeURIComponent(`${x},${series}`);
+      fetch(`/api/query/${pattern}?group_by=${gb}&aggregate=${encodeURIComponent(aggregate)}&sort=${encodeURIComponent(x)}&limit=500`)
+        .then((r) => r.json()).then((d) => done(d.rows || [])).catch(fail);
     } else {
-      const aggregate = JSON.stringify([{ fn: agg, ...(y ? { facet: y } : {}), as: 'value' }]);
-      const sort = mark === 'line' || mark === 'area' ? x : '-value'; // line/area read left→right; bar ranks biggest-first
+      // single series / pie / donut: one row per x. line/area read left→right; bar & slices rank biggest-first.
+      const sort = (mark === 'line' || mark === 'area') ? x : '-value';
       fetch(`/api/query/${pattern}?group_by=${encodeURIComponent(x)}&aggregate=${encodeURIComponent(aggregate)}&sort=${encodeURIComponent(sort)}&limit=200`)
-        .then((r) => r.json()).then((d) => { if (live) setData(d.rows || []); }).catch(() => { if (live) setData([]); });
+        .then((r) => r.json()).then((d) => done(d.rows || [])).catch(fail);
     }
     return () => { live = false; };
-  }, [pattern, x, y, agg, mark, entries]);
+  }, [pattern, x, y, series, agg, mark, round, entries]);
   if (!x) return <div className="status">This chart needs an x facet (x or group_by).</div>;
   if (data === null) return <div className="status">loading…</div>;
   if (data.length === 0) return <div className="status">No data to chart.</div>;
-  return <Chart spec={{ mark, x, y, agg, title: cfg.title, caption: cfg.caption }} data={data} />;
+  return <Chart spec={{ mark, x, y, series, stack: cfg.stack, agg, title: cfg.title, caption: cfg.caption }} data={data} />;
 }
 
 // === Radix Select — the status control ===
