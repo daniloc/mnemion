@@ -204,7 +204,13 @@ function renderHtml(pub: PublicationRow, title: string, entries: Record<string, 
     return parts.join("\n");
   });
 
-  const ownerCss = pub.css ? `\n<style>\n${pub.css}\n</style>` : "";
+  // Owner CSS lands raw inside <style>...</style>. A css value containing
+  // "</style><script>..." would break out of the element → first-party XSS.
+  // Neutralize the closing-tag breakout by escaping the slash so neither
+  // </style nor </script can terminate the element. (Owner-supplied, but the
+  // /p page renders same-origin with the owner's session, so harden anyway.)
+  const safeCss = pub.css ? pub.css.replace(/<\/(style|script)/gi, "<\\/$1") : "";
+  const ownerCss = safeCss ? `\n<style>\n${safeCss}\n</style>` : "";
 
   const body = `<!DOCTYPE html>
 <html lang="en">

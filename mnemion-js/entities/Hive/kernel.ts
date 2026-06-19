@@ -92,6 +92,21 @@ const ON_CREATE: Record<string, CreateHook> = {
     // Auto-generate token — never accept from input
     delete data.token;
 
+    // Member attribution is forgeable across EVERY scope, not just register:
+    // resolveTokenActor trusts the token's `member` to stand in as that person.
+    // An agent minting a `*`/`read`/etc. token could otherwise attribute it to
+    // "owner" (or a member it isn't), forging attribution. A null/absent member
+    // is fine (member-less → owner sentinel resolved downstream). If present, it
+    // must be a real active roster member and never the owner sentinel. The
+    // register branch keeps its own stricter rules (single-use, owner reject, …).
+    if (data.member != null) {
+      const member = data.member;
+      if (typeof member !== "string" || member === "owner")
+        return { error: true, message: 'A token\'s "member" cannot be "owner" — the owner sentinel is resolved automatically for member-less tokens and must never be token-attributable.' };
+      if (!ctx.memberActive(member))
+        return { error: true, message: `A token's "member" must be an active roster member; "${member}" is not in the roster.` };
+    }
+
     // Scope-specific validation
     if (scope === "upload" || scope.startsWith("upload:")) {
       let constraints = data.constraints;
@@ -426,6 +441,22 @@ const ON_WRITE: Record<string, WriteHook> = {
       return { error: true, message: "Page path must be a URL-safe slug (letters, digits, ., _, -)." };
     }
     if (data.blocks === undefined) return data; // a partial update not touching blocks
+    // A page renders on the unauthenticated /page/{path}; a block sourcing a
+    // kernel control table would leak _access_tokens/_members/_federation_hosts
+    // data publicly. Pages project user patterns only — mirror the _publications
+    // source_pattern guard. Scan defensively: only when JSON parses to an array;
+    // malformed blocks fall through to validateBlocks' own error.
+    if (typeof data.blocks === "string") {
+      let parsedBlocks: unknown;
+      try { parsedBlocks = JSON.parse(data.blocks); } catch { parsedBlocks = undefined; }
+      if (Array.isArray(parsedBlocks)) {
+        for (const block of parsedBlocks) {
+          const pattern = block && typeof block === "object" ? (block as Record<string, unknown>).pattern : undefined;
+          if (typeof pattern === "string" && isKernelPattern(pattern))
+            return { error: true, message: `Page blocks cannot reference kernel pattern "${pattern}" — pages project user patterns only.` };
+        }
+      }
+    }
     const errors = validateBlocks(data.blocks as string | null, {
       patternExists: (p) => ctx.patternExists(p),
       hasFacet: (p, f) => ctx.facetMeta(p, f) != null,

@@ -65,6 +65,7 @@ export function isBlockType(s: string): s is BlockTypeId {
 
 const WIDTHS = new Set(["full", "half", "third"]);
 const AGGS = new Set(["count", "sum", "avg", "min", "max"]);
+const MAX_BLOCKS = 32;
 
 export interface BlockValidationCtx {
   patternExists: (pattern: string) => boolean;
@@ -78,6 +79,7 @@ export function validateBlocks(blocksRaw: string | null | undefined, ctx: BlockV
   let blocks: unknown;
   try { blocks = JSON.parse(blocksRaw); } catch { return ["blocks must be valid JSON."]; }
   if (!Array.isArray(blocks)) return ["blocks must be a JSON array."];
+  if (blocks.length > MAX_BLOCKS) return [`a page may have at most ${MAX_BLOCKS} blocks (got ${blocks.length}).`];
 
   const errors: string[] = [];
   blocks.forEach((b, i) => {

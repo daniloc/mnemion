@@ -60,6 +60,11 @@ describe("validateBlocks", () => {
     expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets", mark: "doughnut", x: "year" }]), ctx).join()).toContain("not a chart mark");
     expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets", mark: "bar", series: "platform", y: "engagement" }]), ctx).join()).toContain("needs an x facet");
   });
+  it("caps the number of blocks (DoS guard)", () => {
+    const many = Array.from({ length: 40 }, () => ({ type: "heading", text: "h" }));
+    expect(validateBlocks(JSON.stringify(many), ctx).join()).toContain("at most 32 blocks");
+    expect(validateBlocks(JSON.stringify(many.slice(0, 32)), ctx)).toEqual([]);
+  });
   it("rejects non-array / non-JSON blocks", () => {
     expect(validateBlocks(JSON.stringify({ type: "heading" }), ctx).join()).toContain("must be a JSON array");
     expect(validateBlocks("{bad", ctx).join()).toContain("valid JSON");
@@ -89,6 +94,17 @@ describe("_pages kernel validation", () => {
 
     expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "B", path: "b", blocks: JSON.stringify([{ type: "chart", pattern: "data", group_by: "ghost" }]) }))).message).toContain('facet "ghost"');
     expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "B2", path: "b2", blocks: JSON.stringify([{ type: "metric", pattern: "ghosts" }]) }))).message).toContain("does not exist");
+  });
+
+  it("refuses a page block that sources a kernel pattern (exfil guard)", async () => {
+    const store = getStore();
+    // an unauthenticated public page must never be able to render _access_tokens etc.
+    const r = JSON.parse(await store.mutate("_pages", "create", JSON.stringify({
+      name: "Leak", path: "leak", visibility: "public",
+      blocks: JSON.stringify([{ type: "chart", pattern: "_access_tokens", mark: "bar", x: "token" }]),
+    })));
+    expect(r.error).toBeTruthy();
+    expect(r.message).toContain("kernel pattern");
   });
 
   it("rejects a page path that isn't a URL-safe slug (would yield a broken link)", async () => {

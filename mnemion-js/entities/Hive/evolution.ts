@@ -249,6 +249,8 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     validate(change, ctx) {
       if (!change.pattern_name) return "pattern_name is required for set_sharing";
       if (change.entry_id == null) return "entry_id is required for set_sharing";
+      if (isKernelPattern(change.pattern_name))
+        return `Kernel pattern "${change.pattern_name}" cannot be shared — sharing exposes user-pattern entries only.`;
       if (!ctx.patternExists(change.pattern_name))
         return `Pattern "${change.pattern_name}" does not exist`;
       if (!ctx.entryExists(change.pattern_name, change.entry_id))

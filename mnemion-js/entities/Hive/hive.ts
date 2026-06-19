@@ -87,7 +87,15 @@ export class HiveDO extends DurableObject {
   }
 
   private currentHost(): string {
-    return this.lastKnownHost ?? (this.env as any).WORKER_HOST ?? "localhost";
+    // Prefer a meaningfully-configured WORKER_HOST and IGNORE the inbound Host
+    // header when it's set — generated URLs (upload_url / page_url / og_image /
+    // the instance doc) must not be poisoned by an attacker-controlled Host on
+    // an unauthenticated request (e.g. a /ws upgrade). Only fall back to the
+    // observed host (then the placeholder/localhost) when WORKER_HOST isn't a
+    // real value — i.e. local dev, where the inbound host is the right answer.
+    const configured = (this.env as any).WORKER_HOST;
+    if (configured && configured !== "your-worker.workers.dev") return configured;
+    return this.lastKnownHost ?? configured ?? "localhost";
   }
 
   /** A public URL on this instance — the one place upload_url / page_url /
@@ -1038,6 +1046,9 @@ export class HiveDO extends DurableObject {
   /** Aggregate rows for a block (reuses the query engine: group_by x, agg y).
    *  Still used by the metric block (no x) — chart blocks go through chartData. */
   private async aggRows(pattern: string, x: string | undefined, y: string | undefined, agg: string | undefined, sort: string): Promise<any[]> {
+    // Serve-time backstop: public pages must never read kernel control tables.
+    // A pre-existing/smuggled block pointing at one renders nothing, not data.
+    if (isKernelPattern(pattern)) return [];
     const aggregate = aggSpec(agg || (y ? "sum" : "count"), y);
     try {
       const r = JSON.parse(await this.query(pattern, "", "", sort || "", 200, false, x || "", aggregate));
@@ -1054,6 +1065,8 @@ export class HiveDO extends DurableObject {
    *  alias the engine emits — passing the full field as the sort field is what
    *  the engine rejected, flattening bucketed charts to empty. */
   private async chartData(b: any): Promise<ChartPayload> {
+    // Serve-time backstop: kernel control tables never render on public pages.
+    if (isKernelPattern(b?.pattern)) return { multi: false, data: [] };
     const rc = resolveChart(b);
     const q = chartQuery(rc);
     try {
@@ -1079,6 +1092,13 @@ export class HiveDO extends DurableObject {
   private async renderBlockHtml(b: any): Promise<string> {
     const w = b.width === "half" ? "w-half" : b.width === "third" ? "w-third" : "w-full";
     const e = (v: unknown) => escapeXml(String(v ?? ""));
+    // Defense-in-depth: a block whose pattern is a kernel control table must
+    // never reach an unauthenticated reader (token values as chart labels, etc).
+    // Render the empty placeholder instead of querying it — applies to every
+    // pattern-reading block type (chart, metric, and any future view/entry/list).
+    if (b?.pattern && isKernelPattern(b.pattern)) {
+      return `<div class="pb-empty ${w}"></div>`;
+    }
     switch (b.type) {
       case "heading": return `<h2 class="pb-h ${w}">${e(b.text)}</h2>`;
       case "text": return `<p class="pb-t ${w}">${e(b.text)}</p>`;
@@ -1108,6 +1128,12 @@ export class HiveDO extends DurableObject {
     if (!row) return null;
     let blocks: any[] = [];
     try { blocks = JSON.parse(row.blocks || "[]"); } catch { /* */ }
+    // DoS backstop: each chart/metric block is a DB aggregate run sequentially
+    // on the single-threaded DO, on an unauthenticated edge-cacheable URL. Cap
+    // the render so a page with hundreds of heavy blocks can't pin the DO;
+    // overflow blocks are silently dropped.
+    const MAX_BLOCKS = 32;
+    if (Array.isArray(blocks) && blocks.length > MAX_BLOCKS) blocks = blocks.slice(0, MAX_BLOCKS);
     const parts: string[] = [];
     for (const b of blocks) parts.push(await this.renderBlockHtml(b));
     const title = escapeXml(row.title || row.name);
@@ -1615,6 +1641,10 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
     // identifier quoting and exfiltrates arbitrary tables by id (tokens, etc).
     if (!this.patternExists(pattern)) return JSON.stringify({ found: false });
     if (!Number.isInteger(id)) return JSON.stringify({ found: false });
+    // Serve-time backstop: kernel control tables (_access_tokens, _passkeys, …)
+    // must NEVER be served over this public, unauthenticated route — a _shared
+    // row pointing at one would dump tokens. Refuse regardless of any sharing row.
+    if (isKernelPattern(pattern)) return JSON.stringify({ found: false });
     try {
       // Single JOIN: check sharing + fetch entry in one query
       const rows = this.db.exec(
@@ -1763,8 +1793,11 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
   async fetch(request: Request): Promise<Response> {
     // Record the inbound host so instance-doc generation reflects reality, not
     // a wrangler config that can drift from the worker name.
+    // Only retain a syntactically valid host (no scheme/path/spaces) — a
+    // malformed/attacker Host header must never be stored and reflected into
+    // generated URLs. (currentHost also prefers WORKER_HOST when configured.)
     const host = request.headers.get("host");
-    if (host) this.lastKnownHost = host;
+    if (host && /^[a-zA-Z0-9.-]+(:\d+)?$/.test(host)) this.lastKnownHost = host;
     if (request.headers.get("Upgrade") === "websocket") {
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);

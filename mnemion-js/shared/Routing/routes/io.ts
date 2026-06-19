@@ -47,6 +47,26 @@ export const serveSharedEntry: RouteHandler = async (ctx) => {
 
 // === Egress: GET /o/:path — serve _outputs content ===
 
+// Egress content is agent-authored and served first-party (same origin as the
+// owner's authenticated session). An agent-chosen Content-Type of text/html or
+// image/svg+xml turns stored content into stored XSS that can steal the owner's
+// session cookie and drive /api/*. So we never reflect an arbitrary
+// attacker-chosen active type: only inert types pass through as-is; everything
+// else (incl. text/html, image/svg+xml, missing) is forced to text/plain.
+// `nosniff` on every /o response stops the browser sniffing text/plain into HTML.
+const SAFE_OUTPUT_MIME = new Set([
+  "text/plain",
+  "text/csv",
+  "text/markdown",
+  "application/json",
+  "application/xml",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+]);
+
 export const serveOutput: RouteHandler = async (ctx) => {
   const raw = await ctx.hive.resolveOutput(ctx.params.path);
   const result = JSON.parse(raw);
@@ -74,9 +94,14 @@ export const serveOutput: RouteHandler = async (ctx) => {
     return new Response(null, { status: 304 });
   }
 
+  const mime = SAFE_OUTPUT_MIME.has(result.mime_type)
+    ? result.mime_type
+    : "text/plain; charset=utf-8";
+
   return new Response(result.content, {
     headers: {
-      "Content-Type": result.mime_type,
+      "Content-Type": mime,
+      "X-Content-Type-Options": "nosniff",
       "ETag": etag,
       "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
     },
@@ -142,13 +167,22 @@ export const servePublication: RouteHandler = async (ctx) => {
     return new Response(null, { status: 304 });
   }
 
-  return new Response(result.body, {
-    headers: {
-      "Content-Type": result.content_type,
-      "ETag": etag,
-      "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
-    },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": result.content_type,
+    // nosniff is safe on every format; never let a text projection get sniffed.
+    "X-Content-Type-Options": "nosniff",
+    "ETag": etag,
+    "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
+  };
+  // HTML publications carry owner-authored markup (template + css) served
+  // first-party. A restrictive CSP lets the inline owner CSS + images render
+  // but blocks any script execution, so a breakout can't run code.
+  if (typeof result.content_type === "string" && result.content_type.startsWith("text/html")) {
+    headers["Content-Security-Policy"] =
+      "default-src 'none'; style-src 'unsafe-inline'; img-src *; font-src *";
+  }
+
+  return new Response(result.body, { headers });
 };
 
 // === Ingress: POST /i/:path — create entries via _inputs ===
