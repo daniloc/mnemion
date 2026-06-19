@@ -257,12 +257,14 @@ has the same anatomy: a chokepoint + a `## why` stating the invariant + a
 totality/regression test + a coherence `works when` claim anchoring the
 chokepoint. The boundaries:
 
-- **Untrusted WRITES** → `executeUntrustedWrite` refuses non-user patterns when
-  `!ctx.trusted`; oracle: `verifyWritePolicyTotality` + `policy.test.ts`.
-- **Served READS** → `servedDataCtx`/`servedQuery` (`hive.ts`); the engine
-  (`data.ts`) refuses kernel patterns when `ctx.served`. Every public/OG/
-  publication/`/o/entry` read routes through it, so a serve sink cannot reach
-  `_access_tokens`/`_members`/etc.
+- **Untrusted reads & writes** → one required `trusted` flag on `DataContext`,
+  symmetric: an untrusted context (`!ctx.trusted`) may neither WRITE a kernel
+  pattern (`executeUntrustedWrite`) nor READ one (`query`/`search`/`aggregate`).
+  Writes enter untrusted via ingress/upload; reads via `servedDataCtx`/
+  `servedQuery` (public page, OG, publication, `/o/entry`). The flag is required
+  (no default) so a new serve/ingress path can't silently inherit kernel access —
+  it fails CLOSED. Oracle: `verifyWritePolicyTotality` + `policy.test.ts` (writes),
+  and the served-entry-point totality in `security.test.ts` (reads).
 - **Capability SECRETS** → access tokens are hashed at rest (`credentials.hashToken`);
   a read of the row yields a digest, never a usable bearer.
 - **Instance IDENTITY** → the host is configuration (`WORKER_HOST`), never request

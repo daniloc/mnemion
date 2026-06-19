@@ -1,7 +1,8 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
 import { query } from "../../entities/Hive/data";
+import { KERNEL_TABLES } from "../../entities/Hive/schema";
 
 // Regression guards for the security review fixes. These exercise the mutate /
 // evolution chokepoints (RPC = below the consent layer, runs the kernel hooks),
@@ -62,14 +63,69 @@ describe("token at rest: stored hashed, raw authenticates", () => {
   });
 });
 
-describe("read boundary: a served read refuses kernel patterns at the engine", () => {
-  // The chokepoint mirrors the write side: ctx.served + kernel pattern → refused
-  // before any DB access, so every serve sink inherits the boundary.
-  const servedCtx = (): any => ({ served: true });
-  it("served query of a kernel pattern is refused (owner reads are unaffected)", () => {
-    const r = JSON.parse(query(servedCtx(), "_access_tokens", "", "", "", 10, false, "", ""));
-    expect(r.error).toBeTruthy();
-    expect(JSON.stringify(r)).toContain("served");
+describe("read boundary: one trusted flag gates kernel access for read AND write", () => {
+  // The unified chokepoint: an untrusted context (`!trusted`) can neither read
+  // nor write a kernel pattern, refused before any DB access — so every serve
+  // sink inherits the boundary, and a path that forgets to declare trust fails
+  // CLOSED (the flag is required). Mirrors the write side's verifyWritePolicyTotality.
+  it("an untrusted (served) read of EVERY kernel pattern is refused at the engine", () => {
+    for (const t of KERNEL_TABLES) {
+      const r = JSON.parse(query({ trusted: false } as any, t.name, "", "", "", 10, false, "", ""));
+      expect(r.error, `served read of ${t.name} must be refused`).toBeTruthy();
+      expect(JSON.stringify(r)).toContain("served");
+    }
+  });
+  it("a trusted (owner) context is NOT blocked by the read guard", () => {
+    // trusted:true + kernel pattern passes the guard (then hits patternExists etc.);
+    // it must NOT short-circuit with the served-surface refusal.
+    const r = JSON.parse(query({ trusted: true, patternExists: () => false, listPatterns: () => [] } as any, "_access_tokens", "", "", "", 10, false, "", ""));
+    expect(JSON.stringify(r)).not.toContain("public/served surface");
+  });
+});
+
+// === Read-boundary totality: every served entry point refuses kernel data ===
+// The read analogue of policy.test.ts. Each public/unauthenticated serve path is
+// exercised against a kernel pattern (rows injected via raw SQL, since the mutate
+// guards now block creating them) and must surface NONE of it. Adding a new serve
+// path means adding it here — the declarative oracle that keeps the boundary whole.
+describe("read-boundary totality: served entry points leak no kernel data", () => {
+  function store(): DurableObjectStub<HiveDO> {
+    const id = env.MNEMION_HIVE.idFromName(`user:tot:${crypto.randomUUID()}`);
+    return env.MNEMION_HIVE.get(id);
+  }
+
+  it("getSharedEntry refuses kernel patterns", async () => {
+    const s = store();
+    expect(JSON.parse(await s.getSharedEntry("_access_tokens", 1)).found).toBe(false);
+    expect(JSON.parse(await s.getSharedEntry("_members", 1)).found).toBe(false);
+  });
+
+  it("a public page rendering a (smuggled) kernel chart block emits no kernel rows", async () => {
+    const s = store();
+    // bypass the mutate guard by writing the _pages row directly, then render.
+    await runInDurableObject(s, async (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO "_pages" (name, path, visibility, blocks) VALUES ('x','leak','public',?)`,
+        JSON.stringify([{ type: "metric", pattern: "_access_tokens", agg: "count" }, { type: "chart", pattern: "_access_tokens", x: "token" }]),
+      );
+    });
+    const html = await s.renderPublicPage("leak");
+    // the page renders (not null) but the kernel query returns nothing → no token text
+    expect(html == null || !/[0-9a-f]{32,64}/.test(String(html).replace(/<[^>]+>/g, ""))).toBe(true);
+  });
+
+  it("a publication with a (smuggled) kernel source serves no kernel rows", async () => {
+    const s = store();
+    await runInDurableObject(s, async (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO "_publications" (path, source_pattern, format) VALUES ('leak2','_access_tokens','json')`,
+      );
+    });
+    const res = JSON.parse(await s.resolvePublication("leak2"));
+    // served boundary refuses the kernel source → no entries (or not-found), never token rows.
+    const body = res.body ?? "";
+    expect(/[0-9a-f]{64}/.test(body)).toBe(false);
+    expect(res.found === false || (res.entries?.length ?? 0) === 0 || body.includes('"entries": []') || body.includes('"count": 0')).toBe(true);
   });
 });
 

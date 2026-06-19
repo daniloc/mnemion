@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-19 18:01Z",
+  "generatedAt": "2026-06-19 18:23Z",
   "root": "mnemion-js",
   "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
   "nodes": [
@@ -31,7 +31,7 @@
         "data.ts exists at this node",
         "prime.ts imports ./policy"
       ],
-      "why": "HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints precisely so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf source of truth for \"which patterns agents can write, through which path, what gate fires\" — unclassified kernel patterns fail CLOSED (System → denied) so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary cannot drift between layers.\n\nReads have the mirror boundary. SERVED/untrusted reads (public page chart/metric, OG card, publication source, `/o/entry`) go through `servedDataCtx`/`servedQuery`, where the `data.ts` engine refuses any kernel pattern (`ctx.served`) — so a serve sink physically cannot read `_access_tokens`/`_members`/etc., and a NEW serve path inherits the boundary by using the served context instead of re-deriving an `isKernelPattern` check the next sink would forget. This is the read analogue of `executeUntrustedWrite`; it exists because the scattered per-sink guards it replaced were a block-list that failed open. Instance identity is configuration, not request data: `currentHost()` is authoritative on `WORKER_HOST` and IGNORES the inbound `Host`, so an attacker cannot poison a capability URL (`upload_url`/`page_url`/`og_image`) by sending a spoofed `Host` on an unauthenticated request (e.g. a `/ws` upgrade)."
+      "why": "HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints precisely so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf source of truth for \"which patterns agents can write, through which path, what gate fires\" — unclassified kernel patterns fail CLOSED (System → denied) so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary cannot drift between layers.\n\nReads share the SAME boundary, on the same flag. `DataContext.trusted` is required and gates kernel access symmetrically: an untrusted context (`!trusted`) may neither write a kernel pattern nor read one. Served/untrusted reads (public page chart/metric, OG card, publication source, `/o/entry`) go through `servedDataCtx`/`servedQuery` (which set `trusted: false`), where the `data.ts` engine refuses any kernel pattern — so a serve sink physically cannot read `_access_tokens`/`_members`/etc. Because the flag is required (no default), a NEW serve path can't silently inherit kernel access; it fails CLOSED. This replaced a block-list of scattered per-sink `isKernelPattern` checks that failed open. The read totality is the served-entry-point enumeration in `security.test.ts`, the analogue of `policy.test.ts` for writes. Instance identity is configuration, not request data: `currentHost()` is authoritative on `WORKER_HOST` and IGNORES the inbound `Host`, so an attacker cannot poison a capability URL (`upload_url`/`page_url`/`og_image`) by sending a spoofed `Host` on an unauthenticated request (e.g. a `/ws` upgrade)."
     },
     {
       "id": "c:entities/Session",
@@ -151,7 +151,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/data.ts",
-      "line": 188
+      "line": 189
     },
     {
       "id": "s:entities/Hive/data.ts#executeMutate",
@@ -160,7 +160,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/data.ts",
-      "line": 401
+      "line": 405
     },
     {
       "id": "s:entities/Hive/data.ts#search",
@@ -169,7 +169,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/data.ts",
-      "line": 704
+      "line": 708
     },
     {
       "id": "f:entities/Hive/evolution.ts",
@@ -492,7 +492,7 @@
       "sub": "method",
       "path": "entities/Hive/hive.ts",
       "line": 526,
-      "prose": "A read context for SERVED/untrusted surfaces (public page, /o, /p, OG,\n federation). The one read trust-boundary: the engine refuses any kernel\n pattern for a served read, so a serve path physically cannot reach\n `_access_tokens`/`_members`/etc. — mirroring how `!trusted` confines\n untrusted writes. New serve sinks inherit the boundary by using this."
+      "prose": "A read context for SERVED/untrusted surfaces (public page, /o, /p, OG,\n federation). Marked `trusted: false` — the SAME flag that confines untrusted\n writes — so the engine refuses any kernel pattern for a served read. A serve\n path physically cannot reach `_access_tokens`/`_members`/etc., and new serve\n sinks inherit the boundary by using this context."
     },
     {
       "id": "s:entities/Hive/hive.ts#servedQuery()",

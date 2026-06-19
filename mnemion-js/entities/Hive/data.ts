@@ -32,14 +32,15 @@ export interface DataContext {
   patternClass(name: string): "knowledge" | "dataset";
   /** The member this write is attributed to (created_by/updated_by). */
   actor: string;
-  /** Whether this write entered through a trusted surface (the MCP tool layer,
-   *  which runs the consent gate) or an untrusted public HTTP path (ingress).
-   *  Untrusted writes may only target user patterns — the engine refuses any
-   *  kernel target, so the boundary lives at this one chokepoint rather than
-   *  being re-checked at each call site. Defaults to trusted (internal callers). */
+  /** Whether this context entered through a TRUSTED surface (the authenticated
+   *  MCP/owner session, which runs the consent gate) or an UNTRUSTED public path
+   *  (ingress writes; served public-page / OG / publication / /o-entry reads).
+   *  The single kernel boundary, symmetric across reads and writes: an untrusted
+   *  context (`!trusted`) may neither WRITE a kernel pattern nor READ one — the
+   *  engine refuses both, so the boundary lives at this one chokepoint instead of
+   *  a check per call site. REQUIRED (no default): a context must declare its
+   *  trust, so a new serve/ingress path can't silently inherit kernel access. */
   trusted: boolean;
-  /** Whether this read entered through a SERVED/untrusted path (public page, /o, /p, federation, OG) rather than the authenticated owner/member session. Served reads may only touch USER patterns — the engine refuses any kernel pattern, so the boundary lives at this one chokepoint rather than at each serve sink. Defaults to false (trusted owner reads). */
-  served?: boolean;
 }
 
 // === Constants ===
@@ -196,7 +197,10 @@ export function query(
   groupBy: string = "",
   aggregateJson: string = "",
 ): string {
-  if (ctx.served && isKernelPattern(patternName))
+  // Read boundary, symmetric with the write boundary below: an untrusted/served
+  // context can't read a kernel pattern. Fail-closed — a serve path that forgets
+  // to mark itself trusted gets the safe (refused) behavior, not full access.
+  if (!ctx.trusted && isKernelPattern(patternName))
     return errorJson(`Pattern "${patternName}" is not readable on a public/served surface.`);
 
   if (!ctx.patternExists(patternName))
@@ -710,7 +714,7 @@ export function search(ctx: DataContext, term: string, objectsJson: string, limi
   // Served/untrusted full-text search may never surface kernel patterns
   // (secrets/roster/control tables) — mirror prime's kernel exclusion. An
   // explicit served search naming only kernel targets simply returns nothing.
-  if (ctx.served) targetObjects = targetObjects.filter((name: string) => !isKernelPattern(name));
+  if (!ctx.trusted) targetObjects = targetObjects.filter((name: string) => !isKernelPattern(name));
 
   const results: { pattern: string; entry: any; matched_facets: string[] }[] = [];
 

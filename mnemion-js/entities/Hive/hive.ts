@@ -519,12 +519,12 @@ export class HiveDO extends DurableObject {
   }
 
   /** A read context for SERVED/untrusted surfaces (public page, /o, /p, OG,
-   *  federation). The one read trust-boundary: the engine refuses any kernel
-   *  pattern for a served read, so a serve path physically cannot reach
-   *  `_access_tokens`/`_members`/etc. — mirroring how `!trusted` confines
-   *  untrusted writes. New serve sinks inherit the boundary by using this. */
+   *  federation). Marked `trusted: false` — the SAME flag that confines untrusted
+   *  writes — so the engine refuses any kernel pattern for a served read. A serve
+   *  path physically cannot reach `_access_tokens`/`_members`/etc., and new serve
+   *  sinks inherit the boundary by using this context. */
   private servedDataCtx(): data.DataContext {
-    return { ...this.dataCtx(), served: true };
+    return { ...this.dataCtx(), trusted: false };
   }
 
   /** query() for a served/untrusted surface — refuses kernel patterns at the
