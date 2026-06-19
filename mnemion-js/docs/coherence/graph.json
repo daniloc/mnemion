@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-19 04:23Z",
+  "generatedAt": "2026-06-19 04:26Z",
   "root": "mnemion-js",
   "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
   "nodes": [
@@ -85,6 +85,25 @@
         "routes/io.ts exists at this node"
       ],
       "why": "The router is the worker's declarative HTTP dispatch (method, pattern, auth gate, param constraints matched in declaration order) with handlers grouped by domain under `routes/`, so the full routing surface stays scannable. Its auth helpers are security-load-bearing: `timingSafeEqual` is constant-time to close a timing-attack finding on secret/token/signature checks, and session cookies carry a random sid plus a KV-stored epoch so every session can be revoked without rotating `MNEMION_SECRET`, while encoding the actor backward-compatibly so deploys don't force a re-login."
+    },
+    {
+      "id": "c:shared/core",
+      "label": "Core",
+      "kind": "component",
+      "sub": "Cross-cutting primitives shared by both the worker and the SPA: product identity, the declarative UI palettes (view / format / block / chart) an agent authors against, and dev-only seed data.",
+      "claimed": true,
+      "claims": [
+        "constants.ts exists at this node",
+        "view-palette.ts exists at this node",
+        "view-palette.ts imports ./format-palette",
+        "format-palette.ts exists at this node",
+        "block-palette.ts exists at this node",
+        "chart-spec.ts exists at this node",
+        "chart-svg.ts exists at this node",
+        "chart-svg.ts imports ./chart-spec",
+        "dev-seed.ts exists at this node"
+      ],
+      "why": "Core is the layer both runtimes depend on but neither owns, so it carries zero env-specific imports and stays pure data — that purity is what lets the same module validate a write in the worker and render it in the SPA without forking.\n\nIts center of gravity is the agent-authorable UI: `view-palette` (how a pattern renders), `format-palette` (how a value renders), `block-palette` (how a page composes), and the chart pair (`chart-spec` + `chart-svg`). These are the canonical instances of the \"self-enforcing declarations\" doctrine — one declarative table that is simultaneously the spec an agent reads, the validator the kernel derives (`validateViewSpec`/`validateBlocks`/`validateFormatsMap`, fail-closed at the mutate chokepoint), and the totality oracle the SPA's `Record<…Id, Component>` enforces at compile time. The agent composes UI from these tables as data, never as code, which is what makes live agent-authored rework safe.\n\nThe chart layer is deliberately split so one spec drives two renderers: `chart-spec` is the single home for the mark set, the categorical color palette, and the long→wide series pivot, and both the in-hive Recharts renderer and the server SVG renderer (`chart-svg`, for published pages and OG cards) derive from it — so a dataset reads identically in-hive and on a public page. `constants` keeps product identity (`PRODUCT_NAME`, `URI_SCHEME`, `uri()`) in one place so the scheme is never hardcoded. `dev-seed` is gated and runs only in the DO constructor under `DEV_SEED`; it writes via raw SQL (trusted, bypassing the kernel hook), so its contents must stay valid against these same palettes by hand — it is inert in production."
     },
     {
       "id": "i:OAUTH_KV",
@@ -2922,7 +2941,7 @@
     },
     {
       "id": "f:shared/core/block-palette.ts",
-      "parent": "c:.",
+      "parent": "c:shared/core",
       "label": "block-palette.ts",
       "kind": "file",
       "sub": "shared/core/block-palette.ts",
@@ -3022,7 +3041,7 @@
     },
     {
       "id": "f:shared/core/chart-spec.ts",
-      "parent": "c:.",
+      "parent": "c:shared/core",
       "label": "chart-spec.ts",
       "kind": "file",
       "sub": "shared/core/chart-spec.ts",
@@ -3125,7 +3144,7 @@
     },
     {
       "id": "f:shared/core/chart-svg.ts",
-      "parent": "c:.",
+      "parent": "c:shared/core",
       "label": "chart-svg.ts",
       "kind": "file",
       "sub": "shared/core/chart-svg.ts",
@@ -3201,7 +3220,7 @@
     },
     {
       "id": "f:shared/core/constants.ts",
-      "parent": "c:.",
+      "parent": "c:shared/core",
       "label": "constants.ts",
       "kind": "file",
       "sub": "shared/core/constants.ts",
@@ -3267,7 +3286,7 @@
     },
     {
       "id": "f:shared/core/dev-seed.ts",
-      "parent": "c:.",
+      "parent": "c:shared/core",
       "label": "dev-seed.ts",
       "kind": "file",
       "sub": "shared/core/dev-seed.ts",
@@ -3285,7 +3304,7 @@
     },
     {
       "id": "f:shared/core/format-palette.ts",
-      "parent": "c:.",
+      "parent": "c:shared/core",
       "label": "format-palette.ts",
       "kind": "file",
       "sub": "shared/core/format-palette.ts",
@@ -3390,7 +3409,7 @@
     },
     {
       "id": "f:shared/core/text.d.ts",
-      "parent": "c:.",
+      "parent": "c:shared/core",
       "label": "text.d.ts",
       "kind": "file",
       "sub": "shared/core/text.d.ts",
@@ -3398,7 +3417,7 @@
     },
     {
       "id": "f:shared/core/view-palette.ts",
-      "parent": "c:.",
+      "parent": "c:shared/core",
       "label": "view-palette.ts",
       "kind": "file",
       "sub": "shared/core/view-palette.ts",
