@@ -7,7 +7,7 @@ import { Method, Auth, createRouter, type Route, type Env } from "../shared/Rout
 // Auth
 import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify, revokeSessions, invitePage, inviteBegin, inviteComplete } from "../shared/Routing/routes/auth";
 // I/O
-import { serveSharedEntry, serveOutput, servePublication, servePage, servePageOg, receiveInput, upload, uploadDocument, serveDocument, exportPattern } from "../shared/Routing/routes/io";
+import { serveSharedEntry, serveOutput, servePublication, servePage, servePageOg, servePageOgPng, receiveInput, upload, uploadDocument, serveDocument, exportPattern } from "../shared/Routing/routes/io";
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "../shared/Routing/routes/marketplace";
 // Pages (JSON APIs the React SPA consumes)
@@ -49,6 +49,7 @@ const routes: Route[] = [
   { method: Method.GET,  pattern: "/o/:path",              handler: serveOutput },
   { method: Method.GET,  pattern: "/p/:path",              handler: servePublication },
   { method: Method.GET,  pattern: "/page/:path/og.svg",   handler: servePageOg },
+  { method: Method.GET,  pattern: "/page/:path/og.png",   handler: servePageOgPng },
   { method: Method.GET,  pattern: "/page/:path",           handler: servePage },
   { method: Method.POST, pattern: "/i/:path",              handler: receiveInput },
   { method: Method.POST, pattern: "/upload/:token",        where: { token: /^[a-fA-F0-9]+$/ }, handler: upload },

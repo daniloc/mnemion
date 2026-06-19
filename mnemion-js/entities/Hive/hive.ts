@@ -1067,7 +1067,7 @@ export class HiveDO extends DurableObject {
     for (const b of blocks) parts.push(await this.renderBlockHtml(b));
     const title = this.escHtml(row.title || row.name);
     const desc = this.escHtml(row.description || "");
-    const og = `/page/${encodeURIComponent(path)}/og.svg`;
+    const og = `/page/${encodeURIComponent(path)}/og.png`;
     return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
 <meta property="og:title" content="${title}">

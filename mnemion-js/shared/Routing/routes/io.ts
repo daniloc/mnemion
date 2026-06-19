@@ -100,6 +100,19 @@ export const servePageOg: RouteHandler = async (ctx) => {
   return new Response(svg, { headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=300" } });
 };
 
+// PNG OG card (rasterized from the SVG via resvg) — the robust unfurl image.
+export const servePageOgPng: RouteHandler = async (ctx) => {
+  const svg = await ctx.hive.renderPageOgSvg(ctx.params.path);
+  if (svg == null) return new Response("Not found", { status: 404 });
+  try {
+    const { svgToPng } = await import("../../IO/og-png");
+    const png = await svgToPng(svg);
+    return new Response(png, { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=300" } });
+  } catch (e: any) {
+    return new Response(`render error: ${e?.message ?? e}`, { status: 500 });
+  }
+};
+
 export const servePublication: RouteHandler = async (ctx) => {
   const raw = await ctx.hive.resolvePublication(ctx.params.path);
   const result = JSON.parse(raw);

@@ -137,4 +137,10 @@ fallthrough = true
 [[rules]]
 type = "Text"
 globs = ["**/*.client.txt"]
+fallthrough = true
+
+# Import font files as binary (ArrayBuffer) — fed to resvg for OG-card rendering.
+[[rules]]
+type = "Data"
+globs = ["**/*.ttf"]
 fallthrough = false
