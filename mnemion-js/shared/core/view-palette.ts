@@ -12,6 +12,7 @@
 // every view may carry a universal `formats` override map, validated against it.
 
 import { validateFormatsMap, describeFormatPalette } from "./format-palette";
+import { isChartMark, CHART_MARKS } from "./chart-spec";
 
 export type ConfigRole = "facet" | "facets" | "values" | "text" | "flag";
 // facet  → value must name one facet of the target pattern
@@ -197,10 +198,22 @@ export function validateViewSpec(
       } else if (ks.role === "values") {
         if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) errors.push(`config.${key} must be an array of strings.`);
       } else if (ks.role === "text") {
-        if (typeof value !== "string") errors.push(`config.${key} must be a string.`);
+        if (typeof value !== "string") { errors.push(`config.${key} must be a string.`); continue; }
+        // `mark` (chart only) is drawn from a closed set — a typo like "doughnut"
+        // would otherwise pass as free text and silently render as a bar.
+        if (key === "mark" && !isChartMark(value)) {
+          errors.push(`config.mark "${value}" is not a chart mark. Use: ${CHART_MARKS.join(", ")}.`);
+        }
       } else if (ks.role === "flag") {
         if (typeof value !== "boolean") errors.push(`config.${key} must be true or false.`);
       }
+    }
+
+    // A chart `series` without an x axis silently collapses to one meaningless
+    // bar. Only enforced when `series` is present in THIS payload (a partial
+    // update that omits series must not read a previously-stored x).
+    if ("series" in obj && !("x" in obj) && !("group_by" in obj)) {
+      errors.push("config.series needs an x facet (set x or group_by).");
     }
   }
 

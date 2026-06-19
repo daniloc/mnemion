@@ -8,6 +8,8 @@
 // Pure data, zero env-specific imports — bundled into both the worker (validation)
 // and the SPA (rendering).
 
+import { isChartMark, CHART_MARKS } from "./chart-spec";
+
 export type BlockRole = "text" | "pattern" | "facet" | "agg" | "id" | "viewtype" | "number" | "flag";
 
 export interface BlockConfigKey { role: BlockRole; required?: boolean; help: string; }
@@ -119,6 +121,17 @@ export function validateBlocks(blocksRaw: string | null | undefined, ctx: BlockV
           if (typeof v !== "boolean") errors.push(`${at}.${key} must be true or false.`);
           break;
       }
+    }
+
+    // Chart-block specifics: `mark` is a closed set (a typo would otherwise pass
+    // as free text and render as a bar), and `series` without an x axis silently
+    // collapses to one meaningless bar. Only checked when the key is present in
+    // THIS block (partial updates that omit them must not fire).
+    if (typeof block.mark === "string" && !isChartMark(block.mark)) {
+      errors.push(`${at}: mark "${block.mark}" is not a chart mark. Use: ${CHART_MARKS.join(", ")}.`);
+    }
+    if ("series" in block && !("x" in block) && !("group_by" in block)) {
+      errors.push(`${at}.series needs an x facet (set x or group_by).`);
     }
   });
   return errors;

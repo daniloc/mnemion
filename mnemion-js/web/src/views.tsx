@@ -1,9 +1,10 @@
-import { memo, useRef, useState, useEffect, type FC } from 'react';
+import { memo, useRef, useMemo, useState, useEffect, type FC } from 'react';
 import * as Select from '@radix-ui/react-select';
 import * as Dialog from '@radix-ui/react-dialog';
 import { store, useEntry, usePatternEntries, type Entry } from './store';
 import type { ViewTypeId } from '../../shared/core/view-palette';
 import { resolveFormat } from '../../shared/core/format-palette';
+import { resolveChart, chartQuery } from '../../shared/core/chart-spec';
 import { FacetValue } from './FacetValue';
 import { Chart } from './Chart';
 
@@ -574,42 +575,43 @@ const DocBlock = memo(function DocBlock({ pattern, id, facets, cfg }: { pattern:
 export function ChartView({ pattern, view }: ViewProps) {
   const entries = usePatternEntries(pattern); // subscribe → re-aggregate when the data changes (live)
   const cfg = parseConfig(view);
-  const x = cfg.x || cfg.group_by;
-  const y = cfg.y || cfg.metric;
-  const series = cfg.series;
-  const agg = cfg.agg || (y ? 'sum' : 'count');
-  const mark = cfg.mark || 'bar';
-  const round = mark === 'pie' || mark === 'donut';
+  // Resolve aliases/defaults/`:unit` buckets once at the boundary, then derive the
+  // fetch from the SAME query plan the server uses (chartQuery) — so the in-hive
+  // chart and the published/OG chart can't aggregate, sort, or bucket differently.
+  const rc = resolveChart(cfg as Record<string, unknown>);
+  const enc = encodeURIComponent;
   const [data, setData] = useState<Record<string, unknown>[] | null>(null);
+  // Re-fetch only when the charted columns change, not on every unrelated mutation
+  // (depending on the whole `entries` array re-ran the aggregate fetch constantly).
+  const sig = useMemo(
+    () => entries.map((e) => `${e[rc.x ?? '']}|${rc.y ? e[rc.y] : ''}|${rc.series ? e[rc.series] : ''}`).join(';'),
+    [entries, rc.x, rc.y, rc.series],
+  );
   useEffect(() => {
-    if (!x) { setData([]); return; }
+    if (!rc.x) { setData([]); return; }
     let live = true;
     const done = (rows: Record<string, unknown>[]) => { if (live) setData(rows); };
     const fail = () => { if (live) setData([]); };
-    const aggregate = JSON.stringify([{ fn: agg, ...(y ? { facet: y } : {}), as: 'value' }]);
-    if (mark === 'scatter') {
-      // raw points: x,y per entry, no aggregation
-      const facets = [x, y].filter(Boolean).join(',');
-      fetch(`/api/query/${pattern}?facets=${encodeURIComponent(facets)}&limit=500`)
+    const q = chartQuery(rc);
+    if (q.kind === 'scatter') {
+      // raw points: x,y per entry, no aggregation. NULL y coerces to 0 to match the server.
+      fetch(`/api/query/${pattern}?facets=${enc(q.facets ?? '')}&limit=${q.limit}`)
         .then((r) => r.json())
-        .then((d) => done((d.entries || []).map((e: Record<string, unknown>) => ({ [x]: e[x], value: y ? e[y] : 0 })))).catch(fail);
-    } else if (series && !round) {
-      // multi-series: aggregate over x AND series → long rows, pivoted in Chart.
-      const gb = encodeURIComponent(`${x},${series}`);
-      fetch(`/api/query/${pattern}?group_by=${gb}&aggregate=${encodeURIComponent(aggregate)}&sort=${encodeURIComponent(x)}&limit=500`)
-        .then((r) => r.json()).then((d) => done(d.rows || [])).catch(fail);
+        .then((d) => done((d.entries || []).map((e: Record<string, unknown>) => ({ [rc.x!]: e[rc.x!], value: Number(rc.y ? e[rc.y] : 0) || 0 })))).catch(fail);
     } else {
-      // single series / pie / donut: one row per x. line/area read left→right; bar & slices rank biggest-first.
-      const sort = (mark === 'line' || mark === 'area') ? x : '-value';
-      fetch(`/api/query/${pattern}?group_by=${encodeURIComponent(x)}&aggregate=${encodeURIComponent(aggregate)}&sort=${encodeURIComponent(sort)}&limit=200`)
+      // series & aggregate share the wire shape — group_by/aggregate/sort/limit from q.
+      fetch(`/api/query/${pattern}?group_by=${enc(q.group_by ?? '')}&aggregate=${enc(q.aggregate ?? '')}&sort=${enc(q.sort ?? '')}&limit=${q.limit}`)
         .then((r) => r.json()).then((d) => done(d.rows || [])).catch(fail);
     }
     return () => { live = false; };
-  }, [pattern, x, y, series, agg, mark, round, entries]);
-  if (!x) return <div className="status">This chart needs an x facet (x or group_by).</div>;
+    // sig stands in for `entries` — re-fetch only when the charted columns change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pattern, rc.mark, rc.groupBy, rc.x, rc.seriesGroup, rc.series, rc.y, rc.agg, sig]);
+  if (!rc.x) return <div className="status">This chart needs an x facet (x or group_by).</div>;
   if (data === null) return <div className="status">loading…</div>;
   if (data.length === 0) return <div className="status">No data to chart.</div>;
-  return <Chart spec={{ mark, x, y, series, stack: cfg.stack, agg, title: cfg.title, caption: cfg.caption }} data={data} />;
+  // Bare keys (rc.x/rc.series): the query aliases a `:unit` bucket to the bare name.
+  return <Chart spec={{ mark: rc.mark, x: rc.x, y: rc.y, series: rc.series, stack: rc.stack, agg: rc.agg, title: rc.title, caption: rc.caption }} data={data} />;
 }
 
 // === Radix Select — the status control ===

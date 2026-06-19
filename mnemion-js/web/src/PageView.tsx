@@ -71,6 +71,13 @@ function MetricBlock({ block }: { block: Block }) {
 
 function ChartBlock({ block }: { block: Block }) {
   const pattern = String(block.pattern || '');
+  // Load the pattern's entries into the shared store (like ViewBlock) so ChartView's
+  // usePatternEntries subscription sees /ws deltas and the chart re-aggregates live.
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/query/${pattern}`).then((r) => r.json()).then((d) => { if (live) store.load(pattern, d.entries || []); }).catch(() => {});
+    return () => { live = false; };
+  }, [pattern]);
   // pass every chart key (mark/x/y/agg/title/caption…) through as the view config.
   const { type: _t, width: _w, pattern: _p, ...cfg } = block;
   const view: ViewSpec = { pattern, name: 'block', view_type: 'chart', config: JSON.stringify(cfg) };

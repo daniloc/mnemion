@@ -419,6 +419,12 @@ const ON_WRITE: Record<string, WriteHook> = {
   },
 
   _pages(data, _operation, ctx) {
+    // A page path becomes a public URL segment (/page/{path}) and a private
+    // app anchor (/#page:{path}) — reject anything that isn't a URL-safe slug
+    // before it can produce a broken page_url.
+    if (typeof data.path === "string" && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(data.path)) {
+      return { error: true, message: "Page path must be a URL-safe slug (letters, digits, ., _, -)." };
+    }
     if (data.blocks === undefined) return data; // a partial update not touching blocks
     const errors = validateBlocks(data.blocks as string | null, {
       patternExists: (p) => ctx.patternExists(p),

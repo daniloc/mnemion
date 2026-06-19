@@ -41,14 +41,10 @@ export interface Rendered {
 
 // === Escaping ===
 
-export function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+// The one shared XML/HTML escaper (shared/core/escape), bound to this module's
+// long-standing name for its own uses and re-exported for its callers.
+import { escapeXml as escapeHtml } from "../core/escape";
+export { escapeHtml };
 
 // === Template seam ===
 

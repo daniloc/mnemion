@@ -180,6 +180,14 @@ describe("chart config", () => {
     expect(validateViewSpec("chart", JSON.stringify({ mark: "pie", x: "platform" }), has)).toEqual([]);
     expect(validateViewSpec("chart", JSON.stringify({ mark: "donut", x: "platform", y: "engagement" }), has)).toEqual([]);
   });
+  it("rejects a mark that isn't a chart mark (was silently rendered as bar)", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ mark: "doughnut", x: "platform" }), has).join()).toContain("not a chart mark");
+  });
+  it("rejects series without an x facet (was one meaningless bar)", () => {
+    expect(validateViewSpec("chart", JSON.stringify({ mark: "bar", series: "platform", y: "faves" }), has).join()).toContain("needs an x facet");
+    // but series WITH x (or group_by) is fine
+    expect(validateViewSpec("chart", JSON.stringify({ mark: "bar", series: "platform", group_by: "year" }), has)).toEqual([]);
+  });
 });
 
 // === entry revision history (derived from the audit log) ===

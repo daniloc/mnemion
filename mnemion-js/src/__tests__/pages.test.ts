@@ -56,6 +56,10 @@ describe("validateBlocks", () => {
     expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets", x: "year", series: "ghost" }]), ctx).join()).toContain('facet "ghost"');
     expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets", x: "year", stack: "yes" }]), ctx).join()).toContain("true or false");
   });
+  it("rejects a chart block with a non-chart mark or series-without-x", () => {
+    expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets", mark: "doughnut", x: "year" }]), ctx).join()).toContain("not a chart mark");
+    expect(validateBlocks(JSON.stringify([{ type: "chart", pattern: "tweets", mark: "bar", series: "platform", y: "engagement" }]), ctx).join()).toContain("needs an x facet");
+  });
   it("rejects non-array / non-JSON blocks", () => {
     expect(validateBlocks(JSON.stringify({ type: "heading" }), ctx).join()).toContain("must be a JSON array");
     expect(validateBlocks("{bad", ctx).join()).toContain("valid JSON");
@@ -85,6 +89,12 @@ describe("_pages kernel validation", () => {
 
     expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "B", path: "b", blocks: JSON.stringify([{ type: "chart", pattern: "data", group_by: "ghost" }]) }))).message).toContain('facet "ghost"');
     expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "B2", path: "b2", blocks: JSON.stringify([{ type: "metric", pattern: "ghosts" }]) }))).message).toContain("does not exist");
+  });
+
+  it("rejects a page path that isn't a URL-safe slug (would yield a broken link)", async () => {
+    const store = getStore();
+    expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "Bad", path: "my page" }))).message).toContain("URL-safe slug");
+    expect(JSON.parse(await store.mutate("_pages", "create", JSON.stringify({ name: "Bad2", path: "q?x=1" }))).message).toContain("URL-safe slug");
   });
 
   it("hands back a link the agent can give the human (private → app deep-link, public → web URL + OG)", async () => {

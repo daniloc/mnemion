@@ -19,7 +19,8 @@ import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } fro
 import { isKernelPattern, isValidWriteTarget, writeClass } from "./policy";
 import { deriveLabel } from "./labels";
 import { renderChartSvg, chartOgSvg, type ChartPayload } from "../../shared/core/chart-svg";
-import { pivotSeries, ROUND_MARKS } from "../../shared/core/chart-spec";
+import { pivotSeries, resolveChart, chartQuery, aggSpec } from "../../shared/core/chart-spec";
+import { escapeXml } from "../../shared/core/escape";
 import PUBLIC_PAGE_CSS from "./public-page.css";
 import * as cred from "../../shared/Auth/credentials";
 import * as evo from "./evolution";
@@ -87,6 +88,12 @@ export class HiveDO extends DurableObject {
 
   private currentHost(): string {
     return this.lastKnownHost ?? (this.env as any).WORKER_HOST ?? "localhost";
+  }
+
+  /** A public URL on this instance — the one place upload_url / page_url /
+   *  og_image hand-build `https://{host}/{path}` from the live host. */
+  private instanceUrl(path: string): string {
+    return `https://${this.currentHost()}/${path}`;
   }
 
   // === RPC methods (called from MnemionSession) ===
@@ -545,7 +552,7 @@ export class HiveDO extends DurableObject {
         });
         if (!tok.error && tok.entry?.token) {
           result.upload_token = tok.entry.token;
-          result.upload_url = `https://${this.currentHost()}/f/${tok.entry.token}`;
+          result.upload_url = this.instanceUrl(`f/${tok.entry.token}`);
         }
         // Minting the token is pure DB; the bytes need R2. If it isn't enabled,
         // say so plainly rather than handing back an upload_url that 503s.
@@ -560,9 +567,9 @@ export class HiveDO extends DurableObject {
       // from currentHost() + visibility, never stored — same shape as upload_url.
       if (patternName === "_pages" && (operation === "create" || operation === "update") && result.entry?.path) {
         const isPublic = result.entry.visibility === "public";
-        const base = `https://${this.currentHost()}`;
-        result.page_url = isPublic ? `${base}/page/${result.entry.path}` : `${base}/#page:${result.entry.path}`;
-        if (isPublic) result.og_image = `${base}/page/${result.entry.path}/og.png`;
+        const slug = encodeURIComponent(result.entry.path);
+        result.page_url = isPublic ? this.instanceUrl(`page/${slug}`) : this.instanceUrl(`#page:${slug}`);
+        if (isPublic) result.og_image = this.instanceUrl(`page/${slug}/og.png`);
         else result.page_note = "Private page — only you, signed in, can open this link. Publishing it (visibility: public) is consent-gated.";
       }
       // Archiving a document frees its R2 object — the metadata and the blob die together.
@@ -1028,14 +1035,10 @@ export class HiveDO extends DurableObject {
 
   // === Public pages (server-rendered HTML + OG card, for sharing) ===
 
-  private escHtml(s: string): string {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
-
-  /** Aggregate rows for a block (reuses the query engine: group_by x, agg y). */
+  /** Aggregate rows for a block (reuses the query engine: group_by x, agg y).
+   *  Still used by the metric block (no x) — chart blocks go through chartData. */
   private async aggRows(pattern: string, x: string | undefined, y: string | undefined, agg: string | undefined, sort: string): Promise<any[]> {
-    const fn = agg || (y ? "sum" : "count");
-    const aggregate = JSON.stringify([{ fn, ...(y ? { facet: y } : {}), as: "value" }]);
+    const aggregate = aggSpec(agg || (y ? "sum" : "count"), y);
     try {
       const r = JSON.parse(await this.query(pattern, "", "", sort || "", 200, false, x || "", aggregate));
       return r.rows || [];
@@ -1044,32 +1047,38 @@ export class HiveDO extends DurableObject {
 
   /** Resolve a chart block's data into the payload both server renderers expect:
    *  raw x,y points for scatter; a pivoted multi-series set when `series` is set
-   *  (non-round marks); a flat aggregate otherwise (incl. pie/donut). */
+   *  (non-round marks); a flat aggregate otherwise (incl. pie/donut). Fetch
+   *  params come from chartQuery (the same source the client renderer uses), so
+   *  the `:unit` bucket is split correctly: q.group_by GROUPs BY the full
+   *  "facet:unit" field while q.sort and the row read-key rc.x use the bare
+   *  alias the engine emits — passing the full field as the sort field is what
+   *  the engine rejected, flattening bucketed charts to empty. */
   private async chartData(b: any): Promise<ChartPayload> {
-    const x = b.x || b.group_by, y = b.y || b.metric, series = b.series, mark = b.mark || "bar";
-    if (mark === "scatter") {
-      try {
-        const r = JSON.parse(await this.query(b.pattern, "", `${x ?? ""},${y ?? ""}`, "", 500, false, "", ""));
-        return { multi: false, data: (r.entries || []).map((e: any) => ({ label: String(e[x] ?? ""), value: Number(e[y]) || 0 })) };
-      } catch { return { multi: false, data: [] }; }
+    const rc = resolveChart(b);
+    const q = chartQuery(rc);
+    try {
+      if (q.kind === "scatter") {
+        const r = JSON.parse(await this.query(b.pattern, "", q.facets ?? "", "", q.limit, false, "", ""));
+        const data = (r.entries || []).map((e: any) => ({ label: String(e[rc.x!] ?? ""), value: Number(e[rc.y!]) || 0 }));
+        return { multi: false, data };
+      }
+      if (q.kind === "series") {
+        const r = JSON.parse(await this.query(b.pattern, "", "", q.sort ?? "", q.limit, false, q.group_by ?? "", q.aggregate ?? ""));
+        const { rows, keys } = pivotSeries(r.rows || [], rc.x!, rc.series!);
+        return { multi: true, data: { xKey: rc.x!, rows, keys } };
+      }
+      const r = JSON.parse(await this.query(b.pattern, "", "", q.sort ?? "", q.limit, false, q.group_by ?? "", q.aggregate ?? ""));
+      const data = (r.rows || []).map((row: any) => ({ label: String(row[rc.x!] ?? ""), value: Number(row.value) || 0 }));
+      return { multi: false, data };
+    } catch {
+      if (q.kind === "series") return { multi: true, data: { xKey: rc.x ?? "", rows: [], keys: [] } };
+      return { multi: false, data: [] };
     }
-    if (series && x && !ROUND_MARKS.has(mark)) {
-      // aggregate over x AND series → long rows → pivot to per-series columns.
-      const aggregate = JSON.stringify([{ fn: b.agg || (y ? "sum" : "count"), ...(y ? { facet: y } : {}), as: "value" }]);
-      try {
-        const r = JSON.parse(await this.query(b.pattern, "", "", x, 500, false, `${x},${series}`, aggregate));
-        const { rows, keys } = pivotSeries(r.rows || [], x, series, "value");
-        return { multi: true, data: { xKey: x, rows, keys } };
-      } catch { return { multi: true, data: { xKey: x, rows: [], keys: [] } }; }
-    }
-    const sort = mark === "line" || mark === "area" ? x : "-value";
-    const rows = await this.aggRows(b.pattern, x, y, b.agg, sort);
-    return { multi: false, data: rows.map((r: any) => ({ label: String(r[x] ?? ""), value: Number(r.value) || 0 })) };
   }
 
   private async renderBlockHtml(b: any): Promise<string> {
     const w = b.width === "half" ? "w-half" : b.width === "third" ? "w-third" : "w-full";
-    const e = (v: unknown) => this.escHtml(String(v ?? ""));
+    const e = (v: unknown) => escapeXml(String(v ?? ""));
     switch (b.type) {
       case "heading": return `<h2 class="pb-h ${w}">${e(b.text)}</h2>`;
       case "text": return `<p class="pb-t ${w}">${e(b.text)}</p>`;
@@ -1101,8 +1110,8 @@ export class HiveDO extends DurableObject {
     try { blocks = JSON.parse(row.blocks || "[]"); } catch { /* */ }
     const parts: string[] = [];
     for (const b of blocks) parts.push(await this.renderBlockHtml(b));
-    const title = this.escHtml(row.title || row.name);
-    const desc = this.escHtml(row.description || "");
+    const title = escapeXml(row.title || row.name);
+    const desc = escapeXml(row.description || "");
     const og = `/page/${encodeURIComponent(path)}/og.png`;
     return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
@@ -1122,6 +1131,9 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
     const chart = blocks.find((b: any) => b.type === "chart");
     if (!chart) return null;
     const data = await this.chartData(chart);
+    // An empty chart would render a blank 1200×630 card — serve no OG image instead.
+    const empty = data.multi ? data.data.rows.length === 0 : data.data.length === 0;
+    if (empty) return null;
     return chartOgSvg(row.title || row.name, chart.mark || "bar", data, chart.stack === true);
   }
 
