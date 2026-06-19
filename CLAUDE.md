@@ -248,6 +248,33 @@ Domain logic lives in pure-function modules with context injected. HiveDO builds
 
 The operational synthesis of the two principles above, for a codebase agents edit. Every invariant gets **one declarative home** (a table keyed by what it governs) that is simultaneously the spec an agent reads, the enforcement every gate derives from, and the oracle a totality check asserts completeness against — so spec, enforcement, and test can't drift. Five properties make a declaration self-enforcing: (1) one table, and it's data; (2) derive, never duplicate; (3) enforce at the chokepoint the invariant is about, not the convenient layer; (4) fail closed (absence → the safe state); (5) a totality check that fails loudly. Reference: `entities/Hive/policy.ts` (write-class registry) + `verifyWritePolicyTotality` + `src/__tests__/policy.test.ts`. Full doctrine and checklists: `project-docs/active/self-enforcing-declarations.md`. Quality metric: minimize the number of files an agent must touch in lockstep to add a pattern/tool/route/invariant — drive it toward one. Not for effects (keep imperative), one-offs, or history (migrations/audit logs).
 
+## Design principle: security boundaries are self-enforcing declarations
+
+The security model is a set of **boundaries**, each enforced at ONE chokepoint a
+new code path physically cannot avoid — never a guard remembered at each call
+site (a block-list fails open the moment someone forgets a sink). Each boundary
+has the same anatomy: a chokepoint + a `## why` stating the invariant + a
+totality/regression test + a coherence `works when` claim anchoring the
+chokepoint. The boundaries:
+
+- **Untrusted WRITES** → `executeUntrustedWrite` refuses non-user patterns when
+  `!ctx.trusted`; oracle: `verifyWritePolicyTotality` + `policy.test.ts`.
+- **Served READS** → `servedDataCtx`/`servedQuery` (`hive.ts`); the engine
+  (`data.ts`) refuses kernel patterns when `ctx.served`. Every public/OG/
+  publication/`/o/entry` read routes through it, so a serve sink cannot reach
+  `_access_tokens`/`_members`/etc.
+- **Capability SECRETS** → access tokens are hashed at rest (`credentials.hashToken`);
+  a read of the row yields a digest, never a usable bearer.
+- **Instance IDENTITY** → the host is configuration (`WORKER_HOST`), never request
+  data; `currentHost()` ignores the inbound `Host`.
+- **Served CONTENT** → agent-authored egress is inert (`Content-Security-Policy:
+  sandbox`), never active script on the first-party origin.
+
+When you add a serve path, a stored secret, a generated URL, or a content egress:
+**route it through the existing boundary — do not re-implement the guard.** Adding
+a *new* boundary means adding all four parts (chokepoint, why, totality test,
+claim) so the next agent inherits it by construction.
+
 ## Coherence (spec ↔ code)
 
 The same idea, tooled for docs. The [coherence harness](https://github.com/daniloc/coherence) (`coherence-harness`, a dev dep) derives a multi-resolution graph from the `*.spec.md` tree + the code, renders an outline (`docs/coherence/_graph.html`), an agent map (`AGENTS.md`, `docs/coherence/_overview.html`), and **verifies the specs haven't rotted** against the code.
