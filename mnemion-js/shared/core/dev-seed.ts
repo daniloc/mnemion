@@ -167,6 +167,10 @@ export function seedDevData(db: DB): void {
     // a second view of the same dataset, as a line (a value over time) with a
     // headline — the "data shitpost" shape.
     config: JSON.stringify({ mark: "line", x: "year", y: "engagement", agg: "sum", title: "Engagement by year", caption: "sum of engagement per year" }) });
+  ins(db, "_views", { pattern: "tweets", name: "faves vs reach", view_type: "chart",
+    // a third view: scatter — does fave count predict total engagement? raw
+    // points, one per post (no aggregation).
+    config: JSON.stringify({ mark: "scatter", x: "faves", y: "engagement", title: "Do faves predict reach?", caption: "one point per post" }) });
 
   // --- Pages: an agent-composed dashboard referencing several patterns ---
   ins(db, "_pages", { name: "Pulse", path: "pulse", title: "Pulse",

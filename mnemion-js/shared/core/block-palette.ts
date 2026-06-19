@@ -28,7 +28,7 @@ export const BLOCK_PALETTE = {
   } },
   chart: { label: "Chart", help: "A bar/line/area chart of an aggregate grouped by a facet.", config: {
     pattern: { role: "pattern", required: true, help: "pattern to chart" },
-    mark: { role: "text", help: "bar | line | area (default: bar)" },
+    mark: { role: "text", help: "bar | line | area | scatter (default: bar)" },
     x: { role: "facet", help: "facet for the x-axis (alias: group_by)" },
     y: { role: "facet", help: "numeric facet for the y-axis (alias: metric; omit to count rows)" },
     group_by: { role: "facet", help: "alias for x" },

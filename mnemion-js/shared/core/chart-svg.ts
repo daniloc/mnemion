@@ -28,8 +28,17 @@ export function chartToSvg(mark: string, data: Datum[], opts: ChartSvgOpts = {})
   const y = (v: number) => m.top + ph - (v / max) * ph;
   const n = Math.max(1, data.length);
   const band = pw / n;
-  const cx = (i: number) => m.left + band * (i + 0.5);
   const font = "font-family:'Spline Sans Mono',ui-monospace,monospace";
+  const sw = Math.max(2, ls * 0.23).toFixed(1);
+  const dot = Math.max(2.5, ls * 0.28).toFixed(1);
+
+  // x positioning: a linear scale when x parses as numbers and the mark plots over
+  // a continuous axis (line/area/scatter) — so years space to scale, not equally;
+  // a categorical band otherwise (bars, non-numeric x).
+  const xs = data.map((d) => Number(d.label));
+  const linearX = n > 1 && (mark === "line" || mark === "area" || mark === "scatter") && xs.every((v) => isFinite(v));
+  const xmin = linearX ? Math.min(...xs) : 0, xspan = linearX ? (Math.max(...xs) - xmin) || 1 : 1;
+  const xPos = linearX ? (i: number) => m.left + ((xs[i] - xmin) / xspan) * pw : (i: number) => m.left + band * (i + 0.5);
 
   const gridSvg = [0, max / 2, max].map((t) => {
     const yy = y(t).toFixed(1);
@@ -37,23 +46,26 @@ export function chartToSvg(mark: string, data: Datum[], opts: ChartSvgOpts = {})
       + `<text x="${m.left - 8}" y="${(y(t) + 3).toFixed(1)}" text-anchor="end" fill="${ink3}" font-size="${ls}" style="${font}">${compactNum(t)}</text>`;
   }).join("");
 
-  const xLabels = data.map((d, i) => `<text x="${cx(i).toFixed(1)}" y="${H - 9}" text-anchor="middle" fill="${ink3}" font-size="${ls}" style="${font}">${esc(d.label)}</text>`).join("");
+  // scatter packs many points — label the axis extremes only; otherwise per point.
+  const xLabels = (mark === "scatter" && linearX)
+    ? [0, n - 1].map((i) => `<text x="${xPos(i).toFixed(1)}" y="${H - 9}" text-anchor="middle" fill="${ink3}" font-size="${ls}" style="${font}">${compactNum(xs[i])}</text>`).join("")
+    : data.map((d, i) => `<text x="${xPos(i).toFixed(1)}" y="${H - 9}" text-anchor="middle" fill="${ink3}" font-size="${ls}" style="${font}">${esc(d.label)}</text>`).join("");
 
-  const sw = Math.max(2, ls * 0.23).toFixed(1);
-  const dot = Math.max(2.5, ls * 0.28).toFixed(1);
   let series = "";
-  if (mark === "line" || mark === "area") {
-    const pts = data.map((d, i) => `${cx(i).toFixed(1)},${y(d.value).toFixed(1)}`);
+  if (mark === "scatter") {
+    series = data.map((d, i) => `<circle cx="${xPos(i).toFixed(1)}" cy="${y(d.value).toFixed(1)}" r="${dot}" fill="${accent}" fill-opacity="0.65"/>`).join("");
+  } else if (mark === "line" || mark === "area") {
+    const pts = data.map((d, i) => `${xPos(i).toFixed(1)},${y(d.value).toFixed(1)}`);
     const path = "M" + pts.join(" L");
-    if (mark === "area") series += `<path d="${path} L${cx(n - 1).toFixed(1)},${baseline.toFixed(1)} L${cx(0).toFixed(1)},${baseline.toFixed(1)} Z" fill="${accent}" fill-opacity="0.12"/>`;
+    if (mark === "area") series += `<path d="${path} L${xPos(n - 1).toFixed(1)},${baseline.toFixed(1)} L${xPos(0).toFixed(1)},${baseline.toFixed(1)} Z" fill="${accent}" fill-opacity="0.12"/>`;
     series += `<path d="${path}" fill="none" stroke="${accent}" stroke-width="${sw}" stroke-linejoin="round" stroke-linecap="round"/>`;
-    series += data.map((d, i) => `<circle cx="${cx(i).toFixed(1)}" cy="${y(d.value).toFixed(1)}" r="${dot}" fill="${accent}"/>`).join("");
+    series += data.map((d, i) => `<circle cx="${xPos(i).toFixed(1)}" cy="${y(d.value).toFixed(1)}" r="${dot}" fill="${accent}"/>`).join("");
   } else {
     const pad = band * 0.22;
     const bw = Math.min(band - 2 * pad, 56);
     series = data.map((d, i) => {
       const yy = y(d.value);
-      return `<rect x="${(cx(i) - bw / 2).toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, baseline - yy).toFixed(1)}" rx="3" fill="${accent}"/>`;
+      return `<rect x="${(xPos(i) - bw / 2).toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, baseline - yy).toFixed(1)}" rx="3" fill="${accent}"/>`;
     }).join("");
   }
 

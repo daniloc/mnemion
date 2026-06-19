@@ -85,7 +85,7 @@ export const VIEW_PALETTE = {
     label: "Chart",
     help: "A bar/line/area chart of an aggregate — group entries by a facet (x) and measure them (y). For datasets you want to SEE the shape of, not read. Pairs well with a table view of the same pattern.",
     config: {
-      mark: { role: "text", help: "bar | line | area (default: bar). Use line/area for a value over time." },
+      mark: { role: "text", help: "bar | line | area | scatter (default: bar). line/area for a value over a numeric/time x (spaced to scale); scatter plots x vs y per entry (no aggregation)." },
       x: { role: "facet", help: "facet for the x-axis / categories; bucket a datetime with facet:unit, e.g. created_at:month" },
       y: { role: "facet", help: "numeric facet for the y-axis (omit to count rows)" },
       group_by: { role: "facet", help: "alias for x" },

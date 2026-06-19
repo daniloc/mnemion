@@ -1029,6 +1029,21 @@ export class HiveDO extends DurableObject {
     } catch { return []; }
   }
 
+  /** Resolve a chart block's data: raw x,y points for scatter; an aggregate
+   *  otherwise. Returns the {label,value} shape both server renderers expect. */
+  private async chartData(b: any): Promise<Datum[]> {
+    const x = b.x || b.group_by, y = b.y || b.metric, mark = b.mark || "bar";
+    if (mark === "scatter") {
+      try {
+        const r = JSON.parse(await this.query(b.pattern, "", `${x ?? ""},${y ?? ""}`, "", 500, false, "", ""));
+        return (r.entries || []).map((e: any) => ({ label: String(e[x] ?? ""), value: Number(e[y]) || 0 }));
+      } catch { return []; }
+    }
+    const sort = mark === "line" || mark === "area" ? x : "-value";
+    const rows = await this.aggRows(b.pattern, x, y, b.agg, sort);
+    return rows.map((r: any) => ({ label: String(r[x] ?? ""), value: Number(r.value) || 0 }));
+  }
+
   private async renderBlockHtml(b: any): Promise<string> {
     const w = b.width === "half" ? "w-half" : b.width === "third" ? "w-third" : "w-full";
     const e = (v: unknown) => this.escHtml(String(v ?? ""));
@@ -1041,11 +1056,8 @@ export class HiveDO extends DurableObject {
         return `<div class="pb-metric ${w}"><div class="pb-metric-n">${v == null ? "—" : new Intl.NumberFormat("en").format(v)}</div><div class="pb-metric-l">${e(b.label)}</div></div>`;
       }
       case "chart": {
-        const x = b.x || b.group_by, y = b.y || b.metric, mark = b.mark || "bar";
-        const sort = mark === "line" || mark === "area" ? x : "-value";
-        const rows = await this.aggRows(b.pattern, x, y, b.agg, sort);
-        const data: Datum[] = rows.map((r: any) => ({ label: String(r[x] ?? ""), value: Number(r.value) || 0 }));
-        const svg = data.length ? chartToSvg(mark, data) : `<div class="pb-empty">no data</div>`;
+        const data = await this.chartData(b);
+        const svg = data.length ? chartToSvg(b.mark || "bar", data) : `<div class="pb-empty">no data</div>`;
         return `<figure class="pb-chart ${w}">${b.title ? `<figcaption class="pb-chart-t">${e(b.title)}</figcaption>` : ""}<div class="pb-chart-c">${svg}</div>${b.caption ? `<figcaption class="pb-chart-cap">${e(b.caption)}</figcaption>` : ""}</figure>`;
       }
       default: return ""; // embeds (view/entry/list) aren't served on public pages yet
@@ -1085,11 +1097,8 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
     try { blocks = JSON.parse(row.blocks || "[]"); } catch { /* */ }
     const chart = blocks.find((b: any) => b.type === "chart");
     if (!chart) return null;
-    const x = chart.x || chart.group_by, y = chart.y || chart.metric, mark = chart.mark || "bar";
-    const sort = mark === "line" || mark === "area" ? x : "-value";
-    const rows = await this.aggRows(chart.pattern, x, y, chart.agg, sort);
-    const data: Datum[] = rows.map((r: any) => ({ label: String(r[x] ?? ""), value: Number(r.value) || 0 }));
-    return chartOgSvg(row.title || row.name, mark, data);
+    const data = await this.chartData(chart);
+    return chartOgSvg(row.title || row.name, chart.mark || "bar", data);
   }
 
   // === System docs ===

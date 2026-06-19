@@ -581,12 +581,20 @@ export function ChartView({ pattern, view }: ViewProps) {
   const [data, setData] = useState<Record<string, unknown>[] | null>(null);
   useEffect(() => {
     if (!x) { setData([]); return; }
-    const aggregate = JSON.stringify([{ fn: agg, ...(y ? { facet: y } : {}), as: 'value' }]);
-    // line/area read left→right over the axis; bar ranks biggest-first.
-    const sort = mark === 'line' || mark === 'area' ? x : '-value';
-    const url = `/api/query/${pattern}?group_by=${encodeURIComponent(x)}&aggregate=${encodeURIComponent(aggregate)}&sort=${encodeURIComponent(sort)}&limit=200`;
     let live = true;
-    fetch(url).then((r) => r.json()).then((d) => { if (live) setData(d.rows || []); }).catch(() => { if (live) setData([]); });
+    if (mark === 'scatter') {
+      // raw points: x,y per entry, no aggregation
+      const facets = [x, y].filter(Boolean).join(',');
+      fetch(`/api/query/${pattern}?facets=${encodeURIComponent(facets)}&limit=500`)
+        .then((r) => r.json())
+        .then((d) => { if (live) setData((d.entries || []).map((e: Record<string, unknown>) => ({ [x]: e[x], value: y ? e[y] : 0 }))); })
+        .catch(() => { if (live) setData([]); });
+    } else {
+      const aggregate = JSON.stringify([{ fn: agg, ...(y ? { facet: y } : {}), as: 'value' }]);
+      const sort = mark === 'line' || mark === 'area' ? x : '-value'; // line/area read left→right; bar ranks biggest-first
+      fetch(`/api/query/${pattern}?group_by=${encodeURIComponent(x)}&aggregate=${encodeURIComponent(aggregate)}&sort=${encodeURIComponent(sort)}&limit=200`)
+        .then((r) => r.json()).then((d) => { if (live) setData(d.rows || []); }).catch(() => { if (live) setData([]); });
+    }
     return () => { live = false; };
   }, [pattern, x, y, agg, mark, entries]);
   if (!x) return <div className="status">This chart needs an x facet (x or group_by).</div>;
