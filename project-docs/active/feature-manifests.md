@@ -49,16 +49,22 @@ never last-write-wins.
 
 | Slot | Composer | Wired? | How it feeds the registry |
 |---|---|---|---|
-| effects | `composeEffects` | **YES** | `effects.ts` `PATTERN_EFFECTS = composeEffects(FEATURES)` (module load) |
-| write-policy | `composeWritePolicy` | roadmap | merge into `policy.ts` `KERNEL_WRITE_POLICY` at module load. **Fail-closed preserved**: an unclassified feature pattern still → System/denied |
+| effects | `composeEffects` | **WIRED** | `effects.ts` `PATTERN_EFFECTS = composeEffects(FEATURES)` (module load) |
+| routes | `composeRoutes` | **WIRED** | `src/index.ts` `routes = [...CORE_ROUTES, ...composeRoutes(FEATURES)]`, appended AFTER core (declaration order → a feature route cannot shadow a core route); each route's prefix feeds `BACKEND_PREFIXES`. /f→documents, /page→pages |
+| write-policy | (feature `security.ts`) | **WIRED** | `policy.ts` `KERNEL_WRITE_POLICY = mergeDisjoint(CORE, FEATURE_WRITE_POLICY)`. Leaf preserved: policy.ts imports only the pure-data feature-security barrel (types erased), never a manifest. Fail-closed intact; CORE↔feature collision throws loud |
+| egress-sensitivity | (feature `security.ts`) | **WIRED** | `policy.ts` `SENSITIVE_COLUMNS` composes feature columns (e.g. `_documents.r2_key`); `findUnclassifiedSensitiveColumns` oracle reads the composed map |
 | patterns + DDL | `composePatterns` | roadmap | `schema.ts` `KERNEL_PATTERNS = [...CORE, ...composePatterns(FEATURES)]`; boot DDL + `_fields` seeding + write-class totality already iterate KERNEL_PATTERNS |
+| kernel hooks | (feature hooks) | roadmap | ON_CREATE/ON_WRITE/IMMUTABLE compose into kernel.ts's hook registry; enforcement stays at the kernel chokepoint (applyKernelRules). The security-VALIDATION logic — handle carefully; consider whether it belongs in the feature or stays kernel-central |
 | migrations | `composeMigrations` | roadmap | sorted, version-unique; appended to the boot migration ledger in `schema.ts` |
-| routes | `composeRoutes` | roadmap | `src/index.ts` `routes = [...CORE, ...composeRoutes(FEATURES)]`, appended AFTER core (declaration order → a feature route cannot shadow a core route); each route's prefix feeds `BACKEND_PREFIXES` |
-| tools | `composeTools` | roadmap | metadata half into `tools.ts` SSOT (session.ts + `/api/tools` already derive from it → 0 further edits); handler half is a per-tool `register(server, hive)` called at MCP init |
-| system-docs | `composeSystemDocs` | roadmap | concatenated into the `schema.ts` system-doc seed list at boot |
+| tools | `composeTools` | roadmap (no contributor yet) | metadata half into `tools.ts` SSOT; handler half a per-tool `register(server, hive)` at MCP init. The 7 tools are core; no per-feature tool exists yet |
+| system-docs | `composeSystemDocs` | roadmap | concatenated into the `schema.ts` system-doc seed list at boot. (`http-io.md` spans several features — needs splitting first) |
 
-Each roadmap row is "one-time host wiring" (the central file adopts its composer once),
-after which **every** future feature touching that registry is still just 2 files.
+**Wired: effects, routes, write-policy, egress-sensitivity** — a feature owns its
+footprint across four registries, including the security-critical one, each composed at
+its chokepoint with totality intact. Remaining (DDL, kernel hooks, migrations) is the
+same pattern; each is "one-time host wiring," after which every future feature is 2
+files. The security leaf-preservation pattern (pure-data `security.ts` per feature, the
+leaf composes only data+types) is the template for the DDL/hook composition too.
 
 ## Totality
 
