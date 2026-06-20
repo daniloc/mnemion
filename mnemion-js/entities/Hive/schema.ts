@@ -1183,9 +1183,14 @@ function verifyFieldsIntegrity(db: any): void {
     // required flag mismatch — agents told a column is optional but DB rejects NULL (or vice versa).
     // NOT NULL with DEFAULT is effectively optional from the agent's perspective (SQLite fills it in)
     // — skip those, only flag the case where the DB will actually reject an omitted value.
+    const secretCols = new Set(sensitiveColumns(obj.name).filter((s) => s.kind === "secret").map((s) => s.column));
     for (const [name, ddl] of ddlCols) {
       const f = fieldsByName.get(name);
       if (!f) continue;
+      // A `secret` column (born-hashed) is system-managed: NOT NULL in DDL (the
+      // system always supplies the digest) yet required:false in _fields (the AGENT
+      // never supplies it). That divergence is by design, not drift.
+      if (secretCols.has(name)) continue;
       const ddlRequired = ddl.notnull && !ddl.hasDefault ? 1 : 0;
       if (ddlRequired !== f.required) {
         drifts.push(`"${obj.name}".${name}: _fields.required=${f.required} but DDL ${ddl.notnull ? "NOT NULL" : "nullable"}${ddl.hasDefault ? " with default" : ""}`);
@@ -1244,6 +1249,13 @@ export function ensureAuditTriggers(db: any, tableName: string): void {
   const col = (side: "NEW" | "OLD", c: string) => sensitive.has(c) ? `'${c}', NULL` : `'${c}', ${side}."${c}"`;
   const newJson = columns.map((c) => col("NEW", c)).join(", ");
   const oldJson = columns.map((c) => col("OLD", c)).join(", ");
+
+  // For a table with sensitive columns, DROP and recreate the triggers so the
+  // NULL-ing takes effect on an ALREADY-DEPLOYED hive (CREATE TRIGGER IF NOT EXISTS
+  // is a no-op against a pre-existing trigger that still captured the raw value).
+  if (sensitive.size) {
+    for (const op of ["insert", "update", "delete"]) db.exec(`DROP TRIGGER IF EXISTS "_audit_${tableName}_${op}"`);
+  }
 
   db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_insert"
     AFTER INSERT ON "${tableName}" BEGIN

@@ -16,7 +16,7 @@ import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/cons
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
-import { isKernelPattern, isValidWriteTarget, writeClass, seal, secretColumn } from "./policy";
+import { isKernelPattern, isValidWriteTarget, writeClass, seal, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
 import { deriveLabel } from "./labels";
 import { renderChartSvg, chartOgSvg, type ChartPayload } from "../../shared/core/chart-svg";
 import { pivotSeries, resolveChart, chartQuery, aggSpec } from "../../shared/core/chart-spec";
@@ -100,19 +100,21 @@ export class HiveDO extends DurableObject {
         catch { /* a bad row must not brick construction — skip it */ }
       }
     } catch { /* table may not exist yet on a brand-new hive */ }
-    // Audit-log scrub: NULL out any token value the pre-born-hashed audit trigger
-    // captured (new_data/old_data JSON containing a 32-hex token). Cheap and idempotent.
+    // Audit-log scrub: NULL out every sensitive value the pre-recreate audit
+    // triggers captured (raw tokens, passkey material). Derived from SENSITIVE_COLUMNS
+    // so it covers every classified column; idempotent (once null, the guard skips it).
     try {
-      this.db.exec(
-        `UPDATE _mutation_log SET new_data = json_set(new_data, '$.token', null)
-         WHERE table_name = '_access_tokens' AND json_extract(new_data, '$.token') IS NOT NULL
-           AND length(json_extract(new_data, '$.token')) != 64`,
-      );
-      this.db.exec(
-        `UPDATE _mutation_log SET old_data = json_set(old_data, '$.token', null)
-         WHERE table_name = '_access_tokens' AND json_extract(old_data, '$.token') IS NOT NULL
-           AND length(json_extract(old_data, '$.token')) != 64`,
-      );
+      for (const [table, cols] of Object.entries(SENSITIVE_COLUMNS)) {
+        for (const c of cols) {
+          for (const field of ["new_data", "old_data"]) {
+            this.db.exec(
+              `UPDATE _mutation_log SET ${field} = json_set(${field}, '$.${c.column}', null)
+               WHERE table_name = ? AND json_extract(${field}, '$.${c.column}') IS NOT NULL`,
+              table,
+            );
+          }
+        }
+      }
     } catch { /* best effort */ }
   }
 
@@ -1380,6 +1382,10 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
     // are degraded locally; query/mutate (the UI surface) are unaffected. The
     // test suite leaves this unset so embedding is still exercised.
     if ((this.env as any).SKIP_EMBED) return;
+    // Kernel control tables (_access_tokens, _members, …) are not memory — never
+    // embed them for recall (the same set prime excludes). _documents et al. that
+    // ARE prime-included still embed.
+    if (isKernelPattern(pattern) && !primeIncluded(pattern)) return;
     const ctx = this.primeCtx();
     if (operation === "archive") {
       this.ctx.waitUntil(priming.removeEntry(ctx, pattern, id));
@@ -1668,7 +1674,9 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
   async resolveTokenConstraints(token: string, requiredScope: string): Promise<string> {
     const t = await cred.findAccessToken(this.db, token);
     if (!t || !cred.scopeMatches(t.scope, requiredScope)) return JSON.stringify({ valid: false });
-    return JSON.stringify({ valid: true, constraints: t.constraints ? JSON.parse(t.constraints) : null });
+    let constraints: unknown = null;
+    try { constraints = t.constraints ? JSON.parse(t.constraints) : null; } catch { /* malformed → no constraints, still valid */ }
+    return JSON.stringify({ valid: true, constraints });
   }
   async resolveTokenActor(token: string, requiredScope: string) {
     return cred.resolveTokenActor(this.db, token, requiredScope);
@@ -1749,7 +1757,9 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
       ).toArray() as any[];
       if (rows.length === 0) return JSON.stringify({ found: false });
       const { visibility, ...entry } = rows[0];
-      return JSON.stringify({ found: true, visibility, pattern, entry });
+      // seal: this entry is served publicly at /o/entry — strip any sensitive
+      // column (covers a future user pattern classified in SENSITIVE_COLUMNS).
+      return JSON.stringify({ found: true, visibility, pattern, entry: seal(pattern, entry) });
     } catch {
       return JSON.stringify({ found: false });
     }
@@ -1779,7 +1789,9 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
     );
     const queryResult = JSON.parse(queryRaw);
     if (queryResult.error) return JSON.stringify({ found: false });
-    let entries = queryResult.entries as Record<string, unknown>[];
+    // seal: these rows render into a public /p projection — strip any sensitive
+    // column (a future user pattern classified in SENSITIVE_COLUMNS).
+    let entries = (queryResult.entries as Record<string, unknown>[]).map((e) => seal(pub.source_pattern, e));
 
     // Publications project current truth: superseded entries drop out unless opted in
     if (!pub.include_superseded && entries.length > 0) {

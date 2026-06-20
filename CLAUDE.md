@@ -267,15 +267,21 @@ chokepoint. The boundaries:
   and the served-entry-point totality in `security.test.ts` (reads).
 - **Egress sensitivity** → the read/serialization dual of the write registry.
   `SENSITIVE_COLUMNS` (`policy.ts`) declares which columns must never leave the DO
-  in the clear; `seal(pattern, row)` is the one sieve every "row → bytes that
-  leave the DO" path routes through (mutate response, `/ws` broadcast, audit
-  trigger, export, served reads). `secret` columns are also **born hashed** —
-  generated in app code and stored as a digest *before* INSERT (`hive.ts`
-  `mintSecrets`; the `randomblob` SQL default is gone), so the preimage never
-  lands in a column, the audit log, or a delta; the raw is returned ONCE at mint.
-  Oracle: `findUnclassifiedSensitiveColumns` (boot) + the seal/born-hashed tests.
-  A new egress inherits redaction by routing through `seal`; a new secret column
-  fails loud until classified.
+  in the clear. Two complementary mechanisms, by reader:
+  - **OUTWARD egresses** — the `/ws` broadcast (reaches every session), `export`,
+    and served public reads (`getSharedEntry`, publication projections) — route
+    rows through `seal(pattern, row)`, which strips `secret` + `redact` columns.
+    The audit trigger does the same (records sensitive columns as NULL).
+  - **The trusted owner read plane** (`query`/`getEntry`/`search`) returns rows
+    as-is, but `secret` columns are **born hashed**: generated in app code and
+    stored as a digest *before* INSERT (`hive.ts mintSecrets`; the `randomblob`
+    SQL default is gone), so a read — owner or otherwise — yields a digest, never
+    a usable bearer. The preimage never lands in a column, the audit log, or a
+    delta; the raw is returned ONCE at mint.
+  Oracle: `findUnclassifiedSensitiveColumns` — a boot `warn` plus a `security.test`
+  assertion over the real kernel schema that **fails the suite** if a secret-shaped
+  column is unclassified. A new outward egress inherits redaction by routing
+  through `seal`; a new secret column fails the test until classified + born-hashed.
 - **Instance IDENTITY** → the host is configuration (`WORKER_HOST`), never request
   data; `currentHost()` ignores the inbound `Host`.
 - **Served CONTENT** → agent-authored egress is inert (`Content-Security-Policy:

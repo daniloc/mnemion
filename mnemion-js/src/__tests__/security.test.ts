@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
 import { query } from "../../entities/Hive/data";
 import { KERNEL_TABLES } from "../../entities/Hive/schema";
-import { seal } from "../../entities/Hive/policy";
+import { seal, findUnclassifiedSensitiveColumns } from "../../entities/Hive/policy";
 
 // Regression guards for the security review fixes. These exercise the mutate /
 // evolution chokepoints (RPC = below the consent layer, runs the kernel hooks),
@@ -91,6 +91,23 @@ describe("seal: the egress sieve strips sensitive columns from any serialized ro
     expect(seal("_passkeys", { id: 1, public_key: "k", credential_id: "c", counter: 3 })).toEqual({ id: 1, counter: 3 });
     expect(seal("goals", { id: 1, title: "x" })).toEqual({ id: 1, title: "x" });
     expect(seal("_access_tokens", null)).toBeNull();
+  });
+});
+
+describe("egress totality: every secret-shaped column on a kernel table is classified", () => {
+  it("catches a planted gap", () => {
+    expect(findUnclassifiedSensitiveColumns({ _foo: ["api_key", "name"] })).toEqual(["_foo.api_key"]);
+  });
+  it("the REAL kernel schema has no unclassified secret-shaped column (the loud oracle)", async () => {
+    const store = getStore();
+    await runInDurableObject(store, async (_i, state) => {
+      const tables = (state.storage.sql.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'`).toArray() as any[]).map((t) => t.name as string);
+      const cols: Record<string, string[]> = {};
+      for (const t of tables) cols[t] = (state.storage.sql.exec(`PRAGMA table_info("${t}")`).toArray() as any[]).map((c: any) => c.name as string);
+      // a new secret-shaped column (token/password/public_key/…) on any kernel
+      // table fails HERE until it's added to SENSITIVE_COLUMNS.
+      expect(findUnclassifiedSensitiveColumns(cols)).toEqual([]);
+    });
   });
 });
 
