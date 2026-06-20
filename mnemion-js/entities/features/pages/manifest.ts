@@ -16,9 +16,8 @@ import { servePage, servePageOg, servePageOgPng } from "../../../shared/Routing/
 import { patterns as pagesPatterns } from "./schema";
 import { onWrite as pagesOnWrite } from "./hooks";
 
-// Security footprint as pure data, foldable into the policy.ts leaf without pulling
-// this manifest's code. Re-exported so the dir shows its whole footprint.
-export { writePolicy } from "./security";
+// Security footprint as pure data in ./security.ts, foldable into the policy.ts leaf
+// without pulling this manifest's code.
 
 export const pages: Feature = {
   name: "pages",

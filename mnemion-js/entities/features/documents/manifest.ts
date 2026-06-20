@@ -23,11 +23,9 @@ import { uploadDocument, serveDocument } from "../../../shared/Routing/routes/io
 import { patterns as documentsPatterns, migrations as documentsMigrations } from "./schema";
 import { onCreate as documentsOnCreate, immutable as documentsImmutable } from "./hooks";
 
-// The feature's security footprint (write class + egress sensitivity) lives in a
-// pure-data sibling so policy.ts — the dependency-free security leaf — can fold it in
-// without importing this manifest (which carries code). Re-exported here so the whole
-// footprint is discoverable from the feature dir.
-export { writePolicy, sensitiveColumns } from "./security";
+// The feature's security footprint (write class + egress sensitivity) lives in the
+// pure-data sibling ./security.ts so policy.ts — the dependency-free security leaf —
+// can fold it in without importing this manifest (which carries code).
 
 export const documents: Feature = {
   name: "documents",

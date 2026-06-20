@@ -52,27 +52,26 @@ the raw-tool scan as a standing gate. Verify cycles by tracing whether the back-
 
 ## Live inventory (triage — confirm before deleting)
 
-**Eliminate (superseded / dead):**
-- `entities/features/compose.ts` — `composeWritePolicy` is dead (write-policy wired via
-  `entities/features/security.ts`, not this). Reconcile: either route both through one
-  mechanism or delete the unused one. *Resolve when the composer set settles (after the
-  DDL/migrations wiring lands).*
+**CLEARED (refactor-introduced cruft, eliminated):**
+- ~~`composeWritePolicy`~~ — deleted; write-policy lives in the `security.ts` barrel. A
+  comment now records why there's no second home.
+- ~~manifest `writePolicy`/`sensitiveColumns` re-exports~~ — dropped (a known-dead export
+  pollutes the cruft scan — same broken-windows trap as a red coherence baseline; the
+  comment + the sibling `security.ts` keep the footprint discoverable).
 
-**Pending, NOT cruft (do not delete):**
-- `composePatterns`, `composeMigrations` — being wired by the DDL/migrations pass.
-- `FEATURES` (index.ts) — ts-prune false-positive (imported by effects.ts/index.ts).
-- `src/index.ts` `default`, canvas/fragment entry exports — runtime/build entry points.
+**NOT cruft (intentional / false-positive — leave):**
+- `composeTools`, `composeSystemDocs` — ready extension points, no contributor yet (the 7
+  core tools aren't feature-owned). Deleting them would defeat the keystone for those
+  registries; keep, documented in feature-manifests.md.
+- `FEATURES` (index.ts) — false-positive (imported by effects.ts/schema.ts/kernel.ts).
+- `src/index.ts default`, canvas/`env` entries, the `satisfies` lines — runtime/build
+  entry points and ts-prune quirks.
+- `labels.truncate` (5 refs), `format-palette.resolveFormat` (16 refs) — USED;
+  ts-prune false-positives.
 
-**Review (likely pre-existing orphans — confirm no dynamic use):**
-- `labels.truncate`, `format-palette.isNumericFormat` / `resolveFormat`,
-  `extract.ExtractionStatus`. Grep for string/dynamic references before removing.
-
-**Decide:**
-- Manifest `writePolicy`/`sensitiveColumns` re-exports — keep for dir-discoverability, or
-  drop (the `security.ts` file is already the discoverable home)? Lean drop.
-- `composeTools`/`composeSystemDocs` — keep as typed roadmap (documented in
-  feature-manifests.md) or delete until a contributor exists? Lean keep-with-doc, since
-  the `Feature` type slot is the contract; revisit if they rot.
+**Pre-existing dead — confirmed 0 refs, remove in the final sweep (NOT refactor cruft):**
+- `format-palette.isNumericFormat`, `extract.ExtractionStatus`. Predate this work; a
+  2-line removal, deferred to keep refactor commits scoped.
 
 ## When to run the cleanup
 
