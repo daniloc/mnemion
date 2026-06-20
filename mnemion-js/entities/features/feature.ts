@@ -23,6 +23,7 @@
 // than re-discovering a registry. See ./compose.ts for what is live vs. designed.
 
 import type { PatternEffect } from "../Hive/effects";
+import type { CreateHook, WriteHook, ImmutableRule } from "../Hive/kernel";
 
 /** A kernel-pattern declaration as schema.ts expects it (DDL + facet metadata +
  *  doctrine). Kept as the existing `KernelTable` shape so a feature can hand
@@ -102,6 +103,20 @@ export interface Feature {
   /** Post-mutate side effects, keyed by pattern name. WIRED: folded into
    *  PATTERN_EFFECTS by composeEffects(). */
   effects?: Record<string, PatternEffect>;
+
+  /** Kernel PRE-MUTATION hooks this feature owns for its pattern(s), keyed by
+   *  pattern name. WIRED: composeOnCreate / composeOnWrite / composeImmutable
+   *  (compose.ts) fold these into kernel.ts's ON_CREATE / ON_WRITE / IMMUTABLE
+   *  registries; applyKernelRules — the kernel chokepoint — enforces them
+   *  unchanged. A feature's hooks live in its own <dir>/hooks.ts (code), which
+   *  imports ONLY TYPES from kernel.ts so the back-edge stays type-only (no
+   *  runtime cycle). `immutable` mirrors the IMMUTABLE record shape (rejected on
+   *  every op). */
+  hooks?: {
+    onCreate?: Record<string, CreateHook>;
+    onWrite?: Record<string, WriteHook>;
+    immutable?: Record<string, ImmutableRule>;
+  };
 
   /** Kernel patterns this feature owns (DDL + facets + doctrine). WIRED: folded
    *  into KERNEL_TABLES by composePatterns() at boot. */

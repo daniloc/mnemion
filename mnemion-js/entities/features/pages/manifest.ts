@@ -14,6 +14,7 @@
 import type { Feature } from "../feature";
 import { servePage, servePageOg, servePageOgPng } from "../../../shared/Routing/routes/io";
 import { patterns as pagesPatterns } from "./schema";
+import { onWrite as pagesOnWrite } from "./hooks";
 
 // Security footprint as pure data, foldable into the policy.ts leaf without pulling
 // this manifest's code. Re-exported so the dir shows its whole footprint.
@@ -24,6 +25,11 @@ export const pages: Feature = {
   // Pattern structure (DDL/facets/index), owned by the feature dir (./schema.ts,
   // pure data) and composed into schema.ts's KERNEL_TABLES at boot.
   patterns: pagesPatterns,
+  // The _pages write-time hook (URL-safe path + block-palette validation + the
+  // kernel-pattern exfil guard), owned by ./hooks.ts (code, type-only kernel
+  // import) and composed into kernel.ts's ON_WRITE registry — enforced at the
+  // applyKernelRules chokepoint, byte-for-byte as before.
+  hooks: { onWrite: pagesOnWrite },
   // Public-page serving + OG-card edges, spliced into the route table by
   // composeRoutes. Handlers stay in routes/io.ts. The og.svg/og.png variants are
   // declared before the catch-all /page/:path; their regexes don't overlap (a

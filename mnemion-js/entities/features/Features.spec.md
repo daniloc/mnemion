@@ -17,8 +17,15 @@ Per-feature manifests that FEED the scattered registries from one declaration; c
 - pages/schema.ts exists at this node
 - documents/manifest.ts imports ./schema
 - pages/manifest.ts imports ./schema
+- documents/hooks.ts exists at this node
+- pages/hooks.ts exists at this node
+- documents/manifest.ts imports ./hooks
+- pages/manifest.ts imports ./hooks
 - passes test "pattern-effects totality"
 - passes test "returns 503 from POST /f and 404 from GET /f when R2 is absent"
+- passes test "requires a title"
+- passes test "refuses agent-supplied blob bookkeeping"
+- passes test "refuses a page block that sources a kernel pattern"
 
 ## why
 
@@ -66,10 +73,28 @@ DDL↔`_fields` drift oracle — plus `verifyWritePolicyTotality`) reads the COM
 array, so a feature pattern is indistinguishable from a core one and an existing
 hive sees no schema diff at boot. The feature `schema.ts` files stay PURE DATA so
 they share the leaf discipline of the `*/security.ts` siblings (the structure half
-of "a feature owns its schema," beside the security half). The kernel pre-mutation
-HOOKS for `_documents`/`_pages` (immutable columns, block/visibility validation)
-deliberately stay in `kernel.ts` — moving the structure is settled; moving the
-hooks is a separate design call, noted in the feature schema files.
+of "a feature owns its schema," beside the security half).
+
+The kernel PRE-MUTATION HOOKS are the fifth registry, completing "a feature owns its
+kernel pattern": the `_documents` create validation (title required) + its
+system-managed immutable bookkeeping columns live in `documents/hooks.ts`, and the
+`_pages` write-time hook (URL-safe path + block-palette validation + the
+kernel-pattern exfil guard) lives in `pages/hooks.ts`. A feature declares these in
+its manifest's `hooks` slot; `kernel.ts` renames its hand-written literals to
+`CORE_ON_CREATE`/`CORE_ON_WRITE`/`CORE_IMMUTABLE` and derives the EXPORTED
+`ON_CREATE`/`ON_WRITE`/`IMMUTABLE` as `mergeDisjoint(CORE_*, compose*(FEATURES))`.
+ENFORCEMENT does NOT move — `applyKernelRules` (the one chokepoint every mutate runs
+through) reads the EXPORTED composed maps, so the validation fires byte-for-byte as
+before (confirmed by the document title/immutability + page block-exfil tests staying
+green); only the DECLARATION moves into the feature dir, exactly as `effects` compose
+into `PATTERN_EFFECTS` but fire at the mutate chokepoint. The hook bodies are code, so
+`<dir>/hooks.ts` imports ONLY TYPES from `kernel.ts` (the hook signature types +
+`ImmutableRule` shape) — type imports are erased at runtime, so the `kernel.ts →
+FEATURES → manifest → hooks` back-edge is type-only and adds NO runtime cycle
+(`dpdm -T`, which strips type-only edges, shows the same single pre-existing runtime
+cycle before and after). `mergeDisjoint` mirrors policy.ts: a feature hook for a CORE
+pattern throws at module load, so a feature can never silently override a core
+invariant.
 
 Composition for `effects`/`tools`/`writePolicy`/`routes` runs at MODULE LOAD
 (static tables); `patterns`/`migrations`/`systemDocs` compose at BOOT (they touch

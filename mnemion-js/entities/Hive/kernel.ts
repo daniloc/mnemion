@@ -12,10 +12,21 @@
 // owner-takeover. "Which patterns the system writes" and "which are valid
 // ingress/upload targets" are intentionally NOT defined here — they derive from
 // policy.ts so the boundary cannot drift between layers.
+//
+// Hooks for a FEATURE's own kernel pattern live in that feature's <dir>/hooks.ts
+// (a feature owns its pattern's hooks, the same way it owns the pattern's schema +
+// security). The EXPORTED ON_CREATE / ON_WRITE / IMMUTABLE here are
+// mergeDisjoint(CORE_*, compose*(FEATURES)) — CORE infra hooks plus each feature's
+// own, composed at module load. ENFORCEMENT does NOT move: applyKernelRules (this
+// file, the one chokepoint every mutate runs through) reads the composed maps, so a
+// feature hook fires byte-for-byte as a core one. The feature hooks.ts files import
+// ONLY TYPES from this file, so the compose back-edge is type-only (no runtime
+// cycle), and mergeDisjoint throws if a feature shadows a CORE pattern's hook.
 
 import { isKernelPattern, isValidWriteTarget } from "./policy";
 import { validateViewSpec, DEFAULT_VIEW_TYPE } from "../../shared/core/view-palette";
-import { validateBlocks } from "../../shared/core/block-palette";
+import { FEATURES } from "../features";
+import { composeOnCreate, composeOnWrite, composeImmutable } from "../features/compose";
 
 export interface KernelContext {
   patternExists(name: string): boolean;
@@ -29,8 +40,13 @@ export interface KernelContext {
   entryField(pattern: string, id: number, field: string): unknown;
 }
 
-type HookResult = Record<string, unknown> | { error: true; message: string };
-type CreateHook = (data: Record<string, unknown>, ctx: KernelContext) => HookResult;
+export type HookResult = Record<string, unknown> | { error: true; message: string };
+export type CreateHook = (data: Record<string, unknown>, ctx: KernelContext) => HookResult;
+
+/** The shape of an IMMUTABLE / IMMUTABLE_AFTER_CREATE registry row. Exported so a
+ *  feature can declare its pattern's immutable fields (in its own hooks.ts) against
+ *  the same shape kernel.ts composes back in. */
+export interface ImmutableRule { fields: string[]; message: string }
 
 // Which patterns the system writes itself (caches/audit logs) and which are
 // valid ingress/upload targets are derived from the write-class registry in
@@ -38,14 +54,10 @@ type CreateHook = (data: Record<string, unknown>, ctx: KernelContext) => HookRes
 
 // === Immutable fields — rejected on any operation ===
 
-export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = {
+const CORE_IMMUTABLE: Record<string, ImmutableRule> = {
   _system_docs: {
     fields: ["default_content"],
     message: "default_content is immutable. It preserves the original seed for recovery.",
-  },
-  _documents: {
-    fields: ["r2_key", "size", "stored_at", "extracted_text", "extraction_status"],
-    message: "r2_key, size, stored_at, extracted_text, and extraction_status are managed by the system on upload/extraction — they cannot be set via mutate.",
   },
   _access_tokens: {
     fields: ["approved_at", "consumed_at"],
@@ -60,7 +72,7 @@ export const IMMUTABLE: Record<string, { fields: string[]; message: string }> = 
 // by a later update/unarchive. Freezing scope/member/constraints/token closes the
 // defense-in-depth gap where an update could repoint an existing token (e.g. to
 // a different member) without re-passing the create-time validation.
-export const IMMUTABLE_AFTER_CREATE: Record<string, { fields: string[]; message: string }> = {
+export const IMMUTABLE_AFTER_CREATE: Record<string, ImmutableRule> = {
   _access_tokens: {
     fields: ["scope", "member", "constraints", "token"],
     message: "A token's scope, member, constraints, and value are fixed at creation. Archive it and mint a new one instead of editing them.",
@@ -84,7 +96,7 @@ export const IMMUTABLE_AFTER_CREATE: Record<string, { fields: string[]; message:
 
 // === Create hooks — validate + transform before INSERT ===
 
-const ON_CREATE: Record<string, CreateHook> = {
+const CORE_ON_CREATE: Record<string, CreateHook> = {
   _access_tokens(data, ctx) {
     const scope = (data.scope as string) || "*";
     data.scope = scope;
@@ -370,17 +382,6 @@ const ON_CREATE: Record<string, CreateHook> = {
     return data;
   },
 
-  _documents(data) {
-    if (!data.title || typeof data.title !== "string" || !(data.title as string).trim())
-      return { error: true, message: "title is required for _documents" };
-    // r2_key/size/stored_at are IMMUTABLE (system-managed on upload) — see IMMUTABLE above.
-    const vis = (data.visibility as string) || "private";
-    if (!["private", "unlisted", "public"].includes(vis))
-      return { error: true, message: `Invalid visibility "${vis}". Use "private", "unlisted", or "public".` };
-    data.visibility = vis;
-    return data;
-  },
-
   _maintenance_passes(data) {
     if (!data.summary || typeof data.summary !== "string" || !(data.summary as string).trim())
       return { error: true, message: "summary is required — record what was reviewed and changed in this maintenance pass" };
@@ -409,9 +410,9 @@ const ON_CREATE: Record<string, CreateHook> = {
 // both must validate against the view palette (the SSOT in view-palette.ts), so
 // a malformed or facet-missing spec is refused at the mutate chokepoint rather
 // than silently degrading in the renderer.
-type WriteHook = (data: Record<string, unknown>, operation: string, ctx: KernelContext) => HookResult;
+export type WriteHook = (data: Record<string, unknown>, operation: string, ctx: KernelContext) => HookResult;
 
-const ON_WRITE: Record<string, WriteHook> = {
+const CORE_ON_WRITE: Record<string, WriteHook> = {
   _views(data, operation, ctx) {
     const isCreate = operation === "create";
     // A partial update carries only the changed fields; the rest stay on the
@@ -437,41 +438,34 @@ const ON_WRITE: Record<string, WriteHook> = {
     }
     return data;
   },
-
-  _pages(data, _operation, ctx) {
-    // A page path becomes a public URL segment (/page/{path}) and a private
-    // app anchor (/#page:{path}) — reject anything that isn't a URL-safe slug
-    // before it can produce a broken page_url.
-    if (typeof data.path === "string" && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(data.path)) {
-      return { error: true, message: "Page path must be a URL-safe slug (letters, digits, ., _, -)." };
-    }
-    if (data.blocks === undefined) return data; // a partial update not touching blocks
-    // A page renders on the unauthenticated /page/{path}; a block sourcing a
-    // kernel control table would leak _access_tokens/_members/_federation_hosts
-    // data publicly. Pages project user patterns only — mirror the _publications
-    // source_pattern guard. Scan defensively: only when JSON parses to an array;
-    // malformed blocks fall through to validateBlocks' own error.
-    if (typeof data.blocks === "string") {
-      let parsedBlocks: unknown;
-      try { parsedBlocks = JSON.parse(data.blocks); } catch { parsedBlocks = undefined; }
-      if (Array.isArray(parsedBlocks)) {
-        for (const block of parsedBlocks) {
-          const pattern = block && typeof block === "object" ? (block as Record<string, unknown>).pattern : undefined;
-          if (typeof pattern === "string" && isKernelPattern(pattern))
-            return { error: true, message: `Page blocks cannot reference kernel pattern "${pattern}" — pages project user patterns only.` };
-        }
-      }
-    }
-    const errors = validateBlocks(data.blocks as string | null, {
-      patternExists: (p) => ctx.patternExists(p),
-      hasFacet: (p, f) => ctx.facetMeta(p, f) != null,
-    });
-    if (errors.length) {
-      return { error: true, message: `Invalid page: ${errors.join(" ")}` };
-    }
-    return data;
-  },
 };
+
+// === Effective hook registries — CORE infra hooks + each feature's own ===
+//
+// A feature owns the pre-mutation hooks for the kernel pattern(s) it owns, declared
+// in its <dir>/hooks.ts (code, type-only kernel import) and folded in here. The
+// EXPORTED maps below are what applyKernelRules reads — so moving a hook into a
+// feature dir changes only WHERE it's declared; ENFORCEMENT stays at this kernel
+// chokepoint, byte-for-byte. mergeDisjoint mirrors policy.ts: a feature that
+// declares a hook for a CORE pattern is a bug and throws at module load (the
+// composers already throw on feature↔feature collisions), so a feature can never
+// silently override a core invariant — fail LOUD. A feature hook.ts that forgets to
+// wire up is simply absent → the pattern falls through applyKernelRules' default
+// (no transform), the same fail-closed behavior an unclassified pattern gets.
+function mergeDisjoint<T>(core: Record<string, T>, feature: Record<string, T>, what: string): Record<string, T> {
+  for (const k of Object.keys(feature))
+    if (k in core) throw new Error(`feature ${what} collision: "${k}" is a CORE kernel pattern and cannot be redeclared by a feature`);
+  return { ...core, ...feature };
+}
+
+export const ON_CREATE: Record<string, CreateHook> =
+  mergeDisjoint(CORE_ON_CREATE, composeOnCreate(FEATURES), "on-create-hook");
+
+export const ON_WRITE: Record<string, WriteHook> =
+  mergeDisjoint(CORE_ON_WRITE, composeOnWrite(FEATURES), "on-write-hook");
+
+export const IMMUTABLE: Record<string, ImmutableRule> =
+  mergeDisjoint(CORE_IMMUTABLE, composeImmutable(FEATURES), "immutable-fields");
 
 // === Mutate shortcuts — kernel-level aliases for common operations ===
 

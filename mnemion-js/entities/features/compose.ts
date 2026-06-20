@@ -14,6 +14,7 @@
 
 import type { Feature, FeatureRoute, FeatureSystemDoc } from "./feature";
 import type { PatternEffect } from "../Hive/effects";
+import type { CreateHook, WriteHook, ImmutableRule } from "../Hive/kernel";
 
 /** Fold every feature's `effects` into the flat PATTERN_EFFECTS map.
  *  WHERE IT RUNS: module load of effects.ts (`PATTERN_EFFECTS = composeEffects(FEATURES)`).
@@ -122,6 +123,51 @@ export function composeTools(features: Feature[]): NonNullable<Feature["tools"]>
       if (seen.has(t.name)) throw new Error(`feature-tool collision: "${t.name}" (in "${f.name}")`);
       seen.add(t.name);
       out.push(t);
+    }
+  return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// KERNEL PRE-MUTATION HOOKS.  WIRED.  HOST: entities/Hive/kernel.ts renames its
+// hand-written literals to CORE_ON_CREATE / CORE_ON_WRITE / CORE_IMMUTABLE and
+// derives the EXPORTED ON_CREATE / ON_WRITE / IMMUTABLE as
+//   mergeDisjoint(CORE_*, compose*(FEATURES))
+// (mirroring policy.ts), throwing if a feature declares a hook for a CORE pattern.
+// applyKernelRules reads the exported composed maps, so ENFORCEMENT stays at the
+// kernel chokepoint — only the DECLARATION moves into the feature dir. The feature
+// hooks.ts files import ONLY TYPES from kernel.ts, so the kernel.ts → FEATURES →
+// hooks back-edge is type-only and no runtime cycle forms. WHERE IT RUNS: module
+// load of kernel.ts. Each composer folds every feature's slice of its registry,
+// throwing on a feature↔feature collision (two features can't own the same
+// pattern's hook).
+// ───────────────────────────────────────────────────────────────────────────
+
+export function composeOnCreate(features: Feature[]): Record<string, CreateHook> {
+  const out: Record<string, CreateHook> = {};
+  for (const f of features)
+    for (const [pattern, hook] of Object.entries(f.hooks?.onCreate ?? {})) {
+      if (out[pattern]) throw new Error(`feature on-create-hook collision: pattern "${pattern}" declared by two features (second is "${f.name}")`);
+      out[pattern] = hook;
+    }
+  return out;
+}
+
+export function composeOnWrite(features: Feature[]): Record<string, WriteHook> {
+  const out: Record<string, WriteHook> = {};
+  for (const f of features)
+    for (const [pattern, hook] of Object.entries(f.hooks?.onWrite ?? {})) {
+      if (out[pattern]) throw new Error(`feature on-write-hook collision: pattern "${pattern}" declared by two features (second is "${f.name}")`);
+      out[pattern] = hook;
+    }
+  return out;
+}
+
+export function composeImmutable(features: Feature[]): Record<string, ImmutableRule> {
+  const out: Record<string, ImmutableRule> = {};
+  for (const f of features)
+    for (const [pattern, rule] of Object.entries(f.hooks?.immutable ?? {})) {
+      if (out[pattern]) throw new Error(`feature immutable-fields collision: pattern "${pattern}" declared by two features (second is "${f.name}")`);
+      out[pattern] = rule;
     }
   return out;
 }

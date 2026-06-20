@@ -7,9 +7,10 @@
 // migration pile, byte-for-byte the same rows the central array used to hold, so
 // verifyFieldsIntegrity (the DDL↔_fields drift oracle) sees no change.
 //
-// NOTE: the kernel pre-mutation HOOKS for _documents (immutable r2_key/size/etc.,
-// the upload-bookkeeping invariants) stay in entities/Hive/kernel.ts — moving the
-// structure is settled; moving the hooks is a separate, deliberate design call.
+// NOTE: the kernel pre-mutation HOOKS for _documents (the title-required create
+// validation + the immutable r2_key/size/etc. bookkeeping invariants) live in the
+// sibling ./hooks.ts (code, type-only kernel import), composed into kernel.ts's
+// ON_CREATE / IMMUTABLE registries and enforced at the applyKernelRules chokepoint.
 
 import type { FeaturePattern, FeatureMigration } from "../feature";
 

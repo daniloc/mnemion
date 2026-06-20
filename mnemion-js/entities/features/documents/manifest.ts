@@ -21,6 +21,7 @@
 import type { Feature } from "../feature";
 import { uploadDocument, serveDocument } from "../../../shared/Routing/routes/io";
 import { patterns as documentsPatterns, migrations as documentsMigrations } from "./schema";
+import { onCreate as documentsOnCreate, immutable as documentsImmutable } from "./hooks";
 
 // The feature's security footprint (write class + egress sensitivity) lives in a
 // pure-data sibling so policy.ts — the dependency-free security leaf — can fold it in
@@ -34,6 +35,11 @@ export const documents: Feature = {
   // feature dir (./schema.ts, pure data) and composed into schema.ts at boot.
   patterns: documentsPatterns,
   migrations: documentsMigrations,
+  // Pre-mutation hooks (title-required create validation + the system-managed
+  // bookkeeping immutables), owned by ./hooks.ts (code, type-only kernel import)
+  // and composed into kernel.ts's ON_CREATE / IMMUTABLE registries — enforced at
+  // the applyKernelRules chokepoint, byte-for-byte as before.
+  hooks: { onCreate: documentsOnCreate, immutable: documentsImmutable },
   // The feature's two HTTP edges, spliced into the route table by composeRoutes.
   // Handlers stay in the I/O adapter layer (routes/io.ts); only the routing rows
   // live here. /f/:token streams bytes to R2 (single-use upload ticket, hex-guarded);
