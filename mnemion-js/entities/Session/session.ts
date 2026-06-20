@@ -239,7 +239,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     this.server.registerTool(
       "render",
       {
-        description: "Render a rich UI view of the hive in MCP-Apps-capable clients (falls back to text elsewhere). view=\"patterns\": a table of every pattern and its entry count. view=\"entries\" with pattern=<name>: a table of that pattern's entries (most recent first; long text truncated).",
+        description: toolDesc("render"),
         inputSchema: {
           view: z.enum(["patterns", "entries"]).default("patterns"),
           pattern: z.string().optional().describe("Required for view=\"entries\": the pattern whose entries to render."),

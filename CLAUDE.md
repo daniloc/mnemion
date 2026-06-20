@@ -23,7 +23,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   coherence.config.json  Coherence harness config (component dirs, adapters)
 
   src/index.ts         Route table + OAuthProvider config (the worker entry; wrangler `main`)
-  src/pages/           Svelte components (SchemaViewer, HiveMap, LinkMap, Canvas, EntryDetail) + SSR + canvas/fragment entry points
+  src/pages/           The Svelte remnants: Canvas.svelte (+ EntryDetail.svelte, used by Canvas) and the MCP `render` fragment (render-*.ts/html) + their canvas/fragment build entry points. The legacy SchemaViewer/HiveMap/LinkMap SSR pages are retired (web app is React, under web/)
   src/system-docs/     Markdown files with {{placeholder}} syntax, loaded at runtime
   src/__tests__/       vitest (vitest-pool-workers)
 
@@ -131,9 +131,9 @@ Mnemion uses biological vocabulary at every layer — API parameters, URIs, JSON
 - `mnemion://entry/{pattern}/{id}` — individual entry by URI
 - `mnemion://stale` — entries past their staleness horizon (supports `?days=N`); review surface for maintenance passes
 
-### Tools (7 total)
+### Tools (8 total)
 
-Tool metadata is centralized in `entities/Session/tools.ts` (SSOT for `session.ts` MCP registration + `/api/tools` frontend):
+Tool metadata is centralized in `entities/Session/tools.ts` (SSOT for `session.ts` MCP registration + `/api/tools` frontend; the `tools SSOT totality` test reconciles the `TOOLS` rows against the actual `session.ts` registrations in both directions, so a tool can't be registered without a row or left as a stale row):
 
 - `prime` — auto-associative recall: pass conversational context, get semantically-nearest entries + one-hop links. Workers AI embeds entries on write, Vectorize indexes them, prime queries KNN. Relevance is weighted at read time: superseded entries demoted ×0.3 + annotated `superseded_by`; patterns with a memory-policy half-life decay by `0.5^(age/half_life)` where age runs from the later of `updated_at` and the last prime hit (`_entry_access_log` — recall is rehearsal). `raw_similarity` is kept alongside weighted `relevance`. A `maintenance` field appears when a cleanup pass is overdue.
 - `resolve` — read anything by `mnemion://` URI, including federated cross-hive URIs and `mnemion://web/<https-url>` for adapter-cached web fetches (escape hatch for platforms without resource support)
@@ -142,6 +142,7 @@ Tool metadata is centralized in `entities/Session/tools.ts` (SSOT for `session.t
 - `mutate` — create, update, or archive entries. Single creates in user patterns run a policy-gated write-time conflict check (synchronous embed + KNN ≥0.80 same-pattern; the vector is reused for the post-write upsert) and return `possible_overlap` advisories; exclusive-facet duplicates advise via cheap SQL (batch included). Advisory only — never blocks.
 - `propose_change` — propose schema evolution (preview, no commit)
 - `apply_change` — commit proposed change (fires resource update notifications)
+- `render` — visual twin of the read tools: returns a rich UI table (`view=patterns` or `view=entries`) via the `ui://mnemion/render` fragment in MCP-Apps-capable hosts, with a text fallback everywhere else
 
 ### HTTP I/O & Federation
 
@@ -357,17 +358,24 @@ Declarative dispatch table in `shared/Routing/router.ts`. Routes are matched in 
 
 Route handlers are grouped by domain in `shared/Routing/routes/`. OAuthProvider intercepts `/mcp`, `/token`, `/register` before the dispatch table runs.
 
-## Svelte frontend
+## Svelte remnants (Canvas + MCP render fragment)
 
-- **No SvelteKit** — Svelte as component framework only, worker serves pages.
-- Three Vite builds (chained in `npm run build:pages`): main client + canvas client (`vite.canvas.ts`) + SSR server bundle. Each emits `.client.txt` text modules consumed by route handlers via wrangler `[[rules]]`.
-- Session cookies (HMAC-SHA256) via `Auth.SESSION` gate for browser pages.
-- Pages:
-  - **SchemaViewer** — pattern browser + entry editor (extracted detail logic into `EntryDetail.svelte`)
-  - **HiveMap** — force-directed pattern visualization
-  - **LinkMap** — cross-pattern reference graph
-  - **Canvas** (`/canvas`) — tldraw-based infinite canvas for spatial thinking; persists snapshots to `_canvases` via `/api/canvas`. Murderboard-style: drag pattern instances, group/note/link elements, draw connections.
-- WebSocket live updates via Hibernatable API on HiveDO.
+The web app proper is **React** (see Development below). Two Svelte surfaces remain,
+each with its own Vite build (chained in `npm run build:pages`), emitting `.client.txt`
+text modules consumed by route handlers via wrangler `[[rules]]`:
+
+- **Canvas** (`/canvas`) — tldraw-based infinite canvas for spatial thinking; persists
+  snapshots to `_canvases` via `/api/canvas`. Murderboard-style: drag pattern instances,
+  group/note/link elements, draw connections. Uses the shared `EntryDetail.svelte` editor
+  overlay. Built by `vite.canvas.ts`; SSR-shelled + browser cookie-gated (`Auth.SESSION`,
+  HMAC-SHA256).
+- **MCP render fragment** — the `ui://mnemion/render` UI the `render` tool returns
+  (`render-*.ts`), built separately and embedded in MCP-Apps-capable hosts.
+
+- **No SvelteKit** — Svelte as component framework only; the worker serves the built modules.
+- WebSocket live updates via the Hibernatable API on HiveDO.
+- The legacy Svelte-SSR pages (SchemaViewer / HiveMap / LinkMap) are **retired** — their
+  function now lives in the React app under `web/`.
 - Test environment configured as `[env.test]` in wrangler.toml (Auth.DEV mode).
 
 ## Development

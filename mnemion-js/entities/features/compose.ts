@@ -1,6 +1,10 @@
 // compose.ts — the COMPOSERS: derive each scattered registry from the FEATURES
-// array. One composer per registry. effects is LIVE; the rest are documented
-// designs (signatures present, called once wired into their host file).
+// array. One composer per registry. Most are LIVE: effects, patterns, migrations,
+// routes, and the kernel hooks (onCreate/onWrite/immutable) are WIRED into their
+// host files (see the per-composer comments for the exact host + call site);
+// write-policy/egress-sensitivity compose in the security.ts barrel, not here,
+// because policy.ts is a dependency-free leaf. Only the tools composer is still
+// DESIGNED (signature present, wired once tools.ts adopts the array).
 //
 // Composition runs at MODULE LOAD for static registries (effects, tools metadata)
 // and at BOOT for stateful ones (patterns/DDL/migrations/system-docs, which touch

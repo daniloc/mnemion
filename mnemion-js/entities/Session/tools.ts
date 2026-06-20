@@ -125,4 +125,9 @@ For apply: pass change_id from propose_change.
 For revert: pass revert_history_id (from ${uri("history")}). Restores ALL data (not just schema) to the state before that change — destructive, requires confirmation.`,
     when: "After reviewing a propose_change preview. Accepts the change_id from the proposal.",
   },
+  {
+    name: "render",
+    description: "Render a rich UI view of the hive in MCP-Apps-capable clients (falls back to text elsewhere). view=\"patterns\": a table of every pattern and its entry count. view=\"entries\" with pattern=<name>: a table of that pattern's entries (most recent first; long text truncated).",
+    when: "When the host supports MCP Apps and a visual table beats prose — browsing patterns, scanning a dataset's rows.",
+  },
 ];
