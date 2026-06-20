@@ -265,8 +265,17 @@ chokepoint. The boundaries:
   (no default) so a new serve/ingress path can't silently inherit kernel access —
   it fails CLOSED. Oracle: `verifyWritePolicyTotality` + `policy.test.ts` (writes),
   and the served-entry-point totality in `security.test.ts` (reads).
-- **Capability SECRETS** → access tokens are hashed at rest (`credentials.hashToken`);
-  a read of the row yields a digest, never a usable bearer.
+- **Egress sensitivity** → the read/serialization dual of the write registry.
+  `SENSITIVE_COLUMNS` (`policy.ts`) declares which columns must never leave the DO
+  in the clear; `seal(pattern, row)` is the one sieve every "row → bytes that
+  leave the DO" path routes through (mutate response, `/ws` broadcast, audit
+  trigger, export, served reads). `secret` columns are also **born hashed** —
+  generated in app code and stored as a digest *before* INSERT (`hive.ts`
+  `mintSecrets`; the `randomblob` SQL default is gone), so the preimage never
+  lands in a column, the audit log, or a delta; the raw is returned ONCE at mint.
+  Oracle: `findUnclassifiedSensitiveColumns` (boot) + the seal/born-hashed tests.
+  A new egress inherits redaction by routing through `seal`; a new secret column
+  fails loud until classified.
 - **Instance IDENTITY** → the host is configuration (`WORKER_HOST`), never request
   data; `currentHost()` ignores the inbound `Host`.
 - **Served CONTENT** → agent-authored egress is inert (`Content-Security-Policy:

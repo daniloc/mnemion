@@ -16,7 +16,7 @@ import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/cons
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
-import { isKernelPattern, isValidWriteTarget, writeClass } from "./policy";
+import { isKernelPattern, isValidWriteTarget, writeClass, seal, secretColumn } from "./policy";
 import { deriveLabel } from "./labels";
 import { renderChartSvg, chartOgSvg, type ChartPayload } from "../../shared/core/chart-svg";
 import { pivotSeries, resolveChart, chartQuery, aggSpec } from "../../shared/core/chart-spec";
@@ -87,26 +87,48 @@ export class HiveDO extends DurableObject {
     });
   }
 
-  /** Hash any access token still stored in the clear (minted before hashing-at-
-   *  rest). Raw tokens are 32 hex chars; SHA-256 digests are 64 — so anything
-   *  not 64-long is a legacy plaintext token we hash in place, keeping it valid.
-   *  Runs once per cold start; a no-op after the first pass. */
+  /** One-time cleanup of secrets that leaked BEFORE born-hashing: hash any legacy
+   *  plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64), and
+   *  scrub any raw token the old post-insert path left in the `_mutation_log`
+   *  audit trail. Idempotent; a near-no-op after the first cold start. */
   private async migrateTokenHashes(): Promise<void> {
-    let rows: any[] = [];
-    try { rows = this.db.exec(`SELECT id, token FROM "_access_tokens" WHERE length(token) != 64`).toArray() as any[]; }
-    catch { return; } // table may not exist yet on a brand-new hive
-    for (const r of rows) {
-      if (typeof r.token !== "string") continue;
-      this.db.exec(`UPDATE "_access_tokens" SET token = ? WHERE id = ?`, await cred.hashToken(r.token), r.id);
-    }
+    try {
+      const rows = this.db.exec(`SELECT id, token FROM "_access_tokens" WHERE length(token) != 64`).toArray() as any[];
+      for (const r of rows) {
+        if (typeof r.token !== "string") continue;
+        try { this.db.exec(`UPDATE "_access_tokens" SET token = ? WHERE id = ?`, await cred.hashToken(r.token), r.id); }
+        catch { /* a bad row must not brick construction — skip it */ }
+      }
+    } catch { /* table may not exist yet on a brand-new hive */ }
+    // Audit-log scrub: NULL out any token value the pre-born-hashed audit trigger
+    // captured (new_data/old_data JSON containing a 32-hex token). Cheap and idempotent.
+    try {
+      this.db.exec(
+        `UPDATE _mutation_log SET new_data = json_set(new_data, '$.token', null)
+         WHERE table_name = '_access_tokens' AND json_extract(new_data, '$.token') IS NOT NULL
+           AND length(json_extract(new_data, '$.token')) != 64`,
+      );
+      this.db.exec(
+        `UPDATE _mutation_log SET old_data = json_set(old_data, '$.token', null)
+         WHERE table_name = '_access_tokens' AND json_extract(old_data, '$.token') IS NOT NULL
+           AND length(json_extract(old_data, '$.token')) != 64`,
+      );
+    } catch { /* best effort */ }
   }
 
-  /** Replace a freshly-minted token's stored value with its SHA-256 digest. The
-   *  SQL default generated the raw token (now on `entry.token`); we keep the raw
-   *  on the entry for the one-time response and store only the hash. */
-  private async persistTokenHash(entry: any): Promise<void> {
-    if (typeof entry?.token !== "string" || entry.token.length === 64) return;
-    this.db.exec(`UPDATE "_access_tokens" SET token = ? WHERE id = ?`, await cred.hashToken(entry.token), entry.id);
+  /** Born-hashed secrets: for a CREATE of a pattern with a `secret` column
+   *  (SENSITIVE_COLUMNS), generate the preimage in app code and set the column to
+   *  its DIGEST *before* the row is inserted — so the audit trigger, the broadcast,
+   *  and any read only ever see the hash. Returns the raw preimage for the one-time
+   *  response (the only place it exists). Mutates `data` in place; returns null for
+   *  non-secret patterns / non-create ops. */
+  private async mintSecrets(pattern: string, data: Record<string, unknown>, operation: string): Promise<Record<string, string> | null> {
+    if (operation !== "create") return null;
+    const col = secretColumn(pattern);
+    if (!col) return null;
+    const raw = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    data[col] = await cred.hashToken(raw); // store only the digest; raw never lands in a column
+    return { [col]: raw };
   }
 
   private currentHost(): string {
@@ -574,6 +596,10 @@ export class HiveDO extends DurableObject {
       } catch { /* best-effort */ }
     }
 
+    // Born-hashed secrets: a `secret` column (e.g. _access_tokens.token) is set to
+    // its digest BEFORE insert, so the raw never lands in the row/audit/broadcast.
+    const minted = await this.mintSecrets(patternName, parsed, operation);
+
     const result = data.executeMutate(this.dataCtx(actor), patternName, operation, parsed);
     if (!result.error) {
       if (conflictCheck?.neighbors.length) {
@@ -590,22 +616,26 @@ export class HiveDO extends DurableObject {
       if (patternName === "_system_tasks" && operation === "create") {
         await this.runTask(result.entry.id, result.entry.task);
       }
-      // A freshly-minted access token is stored hashed at rest; the raw value
-      // stays on result.entry for the one-time response.
-      if (patternName === "_access_tokens" && operation === "create" && result.entry) {
-        await this.persistTokenHash(result.entry);
+      // The raw preimage exists ONLY here — placed on the response AFTER the
+      // (sealed) broadcast above, so the one-time mint value reaches the caller
+      // while the DB, the audit log, and the /ws delta hold only the digest.
+      if (minted && result.entry) {
+        for (const [c, raw] of Object.entries(minted)) result.entry[c] = raw;
+        result._once = minted;
       }
       // A new document entry is born with its single-use upload ticket — the
       // bytes are POSTed to upload_url, which records r2_key/size on the entry.
       if (patternName === "_documents" && operation === "create" && result.entry && !result.entry.r2_key) {
-        const tok = data.executeMutate(this.dataCtx(actor), "_access_tokens", "create", {
+        const tokData: Record<string, unknown> = {
           scope: "document", label: `upload:document:${result.entry.id}`,
           constraints: JSON.stringify({ document_id: result.entry.id }),
-        });
-        if (!tok.error && tok.entry?.token) {
-          result.upload_token = tok.entry.token; // raw, shown once
-          result.upload_url = this.instanceUrl(`f/${tok.entry.token}`);
-          await this.persistTokenHash(tok.entry); // store only the digest
+        };
+        const tokMinted = await this.mintSecrets("_access_tokens", tokData, "create"); // born-hashed
+        const tok = data.executeMutate(this.dataCtx(actor), "_access_tokens", "create", tokData);
+        const rawTok = tokMinted?.token;
+        if (!tok.error && rawTok) {
+          result.upload_token = rawTok; // raw, shown once (DB holds the digest)
+          result.upload_url = this.instanceUrl(`f/${rawTok}`);
         }
         // Minting the token is pure DB; the bytes need R2. If it isn't enabled,
         // say so plainly rather than handing back an upload_url that 503s.
@@ -740,6 +770,12 @@ export class HiveDO extends DurableObject {
         return this.errorJson(`Pattern "${op.pattern}" does not exist`);
     }
 
+    // Born-hashed secrets must be hashed BEFORE the sync transaction (crypto is
+    // async). Pre-hash each secret-creating op's column and keep the raw to attach
+    // to its result afterward — so a batch-minted token is digest-at-rest too.
+    const onces: (Record<string, string> | null)[] = [];
+    for (const op of operations) onces.push(await this.mintSecrets(op.pattern, op.data, op.operation));
+
     const ctx = this.dataCtx(actor);
     const results: any[] = [];
     this.ctx.storage.transactionSync(() => {
@@ -749,6 +785,8 @@ export class HiveDO extends DurableObject {
         results.push(result);
       }
     });
+    // Attach each one-time raw preimage to its result (DB holds only the digest).
+    results.forEach((r, i) => { const o = onces[i]; if (o && r.entry) { for (const [c, raw] of Object.entries(o)) r.entry[c] = raw; r._once = o; } });
 
     const affectedPatterns = [...new Set(operations.map(op => op.pattern))];
     this.broadcastChange(affectedPatterns);
@@ -1623,6 +1661,15 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
   async validateAccessToken(token: string, requiredScope: string) {
     return cred.validateAccessToken(this.db, token, requiredScope);
   }
+  /** Validate a token's scope AND return its parsed constraints in one hashed
+   *  lookup. The token column is a digest at rest, so a raw `WHERE token = ?`
+   *  query (as marketplace did) matches nothing — callers needing constraints
+   *  must go through this. */
+  async resolveTokenConstraints(token: string, requiredScope: string): Promise<string> {
+    const t = await cred.findAccessToken(this.db, token);
+    if (!t || !cred.scopeMatches(t.scope, requiredScope)) return JSON.stringify({ valid: false });
+    return JSON.stringify({ valid: true, constraints: t.constraints ? JSON.parse(t.constraints) : null });
+  }
   async resolveTokenActor(token: string, requiredScope: string) {
     return cred.resolveTokenActor(this.db, token, requiredScope);
   }
@@ -1662,8 +1709,10 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
       exported_at: new Date().toISOString(),
     };
 
-    // All entries (including archived, for completeness)
-    const entries = this.db.exec(`SELECT * FROM "${patternName}" ORDER BY id`).toArray();
+    // All entries (including archived, for completeness). seal: export is a raw
+    // SELECT that bypasses the engine read-guard, so route rows through the sieve —
+    // a sensitive column (token digest, passkey material) never leaves via export.
+    const entries = (this.db.exec(`SELECT * FROM "${patternName}" ORDER BY id`).toArray() as any[]).map((r) => seal(patternName, r));
 
     // Links involving this pattern
     try {
@@ -1860,10 +1909,13 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
   }
 
   private broadcastChange(patterns: string[], delta?: { op: string; id: unknown; entry: unknown }) {
+    // seal: the delta leaves the DO over /ws to every connected client, so strip
+    // any sensitive column (the one egress sieve — a secret must never ride a delta).
+    const sealedEntry = delta ? seal(patterns[0], delta.entry as Record<string, unknown> | null) : undefined;
     const msg = JSON.stringify({
       type: "changed",
       patterns,
-      ...(delta ? { delta: { pattern: patterns[0], op: delta.op, id: delta.id, entry: delta.entry } } : {}),
+      ...(delta ? { delta: { pattern: patterns[0], op: delta.op, id: delta.id, entry: sealedEntry } } : {}),
     });
     for (const ws of this.ctx.getWebSockets()) {
       try { ws.send(msg); } catch { /* dead socket, runtime will clean up */ }

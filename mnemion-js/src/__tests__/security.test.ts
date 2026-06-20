@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
 import { query } from "../../entities/Hive/data";
 import { KERNEL_TABLES } from "../../entities/Hive/schema";
+import { seal } from "../../entities/Hive/policy";
 
 // Regression guards for the security review fixes. These exercise the mutate /
 // evolution chokepoints (RPC = below the consent layer, runs the kernel hooks),
@@ -60,6 +61,36 @@ describe("token at rest: stored hashed, raw authenticates", () => {
     // the raw token (shown once) still authenticates; a wrong one does not
     expect(await store.validateAccessToken(raw, "*")).toBe(true);
     expect(await store.validateAccessToken(raw + "x", "*")).toBe(false);
+  });
+
+  it("born-hashed: the raw preimage never lands in the audit log", async () => {
+    const store = getStore();
+    const raw = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "*" }))).entry.token as string;
+    await runInDurableObject(store, async (_i, state) => {
+      const logs = state.storage.sql.exec(`SELECT new_data, old_data FROM _mutation_log WHERE table_name = '_access_tokens'`).toArray() as any[];
+      expect(logs.length).toBeGreaterThan(0); // the create WAS audited
+      for (const l of logs) {
+        expect(String(l.new_data ?? "")).not.toContain(raw);
+        expect(String(l.old_data ?? "")).not.toContain(raw);
+      }
+    });
+  });
+
+  it("a batch-minted token is hashed at rest too and authenticates", async () => {
+    const store = getStore();
+    const r = JSON.parse(await store.batchMutate(JSON.stringify([{ pattern: "_access_tokens", operation: "create", data: { scope: "read" } }])));
+    const raw = r.results[0].entry.token as string;
+    expect(raw).toMatch(/^[0-9a-f]{32}$/); // one-time raw on the result
+    expect(await store.validateAccessToken(raw, "read")).toBe(true);
+  });
+});
+
+describe("seal: the egress sieve strips sensitive columns from any serialized row", () => {
+  it("removes secret + redact columns, leaves the rest, untouched for non-sensitive patterns", () => {
+    expect(seal("_access_tokens", { id: 1, token: "abc", scope: "*" })).toEqual({ id: 1, scope: "*" });
+    expect(seal("_passkeys", { id: 1, public_key: "k", credential_id: "c", counter: 3 })).toEqual({ id: 1, counter: 3 });
+    expect(seal("goals", { id: 1, title: "x" })).toEqual({ id: 1, title: "x" });
+    expect(seal("_access_tokens", null)).toBeNull();
   });
 });
 

@@ -220,6 +220,63 @@ export function isAuditExempt(pattern: string): boolean {
   return KERNEL_WRITE_POLICY[pattern]?.auditExempt === true;
 }
 
+// === Egress sensitivity: the read/serialization dual of KERNEL_WRITE_POLICY ===
+//
+// "Sensitive" is a property of DATA (a column), but it used to be enforced per
+// EGRESS path (mutate response, /ws delta, audit trigger, query, export, served
+// reads) — so a new egress kept reintroducing the leak. This is the one
+// declarative home: which columns must never leave the DO in the clear.
+//   - `secret`: born-hashed. The preimage is generated in app code and returned
+//     ONCE at mint; only its digest is ever stored — so the audit trigger, the
+//     broadcast, and any read see a hash, not a usable bearer. Also stripped by
+//     `seal` from every serialized row (belt-and-suspenders).
+//   - `redact`: never serialized off the DO at all (stripped by `seal`); the
+//     data plane has no legitimate need for it.
+// Broadcast, audit, export, and served reads all derive from this, so adding a
+// new secret column protects every egress at once — and `findUnclassifiedSensitiveColumns`
+// fails loud if a secret-shaped column has no policy (the egress totality check).
+export type SensitivityKind = "secret" | "redact";
+export interface SensitiveColumn { column: string; kind: SensitivityKind }
+
+export const SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> = {
+  _access_tokens: [{ column: "token", kind: "secret" }],
+  _passkeys: [{ column: "public_key", kind: "redact" }, { column: "credential_id", kind: "redact" }],
+};
+
+export function sensitiveColumns(pattern: string): SensitiveColumn[] {
+  return SENSITIVE_COLUMNS[pattern] ?? [];
+}
+
+/** The single `secret` (born-hashed) column for a pattern, or null. */
+export function secretColumn(pattern: string): string | null {
+  return SENSITIVE_COLUMNS[pattern]?.find((c) => c.kind === "secret")?.column ?? null;
+}
+
+/** Strip sensitive columns from a row about to leave the DO — the one sieve every
+ *  egress routes through (broadcast, export, served read, mutate response). Shallow
+ *  copy; null/undefined passes through. */
+export function seal<T extends Record<string, unknown> | null | undefined>(pattern: string, row: T): T {
+  if (!row) return row;
+  const cols = SENSITIVE_COLUMNS[pattern];
+  if (!cols?.length) return row;
+  const out: Record<string, unknown> = { ...row };
+  for (const c of cols) delete out[c.column];
+  return out as T;
+}
+
+// A column whose NAME looks like a credential on any KERNEL table must be
+// classified above, or it's an egress gap. The analogue of verifyWritePolicyTotality.
+const SECRET_NAME_RE = /^(token|secret|password|private_key|public_key|credential|credential_id|api_key)$/i;
+export function findUnclassifiedSensitiveColumns(tableColumns: Record<string, string[]>): string[] {
+  const gaps: string[] = [];
+  for (const [table, cols] of Object.entries(tableColumns)) {
+    if (!isKernelPattern(table)) continue;
+    const classified = new Set((SENSITIVE_COLUMNS[table] ?? []).map((c) => c.column));
+    for (const col of cols) if (SECRET_NAME_RE.test(col) && !classified.has(col)) gaps.push(`${table}.${col}`);
+  }
+  return gaps;
+}
+
 /** True if patch must be rejected for this pattern (any consent-gated pattern —
  *  patch skips the kernel validation hooks and the confirmation round-trip). */
 export function patchRejected(pattern: string): boolean {

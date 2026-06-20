@@ -124,24 +124,18 @@ export const marketplaceGit: RouteHandler = async (ctx) => {
       });
     }
 
-    const valid = await ctx.hive.validateAccessToken(password, "marketplace");
-    if (!valid) {
+    // Validate scope AND read the token's plugin constraints in one hashed lookup
+    // (tokens are stored as digests, so a raw token= query would match nothing and
+    // silently serve EVERY plugin — the scope-confinement bug this replaces).
+    const tok = JSON.parse(await ctx.hive.resolveTokenConstraints(password, "marketplace"));
+    if (!tok.valid) {
       return new Response("Invalid token", {
         status: 401,
         headers: { "WWW-Authenticate": `Basic realm="${PRODUCT_NAME}"` },
       });
     }
-
-    // Retrieve plugin scope from token constraints
-    const tokenResult = JSON.parse(await ctx.hive.query(
-      "_access_tokens", JSON.stringify(["token=" + password]),
-      "constraints", "", 1, false
-    ));
-    if (tokenResult.entries?.length) {
-      const constraints = tokenResult.entries[0].constraints
-        ? JSON.parse(tokenResult.entries[0].constraints)
-        : null;
-      pluginNames = constraints?.plugins ?? null;
+    if (tok.constraints) {
+      pluginNames = tok.constraints.plugins ?? null;
     }
   }
 

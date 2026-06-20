@@ -89,8 +89,13 @@ const ON_CREATE: Record<string, CreateHook> = {
     const scope = (data.scope as string) || "*";
     data.scope = scope;
 
-    // Auto-generate token — never accept from input
-    delete data.token;
+    // Token is BORN HASHED: hive.ts (mintSecrets) sets data.token to the system-
+    // generated SHA-256 digest before this hook runs, so the raw preimage never
+    // lands in the column/audit/broadcast. Accept ONLY that 64-hex digest — a
+    // caller-supplied value was already overwritten, and a create path that
+    // skipped minting (no digest) fails CLOSED here rather than minting a raw token.
+    if (typeof data.token !== "string" || !/^[0-9a-f]{64}$/.test(data.token))
+      return { error: true, message: "Access token value is system-generated and cannot be set." };
 
     // Member attribution is forgeable across EVERY scope, not just register:
     // resolveTokenActor trusts the token's `member` to stand in as that person.

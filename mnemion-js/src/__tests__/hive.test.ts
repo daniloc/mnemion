@@ -1635,11 +1635,15 @@ describe("Shared hive — register tokens (invite)", () => {
     const store = getStore();
     // Craft a register token pointing at owner via raw write (bypassing the hook).
     let ownerTok = "", ghostTok = "";
+    ownerTok = "abad1deaabad1deaabad1deaabad1dea";
+    ghostTok = "decafbaddecafbaddecafbaddecafbad";
+    // store the DIGEST (tokens are hashed at rest) so the lookup of the raw value
+    // actually RESOLVES and exercises the owner/non-roster rejection — not a vacuous
+    // hash-mismatch null.
+    const ownerHash = await hashToken(ownerTok), ghostHash = await hashToken(ghostTok);
     await runInDurableObject(store, async (_i, state) => {
-      ownerTok = "abad1deaabad1deaabad1deaabad1dea";
-      ghostTok = "decafbaddecafbaddecafbaddecafbad";
-      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`, ownerTok, JSON.stringify({ member: "owner" }));
-      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`, ghostTok, JSON.stringify({ member: "ghost" }));
+      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`, ownerHash, JSON.stringify({ member: "owner" }));
+      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`, ghostHash, JSON.stringify({ member: "ghost" }));
     });
     expect(await store.approveRegisterToken(ownerTok)).toBeNull();
     expect(await store.approveRegisterToken(ghostTok)).toBeNull();
@@ -1693,12 +1697,12 @@ describe("Shared hive — register tokens (invite)", () => {
   // by a raw write that bypassed the mint-time hook) must not resolve at setup.
   it("refuses at setup time to provision the owner even if a token's constraints say so", async () => {
     const store = getStore();
-    let token = "";
+    const token = "feedfacefeedfacefeedfacefeedface";
+    const stored = await hashToken(token); // digest at rest, so the lookup resolves
     await runInDurableObject(store, async (_i, state) => {
-      token = "feedfacefeedfacefeedfacefeedface";
       state.storage.sql.exec(
         `INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`,
-        token, JSON.stringify({ member: "owner" })
+        stored, JSON.stringify({ member: "owner" })
       );
     });
     expect(await store.resolveRegisterToken(token)).toBeNull();
@@ -1706,12 +1710,12 @@ describe("Shared hive — register tokens (invite)", () => {
 
   it("refuses at setup time when constraints name a member not in the roster", async () => {
     const store = getStore();
-    let token = "";
+    const token = "0ddba110ddba110ddba110ddba110dd0";
+    const stored = await hashToken(token); // digest at rest, so the lookup resolves
     await runInDurableObject(store, async (_i, state) => {
-      token = "0ddba110ddba110ddba110ddba110dd0";
       state.storage.sql.exec(
         `INSERT INTO "_access_tokens" (token, scope, constraints, single_use) VALUES (?, 'register', ?, 1)`,
-        token, JSON.stringify({ member: "ghost" })
+        stored, JSON.stringify({ member: "ghost" })
       );
     });
     expect(await store.resolveRegisterToken(token)).toBeNull();

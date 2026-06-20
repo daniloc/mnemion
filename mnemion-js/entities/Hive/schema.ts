@@ -20,7 +20,7 @@ import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
 import { describeBlockPalette } from "../../shared/core/block-palette";
-import { KERNEL_WRITE_POLICY, isAuditExempt } from "./policy";
+import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns } from "./policy";
 
 // System docs — imported as raw text, placeholders resolved at load time
 import schemaEvolutionRaw from "../../src/system-docs/schema-evolution.md";
@@ -102,7 +102,7 @@ Set "member" to attribute a token to a specific member of the hive (the person w
     doctrine: "Create tokens only when the human requests external access. Use the narrowest scope possible. Never create wildcard tokens without explicit instruction.",
     ddl: `CREATE TABLE IF NOT EXISTS "_access_tokens" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "token" TEXT NOT NULL UNIQUE DEFAULT (hex(randomblob(16))),
+      "token" TEXT NOT NULL UNIQUE,
       "label" TEXT,
       "member" TEXT,
       "scope" TEXT NOT NULL DEFAULT '*',
@@ -1102,6 +1102,19 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 
   verifyWritePolicyTotality();
 
+  // --- Integrity: every secret-shaped column on a kernel table must be classified
+  //     for egress (SENSITIVE_COLUMNS), or it could leak through a serializer. ---
+  try {
+    const kernelCols: Record<string, string[]> = {};
+    for (const obj of allObjects) {
+      const name = obj.name as string;
+      if (!name.startsWith("_")) continue;
+      kernelCols[name] = (db.exec(`PRAGMA table_info("${name}")`).toArray() as any[]).map((c: any) => c.name as string);
+    }
+    const gaps = findUnclassifiedSensitiveColumns(kernelCols);
+    if (gaps.length) console.warn(`[schema] unclassified sensitive columns (add to SENSITIVE_COLUMNS): ${gaps.join(", ")}`);
+  } catch { /* PRAGMA best-effort */ }
+
   // --- Dev seed: populate with realistic data when no secret is configured ---
 
   if (!env?.MNEMION_SECRET && env?.DEV_SEED) {
@@ -1223,8 +1236,14 @@ export function ensureAuditTriggers(db: any, tableName: string): void {
   }
   if (columns.length === 0) return;
 
-  const newJson = columns.map((c) => `'${c}', NEW."${c}"`).join(", ");
-  const oldJson = columns.map((c) => `'${c}', OLD."${c}"`).join(", ");
+  // Sensitive columns are recorded as NULL in the audit log — the change history
+  // must never become a side channel for a secret/redacted value (born-hashed
+  // already keeps the raw out of the row, this keeps even the digest/value out of
+  // _mutation_log). Derived from the one SENSITIVE_COLUMNS registry.
+  const sensitive = new Set(sensitiveColumns(tableName).map((s) => s.column));
+  const col = (side: "NEW" | "OLD", c: string) => sensitive.has(c) ? `'${c}', NULL` : `'${c}', ${side}."${c}"`;
+  const newJson = columns.map((c) => col("NEW", c)).join(", ");
+  const oldJson = columns.map((c) => col("OLD", c)).join(", ");
 
   db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_insert"
     AFTER INSERT ON "${tableName}" BEGIN
