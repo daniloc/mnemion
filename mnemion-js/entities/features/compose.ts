@@ -64,20 +64,12 @@ export function composePatterns(features: Feature[]): NonNullable<Feature["patte
   return out;
 }
 
-/** WRITE POLICY.  HOST: policy.ts `KERNEL_WRITE_POLICY` literal merges
- *  `composeWritePolicy(FEATURES)`. WHERE IT RUNS: module load of policy.ts (the
- *  registry is a static table). The fail-closed default is UNCHANGED: a pattern
- *  declared without a write-policy entry still resolves to System/denied, so a
- *  feature that forgets its policy is denied, not silently agent-writable. */
-export function composeWritePolicy(features: Feature[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const f of features)
-    for (const [pat, cls] of Object.entries(f.writePolicy ?? {})) {
-      if (out[pat]) throw new Error(`feature-write-policy collision: "${pat}" (in "${f.name}")`);
-      out[pat] = cls;
-    }
-  return out;
-}
+// WRITE POLICY + EGRESS SENSITIVITY are composed NOT here but in
+// entities/features/security.ts, because policy.ts is a dependency-free security
+// LEAF and must import only pure data — never a manifest (which carries code). Each
+// feature owns its write-class/sensitive-columns in its pure-data */security.ts,
+// merged by that barrel. There is deliberately no composeWritePolicy: a second home
+// for the same job is cruft by the one-declarative-home doctrine.
 
 /** MIGRATIONS.  WIRED.  HOST: schema.ts's boot migration pile gains a tail loop
  *  over `composeMigrations(FEATURES)`. Core migrations are an append-only pile of

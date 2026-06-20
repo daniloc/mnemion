@@ -99,23 +99,22 @@ export interface Feature {
    *  uses it in collision diagnostics. */
   name: string;
 
-  /** Post-mutate side effects, keyed by pattern name. Folded into PATTERN_EFFECTS
-   *  by composeEffects(). WIRED END-TO-END today. */
+  /** Post-mutate side effects, keyed by pattern name. WIRED: folded into
+   *  PATTERN_EFFECTS by composeEffects(). */
   effects?: Record<string, PatternEffect>;
 
-  /** Kernel patterns this feature owns (DDL + facets + doctrine). DESIGN: folded
-   *  into KERNEL_PATTERNS by composePatterns() at boot. */
+  /** Kernel patterns this feature owns (DDL + facets + doctrine). WIRED: folded
+   *  into KERNEL_TABLES by composePatterns() at boot. */
   patterns?: FeaturePattern[];
 
-  /** Write-policy class per pattern this feature owns, keyed by pattern name.
-   *  Value is the policy record policy.ts expects. DESIGN: folded into
-   *  KERNEL_WRITE_POLICY; absence still fails CLOSED (System/denied). */
-  writePolicy?: Record<string, unknown>;
+  // NOTE: write-policy + egress-sensitivity are NOT a manifest slot. policy.ts is a
+  // dependency-free security leaf, so a feature owns those in its pure-data
+  // */security.ts (composed by entities/features/security.ts), not here.
 
-  /** One-shot schema migrations. DESIGN: run by composeMigrations() at boot. */
+  /** One-shot schema migrations. WIRED: run by composeMigrations() at boot. */
   migrations?: FeatureMigration[];
 
-  /** HTTP routes. DESIGN: spliced into the route table + BACKEND_PREFIXES. */
+  /** HTTP routes. WIRED: spliced into the route table + BACKEND_PREFIXES. */
   routes?: FeatureRoute[];
 
   /** MCP tools. DESIGN: concatenated onto TOOLS + registered on the McpServer. */
