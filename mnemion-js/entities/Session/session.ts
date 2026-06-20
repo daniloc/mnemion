@@ -14,7 +14,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { z } from "zod";
 import type { HiveDO } from "../Hive/hive";
 import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID, OWNER_ACTOR } from "../../shared/core/constants";
-import { consentPolicy, patchRejected, consentRoundTripRequired } from "../Hive/policy";
+import { mutateGate, findGatedBatchOp, normalizeMutateData, isSingleOpData } from "../Hive/mutate-gate";
 import { CHANGE_TYPE_NAMES } from "../Hive/evolution";
 import { FORMAT_IDS } from "../../shared/core/format-palette";
 import { TOOLS } from "./tools";
@@ -612,10 +612,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         // Batch mode
         if (operation === "batch") {
           // Accept both native arrays and JSON-stringified arrays (Claude.ai sends strings)
-          let batchData = data;
-          if (typeof batchData === "string") {
-            try { batchData = JSON.parse(batchData); } catch { /* fall through to validation */ }
-          }
+          const batchData = normalizeMutateData(data);
           if (!Array.isArray(batchData)) {
             return {
               isError: true as const,
@@ -626,12 +623,10 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           // the confirmation round-trip, and patch would skip the kernel
           // validation hooks. Force any escalating change (and any patch on a
           // gated pattern) through a single mutate; only archive (removal/
-          // de-escalation) is allowed inside a batch.
-          const gated = batchData.find((op: any) =>
-            op && (
-              (op.operation === "patch" && patchRejected(op.pattern)) ||
-              consentRoundTripRequired(op.pattern, op.operation, op.data)
-            ));
+          // de-escalation) is allowed inside a batch. The eligibility rule is a
+          // pure derivation of policy.ts (findGatedBatchOp), shared with the
+          // single-op gate so the two can't drift.
+          const gated = findGatedBatchOp(batchData);
           if (gated) {
             return {
               isError: true as const,
@@ -652,10 +647,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         }
 
         // Single mode — parse stringified data if needed (Claude.ai sends strings)
-        let singleData = data;
-        if (typeof singleData === "string") {
-          try { singleData = JSON.parse(singleData); } catch { /* fall through */ }
-        }
+        const singleData = normalizeMutateData(data);
         // Resolve operation from shortcut if omitted
         let resolvedOp: string | undefined = operation;
         if (!resolvedOp && pattern) {
@@ -664,7 +656,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           if (shortcut) resolvedOp = shortcut.operation;
         }
 
-        if (!pattern || !resolvedOp || !singleData || typeof singleData !== "object" || Array.isArray(singleData)) {
+        if (!pattern || !resolvedOp || !isSingleOpData(singleData)) {
           return {
             isError: true as const,
             content: [{ type: "text" as const, text: "For single operations, pass pattern, operation (create|update|archive), and data (object). For batch, pass operation 'batch' with data as array." }],
@@ -672,42 +664,42 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         }
 
         // Confirmation gate for consent-boundary patterns (system docs,
-        // federation allow-list, entry sharing, members, publications, …).
-        const policy = consentPolicy(pattern);
-        if (policy) {
-          // patch is rejected outright: it edits a text facet directly, skipping
-          // the kernel validation hooks (e.g. isBlockedFederationHost) AND the
-          // confirmation round-trip — an agent could patch _federation_hosts.host
-          // from an approved host to an attacker host and leak the token. These
-          // patterns must go through create/update.
-          // Every consent-gated pattern rejects patch (patchRejected is true for
-          // any pattern with a consent policy, which `policy` already is here).
-          if (resolvedOp === "patch") {
-            return {
-              isError: true as const,
-              content: [{ type: "text" as const, text: `"${pattern}" cannot be modified with patch (it would bypass validation and confirmation). Use create or update.` }],
-            };
-          }
+        // federation allow-list, entry sharing, members, publications, …). The
+        // DECISION — patch-reject vs. round-trip vs. pass — is the pure
+        // mutateGate predicate (shared with the batch rule, derived from
+        // policy.ts); only the interactive round-trip MECHANICS (checkAndArmConsent
+        // + re-issue) live here, because only the MCP path can satisfy them.
+        const gate = mutateGate(pattern, resolvedOp, singleData);
+        if (gate.kind === "patch_rejected") {
+          // patch edits a text facet directly, skipping the kernel validation
+          // hooks (e.g. isBlockedFederationHost) AND the confirmation round-trip —
+          // an agent could patch _federation_hosts.host from an approved host to
+          // an attacker host and leak the token. These patterns must go through
+          // create/update.
+          return {
+            isError: true as const,
+            content: [{ type: "text" as const, text: `"${pattern}" cannot be modified with patch (it would bypass validation and confirmation). Use create or update.` }],
+          };
+        }
+        if (gate.kind === "round_trip") {
           // Escalating ops (create/update/unarchive) require a round-trip; the
           // first call returns confirmation_required and the agent must re-issue
           // the identical call to commit. archive (removal) is de-escalation and
           // is allowed without one.
-          if (consentRoundTripRequired(pattern, resolvedOp, singleData)) {
-            const confirmKey = `consent:${pattern}:${resolvedOp}:${JSON.stringify(singleData)}`;
-            if (!(await hive.checkAndArmConsent(confirmKey))) {
-              return {
-                content: [{
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    confirmation_required: true,
-                    message: policy.message,
-                    pattern,
-                    operation: resolvedOp,
-                    data: singleData,
-                  }, null, 2),
-                }],
-              };
-            }
+          const confirmKey = `consent:${pattern}:${resolvedOp}:${JSON.stringify(singleData)}`;
+          if (!(await hive.checkAndArmConsent(confirmKey))) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  confirmation_required: true,
+                  message: gate.policy.message,
+                  pattern,
+                  operation: resolvedOp,
+                  data: singleData,
+                }, null, 2),
+              }],
+            };
           }
         }
 
