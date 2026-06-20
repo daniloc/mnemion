@@ -24,6 +24,22 @@ so the eventual cleanup pass is systematic, not a vibe — plus the live invento
    refactor supersedes a mechanism, the old home becomes cruft the moment the new one
    lands — look for it deliberately at each landing.
 
+## Circular dependencies — a health lens, with a caveat
+
+The composition wires many core modules into the `FEATURES` tree, which raises the
+question of import cycles. **Caveat learned the hard way:** `madge --circular` and
+`dpdm` both count `import type` edges, which **erase at runtime** — so they massively
+over-report. On this tree they flag ~9–10 "cycles", but a manual trace + the
+leaf-preservation design show **every composition cycle is type-only** (e.g.
+`policy.ts → security.ts → (import type) policy.ts`; `manifest → io.ts → (import type)
+router`). There are **zero real runtime cycles** from the refactor (the only all-runtime
+ones, `schema↔dev-seed` and `hive↔evolution`, predate it).
+
+Lesson: a runtime-cycle check must be **type-aware** (`eslint import/no-cycle` with the
+TS resolver) or it cries wolf — and a check that cries wolf is itself cruft. Don't add
+the raw-tool scan as a standing gate. Verify cycles by tracing whether the back-edge is
+`import type`; if it is, it's benign.
+
 ## Refactor-specific cruft taxonomy (what to look for)
 
 | Class | Signature | Example here |
