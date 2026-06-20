@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-06-20 03:14Z",
+  "generatedAt": "2026-06-20 03:33Z",
   "root": "mnemion-js",
-  "absRoot": "/Users/daniloc/Documents/Dev/mnemion/.claude/worktrees/agent-ae41229165b904b7e/mnemion-js",
+  "absRoot": "/Users/daniloc/Documents/Dev/mnemion/.claude/worktrees/agent-adb5583ac93894fe6/mnemion-js",
   "nodes": [
     {
       "id": "c:.",
@@ -34,6 +34,8 @@
         "passes test \"context-capability totality\"",
         "passes test \"pattern-effects totality\"",
         "effects.ts exists at this node",
+        "effects.ts imports ../features",
+        "effects.ts imports ../features/compose",
         "documents.ts exists at this node",
         "hive.ts imports ./documents",
         "render.ts exists at this node",
@@ -56,6 +58,25 @@
         "session.ts imports ./tools"
       ],
       "why": "SessionDO is one Durable Object per MCP session: it handles the MCP protocol (tools, resources, init instructions) and proxies to the single HiveDO over RPC, keeping protocol concerns out of the data substrate. Tool metadata lives once in `tools.ts` as the SSOT feeding both MCP registration and the `/api/tools` frontend, so the agent-facing surface can't drift between the two; the session stamps the authenticated actor onto writes from its OAuth props so attribution is enforced at the protocol edge."
+    },
+    {
+      "id": "c:entities/features",
+      "label": "Features",
+      "kind": "component",
+      "sub": "Per-feature manifests that FEED the scattered registries from one declaration; composers derive each registry from the `FEATURES` array.",
+      "claimed": true,
+      "claims": [
+        "feature.ts exists at this node",
+        "compose.ts exists at this node",
+        "index.ts exists at this node",
+        "compose.ts imports ./feature",
+        "index.ts imports ./feature",
+        "index.ts imports ./documents/manifest",
+        "index.ts imports ./pages/manifest",
+        "index.ts imports ./system-tasks/manifest",
+        "passes test \"pattern-effects totality\""
+      ],
+      "why": "A \"feature\" is the extensibility keystone, and today its footprint is smeared\nacross registries a forker's agent must find and edit in lockstep: post-mutate\neffects (`entities/Hive/effects.ts`), HTTP routes (`src/index.ts`), MCP tools\n(`entities/Session/tools.ts`), kernel patterns + DDL (`entities/Hive/schema.ts`),\nwrite-policy class (`entities/Hive/policy.ts`), system docs, and the coherence\nspec. The `Feature` type collects all of those contributions into ONE\nco-located, typed declaration; the composers in `compose.ts` DERIVE each\nregistry from the hand-maintained `FEATURES` barrel (`index.ts`). Adding a\nfeature is then: create one dir + add one import line to the barrel — its whole\nfootprint legible in the manifest instead of scattered.\n\n`effects` is the first registry wired end-to-end: `PATTERN_EFFECTS` in\n`effects.ts` is `composeEffects(FEATURES)` rather than a hand-written literal, so\na new side-effecting pattern is a feature manifest, not another entry in a\ncentral map. Composition for `effects`/`tools`/`writePolicy`/`routes` runs at\nMODULE LOAD (static tables); `patterns`/`migrations`/`systemDocs` compose at BOOT\n(they touch the DB). The composers fail LOUDLY on collision (two features over\none pattern's effect, a duplicate migration version, a route/tool/pattern name\nclash) rather than silently last-write-wins — a malformed manifest can't quietly\nshadow another feature. The fail-CLOSED write-policy default is preserved: a\nfeature pattern declared without a write-policy entry still resolves to\nSystem/denied, never silently agent-writable. The remaining registries keep ONE\nsource of truth each until they adopt their composer (documented landing spots in\n`compose.ts`), so this migration adds the seam without duplicating definitions."
     },
     {
       "id": "c:shared/Auth",
@@ -255,7 +276,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/effects.ts",
-      "line": 20
+      "line": 23
     },
     {
       "id": "s:entities/Hive/effects.ts#PatternEffect",
@@ -264,7 +285,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/effects.ts",
-      "line": 40
+      "line": 43
     },
     {
       "id": "s:entities/Hive/effects.ts#PATTERN_EFFECTS",
@@ -273,7 +294,8 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/effects.ts",
-      "line": 52
+      "line": 64,
+      "prose": "PATTERN_EFFECTS is no longer a hand-written literal — it is COMPOSED from the\nper-feature manifests in entities/features/. Each feature declares its\npost-mutate effects keyed by pattern; `composeEffects` folds them into this flat\nmap (and throws on a two-feature collision over the same pattern). The bodies\nfor _documents / _pages / _system_tasks now live in their feature manifests.\n\nThis is the extensibility seam: adding a side-effecting pattern means writing a\nfeature manifest + one barrel line — not editing this file. The shape contract\n(EffectContext, PatternEffect above) stays here as the leaf the manifests import."
     },
     {
       "id": "f:entities/Hive/evolution.ts",
@@ -2148,6 +2170,208 @@
       "sub": "const",
       "path": "entities/Session/tools.ts",
       "line": 19
+    },
+    {
+      "id": "f:entities/features/compose.ts",
+      "parent": "c:entities/features",
+      "label": "compose.ts",
+      "kind": "file",
+      "sub": "entities/features/compose.ts",
+      "path": "entities/features/compose.ts",
+      "prose": "compose.ts — the COMPOSERS: derive each scattered registry from the FEATURES\narray. One composer per registry. effects is LIVE; the rest are documented\ndesigns (signatures present, called once wired into their host file).\n\nComposition runs at MODULE LOAD for static registries (effects, tools metadata)\nand at BOOT for stateful ones (patterns/DDL/migrations/system-docs, which touch\nthe DB). See \"WHERE EACH RUNS\" in the per-composer comments.\n\nInvariants the composers enforce (fail LOUDLY, never silently last-write-wins):\n  - effects: a pattern may have an effect from at MOST one feature (collision →\n    throw). Two features fighting over `_documents`'s post-mutate hook is a bug.\n  - migrations: version numbers are globally unique + monotonic.\n  - patterns / tools / routes: name/path uniqueness across features."
+    },
+    {
+      "id": "s:entities/features/compose.ts#composeEffects",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composeEffects",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 21,
+      "prose": "Fold every feature's `effects` into the flat PATTERN_EFFECTS map.\n WHERE IT RUNS: module load of effects.ts (`PATTERN_EFFECTS = composeEffects(FEATURES)`).\n Pure, synchronous, no DB — safe at import time."
+    },
+    {
+      "id": "s:entities/features/compose.ts#composePatterns",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composePatterns",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 52,
+      "prose": "PATTERNS + DDL.  HOST: schema.ts `KERNEL_PATTERNS` literal becomes\n `[...CORE_KERNEL_PATTERNS, ...composePatterns(FEATURES)]`.\n WHERE IT RUNS: boot — schema.ts already iterates KERNEL_PATTERNS to run DDL +\n seed _fields; a feature's patterns join that list, so DDL, _fields metadata,\n and the write-class totality check (`findUnclassifiedKernelPatterns`) all pick\n them up unchanged. Composer asserts no two features (or a feature + core)\n declare the same pattern name."
+    },
+    {
+      "id": "s:entities/features/compose.ts#composeWritePolicy",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composeWritePolicy",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 69,
+      "prose": "WRITE POLICY.  HOST: policy.ts `KERNEL_WRITE_POLICY` literal merges\n `composeWritePolicy(FEATURES)`. WHERE IT RUNS: module load of policy.ts (the\n registry is a static table). The fail-closed default is UNCHANGED: a pattern\n declared without a write-policy entry still resolves to System/denied, so a\n feature that forgets its policy is denied, not silently agent-writable."
+    },
+    {
+      "id": "s:entities/features/compose.ts#composeMigrations",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composeMigrations",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 83,
+      "prose": "MIGRATIONS.  HOST: schema.ts `runMigrations` switch gains a tail loop over\n `composeMigrations(FEATURES)` (sorted by version, run if > stored schema\n version). WHERE IT RUNS: boot, after core migrations. Composer asserts version\n uniqueness across features so two features can't claim the same slot."
+    },
+    {
+      "id": "s:entities/features/compose.ts#composeRoutes",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composeRoutes",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 101,
+      "prose": "ROUTES.  HOST: src/index.ts `routes[]` becomes `[...CORE_ROUTES,\n ...composeRoutes(FEATURES)]`, and BACKEND_PREFIXES absorbs each route's\n `backendPrefix`. WHERE IT RUNS: module load of index.ts (the route table is\n built once). Feature routes are appended AFTER core routes (declaration-order\n matching means a feature route can never shadow a core route), and the\n composer asserts no two features claim the same method+pattern."
+    },
+    {
+      "id": "s:entities/features/compose.ts#composeTools",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composeTools",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 119,
+      "prose": "TOOLS.  HOST: tools.ts `TOOLS` concatenates `composeTools(FEATURES)` (the\n metadata half, feeding /api/tools + MCP registration listing); session.ts\n calls each feature tool's `register(server, hive)` during MCP setup (the\n handler half). WHERE IT RUNS: tools metadata at module load; `register` once\n per session at MCP init. Composer asserts tool-name uniqueness."
+    },
+    {
+      "id": "s:entities/features/compose.ts#composeSystemDocs",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composeSystemDocs",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 134,
+      "prose": "SYSTEM DOCS.  HOST: schema.ts seed list concatenates\n `composeSystemDocs(FEATURES)`. WHERE IT RUNS: boot, alongside the core doc\n seeding. Composer asserts slug uniqueness."
+    },
+    {
+      "id": "f:entities/features/documents/manifest.ts",
+      "parent": "c:entities/features",
+      "label": "manifest.ts",
+      "kind": "file",
+      "sub": "entities/features/documents/manifest.ts",
+      "path": "entities/features/documents/manifest.ts",
+      "prose": "documents — R2-backed file store feature.\n\nThe whole feature, legible in one place. Today only `effects` is composed\nend-to-end (the post-mutate orchestration that used to live inline in\neffects.ts's PATTERN_EFFECTS literal). The other slots show what this feature\nWOULD declare once those registries adopt the composer — they are commented\npointers to the live registries that own them, not duplicated definitions, so\nthere is exactly one source of truth per registry until migration.\n\n  patterns/writePolicy → entities/Hive/schema.ts (_documents DDL) +\n                         entities/Hive/policy.ts (_documents write class)\n  routes               → src/index.ts (/f/:token upload, /f/:id serve)\n  migrations           → schema.ts v12 (extracted_text / extraction_status)\n  systemDocs           → src/system-docs/http-io.md"
+    },
+    {
+      "id": "s:entities/features/documents/manifest.ts#documents",
+      "parent": "f:entities/features/documents/manifest.ts",
+      "label": "documents",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/documents/manifest.ts",
+      "line": 18
+    },
+    {
+      "id": "f:entities/features/feature.ts",
+      "parent": "c:entities/features",
+      "label": "feature.ts",
+      "kind": "file",
+      "sub": "entities/features/feature.ts",
+      "path": "entities/features/feature.ts",
+      "prose": "feature.ts — the Feature TYPE: one per-feature declaration that FEEDS the\nscattered registries from a single co-located module.\n\nA \"feature\" is the extensibility keystone. Today a feature's footprint is\nsmeared across registries a forker's agent must find and edit in lockstep:\n  - post-mutate side effects   → entities/Hive/effects.ts  (PATTERN_EFFECTS)\n  - HTTP routes                → src/index.ts              (routes[])\n  - MCP tools                  → entities/Session/tools.ts (TOOLS)\n  - kernel patterns + DDL      → entities/Hive/schema.ts   (KERNEL_PATTERNS)\n  - write-policy class         → entities/Hive/policy.ts   (KERNEL_WRITE_POLICY)\n  - system docs                → src/system-docs/*.md      (imported in schema.ts)\n  - coherence spec             → <dir>/*.spec.md\n\nA `Feature` object declares each of those contributions in ONE place. The\ncomposers in this directory then DERIVE the registries from `FEATURES` (the\nbarrel in ./index.ts). Adding a feature = create one dir + add one import line\nto the barrel — its whole footprint is legible in the manifest, not scattered.\n\nThis file is intentionally dependency-light: it imports only the TYPES of the\ncontributions, never the runtime registries, so a feature manifest can be read\n(and reasoned about) in isolation. `effects` is wired end-to-end today; the\nremaining fields are TYPED and documented so the next agent fills a slot rather\nthan re-discovering a registry. See ./compose.ts for what is live vs. designed."
+    },
+    {
+      "id": "s:entities/features/feature.ts#FeaturePattern",
+      "parent": "f:entities/features/feature.ts",
+      "label": "FeaturePattern",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/features/feature.ts",
+      "line": 30,
+      "prose": "A kernel-pattern declaration as schema.ts expects it (DDL + facet metadata +\n doctrine). Kept as the existing shape so a feature can hand schema.ts a row\n verbatim."
+    },
+    {
+      "id": "s:entities/features/feature.ts#FeatureMigration",
+      "parent": "f:entities/features/feature.ts",
+      "label": "FeatureMigration",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/features/feature.ts",
+      "line": 40,
+      "prose": "A one-shot, idempotent ALTER/backfill keyed by a monotonic version, mirroring\n the `runMigrations` switch in schema.ts. Runs at boot, after pattern DDL."
+    },
+    {
+      "id": "s:entities/features/feature.ts#FeatureRoute",
+      "parent": "f:entities/features/feature.ts",
+      "label": "FeatureRoute",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/features/feature.ts",
+      "line": 54,
+      "prose": "A route contribution: the existing Route shape plus the handler. Imported as a\n type only so the manifest doesn't pull the router runtime. The composer splices\n these into the `routes[]` array in src/index.ts in feature-declaration order,\n AFTER the core routes (a feature route can't shadow a core route)."
+    },
+    {
+      "id": "s:entities/features/feature.ts#FeatureTool",
+      "parent": "f:entities/features/feature.ts",
+      "label": "FeatureTool",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/features/feature.ts",
+      "line": 71,
+      "prose": "MCP tool metadata — the ToolMeta shape from tools.ts. A feature that adds an\n agent-facing verb declares it here; the composer concatenates onto TOOLS. The\n feature ALSO supplies the Zod schema + handler wiring (a `registerTool`\n callback) since session.ts binds those — see compose design notes."
+    },
+    {
+      "id": "s:entities/features/feature.ts#FeatureSystemDoc",
+      "parent": "f:entities/features/feature.ts",
+      "label": "FeatureSystemDoc",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/features/feature.ts",
+      "line": 83,
+      "prose": "A system-doc contribution: the raw markdown (imported as a text module) plus\n its slug/title, seeded into _system_docs at boot exactly like schema.ts does."
+    },
+    {
+      "id": "s:entities/features/feature.ts#Feature",
+      "parent": "f:entities/features/feature.ts",
+      "label": "Feature",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/features/feature.ts",
+      "line": 93,
+      "prose": "One feature, declaring every registry contribution it makes. Only `name` is\n required; every contribution field is optional so a feature opts into exactly\n the registries it touches."
+    },
+    {
+      "id": "f:entities/features/index.ts",
+      "parent": "c:entities/features",
+      "label": "index.ts",
+      "kind": "file",
+      "sub": "entities/features/index.ts",
+      "path": "entities/features/index.ts",
+      "prose": "index.ts — the FEATURE BARREL. The whole feature set, in one greppable place.\n\nAdding a feature is TWO edits, both here-adjacent:\n  1. create entities/features/<name>/manifest.ts exporting a `Feature`\n  2. add ONE import line + ONE array entry below\n\nThe composers in ./compose.ts derive every scattered registry from FEATURES.\n`effects` is live today: entities/Hive/effects.ts sets\n  PATTERN_EFFECTS = composeEffects(FEATURES)\ninstead of a hand-written literal. The remaining registries adopt their\ncomposer in their own host file (see compose.ts for each landing spot)."
+    },
+    {
+      "id": "s:entities/features/index.ts#FEATURES",
+      "parent": "f:entities/features/index.ts",
+      "label": "FEATURES",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/index.ts",
+      "line": 18
+    },
+    {
+      "id": "f:entities/features/system-tasks/manifest.ts",
+      "parent": "c:entities/features",
+      "label": "manifest.ts",
+      "kind": "file",
+      "sub": "entities/features/system-tasks/manifest.ts",
+      "path": "entities/features/system-tasks/manifest.ts",
+      "prose": "system-tasks — dispatch-on-create maintenance jobs.\n\nLive slot: `effects` (run the task post-commit). Other registries:\n  patterns/writePolicy → schema.ts (_system_tasks DDL) + policy.ts\n  routes               → src/index.ts (/dev/seed-vectors triggers the task path)"
+    },
+    {
+      "id": "s:entities/features/system-tasks/manifest.ts#systemTasks",
+      "parent": "f:entities/features/system-tasks/manifest.ts",
+      "label": "systemTasks",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/system-tasks/manifest.ts",
+      "line": 9
     },
     {
       "id": "f:shared/Auth/credentials.ts",
@@ -4163,415 +4387,6 @@
       "label": "react",
       "kind": "external",
       "sub": "module"
-    },
-    {
-      "id": "f:worker-configuration.d.ts",
-      "parent": "c:.",
-      "label": "worker-configuration.d.ts",
-      "kind": "file",
-      "sub": "worker-configuration.d.ts",
-      "path": "worker-configuration.d.ts",
-      "prose": "eslint-disable"
-    },
-    {
-      "id": "s:worker-configuration.d.ts#httpServerHandler",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "httpServerHandler",
-      "kind": "symbol",
-      "sub": "function",
-      "path": "worker-configuration.d.ts",
-      "line": 12620
-    },
-    {
-      "id": "s:worker-configuration.d.ts#onRequest",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "onRequest",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12659
-    },
-    {
-      "id": "s:worker-configuration.d.ts#PipelineRecord",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "PipelineRecord",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12678
-    },
-    {
-      "id": "s:worker-configuration.d.ts#PipelineBatchMetadata",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "PipelineBatchMetadata",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12679
-    },
-    {
-      "id": "s:worker-configuration.d.ts#Pipeline",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "Pipeline",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12683
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__RPC_STUB_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__RPC_STUB_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12748,
-      "prose": "Branded types for identifying `WorkerEntrypoint`/`DurableObject`/`Target`s.\nTypeScript uses *structural* typing meaning anything with the same shape as type `T` is a `T`.\nFor the classes exported by `cloudflare:workers` we want *nominal* typing (i.e. we only want to\naccept `WorkerEntrypoint` from `cloudflare:workers`, not any other class with the same shape)"
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__RPC_TARGET_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__RPC_TARGET_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12749
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__WORKER_ENTRYPOINT_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__WORKER_ENTRYPOINT_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12750
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__DURABLE_OBJECT_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__DURABLE_OBJECT_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12751
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__WORKFLOW_ENTRYPOINT_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__WORKFLOW_ENTRYPOINT_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12752
-    },
-    {
-      "id": "s:worker-configuration.d.ts#RpcTargetBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "RpcTargetBranded",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12753
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkerEntrypointBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkerEntrypointBranded",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12756
-    },
-    {
-      "id": "s:worker-configuration.d.ts#DurableObjectBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "DurableObjectBranded",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12759
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowEntrypointBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowEntrypointBranded",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12762
-    },
-    {
-      "id": "s:worker-configuration.d.ts#EntrypointBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "EntrypointBranded",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12765
-    },
-    {
-      "id": "s:worker-configuration.d.ts#Stubable",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "Stubable",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12767,
-      "prose": "Types that can be used through `Stub`s"
-    },
-    {
-      "id": "s:worker-configuration.d.ts#Stub",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "Stub",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12789
-    },
-    {
-      "id": "s:worker-configuration.d.ts#Provider",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "Provider",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12836,
-      "prose": "Base type for all other types providing RPC-like interfaces.\nRewrites all methods/properties to be `MethodOrProperty`s, while preserving callable types.\n`Reserved` names (e.g. stub method names like `dup()`) and symbols can't be accessed over RPC."
-    },
-    {
-      "id": "s:worker-configuration.d.ts#RpcStub",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "RpcStub",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12884
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowDurationLabel",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowDurationLabel",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12919
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowSleepDuration",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowSleepDuration",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12920
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowDelayDuration",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowDelayDuration",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12921
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowTimeoutDuration",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowTimeoutDuration",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12922
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowRetentionDuration",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowRetentionDuration",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12923
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowBackoff",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowBackoff",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12924
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepSensitivity",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepSensitivity",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12925
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepConfig",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepConfig",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12926
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowCronSchedule",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowCronSchedule",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12935
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowEvent",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowEvent",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12941
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepEvent",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepEvent",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12948
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepContext",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepContext",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12954
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowRollbackContext",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowRollbackContext",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12962
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowRollbackHandler",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowRollbackHandler",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12967
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepRollbackOptions",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepRollbackOptions",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12968
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowInstanceStatus",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowInstanceStatus",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12982
-    },
-    {
-      "id": "s:worker-configuration.d.ts#waitUntil",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "waitUntil",
-      "kind": "symbol",
-      "sub": "function",
-      "path": "worker-configuration.d.ts",
-      "line": 12990
-    },
-    {
-      "id": "s:worker-configuration.d.ts#withEnv",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "withEnv",
-      "kind": "symbol",
-      "sub": "function",
-      "path": "worker-configuration.d.ts",
-      "line": 12991
-    },
-    {
-      "id": "s:worker-configuration.d.ts#withExports",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "withExports",
-      "kind": "symbol",
-      "sub": "function",
-      "path": "worker-configuration.d.ts",
-      "line": 12992
-    },
-    {
-      "id": "s:worker-configuration.d.ts#withEnvAndExports",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "withEnvAndExports",
-      "kind": "symbol",
-      "sub": "function",
-      "path": "worker-configuration.d.ts",
-      "line": 12993
-    },
-    {
-      "id": "s:worker-configuration.d.ts#env",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "env",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12994
-    },
-    {
-      "id": "s:worker-configuration.d.ts#exports",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "exports",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12995
-    },
-    {
-      "id": "s:worker-configuration.d.ts#cache",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "cache",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12996
-    },
-    {
-      "id": "s:worker-configuration.d.ts#tracing",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "tracing",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12997
-    },
-    {
-      "id": "s:worker-configuration.d.ts#NonRetryableError",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "NonRetryableError",
-      "kind": "symbol",
-      "sub": "class",
-      "path": "worker-configuration.d.ts",
-      "line": 14376,
-      "prose": "NonRetryableError allows for a user to throw a fatal error\nthat makes a Workflow instance fail immediately without triggering a retry"
     }
   ],
   "edges": [

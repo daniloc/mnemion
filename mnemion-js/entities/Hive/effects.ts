@@ -17,6 +17,9 @@
 //   after  — runs POST-commit; best-effort / annotating. A failed URL or token
 //            DEGRADES the result (matches today), it never unwinds the committed row.
 
+import { FEATURES } from "../features";
+import { composeEffects } from "../features/compose";
+
 export interface EffectContext {
   env: any;
   /** A public URL on this instance (host is configuration, never request data). */
@@ -49,62 +52,13 @@ export interface PatternEffect {
   ): void | Promise<void>;
 }
 
-export const PATTERN_EFFECTS: Record<string, PatternEffect> = {
-  _documents: {
-    before(parsed, operation, ctx) {
-      // Capture the R2 key BEFORE the row is archived, so `after` can free the blob.
-      if (operation !== "archive" || parsed.id == null) return;
-      const key = ctx.readField("_documents", parsed.id, "r2_key");
-      return { archivedDocKey: typeof key === "string" ? key : null };
-    },
-    async after(entry, result, parsed, operation, scratch, ctx) {
-      // create → born with a single-use upload ticket; bytes are POSTed to upload_url,
-      // which records r2_key/size on the entry. Digest at rest, raw shown once.
-      if (operation === "create" && entry && !entry.r2_key) {
-        const tok = await ctx.internalCreate("_access_tokens", {
-          scope: "document",
-          label: `upload:document:${entry.id}`,
-          constraints: JSON.stringify({ document_id: entry.id }),
-        });
-        const rawTok = tok.once?.token;
-        if (!tok.error && rawTok) {
-          result.upload_token = rawTok; // raw, shown once (DB holds the digest)
-          result.upload_url = ctx.instanceUrl(`f/${rawTok}`);
-        }
-        // Minting the token is pure DB; the bytes need R2. If it isn't enabled, say so
-        // plainly rather than handing back an upload_url that 503s.
-        if (!ctx.env.DOCUMENTS) {
-          result.documents_note =
-            "File storage (R2) is not enabled on this instance — the metadata entry was created, but uploading bytes to upload_url will fail until R2 is enabled. Everything else works without it.";
-        }
-      }
-      // archive → free the R2 object: the metadata and the blob die together.
-      const key = scratch.archivedDocKey as string | null | undefined;
-      if (key && ctx.env.DOCUMENTS) {
-        ctx.schedule(ctx.env.DOCUMENTS.delete(key).catch(() => {}));
-      }
-    },
-  },
-
-  _pages: {
-    // A page is born (or re-saved) → hand back the link to give the human, so the
-    // agent never has to guess the host or the public-vs-private route. Public pages
-    // serve at /page/{path} (+ OG card); private pages open only in the signed-in app
-    // at /#page:{path}. Derived from the live host + visibility, never stored.
-    after(entry, result, parsed, operation, scratch, ctx) {
-      if ((operation === "create" || operation === "update") && entry?.path) {
-        const isPublic = entry.visibility === "public";
-        const slug = encodeURIComponent(entry.path);
-        result.page_url = isPublic ? ctx.instanceUrl(`page/${slug}`) : ctx.instanceUrl(`#page:${slug}`);
-        if (isPublic) result.og_image = ctx.instanceUrl(`page/${slug}/og.png`);
-        else result.page_note = "Private page — only you, signed in, can open this link. Publishing it (visibility: public) is consent-gated.";
-      }
-    },
-  },
-
-  _system_tasks: {
-    async after(entry, result, parsed, operation, scratch, ctx) {
-      if (operation === "create" && entry) await ctx.runTask(entry.id, entry.task);
-    },
-  },
-};
+// PATTERN_EFFECTS is no longer a hand-written literal — it is COMPOSED from the
+// per-feature manifests in entities/features/. Each feature declares its
+// post-mutate effects keyed by pattern; `composeEffects` folds them into this flat
+// map (and throws on a two-feature collision over the same pattern). The bodies
+// for _documents / _pages / _system_tasks now live in their feature manifests.
+//
+// This is the extensibility seam: adding a side-effecting pattern means writing a
+// feature manifest + one barrel line — not editing this file. The shape contract
+// (EffectContext, PatternEffect above) stays here as the leaf the manifests import.
+export const PATTERN_EFFECTS: Record<string, PatternEffect> = composeEffects(FEATURES);

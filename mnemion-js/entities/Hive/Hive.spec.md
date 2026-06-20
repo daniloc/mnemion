@@ -13,6 +13,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 - passes test "context-capability totality"
 - passes test "pattern-effects totality"
 - effects.ts exists at this node
+- effects.ts imports ../features
+- effects.ts imports ../features/compose
 - documents.ts exists at this node
 - hive.ts imports ./documents
 - render.ts exists at this node
