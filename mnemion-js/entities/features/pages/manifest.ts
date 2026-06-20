@@ -1,14 +1,25 @@
 // pages — agent-authored public/private pages feature.
 //
-// Live slot: `effects` (the post-mutate link-back). Other registries it touches:
+// Live slots: `effects` (the post-mutate link-back) + `routes` (the public-page
+// HTTP edges). Other registries it touches:
 //   patterns/writePolicy → schema.ts (_pages DDL + path index) + policy.ts
-//   routes               → src/index.ts (/page/:path, /page/:path/og.{svg,png})
-//   systemDocs           → src/system-docs/http-io.md (pages section)
+//   systemDocs           → src/system-docs/http-io.md (shared HTTP-I/O doc)
 
 import type { Feature } from "../feature";
+import { servePage, servePageOg, servePageOgPng } from "../../../shared/Routing/routes/io";
 
 export const pages: Feature = {
   name: "pages",
+  // Public-page serving + OG-card edges, spliced into the route table by
+  // composeRoutes. Handlers stay in routes/io.ts. The og.svg/og.png variants are
+  // declared before the catch-all /page/:path; their regexes don't overlap (a
+  // segment can't span a slash) but declaration order is preserved for clarity.
+  // /page/ backendPrefix keeps an unmatched GET off the SPA shell.
+  routes: [
+    { method: "GET", pattern: "/page/:path/og.svg", handler: servePageOg,    backendPrefix: "/page/" },
+    { method: "GET", pattern: "/page/:path/og.png", handler: servePageOgPng },
+    { method: "GET", pattern: "/page/:path",        handler: servePage },
+  ],
   effects: {
     _pages: {
       // A page is born (or re-saved) → hand back the link to give the human, so the

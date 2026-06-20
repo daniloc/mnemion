@@ -1,22 +1,31 @@
 // documents — R2-backed file store feature.
 //
-// The whole feature, legible in one place. Today only `effects` is composed
-// end-to-end (the post-mutate orchestration that used to live inline in
-// effects.ts's PATTERN_EFFECTS literal). The other slots show what this feature
-// WOULD declare once those registries adopt the composer — they are commented
-// pointers to the live registries that own them, not duplicated definitions, so
-// there is exactly one source of truth per registry until migration.
+// The whole feature, legible in one place. `effects` + `routes` are composed
+// end-to-end today. The remaining slots are commented pointers to the live
+// registries that still own them — not duplicated definitions, so there is
+// exactly one source of truth per registry until migration.
 //
 //   patterns/writePolicy → entities/Hive/schema.ts (_documents DDL) +
 //                          entities/Hive/policy.ts (_documents write class)
-//   routes               → src/index.ts (/f/:token upload, /f/:id serve)
 //   migrations           → schema.ts v12 (extracted_text / extraction_status)
-//   systemDocs           → src/system-docs/http-io.md
+//   systemDocs           → src/system-docs/http-io.md (shared with the other
+//                          HTTP-I/O features — egress/publications/ingress — so
+//                          it stays a single doc, not split per-feature)
 
 import type { Feature } from "../feature";
+import { uploadDocument, serveDocument } from "../../../shared/Routing/routes/io";
 
 export const documents: Feature = {
   name: "documents",
+  // The feature's two HTTP edges, spliced into the route table by composeRoutes.
+  // Handlers stay in the I/O adapter layer (routes/io.ts); only the routing rows
+  // live here. /f/:token streams bytes to R2 (single-use upload ticket, hex-guarded);
+  // /f/:id serves a stored blob (numeric-id-guarded, visibility-gated). The /f/
+  // backendPrefix keeps an unmatched GET off the SPA shell.
+  routes: [
+    { method: "POST", pattern: "/f/:token", where: { token: /^[a-fA-F0-9]+$/ }, handler: uploadDocument, backendPrefix: "/f/" },
+    { method: "GET",  pattern: "/f/:id",    where: { id: /^\d+$/ },              handler: serveDocument },
+  ],
   effects: {
     _documents: {
       before(parsed, operation, ctx) {

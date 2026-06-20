@@ -2,12 +2,15 @@ import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { SessionDO } from "../entities/Session/session";
 import { HiveDO } from "../entities/Hive/hive";
 import { HIVE_ID } from "../shared/core/constants";
-import { Method, Auth, createRouter, type Route, type Env } from "../shared/Routing/router";
+import { Method, Auth, createRouter, type Route, type RouteHandler, type Env } from "../shared/Routing/router";
+import { FEATURES } from "../entities/features";
+import { composeRoutes } from "../entities/features/compose";
+import type { FeatureRoute } from "../entities/features/feature";
 
 // Auth
 import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify, revokeSessions, invitePage, inviteBegin, inviteComplete } from "../shared/Routing/routes/auth";
 // I/O
-import { serveSharedEntry, serveOutput, servePublication, servePage, servePageOg, servePageOgPng, receiveInput, upload, uploadDocument, serveDocument, exportPattern } from "../shared/Routing/routes/io";
+import { serveSharedEntry, serveOutput, servePublication, receiveInput, upload, exportPattern } from "../shared/Routing/routes/io";
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "../shared/Routing/routes/marketplace";
 // Pages (JSON APIs the React SPA consumes)
@@ -21,8 +24,16 @@ import { seedTestData, seedVectors } from "../shared/Routing/routes/dev";
 export { SessionDO, HiveDO };
 
 // === Route table ===
+//
+// The full HTTP surface = CORE_ROUTES (below) + per-feature routes (declared in
+// their own manifests under entities/features/<name>/manifest.ts and folded in by
+// composeRoutes). To see every route a request can hit: read CORE_ROUTES here,
+// then each feature manifest's `routes`. Feature routes are appended AFTER core,
+// and the router matches in declaration order (first match wins) — so a feature
+// route can never shadow a core route. Each route stays a single declarative row
+// (method, pattern, auth, where, handler), here or in the manifest.
 
-const routes: Route[] = [
+const CORE_ROUTES: Route[] = [
   // Auth & passkeys
   { method: Method.GET,  pattern: "/authorize",            handler: authorize },
   { method: Method.POST, pattern: "/auth/verify",          handler: authVerify },
@@ -48,13 +59,10 @@ const routes: Route[] = [
   { method: Method.GET,  pattern: "/o/entry/:pattern/:id", where: { id: /^\d+$/ }, handler: serveSharedEntry },
   { method: Method.GET,  pattern: "/o/:path",              handler: serveOutput },
   { method: Method.GET,  pattern: "/p/:path",              handler: servePublication },
-  { method: Method.GET,  pattern: "/page/:path/og.svg",   handler: servePageOg },
-  { method: Method.GET,  pattern: "/page/:path/og.png",   handler: servePageOgPng },
-  { method: Method.GET,  pattern: "/page/:path",           handler: servePage },
+  // /page/* (pages feature) and /f/* (documents feature) routes are declared in
+  // their feature manifests and appended below via composeRoutes(FEATURES).
   { method: Method.POST, pattern: "/i/:path",              handler: receiveInput },
   { method: Method.POST, pattern: "/upload/:token",        where: { token: /^[a-fA-F0-9]+$/ }, handler: upload },
-  { method: Method.POST, pattern: "/f/:token",             where: { token: /^[a-fA-F0-9]+$/ }, handler: uploadDocument },
-  { method: Method.GET,  pattern: "/f/:id",                where: { id: /^\d+$/ }, handler: serveDocument },
   { method: Method.GET,  pattern: "/export/:pattern",       auth: Auth.SESSION, handler: exportPattern },
 
   // Pages (JSON APIs for the React SPA; the SPA itself is served as static assets)
@@ -81,16 +89,44 @@ const routes: Route[] = [
   { method: Method.ANY,  pattern: "/marketplace*",         handler: marketplaceGit },
 ];
 
+// Feature routes carry their `method`/`auth` as plain strings (the manifest is
+// dependency-light and doesn't import the router enums); both map 1:1 onto the
+// enum values (Method/Auth values ARE those strings), except "ANY" → Method.ANY.
+const FEATURE_METHODS: Record<FeatureRoute["method"], Method> = {
+  GET: Method.GET, POST: Method.POST, ANY: Method.ANY,
+};
+function toRoute(r: FeatureRoute): Route {
+  return {
+    method: FEATURE_METHODS[r.method],
+    pattern: r.pattern,
+    auth: r.auth ? (r.auth as Auth) : undefined,
+    where: r.where,
+    // FeatureRoute.handler is typed loosely (sync|async, ctx: any) so the manifest
+    // stays router-runtime-free; the concrete handlers are all `RouteHandler`.
+    handler: r.handler as RouteHandler,
+  };
+}
+
+// Composed feature routes (declared in entities/features/*/manifest.ts). Appended
+// AFTER core so a feature route can never shadow a core route (first-match-wins).
+const FEATURE_ROUTES = composeRoutes(FEATURES);
+
+// Full surface = core (above) + per-feature routes (in their manifests).
+const routes: Route[] = [...CORE_ROUTES, ...FEATURE_ROUTES.map(toRoute)];
+
 const dispatch = createRouter(routes);
 
 // Backend path prefixes the worker owns. Anything else is a browser route that
 // resolves to the React SPA shell. (Static asset files — /assets/* etc. — are
 // served by the runtime before the worker runs; only unmatched paths reach
-// here, so a 404 on a non-backend GET means "serve the SPA".)
+// here, so a 404 on a non-backend GET means "serve the SPA".) The feature-owned
+// prefixes (/page/, /f/) are derived from the manifests' `backendPrefix`, so a
+// moved route's SPA-exclusion travels with its declaration.
 const BACKEND_PREFIXES = [
-  "/api", "/mcp", "/o/", "/p/", "/page/", "/i/", "/f/", "/upload/", "/export/", "/ws",
+  "/api", "/mcp", "/o/", "/p/", "/i/", "/upload/", "/export/", "/ws",
   "/token", "/register", "/authorize", "/auth/", "/setup", "/login",
   "/sessions/", "/invite/", "/marketplace", "/dev/", "/.well-known", "/canvas",
+  ...FEATURE_ROUTES.flatMap((r) => (r.backendPrefix ? [r.backendPrefix] : [])),
 ];
 function isAppRoute(path: string): boolean {
   return !BACKEND_PREFIXES.some((p) => path === p || path.startsWith(p));
