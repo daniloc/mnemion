@@ -5,6 +5,8 @@
   "ignore": ["node_modules", ".git", "dist", ".wrangler", ".coherence", "docs", "public", "__tests__", "pages", "system-docs"],
   "codeExt": ["ts"],
   "typecheck": ["npm", "run", "types"],
+  "test": ["npx", "vitest", "run", "-t"],
+  "testMatch": "[1-9][0-9]* passed",
   "language": "typescript",
   "platform": "cloudflare"
 }
