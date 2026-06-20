@@ -60,6 +60,21 @@ describe("write-policy totality", () => {
   it("the registry and the expected matrix cover exactly the same patterns", () => {
     expect(new Set(Object.keys(KERNEL_WRITE_POLICY))).toEqual(new Set(Object.keys(EXPECTED)));
   });
+
+  // A feature owns its write-class as PURE DATA in its */security.ts, which imports
+  // policy.ts type-only (to keep the leaf), so the class is a string-literal cast
+  // (`"kernel_consent" as KernelPolicy["class"]`) — the compiler can't catch a typo
+  // there. This re-establishes that guard structurally: every COMPOSED class must be
+  // a real WriteClass member, so a fork that fat-fingers a class string (which would
+  // silently make the pattern fall through writeClass() to neither System-denied nor
+  // a matching consent gate) fails loudly here, not in production.
+  it("every composed write-class is a valid WriteClass enum member", () => {
+    const valid = new Set<string>(Object.values(WriteClass));
+    const bad = Object.entries(KERNEL_WRITE_POLICY)
+      .filter(([, p]) => !valid.has(p.class as string))
+      .map(([name, p]) => `${name}=${(p as { class: string }).class}`);
+    expect(bad).toEqual([]);
+  });
 });
 
 describe("writeClass — every registered pattern matches its declared intent", () => {

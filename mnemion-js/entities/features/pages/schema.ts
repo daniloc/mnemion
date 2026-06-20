@@ -10,9 +10,10 @@
 // edge into the security leaf (this file is imported by the manifest, not policy.ts).
 //
 // No feature migration: every _pages column lives in the base DDL (there was never a
-// _pages ALTER in schema.ts's migration pile). The kernel HOOKS for _pages (block
-// validation, the public-page invariants) stay in entities/Hive/kernel.ts — a
-// separate, deliberate design call, not part of this structure move.
+// _pages ALTER in schema.ts's migration pile). The _pages pre-mutation hooks (URL-safe
+// path slug, block-palette validation, AND the kernel-pattern block-exfil guard) live
+// in the sibling pages/hooks.ts and compose into kernel.ts's ON_WRITE chokepoint via
+// the manifest — enforcement stays at applyKernelRules; only the declaration moved.
 
 import type { FeaturePattern } from "../feature";
 import { describeBlockPalette } from "../../../shared/core/block-palette";
