@@ -1,5 +1,14 @@
 # Multi-tenancy: host-routed hives (decision)
 
+> **STATUS: DEFERRED (not on the active path).** The working premise is **single
+> instance per person — everyone runs their own fork/deploy**, and shares across
+> instances via *federation*, not multi-tenancy. So a hive stays single-owner
+> (`user:owner`), the extensibility story is "a fork-owner extends their own instance
+> via feature manifests," and nothing below is being implemented now. This document is
+> kept as the analysis-of-record for *if* the premise ever changes (a hosted,
+> many-strangers-one-deploy offering). The capability split and actor↔hiveId separation
+> that would make it cheap already landed, so picking this up later stays low-cost.
+
 **Decision:** when Mnemion grows beyond the single `user:owner` hive, a hive is
 selected by the **request host** — `alice.mnemion.dev → hiveId "host:alice"` — not by
 the credential. Chosen over credential-routed tenancy after a parallel worktree
