@@ -29,7 +29,7 @@ import * as eff from "./effects";
 import * as priming from "./prime";
 import * as pubs from "../../shared/IO/publications";
 import * as web from "../../shared/IO/web";
-import { capText, extractPdfText } from "../../shared/IO/extract";
+import * as docs from "./documents";
 
 // === Types ===
 
@@ -677,94 +677,30 @@ export class HiveDO extends DurableObject {
   /** Record a completed upload: bind the R2 key + metadata to the document entry
    *  and burn the single-use token. The route has already streamed the bytes to
    *  R2; on any failure here it deletes that orphaned object. */
+  /** Narrow capabilities handed to the documents module (documents.ts) — db +
+   *  R2 env + broadcast/embed/schedule, never `this`. */
+  private docsCtx(): docs.DocumentsContext {
+    return {
+      db: this.db,
+      env: this.env,
+      broadcast: (p) => this.broadcastChange(p),
+      embed: (id) => priming.embedEntry(this.primeCtx(), "_documents", id),
+      schedule: (pr) => this.ctx.waitUntil(pr),
+      errorJson: (m) => this.errorJson(m),
+    };
+  }
+
   async consumeDocumentUpload(token: string, r2Key: string, contentType: string, size: number): Promise<string> {
-    const accessToken = await cred.findAccessToken(this.db, token);
-    if (!accessToken) return this.errorJson("Invalid or expired upload token");
-    if (!cred.scopeMatches(accessToken.scope, "document")) return this.errorJson("Token does not have document scope");
-
-    let documentId: number;
-    try {
-      documentId = JSON.parse(accessToken.constraints ?? "{}").document_id;
-    } catch { return this.errorJson("Upload token has invalid constraints"); }
-    if (documentId == null) return this.errorJson("Upload token missing document_id");
-
-    const rows = this.db.exec(
-      `SELECT id FROM "_documents" WHERE id = ? AND archived_at IS NULL`, documentId
-    ).toArray();
-    if (rows.length === 0) return this.errorJson("Document not found");
-
-    this.db.exec(
-      `UPDATE "_documents" SET r2_key = ?, "size" = ?, content_type = ?, stored_at = datetime('now'), updated_at = datetime('now'), version = version + 1 WHERE id = ?`,
-      r2Key, size, contentType, documentId
-    );
-    cred.consumeToken(this.db, accessToken.id);
-    this.broadcastChange(["_documents"]);
-
-    const entry = this.db.exec(`SELECT * FROM "_documents" WHERE id = ?`, documentId).one();
-    return JSON.stringify({ uploaded: true, id: documentId, bytes: size, content_type: contentType, entry });
+    return docs.consumeDocumentUpload(this.docsCtx(), token, r2Key, contentType, size);
   }
-
-  /** Record extracted text + status on a document, then re-embed so the text
-   *  joins prime recall (search already covers the facet). Called by the upload
-   *  route after it pulls text from the bytes (inline for text, async for PDF). */
   async recordExtraction(documentId: number, text: string, status: string): Promise<string> {
-    try {
-      const rows = this.db.exec(
-        `SELECT id FROM "_documents" WHERE id = ? AND archived_at IS NULL`, documentId
-      ).toArray();
-      if (rows.length === 0) return this.errorJson("Document not found");
-
-      this.db.exec(
-        `UPDATE "_documents" SET extracted_text = ?, extraction_status = ?, updated_at = datetime('now'), version = version + 1 WHERE id = ?`,
-        text || null, status, documentId
-      );
-      this.broadcastChange(["_documents"]);
-      // Re-embed with the extracted text included (buildEmbedText reads text facets).
-      this.ctx.waitUntil(priming.embedEntry(this.primeCtx(), "_documents", documentId));
-      return JSON.stringify({ recorded: true, id: documentId, status, chars: (text || "").length });
-    } catch (err: any) {
-      return this.errorJson(`Failed to record extraction: ${err.message}`);
-    }
+    return docs.recordExtraction(this.docsCtx(), documentId, text, status);
   }
-
-  /** Schedule async PDF text extraction inside the DO (which has a real
-   *  waitUntil — the route ctx does not). Marks pending, then reads the blob
-   *  back from R2, extracts, and records. Returns immediately; the work
-   *  outlives the RPC via ctx.waitUntil. Best-effort: failures land as status. */
   async extractDocument(id: number): Promise<string> {
-    const rows = this.db.exec(
-      `SELECT r2_key FROM "_documents" WHERE id = ? AND archived_at IS NULL`, id
-    ).toArray() as any[];
-    if (rows.length === 0 || !rows[0].r2_key) return this.errorJson("Document not found or not uploaded");
-    const r2Key = rows[0].r2_key as string;
-
-    this.db.exec(`UPDATE "_documents" SET extraction_status = 'pending', updated_at = datetime('now') WHERE id = ?`, id);
-
-    this.ctx.waitUntil((async () => {
-      try {
-        const obj = this.env.DOCUMENTS ? await this.env.DOCUMENTS.get(r2Key) : null;
-        if (!obj) { await this.recordExtraction(id, "", "failed"); return; }
-        const text = capText(await extractPdfText(await obj.arrayBuffer()));
-        await this.recordExtraction(id, text, text.trim() ? "done" : "empty");
-      } catch {
-        await this.recordExtraction(id, "", "failed");
-      }
-    })());
-
-    return JSON.stringify({ scheduled: true, id });
+    return docs.extractDocument(this.docsCtx(), id);
   }
-
-  /** Resolve a document for serving. Returns found:false until bytes exist. */
   async resolveDocument(id: number): Promise<string> {
-    try {
-      const rows = this.db.exec(
-        `SELECT title, visibility, r2_key, content_type, stored_at FROM "_documents" WHERE id = ? AND archived_at IS NULL`, id
-      ).toArray() as any[];
-      if (rows.length === 0 || !rows[0].r2_key) return JSON.stringify({ found: false });
-      return JSON.stringify({ found: true, ...rows[0] });
-    } catch {
-      return JSON.stringify({ found: false });
-    }
+    return docs.resolveDocument(this.docsCtx(), id);
   }
 
   async batchMutate(operationsJson: string, actor: string = OWNER_ACTOR): Promise<string> {
