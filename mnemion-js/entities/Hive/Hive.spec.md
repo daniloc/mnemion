@@ -11,6 +11,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 - prime.ts imports ./policy
 - passes test "write-policy totality"
 - passes test "context-capability totality"
+- passes test "pattern-effects totality"
+- effects.ts exists at this node
 
 ## why
 

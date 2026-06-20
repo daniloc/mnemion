@@ -25,6 +25,7 @@ import PUBLIC_PAGE_CSS from "./public-page.css";
 import * as cred from "../../shared/Auth/credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
+import * as eff from "./effects";
 import * as priming from "./prime";
 import * as pubs from "../../shared/IO/publications";
 import * as web from "../../shared/IO/web";
@@ -563,6 +564,38 @@ export class HiveDO extends DurableObject {
     return { ...this.ctxFields(actor), trusted: false };
   }
 
+  /** The DO's narrowed hands handed to a pattern effect (effects.ts) — capabilities,
+   *  never `this` and never a raw trusted `executeMutate`. The one sanctioned trusted
+   *  write is `internalCreate`. */
+  private effectCtx(actor: string): eff.EffectContext {
+    return {
+      env: this.env,
+      instanceUrl: (p) => this.instanceUrl(p),
+      schedule: (pr) => this.ctx.waitUntil(pr),
+      runTask: (id, task) => this.runTask(id, task),
+      readField: (pattern, id, field) => {
+        // literal pattern/field only — effects pass constants; guard against any drift.
+        if (!/^[a-z_]+$/i.test(pattern) || !/^[a-z_]+$/i.test(field)) return null;
+        try {
+          const r = this.db.exec(`SELECT ${field} FROM "${pattern}" WHERE id = ?`, id).toArray() as any[];
+          return r[0]?.[field] ?? null;
+        } catch { return null; }
+      },
+      internalCreate: (pattern, d) => this.internalCreate(pattern, d, actor),
+    };
+  }
+
+  /** The ONLY trusted write an effect may perform: a born-hashed create through the
+   *  owner context (mint the secret digest, then write). Effects never hold a raw
+   *  `executeMutate`, so this stays the single audited internal write path. */
+  private async internalCreate(
+    pattern: string, d: Record<string, unknown>, actor: string,
+  ): Promise<{ entry?: any; error?: boolean; once?: Record<string, string> | null }> {
+    const once = await this.mintSecrets(pattern, d, "create");
+    const r = data.executeMutate(this.ownerDataCtx(actor), pattern, "create", d);
+    return { entry: r.entry, error: r.error, once };
+  }
+
   /** query() for a served/untrusted surface — refuses kernel patterns at the
    *  engine. Every public/OG/publication read goes through this, so the kernel
    *  read-boundary lives at one chokepoint instead of a check per serve sink. */
@@ -601,14 +634,12 @@ export class HiveDO extends DurableObject {
       }
     }
 
-    // Capture a document's R2 key before archiving so we can free the blob after.
-    let archivedDocKey: string | null = null;
-    if (patternName === "_documents" && operation === "archive" && parsed.id != null) {
-      try {
-        const r = this.db.exec(`SELECT r2_key FROM "_documents" WHERE id = ?`, parsed.id).toArray() as any[];
-        archivedDocKey = r[0]?.r2_key ?? null;
-      } catch { /* best-effort */ }
-    }
+    // Pattern effects (effects.ts): the side-effecting twin of the kernel's pure
+    // pre-mutation hooks. `before` runs pre-commit (e.g. capture a document's R2 key
+    // before archive so `after` can free the blob); `after` runs post-commit.
+    const effects = eff.PATTERN_EFFECTS[patternName];
+    const effectCtx = this.effectCtx(actor);
+    const scratch = effects?.before ? (effects.before(parsed, operation, effectCtx) || {}) : {};
 
     // Born-hashed secrets: a `secret` column (e.g. _access_tokens.token) is set to
     // its digest BEFORE insert, so the raw never lands in the row/audit/broadcast.
@@ -627,9 +658,6 @@ export class HiveDO extends DurableObject {
       // whole pattern — the heart of "only the element the agent changed redraws".
       this.broadcastChange([patternName], { op: operation, id: result.entry?.id ?? parsed.id, entry: result.entry ?? null });
       this.embedAfterMutate(patternName, operation, result.entry?.id, conflictCheck?.vector ?? undefined);
-      if (patternName === "_system_tasks" && operation === "create") {
-        await this.runTask(result.entry.id, result.entry.task);
-      }
       // The raw preimage exists ONLY here — placed on the response AFTER the
       // (sealed) broadcast above, so the one-time mint value reaches the caller
       // while the DB, the audit log, and the /ws delta hold only the digest.
@@ -637,42 +665,9 @@ export class HiveDO extends DurableObject {
         for (const [c, raw] of Object.entries(minted)) result.entry[c] = raw;
         result._once = minted;
       }
-      // A new document entry is born with its single-use upload ticket — the
-      // bytes are POSTed to upload_url, which records r2_key/size on the entry.
-      if (patternName === "_documents" && operation === "create" && result.entry && !result.entry.r2_key) {
-        const tokData: Record<string, unknown> = {
-          scope: "document", label: `upload:document:${result.entry.id}`,
-          constraints: JSON.stringify({ document_id: result.entry.id }),
-        };
-        const tokMinted = await this.mintSecrets("_access_tokens", tokData, "create"); // born-hashed
-        const tok = data.executeMutate(this.ownerDataCtx(actor), "_access_tokens", "create", tokData);
-        const rawTok = tokMinted?.token;
-        if (!tok.error && rawTok) {
-          result.upload_token = rawTok; // raw, shown once (DB holds the digest)
-          result.upload_url = this.instanceUrl(`f/${rawTok}`);
-        }
-        // Minting the token is pure DB; the bytes need R2. If it isn't enabled,
-        // say so plainly rather than handing back an upload_url that 503s.
-        if (!this.env.DOCUMENTS) {
-          result.documents_note = "File storage (R2) is not enabled on this instance — the metadata entry was created, but uploading bytes to upload_url will fail until R2 is enabled. Everything else works without it.";
-        }
-      }
-      // A page is born (or re-saved) → hand back the link to give the human, so
-      // the agent never has to guess the host or the public-vs-private route.
-      // Public pages serve over HTTP at /page/{path} (+ OG card); private pages
-      // (the default) open only in the signed-in app at /#page:{path}. Derived
-      // from currentHost() + visibility, never stored — same shape as upload_url.
-      if (patternName === "_pages" && (operation === "create" || operation === "update") && result.entry?.path) {
-        const isPublic = result.entry.visibility === "public";
-        const slug = encodeURIComponent(result.entry.path);
-        result.page_url = isPublic ? this.instanceUrl(`page/${slug}`) : this.instanceUrl(`#page:${slug}`);
-        if (isPublic) result.og_image = this.instanceUrl(`page/${slug}/og.png`);
-        else result.page_note = "Private page — only you, signed in, can open this link. Publishing it (visibility: public) is consent-gated.";
-      }
-      // Archiving a document frees its R2 object — the metadata and the blob die together.
-      if (archivedDocKey && this.env.DOCUMENTS) {
-        this.ctx.waitUntil(this.env.DOCUMENTS.delete(archivedDocKey).catch(() => {}));
-      }
+      // Post-commit pattern effects: document upload ticket, page links, run task,
+      // R2 blob free on archive. One dispatch instead of a per-pattern if-pile.
+      if (effects?.after) await effects.after(result.entry, result, parsed, operation, scratch, effectCtx);
     }
     return JSON.stringify(result, null, 2);
   }
