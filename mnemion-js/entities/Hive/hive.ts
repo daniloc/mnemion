@@ -16,7 +16,7 @@ import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/cons
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
-import { isKernelPattern, isValidWriteTarget, writeClass, seal, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
+import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
 import { deriveLabel } from "./labels";
 import { renderChartSvg, chartOgSvg, type ChartPayload } from "../../shared/core/chart-svg";
 import { pivotSeries, resolveChart, chartQuery, aggSpec } from "../../shared/core/chart-spec";
@@ -1723,8 +1723,8 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
 
     // All entries (including archived, for completeness). seal: export is a raw
     // SELECT that bypasses the engine read-guard, so route rows through the sieve —
-    // a sensitive column (token digest, passkey material) never leaves via export.
-    const entries = (this.db.exec(`SELECT * FROM "${patternName}" ORDER BY id`).toArray() as any[]).map((r) => seal(patternName, r));
+    // a sensitive column (token digest, r2_key, passkey material) never leaves via export.
+    const entries = sealAll(patternName, this.db.exec(`SELECT * FROM "${patternName}" ORDER BY id`).toArray() as any[]);
 
     // Links involving this pattern
     try {
@@ -1795,7 +1795,7 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
     if (queryResult.error) return JSON.stringify({ found: false });
     // seal: these rows render into a public /p projection — strip any sensitive
     // column (a future user pattern classified in SENSITIVE_COLUMNS).
-    let entries = (queryResult.entries as Record<string, unknown>[]).map((e) => seal(pub.source_pattern, e));
+    let entries = sealAll(pub.source_pattern, queryResult.entries as Record<string, unknown>[]);
 
     // Publications project current truth: superseded entries drop out unless opted in
     if (!pub.include_superseded && entries.length > 0) {

@@ -270,8 +270,13 @@ chokepoint. The boundaries:
   in the clear. Two complementary mechanisms, by reader:
   - **OUTWARD egresses** — the `/ws` broadcast (reaches every session), `export`,
     and served public reads (`getSharedEntry`, publication projections) — route
-    rows through `seal(pattern, row)`, which strips `secret` + `redact` columns.
-    The audit trigger does the same (records sensitive columns as NULL).
+    rows through `seal`/`sealAll` (`policy.ts`), which strips `secret` + `redact`
+    columns. The audit trigger does the same (records sensitive columns as NULL).
+    Convention: **any new served path that emits pattern rows calls `seal`/`sealAll`.**
+    Oracle: `exportPattern` is the one served path that emits *every* pattern
+    (incl. kernel), so the `security.test` that asserts export strips every
+    `SENSITIVE_COLUMNS` column for every exportable pattern is the registry-driven
+    totality check for outward emission.
   - **The trusted owner read plane** (`query`/`getEntry`/`search`) returns rows
     as-is, but `secret` columns are **born hashed**: generated in app code and
     stored as a digest *before* INSERT (`hive.ts mintSecrets`; the `randomblob`

@@ -267,6 +267,12 @@ export function seal<T extends Record<string, unknown> | null | undefined>(patte
   return out as T;
 }
 
+/** seal a list of rows — the sanctioned form for any served path emitting many
+ *  rows, so no caller hand-rolls `.map(seal)` and forgets the pattern arg. */
+export function sealAll(pattern: string, rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  return rows.map((r) => seal(pattern, r));
+}
+
 // A column whose NAME looks like a credential on any KERNEL table must be
 // classified above, or it's an egress gap. The analogue of verifyWritePolicyTotality.
 // Name heuristic — not exhaustive (a reviewer still classifies the unobvious), but

@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
 import { query } from "../../entities/Hive/data";
 import { KERNEL_TABLES } from "../../entities/Hive/schema";
-import { seal, findUnclassifiedSensitiveColumns } from "../../entities/Hive/policy";
+import { seal, findUnclassifiedSensitiveColumns, SENSITIVE_COLUMNS } from "../../entities/Hive/policy";
 import { hashToken } from "../../shared/Auth/credentials";
 
 // Regression guards for the security review fixes. These exercise the mutate /
@@ -116,6 +116,26 @@ describe("marketplace token-constraint resolution fails CLOSED on malformed cons
     });
     expect(JSON.parse(await store.resolveTokenConstraints(a, "marketplace"))).toEqual({ valid: true, constraints: null });
     expect(JSON.parse(await store.resolveTokenConstraints(b, "marketplace"))).toEqual({ valid: true, constraints: { plugins: ["x"] } });
+  });
+});
+
+describe("outward egress sieve: export strips EVERY classified sensitive column (registry-driven)", () => {
+  // export is the one served path that emits rows for any pattern incl. kernel, so
+  // testing it against the whole SENSITIVE_COLUMNS registry is the totality oracle
+  // for outward emission — add a new sensitive pattern and this auto-covers it.
+  it("exportPattern omits every SENSITIVE_COLUMNS column for every exportable classified pattern", async () => {
+    const store = getStore();
+    await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "*" })); // a real row with a (digest) token
+    let exercisedWithRows = 0;
+    for (const [pattern, cols] of Object.entries(SENSITIVE_COLUMNS)) {
+      const res = await store.exportPattern(pattern);
+      if (res.error) continue; // not a registered/exportable pattern (e.g. _passkeys) — skip
+      for (const e of res.entries ?? []) {
+        exercisedWithRows++;
+        for (const c of cols) expect(e, `${pattern}.${c.column} must be stripped from export`).not.toHaveProperty(c.column);
+      }
+    }
+    expect(exercisedWithRows).toBeGreaterThan(0); // _access_tokens had a row → the assertion actually ran
   });
 });
 
