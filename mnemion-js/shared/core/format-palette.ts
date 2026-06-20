@@ -51,11 +51,6 @@ export function defaultFormatForType(type: string | undefined): FormatId {
   }
 }
 
-/** Whether a resolved format sorts and aligns as a number (table concerns). */
-export function isNumericFormat(format: FormatId): boolean {
-  return format === "number";
-}
-
 // The resolve chain: view override ?? facet intrinsic ?? foreign-key reference ??
 // type default. A declared foreign key (hasLink) wins over the type default — an
 // FK facet is a reference by nature — but an explicit format still overrides it.

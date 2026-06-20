@@ -69,9 +69,25 @@ the raw-tool scan as a standing gate. Verify cycles by tracing whether the back-
 - `labels.truncate` (5 refs), `format-palette.resolveFormat` (16 refs) — USED;
   ts-prune false-positives.
 
-**Pre-existing dead — confirmed 0 refs, remove in the final sweep (NOT refactor cruft):**
-- `format-palette.isNumericFormat`, `extract.ExtractionStatus`. Predate this work; a
-  2-line removal, deferred to keep refactor commits scoped.
+**Pre-existing dead — REMOVED (final sweep):**
+- ~~`format-palette.isNumericFormat`~~, ~~`extract.ExtractionStatus`~~ — deleted.
+
+## Inventory status: CLEAR
+
+Every `npm run cruft` hit now resolves to a known non-issue:
+- **Intentional:** `composeTools`, `composeSystemDocs` (ready extension points).
+- **Build/runtime entries:** `src/index.ts default`, `canvas-server`, `env`.
+- **ts-prune false-positives:** `FEATURES` (imported widely), `labels.truncate` (5 refs),
+  `format-palette.resolveFormat` (16 refs), the `satisfies` lines (operator quirk).
+
+No genuine dead code remains. Re-running the scan IS the verification — that's the
+method working: introduce/inherit cruft → scan surfaces it → eliminate → re-scan clean.
+
+### Known constraint (not cruft): Coherence executable-claim names
+`passes test "<name>"` feeds `<name>` to `vitest -t`, which treats it as a **regex** — so
+a test name with `()`/`[]` etc. silently won't match. Convention: keep claimed test
+names regex-metachar-free (or escape in the harness). The hooks pass hit + worked around
+this.
 
 ## When to run the cleanup
 

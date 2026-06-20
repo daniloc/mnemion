@@ -59,8 +59,6 @@ export async function extractPdfText(bytes: ArrayBuffer): Promise<string> {
   return typeof text === "string" ? text : Array.isArray(text) ? text.join("\n") : "";
 }
 
-export type ExtractionStatus = "done" | "empty" | "failed" | "pending" | "unsupported";
-
 /** Classify what extraction a content type gets, without doing the work. */
 export function extractionPlan(contentType: string): "text" | "pdf" | "unsupported" {
   if (isTextLike(contentType)) return "text";
