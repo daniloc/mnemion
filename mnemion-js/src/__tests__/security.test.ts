@@ -204,6 +204,10 @@ describe("login-credential scope: only a full-access (*) token redeems as an own
 // exercised against a kernel pattern (rows injected via raw SQL, since the mutate
 // guards now block creating them) and must surface NONE of it. Adding a new serve
 // path means adding it here — the declarative oracle that keeps the boundary whole.
+// ALL served public reads now live in entities/Hive/served.ts behind the one
+// kernel-refusing chokepoint (servedQuery + narrow kernel-config lookups); these
+// thin DO stubs (getSharedEntry / resolvePublication / resolveOutput /
+// getInputVisibility / renderPublicPage) are the RPC contract io.ts calls.
 describe("read-boundary totality: served entry points leak no kernel data", () => {
   function store(): DurableObjectStub<HiveDO> {
     const id = env.MNEMION_HIVE.idFromName(`user:tot:${crypto.randomUUID()}`);
@@ -242,6 +246,37 @@ describe("read-boundary totality: served entry points leak no kernel data", () =
     const body = res.body ?? "";
     expect(/[0-9a-f]{64}/.test(body)).toBe(false);
     expect(res.found === false || (res.entries?.length ?? 0) === 0 || body.includes('"entries": []') || body.includes('"count": 0')).toBe(true);
+  });
+
+  it("resolveOutput serves only its _outputs row, never a kernel row", async () => {
+    const s = store();
+    // An _outputs row's content is the agent-authored answer; the served read
+    // returns ONLY that row (keyed by path), never a user/kernel pattern read.
+    // A path with no active output is not-found; nothing leaks.
+    expect(JSON.parse(await s.resolveOutput("nope")).found).toBe(false);
+    await runInDurableObject(s, async (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO "_outputs" (path, content, mime_type, visibility) VALUES ('o1','hello','text/plain','public')`,
+      );
+    });
+    const out = JSON.parse(await s.resolveOutput("o1"));
+    expect(out.found).toBe(true);
+    expect(out.content).toBe("hello");
+  });
+
+  it("getInputVisibility reports only an _inputs visibility, never a kernel row", async () => {
+    const s = store();
+    expect(JSON.parse(await s.getInputVisibility("nope")).found).toBe(false);
+    await runInDurableObject(s, async (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO "_inputs" (path, target_pattern, visibility) VALUES ('i1','notes','unlisted')`,
+      );
+    });
+    const vis = JSON.parse(await s.getInputVisibility("i1"));
+    expect(vis.found).toBe(true);
+    expect(vis.visibility).toBe("unlisted");
+    // It surfaces ONLY visibility — never the target_pattern or any other column.
+    expect(Object.keys(vis).sort()).toEqual(["found", "visibility"]);
   });
 });
 

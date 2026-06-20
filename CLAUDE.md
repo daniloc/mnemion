@@ -37,7 +37,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
     schema.ts          DDL, migrations, KERNEL_TABLES (composed CORE + per-feature), seeding, boot integrity/totality checks
     effects.ts         PATTERN_EFFECTS registry — post-mutate side effects keyed by pattern (composed from features)
     mutate-gate.ts     Pure consent-gate decisions (mutateGate/findGatedBatchOp) derived from policy.ts — shared by MCP, tested in isolation
-    render.ts          Served public-page/OG/chart rendering — holds ONLY the untrusted served reader
+    served.ts          ALL served public reads — public-page/OG/chart rendering + getSharedEntry/resolvePublication/resolveOutput/getInputVisibility — behind ONE kernel-refusing chokepoint (servedQuery + narrow kernel-config lookups); the untrusted served reader
     federation.ts      Federated resolve — allow-list check co-located with the token-bearing fetch (re-validated per redirect hop)
     documents.ts       Document-store lifecycle (R2 blobs) — narrow capability context, never `this.db`
     reports.ts         Owner-context read/format orchestration (index/recent/stale/maintenance/system docs)
@@ -282,7 +282,7 @@ chokepoint. The boundaries:
   `ctxFields` — `ownerDataCtx` (the ONLY `trusted:true`) and `servedDataCtx`
   (`trusted:false`, used by served reads AND ingress/upload writes) — and there is
   no trust parameter to dial at a call site, so orchestration handed only the served
-  constructor (e.g. `render.ts`) physically cannot reach kernel data. Oracle:
+  constructor (e.g. `served.ts`) physically cannot reach kernel data. Oracle:
   `verifyWritePolicyTotality` + `policy.test.ts` (writes), the served-entry-point
   totality in `security.test.ts` (reads), and `context-capability.test.ts` (locks
   the split — no trust-defaulting factory can return).

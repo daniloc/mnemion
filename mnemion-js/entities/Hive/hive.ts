@@ -24,10 +24,9 @@ import * as evo from "./evolution";
 import * as data from "./data";
 import * as eff from "./effects";
 import * as priming from "./prime";
-import * as pubs from "../../shared/IO/publications";
 import * as web from "../../shared/IO/web";
 import * as docs from "./documents";
-import * as rnd from "./render";
+import * as served from "./served";
 import * as fed from "./federation";
 import * as reports from "./reports";
 
@@ -863,16 +862,76 @@ export class HiveDO extends DurableObject {
     }
   }
 
-  // === Public pages (server-rendered HTML + OG card, for sharing) ===
-  // Render orchestration lives in render.ts. The DO hands it ONLY the served
-  // reader (renderCtx) — no `db`, no trusted context — so a served sink cannot
-  // reach a kernel pattern. The DO keeps the `_pages` row read (a trusted DO
-  // read) + thin RPC wrappers io.ts calls.
+  // === Served public reads (public pages + OG, /o/entry, /o, /p, /i) ===
+  // ALL served public-read orchestration lives in served.ts. The DO hands it a
+  // NARROW ServedContext — the untrusted reader (`servedQuery`, which refuses
+  // kernel patterns at the engine) plus a small set of bound kernel-CONFIG
+  // lookups, each returning ONLY its specific answer — never `db`, never a trusted
+  // context, so a served sink cannot reach an arbitrary kernel pattern. The DO
+  // keeps the `_pages` row read (a trusted DO read) + thin RPC stubs io.ts calls.
 
-  /** The render module's narrowed hands: only `servedQuery`, the untrusted reader
-   *  that refuses kernel patterns at the engine. Never `db`, never a trusted ctx. */
-  private renderCtx(): rnd.RenderContext {
-    return { servedQuery: (p, f, fa, s, l, c, g, a) => this.servedQuery(p, f, fa, s, l, c, g, a) };
+  /** The served module's narrowed hands: `servedQuery` (the untrusted reader that
+   *  refuses kernel patterns at the engine) + bound kernel-config lookups, each
+   *  scoped to one answer. Never `db`, never a trusted ctx. */
+  private servedCtx(): served.ServedContext {
+    return {
+      servedQuery: (p, f, fa, s, l, c, g, a) => this.servedQuery(p, f, fa, s, l, c, g, a),
+      patternExists: (name) => this.patternExists(name),
+      sharingVisibility: (pattern, id) => {
+        try {
+          const rows = this.db.exec(
+            `SELECT visibility FROM "_shared" WHERE source_pattern = ? AND source_id = ? AND archived_at IS NULL LIMIT 1`,
+            pattern, id,
+          ).toArray() as any[];
+          return rows.length ? (rows[0].visibility as string) : null;
+        } catch { return null; }
+      },
+      publicationByPath: (path) => {
+        try {
+          const rows = this.db.exec(
+            `SELECT * FROM "_publications" WHERE path = ? AND archived_at IS NULL`, path,
+          ).toArray() as any[];
+          return rows.length ? (rows[0] as served.PublicationConfig) : null;
+        } catch { return null; }
+      },
+      outputByPath: (path) => {
+        try {
+          const rows = this.db.exec(
+            `SELECT content, mime_type, visibility, updated_at FROM "_outputs" WHERE path = ? AND archived_at IS NULL`, path,
+          ).toArray() as any[];
+          return rows.length ? (rows[0] as any) : null;
+        } catch { return null; }
+      },
+      inputVisibility: (path) => {
+        try {
+          const rows = this.db.exec(
+            `SELECT visibility FROM "_inputs" WHERE path = ? AND archived_at IS NULL`, path,
+          ).toArray() as any[];
+          return rows.length ? (rows[0].visibility as string) : null;
+        } catch { return null; }
+      },
+      supersededIds: (pattern, ids) => {
+        if (ids.length === 0) return new Set<number>();
+        try {
+          const placeholders = ids.map(() => "?").join(",");
+          return new Set(
+            this.db.exec(
+              `SELECT target_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id IN (${placeholders})`,
+              pattern, ...ids,
+            ).toArray().map((r: any) => r.target_id as number),
+          );
+        } catch { return new Set<number>(); }
+      },
+      facetMeta: (pattern) => {
+        try {
+          return this.db.exec(
+            "SELECT name, type FROM _fields WHERE object_name = ? ORDER BY id", pattern,
+          ).toArray() as { name: string; type: string }[];
+        } catch { return []; }
+      },
+      host: () => this.currentHost(),
+      errorJson: (m) => this.errorJson(m),
+    };
   }
 
   private getPublicPageRow(path: string): any | null {
@@ -884,13 +943,13 @@ export class HiveDO extends DurableObject {
   async renderPublicPage(path: string): Promise<string | null> {
     const row = this.getPublicPageRow(path);
     if (!row) return null;
-    return rnd.renderPublicPage(this.renderCtx(), row, path);
+    return served.renderPublicPage(this.servedCtx(), row, path);
   }
 
   async renderPageOgSvg(path: string): Promise<string | null> {
     const row = this.getPublicPageRow(path);
     if (!row) return null;
-    return rnd.renderPageOgSvg(this.renderCtx(), row);
+    return served.renderPageOgSvg(this.servedCtx(), row);
   }
 
   // === System docs ===
@@ -1303,128 +1362,28 @@ export class HiveDO extends DurableObject {
   }
 
   // === HTTP I/O ===
+  //
+  // The served READS (getSharedEntry / resolvePublication / resolveOutput /
+  // getInputVisibility) are thin RPC stubs over served.ts — the body moved there
+  // so all served public reads share the one kernel-refusing chokepoint
+  // (servedQuery + narrow config lookups). The RPC method stays on the DO class
+  // because that IS the RPC contract io.ts calls. processInput stays here in full:
+  // it is an untrusted WRITE through servedDataCtx, sibling to the write chokepoints.
 
   async getSharedEntry(pattern: string, id: number): Promise<string> {
-    // Pattern is interpolated as a SQL identifier below — it MUST be validated
-    // against the real pattern list first. This route is public and
-    // unauthenticated; without this guard a crafted :pattern breaks out of the
-    // identifier quoting and exfiltrates arbitrary tables by id (tokens, etc).
-    if (!this.patternExists(pattern)) return JSON.stringify({ found: false });
-    if (!Number.isInteger(id)) return JSON.stringify({ found: false });
-    // Serve-time backstop: kernel control tables (_access_tokens, _passkeys, …)
-    // must NEVER be served over this public, unauthenticated route — a _shared
-    // row pointing at one would dump tokens. Refuse regardless of any sharing row.
-    if (isKernelPattern(pattern)) return JSON.stringify({ found: false });
-    try {
-      // Single JOIN: check sharing + fetch entry in one query
-      const rows = this.db.exec(
-        `SELECT e.*, s.visibility FROM "${pattern}" e
-         JOIN "_shared" s ON s.source_pattern = ? AND s.source_id = e.id AND s.archived_at IS NULL
-         WHERE e.id = ? AND e.archived_at IS NULL`,
-        pattern, id
-      ).toArray() as any[];
-      if (rows.length === 0) return JSON.stringify({ found: false });
-      const { visibility, ...entry } = rows[0];
-      // seal: this entry is served publicly at /o/entry — strip any sensitive
-      // column (covers a future user pattern classified in SENSITIVE_COLUMNS).
-      return JSON.stringify({ found: true, visibility, pattern, entry: seal(pattern, entry) });
-    } catch {
-      return JSON.stringify({ found: false });
-    }
+    return served.getSharedEntry(this.servedCtx(), pattern, id);
   }
 
   async resolvePublication(path: string): Promise<string> {
-    let pub: any;
-    try {
-      const rows = this.db.exec(
-        `SELECT * FROM "_publications" WHERE path = ? AND archived_at IS NULL`, path
-      ).toArray() as any[];
-      if (rows.length === 0) return JSON.stringify({ found: false });
-      pub = rows[0];
-    } catch {
-      return JSON.stringify({ found: false });
-    }
-
-    // private = staged, not served (route layer never sees it)
-    if (pub.visibility === "private") return JSON.stringify({ found: false });
-    if (!this.patternExists(pub.source_pattern)) return JSON.stringify({ found: false });
-
-    // Live projection: run the stored query against current truth
-    const queryRaw = data.query(
-      this.servedDataCtx(), pub.source_pattern, // served boundary: refuses a kernel source
-      pub.filters || "", pub.facets || "", pub.sort || "-updated_at",
-      pub.limit || 50, false,
-    );
-    const queryResult = JSON.parse(queryRaw);
-    if (queryResult.error) return JSON.stringify({ found: false });
-    // seal: these rows render into a public /p projection — strip any sensitive
-    // column (a future user pattern classified in SENSITIVE_COLUMNS).
-    let entries = sealAll(pub.source_pattern, queryResult.entries as Record<string, unknown>[]);
-
-    // Publications project current truth: superseded entries drop out unless opted in
-    if (!pub.include_superseded && entries.length > 0) {
-      try {
-        const ids = entries.map((e) => e.id);
-        const placeholders = ids.map(() => "?").join(",");
-        const superseded = new Set(
-          this.db.exec(
-            `SELECT target_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id IN (${placeholders})`,
-            pub.source_pattern, ...ids
-          ).toArray().map((r: any) => r.target_id)
-        );
-        entries = entries.filter((e) => !superseded.has(e.id));
-      } catch { /* _links may not exist */ }
-    }
-
-    const facetMeta = this.db.exec(
-      "SELECT name, type FROM _fields WHERE object_name = ? ORDER BY id", pub.source_pattern
-    ).toArray() as { name: string; type: string }[];
-
-    const rendered = pubs.renderPublication(pub, entries, {
-      facets: facetMeta,
-      host: this.currentHost(),
-    });
-
-    // ETag source: content changes when the publication config OR any served entry changes
-    let latest = pub.updated_at as string;
-    for (const e of entries) {
-      const u = e.updated_at as string | undefined;
-      if (u && u > latest) latest = u;
-    }
-
-    return JSON.stringify({
-      found: true,
-      visibility: pub.visibility,
-      body: rendered.body,
-      content_type: rendered.contentType,
-      updated_at: latest,
-    });
+    return served.resolvePublication(this.servedCtx(), path);
   }
 
   async resolveOutput(path: string): Promise<string> {
-    try {
-      const rows = this.db.exec(
-        `SELECT content, mime_type, visibility, updated_at FROM "_outputs" WHERE path = ? AND archived_at IS NULL`,
-        path
-      ).toArray() as any[];
-      if (rows.length === 0) return JSON.stringify({ found: false });
-      return JSON.stringify({ found: true, ...rows[0] });
-    } catch {
-      return JSON.stringify({ found: false });
-    }
+    return served.resolveOutput(this.servedCtx(), path);
   }
 
   async getInputVisibility(path: string): Promise<string> {
-    try {
-      const rows = this.db.exec(
-        `SELECT visibility FROM "_inputs" WHERE path = ? AND archived_at IS NULL`,
-        path
-      ).toArray() as any[];
-      if (rows.length === 0) return JSON.stringify({ found: false });
-      return JSON.stringify({ found: true, visibility: rows[0].visibility });
-    } catch {
-      return JSON.stringify({ found: false });
-    }
+    return served.getInputVisibility(this.servedCtx(), path);
   }
 
   async processInput(path: string, body: string, headersJson: string, queryJson: string): Promise<string> {
