@@ -17,7 +17,7 @@ import { ensureAuditTriggers } from "./schema";
 import { isKernelPattern } from "./policy";
 import { FACET_RESERVED_COLUMNS } from "./kernel-columns";
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
-import type { StoreIndex, IndexFacetEntry } from "./hive";
+import type { StoreIndex, IndexFacetEntry } from "./reports";
 
 // === Types ===
 

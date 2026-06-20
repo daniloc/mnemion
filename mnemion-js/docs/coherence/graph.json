@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-20 19:57Z",
+  "generatedAt": "2026-06-20 20:33Z",
   "root": "mnemion-js",
   "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
   "nodes": [
@@ -443,40 +443,13 @@
       "why": "Every agent write funnels through hive's\nmutate/batchMutate/processInput/consumeUpload methods so the kernel-write\nboundary is enforced at one chokepoint instead of re-derived per call site.\nIt stays a thin shell over the pure-function domain modules (data, kernel,\npolicy, prime, evolution, schema) with db/context injected — but the\nper-pattern lifecycle reactions (R2 blob delete on archive, _system_tasks\ndispatch, _documents upload-token mint) remain hardcoded `patternName ===\n\"_x\"` branches here: a consciously-retained imperative seam, since lifting\nthem into the registry was judged a larger refactor with no security payoff\nand they fail loudly in tests on rename."
     },
     {
-      "id": "s:entities/Hive/hive.ts#StoreIndex",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "StoreIndex",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "entities/Hive/hive.ts",
-      "line": 35
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#IndexPatternEntry",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "IndexPatternEntry",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "entities/Hive/hive.ts",
-      "line": 43
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#IndexFacetEntry",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "IndexFacetEntry",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "entities/Hive/hive.ts",
-      "line": 55
-    },
-    {
       "id": "s:entities/Hive/hive.ts#HiveDO",
       "parent": "f:entities/Hive/hive.ts",
       "label": "HiveDO",
       "kind": "symbol",
       "sub": "class",
       "path": "entities/Hive/hive.ts",
-      "line": 72
+      "line": 38
     },
     {
       "id": "s:entities/Hive/hive.ts#db()",
@@ -485,7 +458,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 78
+      "line": 44
     },
     {
       "id": "s:entities/Hive/hive.ts#migrateTokenHashes()",
@@ -494,7 +467,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 94,
+      "line": 60,
       "prose": "One-time cleanup of secrets that leaked BEFORE born-hashing: hash any legacy\n plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64), and\n scrub any raw token the old post-insert path left in the `_mutation_log`\n audit trail. Idempotent; a near-no-op after the first cold start."
     },
     {
@@ -504,7 +477,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 127,
+      "line": 93,
       "prose": "Born-hashed secrets: for a CREATE of a pattern with a `secret` column\n (SENSITIVE_COLUMNS), generate the preimage in app code and set the column to\n its DIGEST *before* the row is inserted — so the audit trigger, the broadcast,\n and any read only ever see the hash. Returns the raw preimage for the one-time\n response (the only place it exists). Mutates `data` in place; returns null for\n non-secret patterns / non-create ops."
     },
     {
@@ -514,7 +487,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 136
+      "line": 102
     },
     {
       "id": "s:entities/Hive/hive.ts#instanceUrl()",
@@ -523,7 +496,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 150,
+      "line": 116,
       "prose": "A public URL on this instance — the one place upload_url / page_url /\n og_image hand-build `https://{host}/{path}` from the live host."
     },
     {
@@ -533,7 +506,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 156
+      "line": 122
     },
     {
       "id": "s:entities/Hive/hive.ts#getCharter()",
@@ -542,7 +515,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 220
+      "line": 126
     },
     {
       "id": "s:entities/Hive/hive.ts#reportsCtx()",
@@ -551,7 +524,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 236,
+      "line": 142,
       "prose": "=== Read-orchestration reports (delegated to reports.ts) ===\n\nRecent activity, the maintenance nag, the stale-review surface, and the\nsystem-doc / instance-doc readers live in reports.ts: pure owner-context\nread+format builders, no writes and no security boundary. The DO injects a\nnarrow ReportsContext (db + bound currentHost/patternClass/errorJson) and\nkeeps thin RPC wrappers with identical signatures."
     },
     {
@@ -561,7 +534,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 245
+      "line": 152
     },
     {
       "id": "s:entities/Hive/hive.ts#getMaintenanceStatus()",
@@ -570,7 +543,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 251
+      "line": 158
     },
     {
       "id": "s:entities/Hive/hive.ts#getStaleEntries()",
@@ -579,7 +552,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 255
+      "line": 162
     },
     {
       "id": "s:entities/Hive/hive.ts#evoCtx()",
@@ -588,7 +561,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 261
+      "line": 168
     },
     {
       "id": "s:entities/Hive/hive.ts#proposeChange()",
@@ -597,7 +570,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 269
+      "line": 176
     },
     {
       "id": "s:entities/Hive/hive.ts#getPendingChange()",
@@ -606,7 +579,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 276,
+      "line": 183,
       "prose": "Peek at a pending change's spec without applying it — lets the SessionDO\ndecide whether the change needs a consent round-trip (e.g. set_sharing to a\nnon-private visibility, which publishes an entry over HTTP)."
     },
     {
@@ -616,7 +589,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 287
+      "line": 194
     },
     {
       "id": "s:entities/Hive/hive.ts#revertChange()",
@@ -625,7 +598,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 295
+      "line": 202
     },
     {
       "id": "s:entities/Hive/hive.ts#getSchema()",
@@ -634,7 +607,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 305
+      "line": 212
     },
     {
       "id": "s:entities/Hive/hive.ts#getHistory()",
@@ -643,7 +616,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 341
+      "line": 248
     },
     {
       "id": "s:entities/Hive/hive.ts#getEntry()",
@@ -652,7 +625,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 349
+      "line": 256
     },
     {
       "id": "s:entities/Hive/hive.ts#listPatterns()",
@@ -661,7 +634,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 382
+      "line": 289
     },
     {
       "id": "s:entities/Hive/hive.ts#ctxFields()",
@@ -670,7 +643,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 393,
+      "line": 300,
       "prose": "Shared DataContext fields, trust-AGNOSTIC. The trust flag is deliberately NOT\n a parameter here — it is fixed by the named constructor a caller chooses\n (`ownerDataCtx` / `servedDataCtx`), so trust can never be dialed at a call\n site — there is no trust boolean to misremember."
     },
     {
@@ -680,7 +653,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 418,
+      "line": 325,
       "prose": "TRUSTED context — full kernel read + write. The owner/agent path (MCP session,\n browser session, internal writes). The ONLY constructor that sets `trusted: true`;\n if you are handed this you can reach kernel data, so it is never given to\n orchestration that serves untrusted surfaces."
     },
     {
@@ -690,7 +663,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 428,
+      "line": 335,
       "prose": "UNTRUSTED context for SERVED surfaces (public page, /o, /p, OG, federation)\n AND untrusted WRITES (ingress, upload). `trusted: false` is the SAME flag the\n engine uses to refuse any kernel pattern, symmetric across read and write — so\n a serve/ingress path physically cannot reach `_access_tokens`/`_members`/etc.\n Orchestration handed only this constructor cannot forge a trusted write: the\n boundary is a capability, not a per-call-site convention."
     },
     {
@@ -700,7 +673,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 435,
+      "line": 342,
       "prose": "The DO's narrowed hands handed to a pattern effect (effects.ts) — capabilities,\n never `this` and never a raw trusted `executeMutate`. The one sanctioned trusted\n write is `internalCreate`."
     },
     {
@@ -710,7 +683,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 467,
+      "line": 374,
       "prose": "query() for a served/untrusted surface — refuses kernel patterns at the\n engine. Every public/OG/publication read goes through this, so the kernel\n read-boundary lives at one chokepoint instead of a check per serve sink."
     },
     {
@@ -720,7 +693,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 472,
+      "line": 379,
       "prose": "A pattern's class: \"dataset\" (structured records) or \"knowledge\" (default)."
     },
     {
@@ -730,7 +703,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 476
+      "line": 383
     },
     {
       "id": "s:entities/Hive/hive.ts#mutate()",
@@ -739,7 +712,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 480
+      "line": 387
     },
     {
       "id": "s:entities/Hive/hive.ts#docsCtx()",
@@ -748,7 +721,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 547,
+      "line": 454,
       "prose": "Narrow capabilities handed to the documents module (documents.ts) — db +\n R2 env + broadcast/embed/schedule, never `this`."
     },
     {
@@ -758,7 +731,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 558
+      "line": 465
     },
     {
       "id": "s:entities/Hive/hive.ts#recordExtraction()",
@@ -767,7 +740,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 561
+      "line": 468
     },
     {
       "id": "s:entities/Hive/hive.ts#extractDocument()",
@@ -776,7 +749,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 564
+      "line": 471
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveDocument()",
@@ -785,7 +758,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 567
+      "line": 474
     },
     {
       "id": "s:entities/Hive/hive.ts#batchMutate()",
@@ -794,7 +767,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 571
+      "line": 478
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeUpload()",
@@ -803,7 +776,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 609
+      "line": 516
     },
     {
       "id": "s:entities/Hive/hive.ts#webCtx()",
@@ -812,7 +785,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 685
+      "line": 592
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveWeb()",
@@ -821,7 +794,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 689
+      "line": 596
     },
     {
       "id": "s:entities/Hive/hive.ts#resolve()",
@@ -830,7 +803,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 713
+      "line": 620
     },
     {
       "id": "s:entities/Hive/hive.ts#fedCtx()",
@@ -839,7 +812,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 792,
+      "line": 699,
       "prose": "The federation module's narrowed hands: the consent allow-list (bound over\n the `_federation_hosts` lookup, never `db`) + errorJson."
     },
     {
@@ -849,7 +822,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 799
+      "line": 706
     },
     {
       "id": "s:entities/Hive/hive.ts#search()",
@@ -858,7 +831,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 803
+      "line": 710
     },
     {
       "id": "s:entities/Hive/hive.ts#getMutationLog()",
@@ -867,7 +840,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 809
+      "line": 716
     },
     {
       "id": "s:entities/Hive/hive.ts#getEntryHistory()",
@@ -876,7 +849,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 826,
+      "line": 733,
       "prose": "Revision history for one entry, oldest→newest: the audit log scoped to\n (pattern, id), with each UPDATE diffed (changed facet: from → to) and\n version/timestamp churn filtered out. The create is the first revision."
     },
     {
@@ -886,7 +859,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 853,
+      "line": 760,
       "prose": "The display label for one entry — what a reference to it should show\n (deriveLabel: title-ish facet, else #id). Used by reference-format chips."
     },
     {
@@ -896,7 +869,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 876,
+      "line": 783,
       "prose": "The served module's narrowed hands: `servedQuery` (the untrusted reader that\n refuses kernel patterns at the engine) + bound kernel-config lookups, each\n scoped to one answer. Never `db`, never a trusted ctx."
     },
     {
@@ -906,7 +879,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 937
+      "line": 844
     },
     {
       "id": "s:entities/Hive/hive.ts#renderPublicPage()",
@@ -915,7 +888,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 943
+      "line": 850
     },
     {
       "id": "s:entities/Hive/hive.ts#renderPageOgSvg()",
@@ -924,7 +897,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 949
+      "line": 856
     },
     {
       "id": "s:entities/Hive/hive.ts#runTask()",
@@ -933,7 +906,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 963
+      "line": 870
     },
     {
       "id": "s:entities/Hive/hive.ts#primeCtx()",
@@ -942,7 +915,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 993
+      "line": 900
     },
     {
       "id": "s:entities/Hive/hive.ts#embedAfterMutate()",
@@ -951,7 +924,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1001
+      "line": 908
     },
     {
       "id": "s:entities/Hive/hive.ts#prime()",
@@ -960,7 +933,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1023
+      "line": 930
     },
     {
       "id": "s:entities/Hive/hive.ts#seedVectors()",
@@ -969,16 +942,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1143
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#getCurrentIndex()",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "getCurrentIndex()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/hive.ts",
-      "line": 1167
+      "line": 1050
     },
     {
       "id": "s:entities/Hive/hive.ts#isFederationHostAllowed()",
@@ -987,7 +951,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1219,
+      "line": 1075,
       "prose": "True if `host` has been explicitly approved for federation (active _federation_hosts row)."
     },
     {
@@ -997,7 +961,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1230
+      "line": 1086
     },
     {
       "id": "s:entities/Hive/hive.ts#entryExists()",
@@ -1006,7 +970,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1236
+      "line": 1092
     },
     {
       "id": "s:entities/Hive/hive.ts#hasKernelVersion()",
@@ -1015,7 +979,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1245,
+      "line": 1101,
       "prose": "True if the table's `version` column is the kernel auto-increment, not a user field."
     },
     {
@@ -1025,7 +989,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1264,
+      "line": 1120,
       "prose": "Two-phase consent that survives session churn. First call with a key arms\n it (10-minute TTL) and returns false — the caller should surface the\n confirmation message. Re-issuing the same key while armed consumes it and\n returns true — the caller proceeds. Durable in DO storage because\n sessionless MCP clients land every call on a fresh SessionDO, where an\n in-memory set can never complete the handshake. The consent signal is the\n deliberate re-issue of identical arguments; the TTL bounds how long an\n armed confirmation can wait. Fails closed: storage errors never confirm."
     },
     {
@@ -1035,7 +999,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1285
+      "line": 1141
     },
     {
       "id": "s:entities/Hive/hive.ts#getPasskeys()",
@@ -1044,7 +1008,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1286
+      "line": 1142
     },
     {
       "id": "s:entities/Hive/hive.ts#storePasskey()",
@@ -1053,7 +1017,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1287
+      "line": 1143
     },
     {
       "id": "s:entities/Hive/hive.ts#updatePasskeyCounter()",
@@ -1062,7 +1026,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1290
+      "line": 1146
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAccessToken()",
@@ -1071,7 +1035,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1291
+      "line": 1147
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveTokenConstraints()",
@@ -1080,7 +1044,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1298,
+      "line": 1154,
       "prose": "Validate a token's scope AND return its parsed constraints in one hashed\n lookup. The token column is a digest at rest, so a raw `WHERE token = ?`\n query (as marketplace did) matches nothing — callers needing constraints\n must go through this."
     },
     {
@@ -1090,7 +1054,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1308
+      "line": 1164
     },
     {
       "id": "s:entities/Hive/hive.ts#isMemberActive()",
@@ -1099,7 +1063,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1311
+      "line": 1167
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveRegisterToken()",
@@ -1108,7 +1072,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1312
+      "line": 1168
     },
     {
       "id": "s:entities/Hive/hive.ts#getRegisterToken()",
@@ -1117,7 +1081,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1313
+      "line": 1169
     },
     {
       "id": "s:entities/Hive/hive.ts#approveRegisterToken()",
@@ -1126,7 +1090,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1314
+      "line": 1170
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAccessToken()",
@@ -1135,7 +1099,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1315
+      "line": 1171
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAuthCode()",
@@ -1144,7 +1108,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1316
+      "line": 1172
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAuthCode()",
@@ -1153,7 +1117,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1317
+      "line": 1173
     },
     {
       "id": "s:entities/Hive/hive.ts#exportPattern()",
@@ -1162,7 +1126,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1321
+      "line": 1177
     },
     {
       "id": "s:entities/Hive/hive.ts#getSharedEntry()",
@@ -1171,7 +1135,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1373
+      "line": 1229
     },
     {
       "id": "s:entities/Hive/hive.ts#resolvePublication()",
@@ -1180,7 +1144,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1377
+      "line": 1233
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveOutput()",
@@ -1189,7 +1153,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1381
+      "line": 1237
     },
     {
       "id": "s:entities/Hive/hive.ts#getInputVisibility()",
@@ -1198,7 +1162,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1385
+      "line": 1241
     },
     {
       "id": "s:entities/Hive/hive.ts#processInput()",
@@ -1207,7 +1171,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1389
+      "line": 1245
     },
     {
       "id": "s:entities/Hive/hive.ts#fetch()",
@@ -1216,7 +1180,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1426
+      "line": 1282
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketMessage()",
@@ -1225,7 +1189,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1442
+      "line": 1298
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketClose()",
@@ -1234,7 +1198,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1446
+      "line": 1302
     },
     {
       "id": "s:entities/Hive/hive.ts#broadcastChange()",
@@ -1243,7 +1207,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1450
+      "line": 1306
     },
     {
       "id": "s:entities/Hive/hive.ts#errorJson()",
@@ -1252,7 +1216,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1464
+      "line": 1320
     },
     {
       "id": "x:cloudflare:workers",
@@ -2172,7 +2136,54 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/reports.ts",
-      "line": 19
+      "line": 20
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#StoreIndex",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "StoreIndex",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/reports.ts",
+      "line": 37
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#IndexPatternEntry",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "IndexPatternEntry",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/reports.ts",
+      "line": 45
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#IndexFacetEntry",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "IndexFacetEntry",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/reports.ts",
+      "line": 57
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#getCurrentIndex",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "getCurrentIndex",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 71,
+      "prose": "The structural index: schema + charter + facet metadata, entry counts zeroed.\n Pure structure — `getIndex` enriches it with live counts/activity. Also handed\n to the evolution previewer (which mutates a copy to show a proposed change)."
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#getIndex",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "getIndex",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 125,
+      "prose": "The agent-facing master index: the structural index enriched with live entry\n counts + latest activity (computed per call, never stored — data is destiny),\n sorted by recency, plus agent-authored view/page specs."
     },
     {
       "id": "s:entities/Hive/reports.ts#getRecentActivity",
@@ -2181,7 +2192,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/reports.ts",
-      "line": 34,
+      "line": 193,
       "prose": "Most recently modified entries across all non-kernel patterns, summarized from\n each pattern's first text/select facet."
     },
     {
@@ -2191,7 +2202,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/reports.ts",
-      "line": 78
+      "line": 237
     },
     {
       "id": "s:entities/Hive/reports.ts#computeMaintenanceStatus",
@@ -2200,7 +2211,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/reports.ts",
-      "line": 82
+      "line": 241
     },
     {
       "id": "s:entities/Hive/reports.ts#getStaleEntries",
@@ -2209,7 +2220,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/reports.ts",
-      "line": 130
+      "line": 289
     },
     {
       "id": "s:entities/Hive/reports.ts#getSystemDocList",
@@ -2218,7 +2229,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/reports.ts",
-      "line": 199
+      "line": 358
     },
     {
       "id": "s:entities/Hive/reports.ts#getSystemDoc",
@@ -2227,7 +2238,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/reports.ts",
-      "line": 212
+      "line": 371
     },
     {
       "id": "s:entities/Hive/reports.ts#renderInstanceDoc",
@@ -2236,7 +2247,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/reports.ts",
-      "line": 242
+      "line": 401
     },
     {
       "id": "s:entities/Hive/reports.ts#computeStorageStats",
@@ -2245,7 +2256,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/reports.ts",
-      "line": 255
+      "line": 414
     },
     {
       "id": "f:entities/Hive/schema.ts",

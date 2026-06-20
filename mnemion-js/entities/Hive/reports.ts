@@ -15,6 +15,7 @@
 // RPC wrappers with identical signatures; this holds the logic.
 import { uri } from "../../shared/core/constants";
 import { parseDbDate, getMemoryPolicy } from "./prime";
+import { IMMUTABLE } from "./kernel";
 
 export interface ReportsContext {
   db: any;
@@ -25,6 +26,164 @@ export interface ReportsContext {
    *  Bound by the DO because it reads DO instance state — kept off this module. */
   currentHost(): string;
   errorJson(message: string): string;
+  /** Whether the R2 document store is enabled (env.DOCUMENTS bound). Drives the
+   *  index's _documents "unavailable" annotation; injected as a boolean so this
+   *  module never reaches `env`. */
+  hasDocuments: boolean;
+}
+
+// === Master index (the live "what is this hive" projection) ===
+
+export interface StoreIndex {
+  version: number;
+  updated_at: string;
+  charter: Record<string, string>;
+  patterns: IndexPatternEntry[];
+  guidance: string;
+}
+
+export interface IndexPatternEntry {
+  name: string;
+  description: string;
+  doctrine: string;
+  pattern_class?: "knowledge" | "dataset";
+  memory_policy?: Record<string, unknown> | null;
+  unavailable?: string;
+  facets: IndexFacetEntry[];
+  entry_count: number;
+  latest_activity: string | null;
+}
+
+export interface IndexFacetEntry {
+  name: string;
+  type: string;
+  required: boolean;
+  default?: string | number | boolean | null;
+  links?: string | null;
+  options?: string[];
+  readonly?: boolean;
+  format?: string;
+}
+
+/** The structural index: schema + charter + facet metadata, entry counts zeroed.
+ *  Pure structure — `getIndex` enriches it with live counts/activity. Also handed
+ *  to the evolution previewer (which mutates a copy to show a proposed change). */
+export function getCurrentIndex(ctx: ReportsContext): StoreIndex {
+  const meta = ctx.db.exec("SELECT * FROM _meta WHERE id = 1").one() as any;
+  const objects = ctx.db.exec("SELECT name, description, doctrine, memory_policy, pattern_class FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray() as any[];
+  const allFields = ctx.db.exec("SELECT * FROM _fields ORDER BY object_name, id").toArray() as any[];
+  const charterRows = ctx.db.exec(
+    `SELECT "key", "value" FROM "_charter" WHERE archived_at IS NULL ORDER BY id`
+  ).toArray() as any[];
+  const charter: Record<string, string> = {};
+  for (const r of charterRows) charter[r.key] = r.value;
+
+  // Group facets by pattern
+  const facetsByPattern = new Map<string, IndexFacetEntry[]>();
+  for (const f of allFields) {
+    if (!facetsByPattern.has(f.object_name)) facetsByPattern.set(f.object_name, []);
+    const facet: IndexFacetEntry = {
+      name: f.name,
+      type: f.type,
+      required: !!f.required,
+      default: f.default_value != null ? JSON.parse(f.default_value) : null,
+    };
+    if (f.references_object) facet.links = f.references_object;
+    if (f.options) facet.options = JSON.parse(f.options);
+    if (f.format) facet.format = f.format;
+    if (IMMUTABLE[f.object_name]?.fields.includes(f.name)) facet.readonly = true;
+    facetsByPattern.get(f.object_name)!.push(facet);
+  }
+
+  return {
+    version: meta.version,
+    updated_at: meta.updated_at,
+    patterns: objects.map((o: any) => {
+      let memoryPolicy: Record<string, unknown> | null = null;
+      if (o.memory_policy) {
+        try { memoryPolicy = JSON.parse(o.memory_policy); } catch { /* malformed — omit */ }
+      }
+      return {
+        name: o.name,
+        description: o.description,
+        doctrine: o.doctrine || "",
+        ...(o.pattern_class === "dataset" ? { pattern_class: "dataset" as const } : {}),
+        ...(memoryPolicy ? { memory_policy: memoryPolicy } : {}),
+        facets: facetsByPattern.get(o.name) || [],
+        entry_count: 0,
+        latest_activity: null,
+      };
+    }),
+    charter,
+    guidance: meta.guidance,
+  };
+}
+
+/** The agent-facing master index: the structural index enriched with live entry
+ *  counts + latest activity (computed per call, never stored — data is destiny),
+ *  sorted by recency, plus agent-authored view/page specs. */
+export function getIndex(ctx: ReportsContext): string {
+  const index = getCurrentIndex(ctx);
+
+  // Flag the document store when R2 isn't enabled, so agents reading the
+  // index know files can't be stored (and can tell the human how to enable it).
+  if (!ctx.hasDocuments) {
+    const docs = index.patterns.find((p) => p.name === "_documents");
+    if (docs) docs.unavailable = "Cloudflare R2 is not enabled on this instance — _documents entries can be created but file upload/serve is unavailable. To enable: turn on R2 (dashboard → Storage & databases → R2), then run `npm run enable-documents` and redeploy.";
+  }
+
+  // Enrich with live entry counts and latest activity
+  for (const pat of index.patterns) {
+    try {
+      const r = ctx.db.exec(
+        `SELECT COUNT(*) as count, MAX(updated_at) as latest FROM "${pat.name}" WHERE archived_at IS NULL`
+      ).one() as { count: number; latest: string | null };
+      pat.entry_count = r.count;
+      pat.latest_activity = r.latest;
+    } catch {
+      try {
+        const r = ctx.db.exec(
+          `SELECT COUNT(*) as count, MAX(updated_at) as latest FROM "${pat.name}"`
+        ).one() as { count: number; latest: string | null };
+        pat.entry_count = r.count;
+        pat.latest_activity = r.latest;
+      } catch {
+        pat.entry_count = 0;
+        pat.latest_activity = null;
+      }
+    }
+  }
+
+  // Sort by latest activity (most recent first), nulls last
+  index.patterns.sort((a, b) => {
+    if (!a.latest_activity && !b.latest_activity) return a.name.localeCompare(b.name);
+    if (!a.latest_activity) return 1;
+    if (!b.latest_activity) return -1;
+    return b.latest_activity.localeCompare(a.latest_activity);
+  });
+
+  // Agent-authored view specs (web app renders patterns per these).
+  let views: any[] = [];
+  try {
+    views = ctx.db.exec(
+      `SELECT pattern, name, view_type, config FROM "_views" WHERE archived_at IS NULL`
+    ).toArray() as any[];
+  } catch { /* table may not exist on a very old install */ }
+
+  // Agent-authored pages (block compositions / dashboards).
+  let pages: any[] = [];
+  try {
+    pages = ctx.db.exec(
+      `SELECT name, path, title, blocks FROM "_pages" WHERE archived_at IS NULL ORDER BY id`
+    ).toArray() as any[];
+  } catch { /* table may not exist on a very old install */ }
+
+  return JSON.stringify({
+    ...index,
+    views,
+    pages,
+    system_docs: uri("_system/"),
+  }, null, 2);
 }
 
 // === Recent activity ===
