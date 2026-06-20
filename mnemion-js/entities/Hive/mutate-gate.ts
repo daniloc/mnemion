@@ -15,9 +15,13 @@
 // I/O, no round-trip mechanics. The interactive consent round-trip itself
 // (checkAndArmConsent + re-issue) stays in session.ts because only the MCP path
 // can satisfy it; this module decides WHETHER it fires, not how. /api stays
-// owner-implicit (a logged-in human IS the consent) and does not consult the
-// consent decision — but the data-shape and batch predicates are shared so the
-// two transports validate identically by construction.
+// owner-implicit (a logged-in human IS the consent) and does not consult these
+// decisions today — it receives parsed, single-op JSON and is intentionally
+// ungated. The win is not that both transports call this, but that the gate
+// decisions now have ONE tested home (a pure leaf over policy.ts) instead of
+// inline branches: an edit to the batch rule or consent condition is anchored by
+// a unit test, so an MCP-only regression can't slip past /api-based tests. If /api
+// ever needs the same validation, it adopts these — without a second copy existing.
 
 import { consentPolicy, patchRejected, consentRoundTripRequired, type ConsentPolicy } from "./policy";
 
