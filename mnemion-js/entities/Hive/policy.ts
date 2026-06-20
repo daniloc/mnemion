@@ -182,13 +182,18 @@ const CORE_KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
 // pattern with no row here still fails CLOSED (writeClass → System/denied), and the
 // boot-time totality check (verifyWritePolicyTotality) asserts THIS composed map
 // covers every KERNEL_TABLES pattern — so a feature that forgets its policy is
-// denied AND flagged, never silently agent-writable. A collision (CORE vs feature)
-// would be masked by spread, so the barrel throws on feature↔feature collisions and
-// the totality/admission-matrix tests pin the full keyset.
-export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
-  ...CORE_KERNEL_WRITE_POLICY,
-  ...FEATURE_WRITE_POLICY,
-};
+// denied AND flagged, never silently agent-writable. A feature that shadows a CORE
+// pattern is a bug: `mergeDisjoint` throws at module load (the barrel already throws
+// on feature↔feature collisions), so a feature can never silently override the write
+// class of an infra pattern like _members — fail LOUD, not via the admission test.
+function mergeDisjoint<T>(core: Record<string, T>, feature: Record<string, T>, what: string): Record<string, T> {
+  for (const k of Object.keys(feature))
+    if (k in core) throw new Error(`feature ${what} collision: "${k}" is a CORE kernel pattern and cannot be redeclared by a feature`);
+  return { ...core, ...feature };
+}
+
+export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> =
+  mergeDisjoint(CORE_KERNEL_WRITE_POLICY, FEATURE_WRITE_POLICY, "write-policy");
 
 // === Derivations — every gate reads through these, never re-derives ===
 
@@ -261,10 +266,8 @@ const CORE_SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> = {
 // egress (seal/sealAll, the audit trigger, export) and the egress totality oracle
 // (findUnclassifiedSensitiveColumns) read THIS composed map, so a feature's
 // redacted/secret columns inherit every egress + the loud-fail oracle unchanged.
-export const SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> = {
-  ...CORE_SENSITIVE_COLUMNS,
-  ...FEATURE_SENSITIVE_COLUMNS,
-};
+export const SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> =
+  mergeDisjoint(CORE_SENSITIVE_COLUMNS, FEATURE_SENSITIVE_COLUMNS, "sensitive-columns");
 
 export function sensitiveColumns(pattern: string): SensitiveColumn[] {
   return SENSITIVE_COLUMNS[pattern] ?? [];
