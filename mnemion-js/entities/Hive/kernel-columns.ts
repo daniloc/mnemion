@@ -35,13 +35,15 @@ const without = (...drop: string[]): readonly string[] =>
 
 // === Named subsets (all derived from KERNEL_COLUMNS above) ===
 
-// User-definable-facet collision check (evolution.ts): a proposed facet name may
-// not collide with a kernel column. Historically this guarded only the four
-// always-present-since-v1 columns and NOT version / created_by / updated_by —
-// preserved exactly here as its own named slice (see FACET_RESERVED_COLUMNS note).
-export const FACET_RESERVED_COLUMNS: ReadonlySet<string> = new Set(
-  without("version", "created_by", "updated_by"),
-);
+// NOTE on facet-name reservation: a proposed facet may not collide with a kernel
+// column (it would shadow the auto-provided column on the same table). That guard
+// (evolution.ts validateFacets, the chokepoint for create_pattern + add_facet)
+// reserves the FULL `KERNEL_COLUMN_SET` directly — there is deliberately NO
+// narrowed "facet-reserved" subset here. A subset is the bug: it once omitted
+// version/created_by/updated_by, so those three were nameable as facets. With the
+// reservation == the kernel column set, adding a kernel column auto-reserves it,
+// and `facet-kernel-collision totality` (evolution.test) asserts every kernel
+// column is rejected — the under-coverage is impossible to reintroduce.
 
 // Columns excluded from the caller-supplied field set on CREATE (data.ts): id is
 // autoincrement, the timestamps + attribution are system-managed. `version` is

@@ -6,6 +6,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 - kernel write boundary
 - kernel read+write capability
 - pattern-effects totality
+- facet/kernel-column collision
 
 ## works when
 - hive.ts exists at this node
@@ -24,6 +25,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 - boundary "kernel write boundary" at writeClass via test "write-policy totality"
 - boundary "kernel read+write capability" at query via test "context-capability totality"
 - boundary "pattern-effects totality" at PATTERN_EFFECTS via test "pattern-effects totality"
+- boundary "facet/kernel-column collision" at KERNEL_COLUMN_SET via test "facet-kernel-collision totality"
 - effects.ts exists at this node
 - effects.ts imports ../features
 - effects.ts imports ../features/compose
@@ -39,6 +41,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 ## why
 
 HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints precisely so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf source of truth for "which patterns agents can write, through which path, what gate fires" — unclassified kernel patterns fail CLOSED (System → denied) so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary cannot drift between layers.
+
+Kernel COLUMNS get the same single-source treatment as kernel patterns. `kernel-columns.ts` is the dependency-free SSOT for the seven auto-provided columns; every "the kernel columns" or named-slice need (the data engine's create-exclude/facet-skip sets, the schema display, the history-diff ignore set) is DERIVED from it by filter, never re-listed, so a slice can't drift from the source. The **facet/kernel-column collision** invariant rides on that: a user-proposed facet may not be named after a kernel column (it would shadow the auto-added column on the same table), and the reservation at the `propose_change` chokepoint (`validateFacets`, reached by BOTH create_pattern and add_facet) is the FULL `KERNEL_COLUMN_SET` — deliberately NOT a narrowed subset. A subset was the historical bug (it omitted `version`/`created_by`/`updated_by`, so those three were nameable as facets). Because the reservation IS the kernel column set, adding a kernel column auto-reserves it, and the `facet-kernel-collision totality` oracle iterates `KERNEL_COLUMNS` asserting every one is rejected on both paths — so the under-coverage is impossible to reintroduce without failing the suite.
 
 The agent-facing WRITE surface reaches the engine over two transports — the interactive MCP `mutate` tool (`entities/Session/session.ts`) and the browser-authenticated `/api/mutate`. The *gating DECISIONS* those transports share — which gate a single op must clear (`mutateGate`: patch-reject vs. consent round-trip vs. pass), which op may not ride inside a batch (`findGatedBatchOp`), and how loosely-typed tool input normalizes (`normalizeMutateData`/`isSingleOpData`) — live in `mutate-gate.ts` as PURE derivations of `policy.ts`, not inline imperative branches in the MCP handler. That removes the real drift vector (an `/api`+RPC test passing while the MCP Zod/consent layer silently breaks): the decision has one tested home. The interactive consent round-trip MECHANICS (`checkAndArmConsent` + re-issue) stay in `session.ts` because only the MCP path can satisfy them; `mutate-gate.ts` decides WHETHER the round-trip fires, never how. `/api` stays owner-implicit (a logged-in human IS the consent) and does not consult the consent decision.
 

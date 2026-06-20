@@ -15,7 +15,7 @@
 import { PRODUCT_NAME, uri, IDENTIFIER_RE } from "../../shared/core/constants";
 import { ensureAuditTriggers } from "./schema";
 import { isKernelPattern } from "./policy";
-import { FACET_RESERVED_COLUMNS } from "./kernel-columns";
+import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
 import type { StoreIndex, IndexFacetEntry } from "./reports";
 
@@ -61,8 +61,8 @@ function validateFacets(
     const nameErr = validateName("Facet", a.name);
     if (nameErr) return nameErr;
     if (!SQLITE_TYPE_MAP[a.type]) return `Unknown facet type: ${a.type}`;
-    if (FACET_RESERVED_COLUMNS.has(a.name))
-      return `Facet "${a.name}" is a kernel-provided column and cannot be defined by the user`;
+    if (KERNEL_COLUMN_SET.has(a.name))
+      return `Facet "${a.name}" is a kernel-provided column (auto-added to every pattern) and cannot be defined by the user`;
     if (existingFacets?.some((e) => e.name === a.name))
       return `Facet "${a.name}" already exists on the pattern`;
     if (a.links && !ctx.patternExists(a.links.pattern))
