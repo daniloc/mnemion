@@ -2,6 +2,11 @@
 
 The single per-user Durable Object that owns all SQLite data and funnels every agent write through one kernel-enforced chokepoint.
 
+## invariants
+- kernel write boundary
+- kernel read+write capability
+- pattern-effects totality
+
 ## works when
 - hive.ts exists at this node
 - hive.ts imports cloudflare:workers
@@ -11,9 +16,9 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 - mutate-gate.ts exists at this node
 - mutate-gate.ts imports ./policy
 - prime.ts imports ./policy
-- passes test "write-policy totality"
-- passes test "context-capability totality"
-- passes test "pattern-effects totality"
+- boundary "kernel write boundary" at writeClass via test "write-policy totality"
+- boundary "kernel read+write capability" at query via test "context-capability totality"
+- boundary "pattern-effects totality" at PATTERN_EFFECTS via test "pattern-effects totality"
 - effects.ts exists at this node
 - effects.ts imports ../features
 - effects.ts imports ../features/compose

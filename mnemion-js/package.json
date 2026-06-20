@@ -19,6 +19,7 @@
     "enable-documents": "bash scripts/enable-documents.sh",
     "coherence:docs": "coherence docs",
     "coherence:verify": "coherence verify",
+    "coherence:decompose": "coherence decompose",
     "coherence:onboard": "coherence onboard",
     "cruft": "npx --yes ts-prune -p tsconfig.json | grep -v 'used in module'"
   },
@@ -51,7 +52,7 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",
     "ai": "^6.0.206",
-    "coherence-harness": "github:daniloc/coherence#v0.2.0",
+    "coherence-harness": "github:daniloc/coherence#v0.3.0",
     "concurrently": "^9.0.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
