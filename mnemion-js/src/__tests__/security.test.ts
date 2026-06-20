@@ -176,6 +176,29 @@ describe("read boundary: one trusted flag gates kernel access for read AND write
   });
 });
 
+// A capability token (marketplace/read/upload/document) is deliberately distributed at
+// LOWER privilege — handed to a remote agent in a clone URL, shared via an unlisted link.
+// The interactive login path (consumeAuthCode/validateAuthCode, behind /authorize +
+// /login) must NEVER accept one as an owner credential, or a leaked capability token
+// escalates to full hive access. Only a full-access (*) token (or the master secret) logs in.
+describe("login-credential scope: only a full-access (*) token redeems as an owner login", () => {
+  it("a capability-scoped token is REFUSED as a login", async () => {
+    const store = getStore();
+    const made = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "marketplace" })));
+    const raw = made.entry?.token ?? made._once?.token;
+    expect(raw, "minting should return the raw token once").toBeTruthy();
+    expect(await store.consumeAuthCode(raw)).toBe(false);
+    expect(await store.validateAuthCode(raw)).toBe(false);
+  });
+  it("a full-access (*) token is accepted as a login", async () => {
+    const store = getStore();
+    const made = JSON.parse(await store.mutate("_access_tokens", "create", JSON.stringify({ scope: "*" })));
+    const raw = made.entry?.token ?? made._once?.token;
+    expect(raw).toBeTruthy();
+    expect(await store.validateAuthCode(raw)).toBe(true);
+  });
+});
+
 // === Read-boundary totality: every served entry point refuses kernel data ===
 // The read analogue of policy.test.ts. Each public/unauthenticated serve path is
 // exercised against a kernel pattern (rows injected via raw SQL, since the mutate

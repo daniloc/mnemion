@@ -227,15 +227,21 @@ export async function approveRegisterToken(db: DB, token: string): Promise<{ mem
   return { member: v.member };
 }
 
-/** Validate a token without consuming it (for reusable Bearer sessions). */
+/** Validate a token as a LOGIN credential — full-access (`*`) scope ONLY. A capability
+ *  token (marketplace/read/upload/document/register) is deliberately distributed at
+ *  LOWER privilege and must never redeem as an owner login; without this gate a
+ *  marketplace-clone token or a shared `read:entry` link would escalate to full owner
+ *  access via /authorize|/login. Mirrors `resolveTokenActor`'s scope check. */
 export async function validateAuthCode(db: DB, code: string): Promise<boolean> {
-  return (await findAccessToken(db, code)) !== null;
+  const t = await findAccessToken(db, code);
+  return t !== null && scopeMatches(t.scope, "*");
 }
 
-/** Validate and consume a single-use token (for browser auth). */
+/** Validate and consume a single-use LOGIN token (browser auth) — full-access (`*`)
+ *  scope ONLY, for the same reason as validateAuthCode. */
 export async function consumeAuthCode(db: DB, code: string): Promise<boolean> {
   const accessToken = await findAccessToken(db, code);
-  if (!accessToken) return false;
+  if (!accessToken || !scopeMatches(accessToken.scope, "*")) return false;
   if (accessToken.single_use) consumeToken(db, accessToken.id);
   return true;
 }
