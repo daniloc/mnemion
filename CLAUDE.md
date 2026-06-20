@@ -28,15 +28,28 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   src/__tests__/       vitest (vitest-pool-workers)
 
   entities/Hive/       (HiveDO — the per-user Durable Object; Hive.spec.md)
-    hive.ts            DO shell — RPC wrappers, URI resolution, federation, WebSocket
-    data.ts            Query engine, mutation engine (CRUD), cross-pattern search
-    kernel.ts          Pre-mutation hooks, immutable fields, scope matching
-    policy.ts          Write-class SSOT: KERNEL_WRITE_POLICY table; every consent/kernel/ingress gate derives from it
+    hive.ts            DO kernel — the capability split (ownerDataCtx/servedDataCtx), write chokepoints (mutate/batchMutate/processInput/consumeUpload), RPC wiring, WebSocket
+    data.ts            Query/mutate/search engine — the `trusted` read+write boundary (an untrusted ctx may neither read nor write a kernel pattern)
+    kernel.ts          Pre-mutation hooks (ON_CREATE/ON_WRITE/IMMUTABLE), enforced at applyKernelRules — composed CORE + per-feature
+    policy.ts          Write-class + egress-sensitivity SSOT (KERNEL_WRITE_POLICY/SENSITIVE_COLUMNS); a dependency-free leaf, composed CORE + per-feature
     prime.ts           Auto-associative priming: Workers AI embeddings + Vectorize KNN
     evolution.ts       Schema evolution: CHANGE_TYPES declaration table, propose/apply/revert
-    schema.ts          DDL, migrations, kernel table declarations, system doc seeding
+    schema.ts          DDL, migrations, KERNEL_TABLES (composed CORE + per-feature), seeding, boot integrity/totality checks
+    effects.ts         PATTERN_EFFECTS registry — post-mutate side effects keyed by pattern (composed from features)
+    mutate-gate.ts     Pure consent-gate decisions (mutateGate/findGatedBatchOp) derived from policy.ts — shared by MCP, tested in isolation
+    render.ts          Served public-page/OG/chart rendering — holds ONLY the untrusted served reader
+    federation.ts      Federated resolve — allow-list check co-located with the token-bearing fetch (re-validated per redirect hop)
+    documents.ts       Document-store lifecycle (R2 blobs) — narrow capability context, never `this.db`
+    reports.ts         Owner-context read/format orchestration (index/recent/stale/maintenance/system docs)
     labels.ts          Single source of truth for "what does this entry look like" (deriveLabel, truncate)
     transform.ts       Transform DSL evaluator for ingress field mapping
+  entities/features/   Feature modules — a feature is ONE directory whose manifest FEEDS the registries above
+    index.ts           FEATURES barrel (one line per feature)
+    feature.ts         The Feature type — the fork contract (effects/routes/tools/patterns/hooks/migrations slots)
+    compose.ts         Composers deriving each registry from FEATURES (fail loud on collision)
+    security.ts        Dependency-free barrel folding each feature's pure-data security.ts into the policy leaf
+    <name>/            manifest.ts + schema.ts + security.ts + hooks.ts + <name>.spec.md (documents = the reference feature)
+                       → How to add one: project-docs/active/authoring-a-feature.md
   entities/Session/    (SessionDO — per-session McpAgent; Session.spec.md)
     session.ts         McpAgent, MCP protocol handler (per-session DO)
     tools.ts           Tool metadata SSOT — feeds session.ts MCP registration and /api/tools
@@ -263,8 +276,15 @@ chokepoint. The boundaries:
   Writes enter untrusted via ingress/upload; reads via `servedDataCtx`/
   `servedQuery` (public page, OG, publication, `/o/entry`). The flag is required
   (no default) so a new serve/ingress path can't silently inherit kernel access —
-  it fails CLOSED. Oracle: `verifyWritePolicyTotality` + `policy.test.ts` (writes),
-  and the served-entry-point totality in `security.test.ts` (reads).
+  it fails CLOSED. The trust decision is a CAPABILITY, not a per-call-site
+  convention: `hive.ts` exposes two named constructors over a trust-agnostic
+  `ctxFields` — `ownerDataCtx` (the ONLY `trusted:true`) and `servedDataCtx`
+  (`trusted:false`, used by served reads AND ingress/upload writes) — and there is
+  no trust parameter to dial at a call site, so orchestration handed only the served
+  constructor (e.g. `render.ts`) physically cannot reach kernel data. Oracle:
+  `verifyWritePolicyTotality` + `policy.test.ts` (writes), the served-entry-point
+  totality in `security.test.ts` (reads), and `context-capability.test.ts` (locks
+  the split — no trust-defaulting factory can return).
 - **Egress sensitivity** → the read/serialization dual of the write registry.
   `SENSITIVE_COLUMNS` (`policy.ts`) declares which columns must never leave the DO
   in the clear. Two complementary mechanisms, by reader:
@@ -296,6 +316,25 @@ When you add a serve path, a stored secret, a generated URL, or a content egress
 **route it through the existing boundary — do not re-implement the guard.** Adding
 a *new* boundary means adding all four parts (chokepoint, why, totality test,
 claim) so the next agent inherits it by construction.
+
+These registries now **compose CORE + per-feature**: a feature owns its write-class +
+egress-sensitivity in its pure-data `entities/features/<name>/security.ts` and its
+pre-mutation hooks in `<name>/hooks.ts`, folded into `KERNEL_WRITE_POLICY` /
+`SENSITIVE_COLUMNS` / `ON_CREATE`/`ON_WRITE`/`IMMUTABLE` at the same chokepoints
+(`mergeDisjoint` throws if a feature shadows a CORE pattern). Enforcement stays
+central; only the *declaration* moved into the feature dir. **To add a feature:
+`project-docs/active/authoring-a-feature.md`** (the fork contract — it also lists the
+sharp edges: keep `security.ts`/`hooks.ts` leaf-clean `import type` only, your
+write-class is a typo-prone string cast guarded by the totality test, declare every
+sensitive column).
+
+## Extending the system (forks)
+
+A feature is one directory under `entities/features/<name>/`; its manifest FEEDS the
+effect/route/tool/pattern/hook/write-policy registries above, composed at boot, each
+enforced at its chokepoint. Adding one = a directory + one `FEATURES` barrel line.
+Verify with `npm test`, `npm run coherence:verify`, `npm run cruft`. Full contract +
+sharp edges: `project-docs/active/{authoring-a-feature,feature-manifests}.md`.
 
 ## Coherence (spec ↔ code)
 

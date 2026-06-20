@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-06-20 03:33Z",
+  "generatedAt": "2026-06-20 08:16Z",
   "root": "mnemion-js",
-  "absRoot": "/Users/daniloc/Documents/Dev/mnemion/.claude/worktrees/agent-adb5583ac93894fe6/mnemion-js",
+  "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
   "nodes": [
     {
       "id": "c:.",
@@ -29,6 +29,8 @@
         "hive.ts imports ./data",
         "policy.ts exists at this node",
         "data.ts exists at this node",
+        "mutate-gate.ts exists at this node",
+        "mutate-gate.ts imports ./policy",
         "prime.ts imports ./policy",
         "passes test \"write-policy totality\"",
         "passes test \"context-capability totality\"",
@@ -41,9 +43,11 @@
         "render.ts exists at this node",
         "hive.ts imports ./render",
         "federation.ts exists at this node",
-        "hive.ts imports ./federation"
+        "hive.ts imports ./federation",
+        "reports.ts exists at this node",
+        "hive.ts imports ./reports"
       ],
-      "why": "HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints precisely so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf source of truth for \"which patterns agents can write, through which path, what gate fires\" — unclassified kernel patterns fail CLOSED (System → denied) so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary cannot drift between layers.\n\nReads share the SAME boundary, on the same flag. `DataContext.trusted` is required and gates kernel access symmetrically: an untrusted context (`!trusted`) may neither write a kernel pattern nor read one. The trust decision is a CAPABILITY, not a per-call-site convention: `HiveDO` exposes two named constructors over a trust-agnostic `ctxFields` — `ownerDataCtx` (the ONLY `trusted: true`) and `servedDataCtx` (`trusted: false`) — and there is no trust parameter to dial at a call site. Served/untrusted reads (public page chart/metric, OG card, publication source, `/o/entry`) AND untrusted writes (ingress, upload) go through `servedDataCtx`, where the `data.ts` engine refuses any kernel pattern — so a serve/ingress sink physically cannot read or write `_access_tokens`/`_members`/etc. The served public-page + OG-card render orchestration lives in its own module (`render.ts`), handed a narrow `RenderContext` that exposes ONLY the served reader (`servedQuery`) — never `db`, never a trusted context, no way to construct one — so the render path's single data access IS the kernel-refusing chokepoint. That made the old per-block `isKernelPattern` guard in `renderBlockHtml` provably redundant (a kernel-named block just reads back empty through `servedQuery`); it was deleted, leaving one chokepoint instead of a guard to forget per block type. Because trust is fixed by the constructor (and the engine flag is required, no default), a NEW serve path can't silently inherit kernel access; it fails CLOSED. `context-capability totality` guards that the split can't rot back into a trust-defaulting factory. This replaced a block-list of scattered per-sink `isKernelPattern` checks that failed open. The read totality is the served-entry-point enumeration in `security.test.ts`, the analogue of `policy.test.ts` for writes. Instance identity is configuration, not request data: `currentHost()` is authoritative on `WORKER_HOST` and IGNORES the inbound `Host`, so an attacker cannot poison a capability URL (`upload_url`/`page_url`/`og_image`) by sending a spoofed `Host` on an unauthenticated request (e.g. a `/ws` upgrade).\n\nCross-hive (foreign-URI) resolution lives in its own module (`federation.ts`), the one place that sends THIS hive's access token (`?token=` → `Authorization: Bearer`) to another origin. Its token-send is CO-LOCATED with the allow-list consent check in a single function (`federatedResolve`) precisely so the approved host and the contacted host can never drift apart: a token is attached only to a request whose host is BOTH not `isBlockedFederationHost` (SSRF block) AND `isHostAllowed` (the `_federation_hosts` consent allow-list), and that pair is re-validated on the INITIAL request AND on EVERY redirect hop, in lockstep with the fetch loop. Splitting the gate from the fetch — across modules or call sites — would let a future edit move one without the other; here they move as a unit. The DO hands the module a NARROW `FederationContext` — only the bound allow-list lookup (`isHostAllowed`, wrapping `_federation_hosts`, never `db`) + `errorJson` — so federation cannot read anything else; `resolve` stays on the DO and decides local vs. federated before dispatching here. This is the security analysis's \"condition #2\"."
+      "why": "HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints precisely so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf source of truth for \"which patterns agents can write, through which path, what gate fires\" — unclassified kernel patterns fail CLOSED (System → denied) so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary cannot drift between layers.\n\nThe agent-facing WRITE surface reaches the engine over two transports — the interactive MCP `mutate` tool (`entities/Session/session.ts`) and the browser-authenticated `/api/mutate`. The *gating DECISIONS* those transports share — which gate a single op must clear (`mutateGate`: patch-reject vs. consent round-trip vs. pass), which op may not ride inside a batch (`findGatedBatchOp`), and how loosely-typed tool input normalizes (`normalizeMutateData`/`isSingleOpData`) — live in `mutate-gate.ts` as PURE derivations of `policy.ts`, not inline imperative branches in the MCP handler. That removes the real drift vector (an `/api`+RPC test passing while the MCP Zod/consent layer silently breaks): the decision has one tested home. The interactive consent round-trip MECHANICS (`checkAndArmConsent` + re-issue) stay in `session.ts` because only the MCP path can satisfy them; `mutate-gate.ts` decides WHETHER the round-trip fires, never how. `/api` stays owner-implicit (a logged-in human IS the consent) and does not consult the consent decision.\n\nReads share the SAME boundary, on the same flag. `DataContext.trusted` is required and gates kernel access symmetrically: an untrusted context (`!trusted`) may neither write a kernel pattern nor read one. The trust decision is a CAPABILITY, not a per-call-site convention: `HiveDO` exposes two named constructors over a trust-agnostic `ctxFields` — `ownerDataCtx` (the ONLY `trusted: true`) and `servedDataCtx` (`trusted: false`) — and there is no trust parameter to dial at a call site. Served/untrusted reads (public page chart/metric, OG card, publication source, `/o/entry`) AND untrusted writes (ingress, upload) go through `servedDataCtx`, where the `data.ts` engine refuses any kernel pattern — so a serve/ingress sink physically cannot read or write `_access_tokens`/`_members`/etc. The served public-page + OG-card render orchestration lives in its own module (`render.ts`), handed a narrow `RenderContext` that exposes ONLY the served reader (`servedQuery`) — never `db`, never a trusted context, no way to construct one — so the render path's single data access IS the kernel-refusing chokepoint. That made the old per-block `isKernelPattern` guard in `renderBlockHtml` provably redundant (a kernel-named block just reads back empty through `servedQuery`); it was deleted, leaving one chokepoint instead of a guard to forget per block type. Because trust is fixed by the constructor (and the engine flag is required, no default), a NEW serve path can't silently inherit kernel access; it fails CLOSED. `context-capability totality` guards that the split can't rot back into a trust-defaulting factory. This replaced a block-list of scattered per-sink `isKernelPattern` checks that failed open. The read totality is the served-entry-point enumeration in `security.test.ts`, the analogue of `policy.test.ts` for writes. Instance identity is configuration, not request data: `currentHost()` is authoritative on `WORKER_HOST` and IGNORES the inbound `Host`, so an attacker cannot poison a capability URL (`upload_url`/`page_url`/`og_image`) by sending a spoofed `Host` on an unauthenticated request (e.g. a `/ws` upgrade).\n\nCross-hive (foreign-URI) resolution lives in its own module (`federation.ts`), the one place that sends THIS hive's access token (`?token=` → `Authorization: Bearer`) to another origin. Its token-send is CO-LOCATED with the allow-list consent check in a single function (`federatedResolve`) precisely so the approved host and the contacted host can never drift apart: a token is attached only to a request whose host is BOTH not `isBlockedFederationHost` (SSRF block) AND `isHostAllowed` (the `_federation_hosts` consent allow-list), and that pair is re-validated on the INITIAL request AND on EVERY redirect hop, in lockstep with the fetch loop. Splitting the gate from the fetch — across modules or call sites — would let a future edit move one without the other; here they move as a unit. The DO hands the module a NARROW `FederationContext` — only the bound allow-list lookup (`isHostAllowed`, wrapping `_federation_hosts`, never `db`) + `errorJson` — so federation cannot read anything else; `resolve` stays on the DO and decides local vs. federated before dispatching here. This is the security analysis's \"condition #2\"."
     },
     {
       "id": "c:entities/Session",
@@ -74,9 +78,23 @@
         "index.ts imports ./documents/manifest",
         "index.ts imports ./pages/manifest",
         "index.ts imports ./system-tasks/manifest",
-        "passes test \"pattern-effects totality\""
+        "documents/manifest.ts imports ../../../shared/Routing/routes/io",
+        "pages/manifest.ts imports ../../../shared/Routing/routes/io",
+        "documents/schema.ts exists at this node",
+        "pages/schema.ts exists at this node",
+        "documents/manifest.ts imports ./schema",
+        "pages/manifest.ts imports ./schema",
+        "documents/hooks.ts exists at this node",
+        "pages/hooks.ts exists at this node",
+        "documents/manifest.ts imports ./hooks",
+        "pages/manifest.ts imports ./hooks",
+        "passes test \"pattern-effects totality\"",
+        "passes test \"returns 503 from POST /f and 404 from GET /f when R2 is absent\"",
+        "passes test \"requires a title\"",
+        "passes test \"refuses agent-supplied blob bookkeeping\"",
+        "passes test \"refuses a page block that sources a kernel pattern\""
       ],
-      "why": "A \"feature\" is the extensibility keystone, and today its footprint is smeared\nacross registries a forker's agent must find and edit in lockstep: post-mutate\neffects (`entities/Hive/effects.ts`), HTTP routes (`src/index.ts`), MCP tools\n(`entities/Session/tools.ts`), kernel patterns + DDL (`entities/Hive/schema.ts`),\nwrite-policy class (`entities/Hive/policy.ts`), system docs, and the coherence\nspec. The `Feature` type collects all of those contributions into ONE\nco-located, typed declaration; the composers in `compose.ts` DERIVE each\nregistry from the hand-maintained `FEATURES` barrel (`index.ts`). Adding a\nfeature is then: create one dir + add one import line to the barrel — its whole\nfootprint legible in the manifest instead of scattered.\n\n`effects` is the first registry wired end-to-end: `PATTERN_EFFECTS` in\n`effects.ts` is `composeEffects(FEATURES)` rather than a hand-written literal, so\na new side-effecting pattern is a feature manifest, not another entry in a\ncentral map. Composition for `effects`/`tools`/`writePolicy`/`routes` runs at\nMODULE LOAD (static tables); `patterns`/`migrations`/`systemDocs` compose at BOOT\n(they touch the DB). The composers fail LOUDLY on collision (two features over\none pattern's effect, a duplicate migration version, a route/tool/pattern name\nclash) rather than silently last-write-wins — a malformed manifest can't quietly\nshadow another feature. The fail-CLOSED write-policy default is preserved: a\nfeature pattern declared without a write-policy entry still resolves to\nSystem/denied, never silently agent-writable. The remaining registries keep ONE\nsource of truth each until they adopt their composer (documented landing spots in\n`compose.ts`), so this migration adds the seam without duplicating definitions."
+      "why": "A \"feature\" is the extensibility keystone, and today its footprint is smeared\nacross registries a forker's agent must find and edit in lockstep: post-mutate\neffects (`entities/Hive/effects.ts`), HTTP routes (`src/index.ts`), MCP tools\n(`entities/Session/tools.ts`), kernel patterns + DDL (`entities/Hive/schema.ts`),\nwrite-policy class (`entities/Hive/policy.ts`), system docs, and the coherence\nspec. The `Feature` type collects all of those contributions into ONE\nco-located, typed declaration; the composers in `compose.ts` DERIVE each\nregistry from the hand-maintained `FEATURES` barrel (`index.ts`). Adding a\nfeature is then: create one dir + add one import line to the barrel — its whole\nfootprint legible in the manifest instead of scattered.\n\n`effects` was the first registry wired end-to-end; `routes` is the second:\n`PATTERN_EFFECTS` in `effects.ts` is `composeEffects(FEATURES)`, and the route\ntable in `src/index.ts` is `[...CORE_ROUTES, ...composeRoutes(FEATURES)]` rather\nthan one hand-written literal. The `documents` feature owns its `/f/*` upload +\nserve edges and the `pages` feature owns its `/page/*` serve + OG edges, declared\nin their manifests (handlers still imported from the I/O adapter layer,\n`shared/Routing/routes/io.ts` — the manifest declares the routing rows, not the\nhandler bodies). So a new side-effecting pattern, or a new HTTP edge for these\nfeatures, is a feature manifest — not another entry in a central map.\n\nRoute ORDER is load-bearing and preserved: the router matches in declaration\norder (first match wins), and feature routes are appended AFTER `CORE_ROUTES`, so\na feature route can never shadow a core route. The moved patterns (`/f/...`,\n`/page/...`) share no prefix with any retained core route (`/o/`, `/p/`,\n`/marketplace*`, etc.), so the move changes no match outcome — confirmed by the\nroute/document/page tests staying green. Each route's `backendPrefix` travels\nwith its declaration into `BACKEND_PREFIXES`, so a moved route's SPA-fallback\nexclusion is derived from the manifest, not re-hardcoded in `src/index.ts`.\n\nPatterns + migrations are the third and fourth registries wired end-to-end: each\nfeature owns its PATTERN STRUCTURE — the kernel-pattern DDL/facets/index and any\nfeature-specific schema migration — as PURE DATA in its dir\n(`<name>/schema.ts`, type-only imports, no manifest code), and `schema.ts` builds\n`KERNEL_TABLES = [...CORE_KERNEL_TABLES, ...composePatterns(FEATURES)]` while its\nboot migration pile gains a tail loop over `composeMigrations(FEATURES)`. The\n`documents` feature owns the `_documents` table + its v12 extraction-columns\nmigration; the `pages` feature owns the `_pages` table + path index. The move is\nbyte-identical: every consumer of `KERNEL_TABLES` (the boot DDL loop, `_fields`\nseeding, the audit triggers, and crucially `verifyFieldsIntegrity` — the\nDDL↔`_fields` drift oracle — plus `verifyWritePolicyTotality`) reads the COMPOSED\narray, so a feature pattern is indistinguishable from a core one and an existing\nhive sees no schema diff at boot. The feature `schema.ts` files stay PURE DATA so\nthey share the leaf discipline of the `*/security.ts` siblings (the structure half\nof \"a feature owns its schema,\" beside the security half).\n\nThe kernel PRE-MUTATION HOOKS are the fifth registry, completing \"a feature owns its\nkernel pattern\": the `_documents` create validation (title required) + its\nsystem-managed immutable bookkeeping columns live in `documents/hooks.ts`, and the\n`_pages` write-time hook (URL-safe path + block-palette validation + the\nkernel-pattern exfil guard) lives in `pages/hooks.ts`. A feature declares these in\nits manifest's `hooks` slot; `kernel.ts` renames its hand-written literals to\n`CORE_ON_CREATE`/`CORE_ON_WRITE`/`CORE_IMMUTABLE` and derives the EXPORTED\n`ON_CREATE`/`ON_WRITE`/`IMMUTABLE` as `mergeDisjoint(CORE_*, compose*(FEATURES))`.\nENFORCEMENT does NOT move — `applyKernelRules` (the one chokepoint every mutate runs\nthrough) reads the EXPORTED composed maps, so the validation fires byte-for-byte as\nbefore (confirmed by the document title/immutability + page block-exfil tests staying\ngreen); only the DECLARATION moves into the feature dir, exactly as `effects` compose\ninto `PATTERN_EFFECTS` but fire at the mutate chokepoint. The hook bodies are code, so\n`<dir>/hooks.ts` imports ONLY TYPES from `kernel.ts` (the hook signature types +\n`ImmutableRule` shape) — type imports are erased at runtime, so the `kernel.ts →\nFEATURES → manifest → hooks` back-edge is type-only and adds NO runtime cycle\n(`dpdm -T`, which strips type-only edges, shows the same single pre-existing runtime\ncycle before and after). `mergeDisjoint` mirrors policy.ts: a feature hook for a CORE\npattern throws at module load, so a feature can never silently override a core\ninvariant.\n\nComposition for `effects`/`tools`/`writePolicy`/`routes` runs at MODULE LOAD\n(static tables); `patterns`/`migrations`/`systemDocs` compose at BOOT (they touch\nthe DB). The composers fail LOUDLY on collision (two features over one pattern's\neffect, a duplicate migration version, a route/tool/pattern name clash) rather\nthan silently last-write-wins — a malformed manifest can't quietly shadow another\nfeature; a feature↔core pattern-name clash is caught by policy.ts's `mergeDisjoint`\nat module load. The fail-CLOSED write-policy default is preserved: a feature\npattern declared without a write-policy entry still resolves to System/denied,\nnever silently agent-writable. System docs stay a single source (`http-io.md`\nspans egress/publications/documents/ingress, so it isn't split per-feature); the\nremaining registries (`tools`, `systemDocs`) keep ONE source of truth each until\nthey adopt their composer (documented landing spots in `compose.ts`), so this\nmigration adds the seam without duplicating definitions."
     },
     {
       "id": "c:shared/Auth",
@@ -416,7 +434,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/hive.ts",
-      "line": 34
+      "line": 35
     },
     {
       "id": "s:entities/Hive/hive.ts#IndexPatternEntry",
@@ -425,7 +443,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/hive.ts",
-      "line": 42
+      "line": 43
     },
     {
       "id": "s:entities/Hive/hive.ts#IndexFacetEntry",
@@ -434,7 +452,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/hive.ts",
-      "line": 54
+      "line": 55
     },
     {
       "id": "s:entities/Hive/hive.ts#HiveDO",
@@ -443,7 +461,7 @@
       "kind": "symbol",
       "sub": "class",
       "path": "entities/Hive/hive.ts",
-      "line": 71
+      "line": 72
     },
     {
       "id": "s:entities/Hive/hive.ts#db()",
@@ -452,7 +470,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 77
+      "line": 78
     },
     {
       "id": "s:entities/Hive/hive.ts#migrateTokenHashes()",
@@ -461,7 +479,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 93,
+      "line": 94,
       "prose": "One-time cleanup of secrets that leaked BEFORE born-hashing: hash any legacy\n plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64), and\n scrub any raw token the old post-insert path left in the `_mutation_log`\n audit trail. Idempotent; a near-no-op after the first cold start."
     },
     {
@@ -471,7 +489,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 126,
+      "line": 127,
       "prose": "Born-hashed secrets: for a CREATE of a pattern with a `secret` column\n (SENSITIVE_COLUMNS), generate the preimage in app code and set the column to\n its DIGEST *before* the row is inserted — so the audit trigger, the broadcast,\n and any read only ever see the hash. Returns the raw preimage for the one-time\n response (the only place it exists). Mutates `data` in place; returns null for\n non-secret patterns / non-create ops."
     },
     {
@@ -481,7 +499,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 135
+      "line": 136
     },
     {
       "id": "s:entities/Hive/hive.ts#instanceUrl()",
@@ -490,7 +508,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 149,
+      "line": 150,
       "prose": "A public URL on this instance — the one place upload_url / page_url /\n og_image hand-build `https://{host}/{path}` from the live host."
     },
     {
@@ -500,7 +518,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 155
+      "line": 156
     },
     {
       "id": "s:entities/Hive/hive.ts#getCharter()",
@@ -509,7 +527,17 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 219
+      "line": 220
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#reportsCtx()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "reportsCtx()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 236,
+      "prose": "=== Read-orchestration reports (delegated to reports.ts) ===\n\nRecent activity, the maintenance nag, the stale-review surface, and the\nsystem-doc / instance-doc readers live in reports.ts: pure owner-context\nread+format builders, no writes and no security boundary. The DO injects a\nnarrow ReportsContext (db + bound currentHost/patternClass/errorJson) and\nkeeps thin RPC wrappers with identical signatures."
     },
     {
       "id": "s:entities/Hive/hive.ts#getRecentActivity()",
@@ -518,7 +546,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 228
+      "line": 245
     },
     {
       "id": "s:entities/Hive/hive.ts#getMaintenanceStatus()",
@@ -527,16 +555,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 273
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#computeMaintenanceStatus()",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "computeMaintenanceStatus()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/hive.ts",
-      "line": 277
+      "line": 251
     },
     {
       "id": "s:entities/Hive/hive.ts#getStaleEntries()",
@@ -545,7 +564,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 325
+      "line": 255
     },
     {
       "id": "s:entities/Hive/hive.ts#evoCtx()",
@@ -554,7 +573,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 394
+      "line": 261
     },
     {
       "id": "s:entities/Hive/hive.ts#proposeChange()",
@@ -563,7 +582,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 402
+      "line": 269
     },
     {
       "id": "s:entities/Hive/hive.ts#getPendingChange()",
@@ -572,7 +591,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 409,
+      "line": 276,
       "prose": "Peek at a pending change's spec without applying it — lets the SessionDO\ndecide whether the change needs a consent round-trip (e.g. set_sharing to a\nnon-private visibility, which publishes an entry over HTTP)."
     },
     {
@@ -582,7 +601,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 420
+      "line": 287
     },
     {
       "id": "s:entities/Hive/hive.ts#revertChange()",
@@ -591,7 +610,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 428
+      "line": 295
     },
     {
       "id": "s:entities/Hive/hive.ts#getSchema()",
@@ -600,7 +619,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 438
+      "line": 305
     },
     {
       "id": "s:entities/Hive/hive.ts#getHistory()",
@@ -609,7 +628,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 474
+      "line": 341
     },
     {
       "id": "s:entities/Hive/hive.ts#getEntry()",
@@ -618,7 +637,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 482
+      "line": 349
     },
     {
       "id": "s:entities/Hive/hive.ts#listPatterns()",
@@ -627,7 +646,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 515
+      "line": 382
     },
     {
       "id": "s:entities/Hive/hive.ts#ctxFields()",
@@ -636,7 +655,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 526,
+      "line": 393,
       "prose": "Shared DataContext fields, trust-AGNOSTIC. The trust flag is deliberately NOT\n a parameter here — it is fixed by the named constructor a caller chooses\n (`ownerDataCtx` / `servedDataCtx`), so trust can never be dialed at a call\n site — there is no trust boolean to misremember."
     },
     {
@@ -646,7 +665,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 551,
+      "line": 418,
       "prose": "TRUSTED context — full kernel read + write. The owner/agent path (MCP session,\n browser session, internal writes). The ONLY constructor that sets `trusted: true`;\n if you are handed this you can reach kernel data, so it is never given to\n orchestration that serves untrusted surfaces."
     },
     {
@@ -656,7 +675,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 561,
+      "line": 428,
       "prose": "UNTRUSTED context for SERVED surfaces (public page, /o, /p, OG, federation)\n AND untrusted WRITES (ingress, upload). `trusted: false` is the SAME flag the\n engine uses to refuse any kernel pattern, symmetric across read and write — so\n a serve/ingress path physically cannot reach `_access_tokens`/`_members`/etc.\n Orchestration handed only this constructor cannot forge a trusted write: the\n boundary is a capability, not a per-call-site convention."
     },
     {
@@ -666,7 +685,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 568,
+      "line": 435,
       "prose": "The DO's narrowed hands handed to a pattern effect (effects.ts) — capabilities,\n never `this` and never a raw trusted `executeMutate`. The one sanctioned trusted\n write is `internalCreate`."
     },
     {
@@ -676,7 +695,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 600,
+      "line": 467,
       "prose": "query() for a served/untrusted surface — refuses kernel patterns at the\n engine. Every public/OG/publication read goes through this, so the kernel\n read-boundary lives at one chokepoint instead of a check per serve sink."
     },
     {
@@ -686,7 +705,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 605,
+      "line": 472,
       "prose": "A pattern's class: \"dataset\" (structured records) or \"knowledge\" (default)."
     },
     {
@@ -696,7 +715,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 609
+      "line": 476
     },
     {
       "id": "s:entities/Hive/hive.ts#mutate()",
@@ -705,7 +724,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 613
+      "line": 480
     },
     {
       "id": "s:entities/Hive/hive.ts#docsCtx()",
@@ -714,7 +733,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 680,
+      "line": 547,
       "prose": "Narrow capabilities handed to the documents module (documents.ts) — db +\n R2 env + broadcast/embed/schedule, never `this`."
     },
     {
@@ -724,7 +743,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 691
+      "line": 558
     },
     {
       "id": "s:entities/Hive/hive.ts#recordExtraction()",
@@ -733,7 +752,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 694
+      "line": 561
     },
     {
       "id": "s:entities/Hive/hive.ts#extractDocument()",
@@ -742,7 +761,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 697
+      "line": 564
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveDocument()",
@@ -751,7 +770,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 700
+      "line": 567
     },
     {
       "id": "s:entities/Hive/hive.ts#batchMutate()",
@@ -760,7 +779,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 704
+      "line": 571
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeUpload()",
@@ -769,7 +788,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 742
+      "line": 609
     },
     {
       "id": "s:entities/Hive/hive.ts#webCtx()",
@@ -778,7 +797,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 819
+      "line": 686
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveWeb()",
@@ -787,7 +806,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 823
+      "line": 690
     },
     {
       "id": "s:entities/Hive/hive.ts#resolve()",
@@ -796,7 +815,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 847
+      "line": 714
     },
     {
       "id": "s:entities/Hive/hive.ts#fedCtx()",
@@ -805,7 +824,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 926,
+      "line": 793,
       "prose": "The federation module's narrowed hands: the consent allow-list (bound over\n the `_federation_hosts` lookup, never `db`) + errorJson."
     },
     {
@@ -815,7 +834,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 933
+      "line": 800
     },
     {
       "id": "s:entities/Hive/hive.ts#search()",
@@ -824,7 +843,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 937
+      "line": 804
     },
     {
       "id": "s:entities/Hive/hive.ts#getMutationLog()",
@@ -833,7 +852,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 943
+      "line": 810
     },
     {
       "id": "s:entities/Hive/hive.ts#getEntryHistory()",
@@ -842,7 +861,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 960,
+      "line": 827,
       "prose": "Revision history for one entry, oldest→newest: the audit log scoped to\n (pattern, id), with each UPDATE diffed (changed facet: from → to) and\n version/timestamp churn filtered out. The create is the first revision."
     },
     {
@@ -852,7 +871,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 987,
+      "line": 854,
       "prose": "The display label for one entry — what a reference to it should show\n (deriveLabel: title-ish facet, else #id). Used by reference-format chips."
     },
     {
@@ -862,7 +881,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1007,
+      "line": 874,
       "prose": "The render module's narrowed hands: only `servedQuery`, the untrusted reader\n that refuses kernel patterns at the engine. Never `db`, never a trusted ctx."
     },
     {
@@ -872,7 +891,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1011
+      "line": 878
     },
     {
       "id": "s:entities/Hive/hive.ts#renderPublicPage()",
@@ -881,7 +900,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1017
+      "line": 884
     },
     {
       "id": "s:entities/Hive/hive.ts#renderPageOgSvg()",
@@ -890,43 +909,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1023
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#getSystemDocList()",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "getSystemDocList()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/hive.ts",
-      "line": 1031
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#getSystemDoc()",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "getSystemDoc()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/hive.ts",
-      "line": 1044
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#renderInstanceDoc()",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "renderInstanceDoc()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/hive.ts",
-      "line": 1074
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#computeStorageStats()",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "computeStorageStats()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/hive.ts",
-      "line": 1087
+      "line": 890
     },
     {
       "id": "s:entities/Hive/hive.ts#runTask()",
@@ -935,7 +918,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1118
+      "line": 904
     },
     {
       "id": "s:entities/Hive/hive.ts#primeCtx()",
@@ -944,7 +927,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1148
+      "line": 934
     },
     {
       "id": "s:entities/Hive/hive.ts#embedAfterMutate()",
@@ -953,7 +936,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1156
+      "line": 942
     },
     {
       "id": "s:entities/Hive/hive.ts#prime()",
@@ -962,7 +945,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1178
+      "line": 964
     },
     {
       "id": "s:entities/Hive/hive.ts#seedVectors()",
@@ -971,7 +954,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1298
+      "line": 1084
     },
     {
       "id": "s:entities/Hive/hive.ts#getCurrentIndex()",
@@ -980,7 +963,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1322
+      "line": 1108
     },
     {
       "id": "s:entities/Hive/hive.ts#isFederationHostAllowed()",
@@ -989,7 +972,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1374,
+      "line": 1160,
       "prose": "True if `host` has been explicitly approved for federation (active _federation_hosts row)."
     },
     {
@@ -999,7 +982,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1385
+      "line": 1171
     },
     {
       "id": "s:entities/Hive/hive.ts#entryExists()",
@@ -1008,7 +991,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1391
+      "line": 1177
     },
     {
       "id": "s:entities/Hive/hive.ts#hasKernelVersion()",
@@ -1017,7 +1000,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1400,
+      "line": 1186,
       "prose": "True if the table's `version` column is the kernel auto-increment, not a user field."
     },
     {
@@ -1027,7 +1010,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1419,
+      "line": 1205,
       "prose": "Two-phase consent that survives session churn. First call with a key arms\n it (10-minute TTL) and returns false — the caller should surface the\n confirmation message. Re-issuing the same key while armed consumes it and\n returns true — the caller proceeds. Durable in DO storage because\n sessionless MCP clients land every call on a fresh SessionDO, where an\n in-memory set can never complete the handshake. The consent signal is the\n deliberate re-issue of identical arguments; the TTL bounds how long an\n armed confirmation can wait. Fails closed: storage errors never confirm."
     },
     {
@@ -1037,7 +1020,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1440
+      "line": 1226
     },
     {
       "id": "s:entities/Hive/hive.ts#getPasskeys()",
@@ -1046,7 +1029,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1441
+      "line": 1227
     },
     {
       "id": "s:entities/Hive/hive.ts#storePasskey()",
@@ -1055,7 +1038,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1442
+      "line": 1228
     },
     {
       "id": "s:entities/Hive/hive.ts#updatePasskeyCounter()",
@@ -1064,7 +1047,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1445
+      "line": 1231
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAccessToken()",
@@ -1073,7 +1056,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1446
+      "line": 1232
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveTokenConstraints()",
@@ -1082,7 +1065,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1453,
+      "line": 1239,
       "prose": "Validate a token's scope AND return its parsed constraints in one hashed\n lookup. The token column is a digest at rest, so a raw `WHERE token = ?`\n query (as marketplace did) matches nothing — callers needing constraints\n must go through this."
     },
     {
@@ -1092,7 +1075,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1463
+      "line": 1249
     },
     {
       "id": "s:entities/Hive/hive.ts#isMemberActive()",
@@ -1101,7 +1084,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1466
+      "line": 1252
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveRegisterToken()",
@@ -1110,7 +1093,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1467
+      "line": 1253
     },
     {
       "id": "s:entities/Hive/hive.ts#getRegisterToken()",
@@ -1119,7 +1102,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1468
+      "line": 1254
     },
     {
       "id": "s:entities/Hive/hive.ts#approveRegisterToken()",
@@ -1128,7 +1111,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1469
+      "line": 1255
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAccessToken()",
@@ -1137,7 +1120,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1470
+      "line": 1256
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAuthCode()",
@@ -1146,7 +1129,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1471
+      "line": 1257
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAuthCode()",
@@ -1155,7 +1138,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1472
+      "line": 1258
     },
     {
       "id": "s:entities/Hive/hive.ts#exportPattern()",
@@ -1164,7 +1147,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1476
+      "line": 1262
     },
     {
       "id": "s:entities/Hive/hive.ts#getSharedEntry()",
@@ -1173,7 +1156,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1521
+      "line": 1307
     },
     {
       "id": "s:entities/Hive/hive.ts#resolvePublication()",
@@ -1182,7 +1165,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1550
+      "line": 1336
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveOutput()",
@@ -1191,7 +1174,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1618
+      "line": 1404
     },
     {
       "id": "s:entities/Hive/hive.ts#getInputVisibility()",
@@ -1200,7 +1183,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1631
+      "line": 1417
     },
     {
       "id": "s:entities/Hive/hive.ts#processInput()",
@@ -1209,7 +1192,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1644
+      "line": 1430
     },
     {
       "id": "s:entities/Hive/hive.ts#fetch()",
@@ -1218,7 +1201,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1681
+      "line": 1467
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketMessage()",
@@ -1227,7 +1210,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1697
+      "line": 1483
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketClose()",
@@ -1236,7 +1219,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1701
+      "line": 1487
     },
     {
       "id": "s:entities/Hive/hive.ts#broadcastChange()",
@@ -1245,7 +1228,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1705
+      "line": 1491
     },
     {
       "id": "s:entities/Hive/hive.ts#errorJson()",
@@ -1254,7 +1237,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1719
+      "line": 1505
     },
     {
       "id": "x:cloudflare:workers",
@@ -1270,7 +1253,7 @@
       "sub": "entities/Hive/kernel.ts",
       "path": "entities/Hive/kernel.ts",
       "prose": "Kernel pattern pre-mutation rules\n\nDeclarative hooks that validate and transform data before the generic\nINSERT/UPDATE/ARCHIVE logic in store.ts runs. Each kernel table's\nspecial behavior is visible in one place.",
-      "why": "Declarative pre-mutation hooks so each kernel table's special behavior\nlives in one visible place. IMMUTABLE / IMMUTABLE_AFTER_CREATE and the\nregister-scope memberActive guard are defense-in-depth against specific\nattacks: an agent self-approving an invite (approved_at immutable),\nrepointing a token's target after mint, or escalating an invite into\nowner-takeover. \"Which patterns the system writes\" and \"which are valid\ningress/upload targets\" are intentionally NOT defined here — they derive from\npolicy.ts so the boundary cannot drift between layers."
+      "why": "Declarative pre-mutation hooks so each kernel table's special behavior\nlives in one visible place. IMMUTABLE / IMMUTABLE_AFTER_CREATE and the\nregister-scope memberActive guard are defense-in-depth against specific\nattacks: an agent self-approving an invite (approved_at immutable),\nrepointing a token's target after mint, or escalating an invite into\nowner-takeover. \"Which patterns the system writes\" and \"which are valid\ningress/upload targets\" are intentionally NOT defined here — they derive from\npolicy.ts so the boundary cannot drift between layers.\n\nHooks for a FEATURE's own kernel pattern live in that feature's <dir>/hooks.ts\n(a feature owns its pattern's hooks, the same way it owns the pattern's schema +\nsecurity). The EXPORTED ON_CREATE / ON_WRITE / IMMUTABLE here are\nmergeDisjoint(CORE_*, compose*(FEATURES)) — CORE infra hooks plus each feature's\nown, composed at module load. ENFORCEMENT does NOT move: applyKernelRules (this\nfile, the one chokepoint every mutate runs through) reads the composed maps, so a\nfeature hook fires byte-for-byte as a core one. The feature hooks.ts files import\nONLY TYPES from this file, so the compose back-edge is type-only (no runtime\ncycle), and mergeDisjoint throws if a feature shadows a CORE pattern's hook."
     },
     {
       "id": "s:entities/Hive/kernel.ts#KernelContext",
@@ -1279,7 +1262,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/kernel.ts",
-      "line": 20
+      "line": 31
     },
     {
       "id": "s:entities/Hive/kernel.ts#patternExists()",
@@ -1288,7 +1271,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 21
+      "line": 32
     },
     {
       "id": "s:entities/Hive/kernel.ts#facetMeta()",
@@ -1297,7 +1280,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 22
+      "line": 33
     },
     {
       "id": "s:entities/Hive/kernel.ts#entryExists()",
@@ -1306,7 +1289,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 23
+      "line": 34
     },
     {
       "id": "s:entities/Hive/kernel.ts#memberActive()",
@@ -1315,7 +1298,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 25,
+      "line": 36,
       "prose": "An active, non-archived member with this label exists in the roster."
     },
     {
@@ -1325,17 +1308,36 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 29,
+      "line": 40,
       "prose": "Read one column of one entry — used to resolve a row's existing values when\n a partial update doesn't carry them (e.g. a _views config edit that omits\n the target pattern). Returns null if the row/column is absent."
     },
     {
-      "id": "s:entities/Hive/kernel.ts#IMMUTABLE",
+      "id": "s:entities/Hive/kernel.ts#HookResult",
       "parent": "f:entities/Hive/kernel.ts",
-      "label": "IMMUTABLE",
+      "label": "HookResult",
       "kind": "symbol",
-      "sub": "const",
+      "sub": "type",
       "path": "entities/Hive/kernel.ts",
-      "line": 41
+      "line": 43
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#CreateHook",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "CreateHook",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "entities/Hive/kernel.ts",
+      "line": 44
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#ImmutableRule",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "ImmutableRule",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/kernel.ts",
+      "line": 49,
+      "prose": "The shape of an IMMUTABLE / IMMUTABLE_AFTER_CREATE registry row. Exported so a\n feature can declare its pattern's immutable fields (in its own hooks.ts) against\n the same shape kernel.ts composes back in."
     },
     {
       "id": "s:entities/Hive/kernel.ts#IMMUTABLE_AFTER_CREATE",
@@ -1344,7 +1346,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/kernel.ts",
-      "line": 63,
+      "line": 75,
       "prose": "=== Immutable-after-create fields — set once at create, frozen thereafter ===\n\nDistinct from IMMUTABLE (rejected on every op): these define a token's\ncapability and are validated by the create hook, but must never be repointed\nby a later update/unarchive. Freezing scope/member/constraints/token closes the\ndefense-in-depth gap where an update could repoint an existing token (e.g. to\na different member) without re-passing the create-time validation."
     },
     {
@@ -1354,7 +1356,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 88
+      "line": 100
     },
     {
       "id": "s:entities/Hive/kernel.ts#_members()",
@@ -1363,7 +1365,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 219
+      "line": 231
     },
     {
       "id": "s:entities/Hive/kernel.ts#_outputs()",
@@ -1372,7 +1374,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 237
+      "line": 249
     },
     {
       "id": "s:entities/Hive/kernel.ts#_inputs()",
@@ -1381,7 +1383,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 247
+      "line": 259
     },
     {
       "id": "s:entities/Hive/kernel.ts#_links()",
@@ -1390,7 +1392,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 268
+      "line": 280
     },
     {
       "id": "s:entities/Hive/kernel.ts#_short_term_fragments()",
@@ -1399,7 +1401,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 302
+      "line": 314
     },
     {
       "id": "s:entities/Hive/kernel.ts#_web_cache()",
@@ -1408,7 +1410,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 307
+      "line": 319
     },
     {
       "id": "s:entities/Hive/kernel.ts#_canvases()",
@@ -1417,7 +1419,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 315
+      "line": 327
     },
     {
       "id": "s:entities/Hive/kernel.ts#_system_tasks()",
@@ -1426,7 +1428,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 321
+      "line": 333
     },
     {
       "id": "s:entities/Hive/kernel.ts#_federation_hosts()",
@@ -1435,7 +1437,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 328
+      "line": 340
     },
     {
       "id": "s:entities/Hive/kernel.ts#_publications()",
@@ -1444,16 +1446,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 343
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_documents()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_documents()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 373
+      "line": 355
     },
     {
       "id": "s:entities/Hive/kernel.ts#_maintenance_passes()",
@@ -1462,7 +1455,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 384
+      "line": 385
     },
     {
       "id": "s:entities/Hive/kernel.ts#_shared()",
@@ -1471,7 +1464,17 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 390
+      "line": 391
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#WriteHook",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "WriteHook",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "entities/Hive/kernel.ts",
+      "line": 413,
+      "prose": "=== Write hooks — validate on create AND update (not just create) ===\n\nFor kernel tables whose payload must stay valid through edits, not only at\nbirth. _views is the case: an agent authors a view, then refines its config —\nboth must validate against the view palette (the SSOT in view-palette.ts), so\na malformed or facet-missing spec is refused at the mutate chokepoint rather\nthan silently degrading in the renderer."
     },
     {
       "id": "s:entities/Hive/kernel.ts#_views()",
@@ -1480,16 +1483,34 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/kernel.ts",
-      "line": 415
+      "line": 416
     },
     {
-      "id": "s:entities/Hive/kernel.ts#_pages()",
+      "id": "s:entities/Hive/kernel.ts#ON_CREATE",
       "parent": "f:entities/Hive/kernel.ts",
-      "label": "_pages()",
+      "label": "ON_CREATE",
       "kind": "symbol",
-      "sub": "method",
+      "sub": "const",
       "path": "entities/Hive/kernel.ts",
-      "line": 441
+      "line": 461
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#ON_WRITE",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "ON_WRITE",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/kernel.ts",
+      "line": 464
+    },
+    {
+      "id": "s:entities/Hive/kernel.ts#IMMUTABLE",
+      "parent": "f:entities/Hive/kernel.ts",
+      "label": "IMMUTABLE",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/kernel.ts",
+      "line": 467
     },
     {
       "id": "s:entities/Hive/kernel.ts#Shortcut",
@@ -1498,7 +1519,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/kernel.ts",
-      "line": 478
+      "line": 472
     },
     {
       "id": "s:entities/Hive/kernel.ts#SHORTCUTS",
@@ -1507,7 +1528,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/kernel.ts",
-      "line": 480
+      "line": 474
     },
     {
       "id": "s:entities/Hive/kernel.ts#expandShortcut",
@@ -1516,7 +1537,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 487,
+      "line": 481,
       "prose": "Expand a shortcut name to pattern + operation, or return null if not a shortcut."
     },
     {
@@ -1526,7 +1547,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 494,
+      "line": 488,
       "prose": "Normalize a federation host: lowercase, strip scheme and any path."
     },
     {
@@ -1536,7 +1557,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 616,
+      "line": 610,
       "prose": "True if a federation target points at a loopback, private, link-local, or\ninternal-only host. Such hosts can never be added to the allow-list and are\nrefused at resolve time - defense against SSRF and against an agent acting on\nprompt-injected content probing internal infrastructure or cloud metadata.\n\nThe host is normalized through the same URL parser fetch() uses, so the check\noperates on the exact host the network stack will contact (handles userinfo,\nports, IPv4 in any base, IPv6 brackets, case). Anything unparseable as a host\nfails closed (blocked). A public hostname whose DNS resolves to a private IP\ncannot be caught here (no DNS API on Workers); that residual is covered by the\nfederation consent allow-list and per-hop redirect re-validation."
     },
     {
@@ -1546,7 +1567,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 648,
+      "line": 642,
       "prose": "Check if tokenScope grants access for requiredScope. Hierarchical prefix match with : boundary."
     },
     {
@@ -1556,7 +1577,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 664,
+      "line": 658,
       "prose": "The immutability error for editing a single named facet on an existing entry,\nor null if the facet is freely editable. Covers both IMMUTABLE (rejected on\nany op) and IMMUTABLE_AFTER_CREATE (frozen after create). Used by the patch\npath, which edits one facet by name and so can't rely on applyKernelRules'\ntop-level-key scan."
     },
     {
@@ -1566,7 +1587,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/kernel.ts",
-      "line": 672
+      "line": 666
     },
     {
       "id": "f:entities/Hive/labels.ts",
@@ -1608,13 +1629,81 @@
       "prose": "Truncate a string to `max` chars, appending an ellipsis if truncated."
     },
     {
+      "id": "f:entities/Hive/mutate-gate.ts",
+      "parent": "c:entities/Hive",
+      "label": "mutate-gate.ts",
+      "kind": "file",
+      "sub": "entities/Hive/mutate-gate.ts",
+      "path": "entities/Hive/mutate-gate.ts",
+      "prose": "Mutate-gate decisions — the pure, transport-agnostic predicates that decide\nwhat gate a write must clear, factored out of the MCP `mutate` handler so the\ndecision can't drift from the place it's enforced.",
+      "why": "The agent-facing WRITE surface exists on two transports: the MCP `mutate`\ntool (entities/Session/session.ts) and the browser-authenticated `/api/mutate`\n(shared/Routing/routes/pages.ts). The *gate decisions* — \"is this op consent-\ngated and which way,\" \"may this op ride inside a batch,\" \"is this loosely-typed\ndata actually an object\" — were inline imperative branches in session.ts. That\nis the real drift vector the memory warns about (\"/api+RPC tests pass while MCP\nbreaks via the Zod/consent layer\"): a future edit to the batch rule or the\nconsent condition touches only session.ts, with no tested home to anchor it.\n\nThese functions are PURE derivations of policy.ts (the write-class SSOT) — no\nI/O, no round-trip mechanics. The interactive consent round-trip itself\n(checkAndArmConsent + re-issue) stays in session.ts because only the MCP path\ncan satisfy it; this module decides WHETHER it fires, not how. /api stays\nowner-implicit (a logged-in human IS the consent) and does not consult these\ndecisions today — it receives parsed, single-op JSON and is intentionally\nungated. The win is not that both transports call this, but that the gate\ndecisions now have ONE tested home (a pure leaf over policy.ts) instead of\ninline branches: an edit to the batch rule or consent condition is anchored by\na unit test, so an MCP-only regression can't slip past /api-based tests. If /api\never needs the same validation, it adopts these — without a second copy existing."
+    },
+    {
+      "id": "s:entities/Hive/mutate-gate.ts#normalizeMutateData",
+      "parent": "f:entities/Hive/mutate-gate.ts",
+      "label": "normalizeMutateData",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/mutate-gate.ts",
+      "line": 37,
+      "prose": "Parse a possibly-JSON-stringified value; non-strings and unparseable strings\n pass through unchanged (the caller's shape check then rejects bad input)."
+    },
+    {
+      "id": "s:entities/Hive/mutate-gate.ts#isSingleOpData",
+      "parent": "f:entities/Hive/mutate-gate.ts",
+      "label": "isSingleOpData",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/mutate-gate.ts",
+      "line": 44,
+      "prose": "True when `data` is a usable single-op payload (a plain object, not an array).\n The shape both transports require before handing data to the engine."
+    },
+    {
+      "id": "s:entities/Hive/mutate-gate.ts#MutateGate",
+      "parent": "f:entities/Hive/mutate-gate.ts",
+      "label": "MutateGate",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "entities/Hive/mutate-gate.ts",
+      "line": 50
+    },
+    {
+      "id": "s:entities/Hive/mutate-gate.ts#mutateGate",
+      "parent": "f:entities/Hive/mutate-gate.ts",
+      "label": "mutateGate",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/mutate-gate.ts",
+      "line": 63,
+      "prose": "Decide which gate a single mutate op must clear, purely from policy.ts. The\n MCP handler drives the round-trip mechanics off this; the engine independently\n enforces write-class, so this is the consent layer's single decision point."
+    },
+    {
+      "id": "s:entities/Hive/mutate-gate.ts#BatchOp",
+      "parent": "f:entities/Hive/mutate-gate.ts",
+      "label": "BatchOp",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/mutate-gate.ts",
+      "line": 79
+    },
+    {
+      "id": "s:entities/Hive/mutate-gate.ts#findGatedBatchOp",
+      "parent": "f:entities/Hive/mutate-gate.ts",
+      "label": "findGatedBatchOp",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/mutate-gate.ts",
+      "line": 86,
+      "prose": "The first op in a batch that may NOT ride inside it, or null if all are\n eligible. Consent-gated escalations and patches on gated patterns must go\n through a single mutate (a batch would skip the round-trip / kernel hooks);\n archive (de-escalation) is allowed. Pure derivation of policy.ts — the batch\n rule has one home, not an inline `.find` in the handler."
+    },
+    {
       "id": "f:entities/Hive/policy.ts",
       "parent": "c:entities/Hive",
       "label": "policy.ts",
       "kind": "file",
       "sub": "entities/Hive/policy.ts",
       "path": "entities/Hive/policy.ts",
-      "prose": "Write-class policy — the single source of truth for \"which patterns can\nagents write, through which path, and what gate fires.\"\n\nThis question was previously answered hole-by-hole: a `CONSENT_GATED` dict in\nthe session layer, an `INTERNAL_WRITE_PROTECTED` set in the data layer, and\neleven independent `startsWith(\"_\")` checks scattered across kernel/data/hive/\nevolution/prime. Each was a separate map of the same territory, and a missed\ncell was a security hole (see the set_sharing, patch-bypass, ingress/upload,\nand register-token findings).\n\nHere the territory is modeled once. Every pattern has a WriteClass; every gate\n(consent round-trip, batch exclusion, ingress/upload eligibility, schema-\nevolution restriction, prime inclusion) is a pure derivation of it. A kernel\npattern with no declared class fails CLOSED (System — denied) so a newly added\nkernel pattern can never silently default to agent-writable through every path.\n\nThis module is a leaf: it imports nothing from the enforcement layers, so they\ncan all derive from it without cycles.",
+      "prose": "Write-class policy — the single source of truth for \"which patterns can\nagents write, through which path, and what gate fires.\"\n\nThis question was previously answered hole-by-hole: a `CONSENT_GATED` dict in\nthe session layer, an `INTERNAL_WRITE_PROTECTED` set in the data layer, and\neleven independent `startsWith(\"_\")` checks scattered across kernel/data/hive/\nevolution/prime. Each was a separate map of the same territory, and a missed\ncell was a security hole (see the set_sharing, patch-bypass, ingress/upload,\nand register-token findings).\n\nHere the territory is modeled once. Every pattern has a WriteClass; every gate\n(consent round-trip, batch exclusion, ingress/upload eligibility, schema-\nevolution restriction, prime inclusion) is a pure derivation of it. A kernel\npattern with no declared class fails CLOSED (System — denied) so a newly added\nkernel pattern can never silently default to agent-writable through every path.\n\nThis module is a leaf: it imports nothing from the enforcement layers, so they\ncan all derive from it without cycles. The ONE import it does carry — the\nfeature-security barrel (entities/features/security.ts) — is itself pure DATA +\nTYPES (each feature's */security.ts imports only `import type` from here), so the\nleaf property holds: no enforcement-layer code, no runtime cycle. (It deliberately\ndoes NOT import a feature manifest.ts; those carry code.)",
       "why": "That question was previously answered hole-by-hole across three layers\nplus eleven scattered startsWith(\"_\") checks, and every missed cell was a\nsecurity hole (set_sharing ungated, the patch-bypass, ingress/upload\ntargeting kernel patterns, register-token takeover). Unclassified kernel\npatterns fail CLOSED (System → denied) so a new kernel pattern can never\nsilently default to agent-writable; the module is a dependency-free leaf so\nevery enforcement layer derives from it without cycles; write-class is\ncomputed at read time, never persisted, to avoid denormalizing the constant."
     },
     {
@@ -1624,7 +1713,25 @@
       "kind": "symbol",
       "sub": "enum",
       "path": "entities/Hive/policy.ts",
-      "line": 31
+      "line": 37
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#ConsentPolicy",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "ConsentPolicy",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/policy.ts",
+      "line": 60
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#KernelPolicy",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "KernelPolicy",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/policy.ts",
+      "line": 66
     },
     {
       "id": "s:entities/Hive/policy.ts#KERNEL_WRITE_POLICY",
@@ -1633,7 +1740,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/policy.ts",
-      "line": 79
+      "line": 195
     },
     {
       "id": "s:entities/Hive/policy.ts#isKernelPattern",
@@ -1642,7 +1749,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 185,
+      "line": 202,
       "prose": "The `_` namespace is reserved for the kernel (create_pattern refuses it), so\n a leading underscore is the exact, single definition of \"kernel pattern.\""
     },
     {
@@ -1652,7 +1759,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 191,
+      "line": 208,
       "prose": "The write class of any pattern. Unclassified kernel patterns fail CLOSED\n (System) — a new `_` table added without a policy row is denied, not opened."
     },
     {
@@ -1662,7 +1769,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 197,
+      "line": 214,
       "prose": "True for patterns the system manages itself — denied at the mutate engine."
     },
     {
@@ -1672,7 +1779,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 204,
+      "line": 221,
       "prose": "True only for User-class patterns: the sole valid ingress/upload write target.\n Every kernel pattern — gated, open, or system — is refused, because HTTP write\n paths bypass the MCP consent layer and must never reach the kernel surface."
     },
     {
@@ -1682,7 +1789,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 209,
+      "line": 226,
       "prose": "Consent configuration for a pattern, or null if it carries none."
     },
     {
@@ -1692,7 +1799,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 214,
+      "line": 231,
       "prose": "True if this kernel pattern is surfaced in prime recall (most are excluded)."
     },
     {
@@ -1702,7 +1809,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 219,
+      "line": 236,
       "prose": "True if this pattern is exempt from audit triggers (append-only logs)."
     },
     {
@@ -1712,7 +1819,7 @@
       "kind": "symbol",
       "sub": "type",
       "path": "entities/Hive/policy.ts",
-      "line": 238,
+      "line": 255,
       "prose": "=== Egress sensitivity: the read/serialization dual of KERNEL_WRITE_POLICY ===\n\n\"Sensitive\" is a property of DATA (a column), but it used to be enforced per\nEGRESS path (mutate response, /ws delta, audit trigger, query, export, served\nreads) — so a new egress kept reintroducing the leak. This is the one\ndeclarative home: which columns must never leave the DO in the clear.\n  - `secret`: born-hashed. The preimage is generated in app code and returned\n    ONCE at mint; only its digest is ever stored — so the audit trigger, the\n    broadcast, and any read see a hash, not a usable bearer. Also stripped by\n    `seal` from every serialized row (belt-and-suspenders).\n  - `redact`: never serialized off the DO at all (stripped by `seal`); the\n    data plane has no legitimate need for it.\nBroadcast, audit, export, and served reads all derive from this, so adding a\nnew secret column protects every egress at once — and `findUnclassifiedSensitiveColumns`\nfails loud if a secret-shaped column has no policy (the egress totality check)."
     },
     {
@@ -1722,7 +1829,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/policy.ts",
-      "line": 239
+      "line": 256
     },
     {
       "id": "s:entities/Hive/policy.ts#SENSITIVE_COLUMNS",
@@ -1731,7 +1838,8 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/policy.ts",
-      "line": 241
+      "line": 269,
+      "prose": "The EFFECTIVE sensitivity registry: CORE columns + each feature's own. Every\negress (seal/sealAll, the audit trigger, export) and the egress totality oracle\n(findUnclassifiedSensitiveColumns) read THIS composed map, so a feature's\nredacted/secret columns inherit every egress + the loud-fail oracle unchanged."
     },
     {
       "id": "s:entities/Hive/policy.ts#sensitiveColumns",
@@ -1740,7 +1848,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 249
+      "line": 272
     },
     {
       "id": "s:entities/Hive/policy.ts#secretColumn",
@@ -1749,7 +1857,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 254,
+      "line": 277,
       "prose": "The single `secret` (born-hashed) column for a pattern, or null."
     },
     {
@@ -1759,7 +1867,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 261,
+      "line": 284,
       "prose": "Strip sensitive columns from a row about to leave the DO — the one sieve every\n egress routes through (broadcast, export, served read, mutate response). Shallow\n copy; null/undefined passes through."
     },
     {
@@ -1769,7 +1877,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 272,
+      "line": 295,
       "prose": "seal a list of rows — the sanctioned form for any served path emitting many\n rows, so no caller hand-rolls `.map(seal)` and forgets the pattern arg."
     },
     {
@@ -1779,7 +1887,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 281
+      "line": 304
     },
     {
       "id": "s:entities/Hive/policy.ts#patchRejected",
@@ -1788,7 +1896,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 293,
+      "line": 316,
       "prose": "True if patch must be rejected for this pattern (any consent-gated pattern —\n patch skips the kernel validation hooks and the confirmation round-trip)."
     },
     {
@@ -1798,7 +1906,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 300,
+      "line": 323,
       "prose": "Whether an escalating create/update/unarchive needs the confirmation\n round-trip, given the data being written (for on_expose visibility checks).\n patch_only patterns never round-trip; patch is handled by patchRejected."
     },
     {
@@ -2002,6 +2110,97 @@
       "line": 124
     },
     {
+      "id": "f:entities/Hive/reports.ts",
+      "parent": "c:entities/Hive",
+      "label": "reports.ts",
+      "kind": "file",
+      "sub": "entities/Hive/reports.ts",
+      "path": "entities/Hive/reports.ts",
+      "prose": "reports.ts — read-orchestration reporting, evicted from HiveDO.\n\nThese are pure read+format builders for agent-facing JSON/markdown: recent\nactivity, the maintenance-status nag, the stale-review surface, the system-doc\nreaders, and the instance/storage doc. None of them write, none are a security\nboundary (they run in the owner/trusted DO context and only SELECT), and none\nare bound to the DO lifecycle/websocket — so they decompose cleanly out of the\nkernel shell.\n\nReportsContext is deliberately narrow. Raw `db` is acceptable here (every read\nis owner-context and read-only), but the bits that DO need DO state — the host\n(`currentHost`, which reads the live `Host` header / WORKER_HOST off the DO\ninstance) and `patternClass`/`errorJson` (already-bound helpers) — are injected\nas functions so this module never reaches back into `this`. The DO keeps thin\nRPC wrappers with identical signatures; this holds the logic."
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#ReportsContext",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "ReportsContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/reports.ts",
+      "line": 19
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#getRecentActivity",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "getRecentActivity",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 34,
+      "prose": "Most recently modified entries across all non-kernel patterns, summarized from\n each pattern's first text/select facet."
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#getMaintenanceStatus",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "getMaintenanceStatus",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 78
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#computeMaintenanceStatus",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "computeMaintenanceStatus",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 82
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#getStaleEntries",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "getStaleEntries",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 130
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#getSystemDocList",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "getSystemDocList",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 199
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#getSystemDoc",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "getSystemDoc",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 212
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#renderInstanceDoc",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "renderInstanceDoc",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 242
+    },
+    {
+      "id": "s:entities/Hive/reports.ts#computeStorageStats",
+      "parent": "f:entities/Hive/reports.ts",
+      "label": "computeStorageStats",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/reports.ts",
+      "line": 255
+    },
+    {
       "id": "f:entities/Hive/schema.ts",
       "parent": "c:entities/Hive",
       "label": "schema.ts",
@@ -2018,7 +2217,8 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/schema.ts",
-      "line": 86
+      "line": 583,
+      "prose": "The EXPORTED kernel surface: CORE infra patterns + each feature's own pattern\nstructure (DDL/facets/index), composed from the pure-data feature schema modules\nvia the FEATURES barrel. composePatterns asserts no two features declare the same\npattern name (a feature↔core name clash is caught by policy.ts's mergeDisjoint at\nmodule load). Everything downstream — the boot DDL loop, _fields seeding,\nverifyFieldsIntegrity, verifyWritePolicyTotality, and the security tests that\niterate KERNEL_TABLES — reads THIS composed array, so a feature pattern is\nindistinguishable from a core one and the DDL↔_fields drift oracle stays green."
     },
     {
       "id": "s:entities/Hive/schema.ts#initializeSchema",
@@ -2027,7 +2227,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 630
+      "line": 590
     },
     {
       "id": "s:entities/Hive/schema.ts#verifyWritePolicyTotality",
@@ -2036,7 +2236,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 1216,
+      "line": 1181,
       "prose": "=== Integrity check: write-class policy totality ===\n\nEvery agent-facing kernel pattern must declare a write class in policy.ts.\nwriteClass() fails CLOSED (System — denied) for any unclassified `_` pattern,\nso a newly added kernel table is safe by default — but silently un-writable is\na bug, not a feature. This warns loudly at boot so a missing classification is\ncaught the moment the table ships, not when a reviewer finds the next hole.\nCode-vs-code (KERNEL_TABLES vs KERNEL_WRITE_POLICY) — no DB needed; exported so\nthe admission-matrix test asserts it statically too."
     },
     {
@@ -2046,7 +2246,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 1234,
+      "line": 1199,
       "prose": "Audit exemption (high-frequency append-only logs whose change history is the\ndata itself — auditing them would just churn the bounded _mutation_log) is a\nper-pattern behavior declared in the policy registry (policy.ts), alongside\nwrite class, so it's covered by the same boot-time totality check."
     },
     {
@@ -2187,7 +2387,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/features/compose.ts",
-      "line": 21,
+      "line": 22,
       "prose": "Fold every feature's `effects` into the flat PATTERN_EFFECTS map.\n WHERE IT RUNS: module load of effects.ts (`PATTERN_EFFECTS = composeEffects(FEATURES)`).\n Pure, synchronous, no DB — safe at import time."
     },
     {
@@ -2197,18 +2397,8 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/features/compose.ts",
-      "line": 52,
-      "prose": "PATTERNS + DDL.  HOST: schema.ts `KERNEL_PATTERNS` literal becomes\n `[...CORE_KERNEL_PATTERNS, ...composePatterns(FEATURES)]`.\n WHERE IT RUNS: boot — schema.ts already iterates KERNEL_PATTERNS to run DDL +\n seed _fields; a feature's patterns join that list, so DDL, _fields metadata,\n and the write-class totality check (`findUnclassifiedKernelPatterns`) all pick\n them up unchanged. Composer asserts no two features (or a feature + core)\n declare the same pattern name."
-    },
-    {
-      "id": "s:entities/features/compose.ts#composeWritePolicy",
-      "parent": "f:entities/features/compose.ts",
-      "label": "composeWritePolicy",
-      "kind": "symbol",
-      "sub": "function",
-      "path": "entities/features/compose.ts",
-      "line": 69,
-      "prose": "WRITE POLICY.  HOST: policy.ts `KERNEL_WRITE_POLICY` literal merges\n `composeWritePolicy(FEATURES)`. WHERE IT RUNS: module load of policy.ts (the\n registry is a static table). The fail-closed default is UNCHANGED: a pattern\n declared without a write-policy entry still resolves to System/denied, so a\n feature that forgets its policy is denied, not silently agent-writable."
+      "line": 56,
+      "prose": "PATTERNS + DDL.  WIRED.  HOST: schema.ts `KERNEL_TABLES` literal becomes\n `[...CORE_KERNEL_TABLES, ...composePatterns(FEATURES)]`.\n WHERE IT RUNS: boot — schema.ts iterates KERNEL_TABLES to run DDL + seed _fields,\n so a feature's patterns join that list and DDL, _fields metadata, the\n DDL↔_fields drift oracle (`verifyFieldsIntegrity`), and the write-class totality\n check (`verifyWritePolicyTotality`) all pick them up unchanged. Composer asserts\n no two features declare the same pattern name; a feature↔core collision is caught\n by the write-policy `mergeDisjoint` in policy.ts."
     },
     {
       "id": "s:entities/features/compose.ts#composeMigrations",
@@ -2217,8 +2407,8 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/features/compose.ts",
-      "line": 83,
-      "prose": "MIGRATIONS.  HOST: schema.ts `runMigrations` switch gains a tail loop over\n `composeMigrations(FEATURES)` (sorted by version, run if > stored schema\n version). WHERE IT RUNS: boot, after core migrations. Composer asserts version\n uniqueness across features so two features can't claim the same slot."
+      "line": 82,
+      "prose": "MIGRATIONS.  WIRED.  HOST: schema.ts's boot migration pile gains a tail loop\n over `composeMigrations(FEATURES)`. Core migrations are an append-only pile of\n idempotent (PRAGMA-guarded) ALTER blocks run on EVERY boot with no stored-version\n gate, so feature migrations run the same way — `version` is purely the global\n ordering + collision slot, not a run condition. WHERE IT RUNS: boot, after the\n kernel DDL loop + core migrations. Composer sorts by version and asserts version\n uniqueness across features so two features can't claim the same slot."
     },
     {
       "id": "s:entities/features/compose.ts#composeRoutes",
@@ -2227,7 +2417,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/features/compose.ts",
-      "line": 101,
+      "line": 100,
       "prose": "ROUTES.  HOST: src/index.ts `routes[]` becomes `[...CORE_ROUTES,\n ...composeRoutes(FEATURES)]`, and BACKEND_PREFIXES absorbs each route's\n `backendPrefix`. WHERE IT RUNS: module load of index.ts (the route table is\n built once). Feature routes are appended AFTER core routes (declaration-order\n matching means a feature route can never shadow a core route), and the\n composer asserts no two features claim the same method+pattern."
     },
     {
@@ -2237,8 +2427,35 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/features/compose.ts",
-      "line": 119,
+      "line": 118,
       "prose": "TOOLS.  HOST: tools.ts `TOOLS` concatenates `composeTools(FEATURES)` (the\n metadata half, feeding /api/tools + MCP registration listing); session.ts\n calls each feature tool's `register(server, hive)` during MCP setup (the\n handler half). WHERE IT RUNS: tools metadata at module load; `register` once\n per session at MCP init. Composer asserts tool-name uniqueness."
+    },
+    {
+      "id": "s:entities/features/compose.ts#composeOnCreate",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composeOnCreate",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 145
+    },
+    {
+      "id": "s:entities/features/compose.ts#composeOnWrite",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composeOnWrite",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 155
+    },
+    {
+      "id": "s:entities/features/compose.ts#composeImmutable",
+      "parent": "f:entities/features/compose.ts",
+      "label": "composeImmutable",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/features/compose.ts",
+      "line": 165
     },
     {
       "id": "s:entities/features/compose.ts#composeSystemDocs",
@@ -2247,8 +2464,35 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/features/compose.ts",
-      "line": 134,
+      "line": 178,
       "prose": "SYSTEM DOCS.  HOST: schema.ts seed list concatenates\n `composeSystemDocs(FEATURES)`. WHERE IT RUNS: boot, alongside the core doc\n seeding. Composer asserts slug uniqueness."
+    },
+    {
+      "id": "f:entities/features/documents/hooks.ts",
+      "parent": "c:entities/features",
+      "label": "hooks.ts",
+      "kind": "file",
+      "sub": "entities/features/documents/hooks.ts",
+      "path": "entities/features/documents/hooks.ts",
+      "prose": "documents/hooks.ts — the documents feature's PRE-MUTATION HOOKS, as code.\n\nThis is the \"a feature owns its kernel pattern's HOOKS\" half of the footprint —\nthe last piece after schema.ts (structure) and security.ts (write class +\negress). The _documents create-time validation (title required; visibility enum)\nand its IMMUTABLE bookkeeping fields (system-managed on upload/extraction) live\nhere, NOT in entities/Hive/kernel.ts. composeKernelHooks (entities/features/\ncompose.ts) folds them back into kernel.ts's ON_CREATE / IMMUTABLE registries, so\napplyKernelRules — the kernel chokepoint every mutate runs through — enforces them\nbyte-for-byte the same. Only the DECLARATION moved; ENFORCEMENT stays at the\nkernel chokepoint, exactly like effects compose into PATTERN_EFFECTS but fire at\nthe mutate chokepoint.\n\nLEAF-PRESERVATION / NO-CYCLE INVARIANT (read before editing): kernel.ts composes\nthis file in (FEATURES → manifest → hooks), so this file MUST import ONLY TYPES\nfrom kernel.ts (`import type`). A runtime import of kernel.ts here would close a\nkernel.ts → features → hooks → kernel.ts RUNTIME cycle. Type imports are erased at\nruntime, so the back-edge stays type-only and no cycle forms."
+    },
+    {
+      "id": "s:entities/features/documents/hooks.ts#immutable",
+      "parent": "f:entities/features/documents/hooks.ts",
+      "label": "immutable",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/documents/hooks.ts",
+      "line": 22
+    },
+    {
+      "id": "s:entities/features/documents/hooks.ts#onCreate",
+      "parent": "f:entities/features/documents/hooks.ts",
+      "label": "onCreate",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/documents/hooks.ts",
+      "line": 29
     },
     {
       "id": "f:entities/features/documents/manifest.ts",
@@ -2257,7 +2501,7 @@
       "kind": "file",
       "sub": "entities/features/documents/manifest.ts",
       "path": "entities/features/documents/manifest.ts",
-      "prose": "documents — R2-backed file store feature.\n\nThe whole feature, legible in one place. Today only `effects` is composed\nend-to-end (the post-mutate orchestration that used to live inline in\neffects.ts's PATTERN_EFFECTS literal). The other slots show what this feature\nWOULD declare once those registries adopt the composer — they are commented\npointers to the live registries that own them, not duplicated definitions, so\nthere is exactly one source of truth per registry until migration.\n\n  patterns/writePolicy → entities/Hive/schema.ts (_documents DDL) +\n                         entities/Hive/policy.ts (_documents write class)\n  routes               → src/index.ts (/f/:token upload, /f/:id serve)\n  migrations           → schema.ts v12 (extracted_text / extraction_status)\n  systemDocs           → src/system-docs/http-io.md"
+      "prose": "documents — R2-backed file store feature.\n\nThe whole feature, legible in one place. `effects` + `routes` are composed\nend-to-end today. The remaining slots are commented pointers to the live\nregistries that still own them — not duplicated definitions, so there is\nexactly one source of truth per registry until migration.\n\n  patterns + migrations → ./schema.ts (pure data: _documents DDL/facets + the v12\n                         extraction-columns migration), folded into schema.ts's\n                         KERNEL_TABLES + boot migration pile by composePatterns /\n                         composeMigrations. Wired below.\n  writePolicy + egress → ./security.ts (pure data: _documents write class +\n                         r2_key redaction), composed into the effective\n                         KERNEL_WRITE_POLICY / SENSITIVE_COLUMNS by\n                         entities/features/security.ts. Re-exported below so the\n                         feature's security footprint is legible from its dir.\n  systemDocs           → src/system-docs/http-io.md (shared with the other\n                         HTTP-I/O features — egress/publications/ingress — so\n                         it stays a single doc, not split per-feature)"
     },
     {
       "id": "s:entities/features/documents/manifest.ts#documents",
@@ -2266,7 +2510,61 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/features/documents/manifest.ts",
-      "line": 18
+      "line": 30
+    },
+    {
+      "id": "f:entities/features/documents/schema.ts",
+      "parent": "c:entities/features",
+      "label": "schema.ts",
+      "kind": "file",
+      "sub": "entities/features/documents/schema.ts",
+      "path": "entities/features/documents/schema.ts",
+      "prose": "documents/schema.ts — the documents feature's PATTERN STRUCTURE, as PURE DATA:\nthe _documents kernel-pattern declaration (DDL + facet metadata + doctrine) and\nthe feature's own schema migration. This is the \"a feature owns its schema\" half\nof the footprint, kept SEPARATE from manifest.ts so it stays pure data + TYPES\nonly (no route handlers, no effect bodies) — composePatterns/composeMigrations\n(entities/features/compose.ts) fold it back into schema.ts's KERNEL_TABLES + boot\nmigration pile, byte-for-byte the same rows the central array used to hold, so\nverifyFieldsIntegrity (the DDL↔_fields drift oracle) sees no change.\n\nNOTE: the kernel pre-mutation HOOKS for _documents (the title-required create\nvalidation + the immutable r2_key/size/etc. bookkeeping invariants) live in the\nsibling ./hooks.ts (code, type-only kernel import), composed into kernel.ts's\nON_CREATE / IMMUTABLE registries and enforced at the applyKernelRules chokepoint."
+    },
+    {
+      "id": "s:entities/features/documents/schema.ts#patterns",
+      "parent": "f:entities/features/documents/schema.ts",
+      "label": "patterns",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/documents/schema.ts",
+      "line": 17
+    },
+    {
+      "id": "s:entities/features/documents/schema.ts#migrations",
+      "parent": "f:entities/features/documents/schema.ts",
+      "label": "migrations",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/documents/schema.ts",
+      "line": 54
+    },
+    {
+      "id": "f:entities/features/documents/security.ts",
+      "parent": "c:entities/features",
+      "label": "security.ts",
+      "kind": "file",
+      "sub": "entities/features/documents/security.ts",
+      "path": "entities/features/documents/security.ts",
+      "prose": "documents/security.ts — the documents feature's WRITE-POLICY + EGRESS-SENSITIVITY\ncontribution, as PURE DATA. This is the security half of the feature's footprint,\nkept SEPARATE from manifest.ts on purpose: policy.ts (the dependency-free security\nleaf) folds this in, and policy.ts MUST NOT pull a manifest (manifests carry code —\neffect bodies, route handlers — which would drag the enforcement layers into the\nsecurity leaf and risk an import cycle).\n\nSo this file imports ONLY TYPES (erased at runtime → no runtime edge into policy.ts)\nand NOTHING else. It is the single home for \"what write class is _documents, and\nwhich of its columns must never leave the DO\" — composed back into the effective\nKERNEL_WRITE_POLICY / SENSITIVE_COLUMNS by entities/features/security.ts."
+    },
+    {
+      "id": "s:entities/features/documents/security.ts#writePolicy",
+      "parent": "f:entities/features/documents/security.ts",
+      "label": "writePolicy",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/documents/security.ts",
+      "line": 15
+    },
+    {
+      "id": "s:entities/features/documents/security.ts#sensitiveColumns",
+      "parent": "f:entities/features/documents/security.ts",
+      "label": "sensitiveColumns",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/documents/security.ts",
+      "line": 30
     },
     {
       "id": "f:entities/features/feature.ts",
@@ -2284,8 +2582,8 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/features/feature.ts",
-      "line": 30,
-      "prose": "A kernel-pattern declaration as schema.ts expects it (DDL + facet metadata +\n doctrine). Kept as the existing shape so a feature can hand schema.ts a row\n verbatim."
+      "line": 34,
+      "prose": "A kernel-pattern declaration as schema.ts expects it (DDL + facet metadata +\n doctrine). Kept as the existing `KernelTable` shape so a feature can hand\n schema.ts a row verbatim — composePatterns folds these into KERNEL_TABLES, and\n the boot DDL loop / _fields seeding / verifyFieldsIntegrity treat them\n identically to a CORE row. `indexes` mirror the KernelTable field (a feature\n pattern may carry its own unique/partial indexes, e.g. _pages' path index)."
     },
     {
       "id": "s:entities/features/feature.ts#FeatureMigration",
@@ -2294,7 +2592,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/features/feature.ts",
-      "line": 40,
+      "line": 45,
       "prose": "A one-shot, idempotent ALTER/backfill keyed by a monotonic version, mirroring\n the `runMigrations` switch in schema.ts. Runs at boot, after pattern DDL."
     },
     {
@@ -2304,7 +2602,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/features/feature.ts",
-      "line": 54,
+      "line": 59,
       "prose": "A route contribution: the existing Route shape plus the handler. Imported as a\n type only so the manifest doesn't pull the router runtime. The composer splices\n these into the `routes[]` array in src/index.ts in feature-declaration order,\n AFTER the core routes (a feature route can't shadow a core route)."
     },
     {
@@ -2314,7 +2612,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/features/feature.ts",
-      "line": 71,
+      "line": 76,
       "prose": "MCP tool metadata — the ToolMeta shape from tools.ts. A feature that adds an\n agent-facing verb declares it here; the composer concatenates onto TOOLS. The\n feature ALSO supplies the Zod schema + handler wiring (a `registerTool`\n callback) since session.ts binds those — see compose design notes."
     },
     {
@@ -2324,7 +2622,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/features/feature.ts",
-      "line": 83,
+      "line": 88,
       "prose": "A system-doc contribution: the raw markdown (imported as a text module) plus\n its slug/title, seeded into _system_docs at boot exactly like schema.ts does."
     },
     {
@@ -2334,7 +2632,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/features/feature.ts",
-      "line": 93,
+      "line": 98,
       "prose": "One feature, declaring every registry contribution it makes. Only `name` is\n required; every contribution field is optional so a feature opts into exactly\n the registries it touches."
     },
     {
@@ -2354,6 +2652,35 @@
       "sub": "const",
       "path": "entities/features/index.ts",
       "line": 18
+    },
+    {
+      "id": "f:entities/features/security.ts",
+      "parent": "c:entities/features",
+      "label": "security.ts",
+      "kind": "file",
+      "sub": "entities/features/security.ts",
+      "path": "entities/features/security.ts",
+      "prose": "security.ts — the FEATURE-SECURITY BARREL. The dependency-free merge of every\nfeature's pure-data security contribution (write class + egress sensitivity),\nimported by entities/Hive/policy.ts to compose the EFFECTIVE write-policy /\nsensitive-column maps.\n\nTHE LEAF-PRESERVATION INVARIANT (read before editing): policy.ts is the\ndependency-free security leaf — every enforcement layer derives from it without a\ncycle. policy.ts may import THIS barrel only because this barrel (and the\nper-feature */security.ts files it re-exports) imports nothing but PURE DATA and\nTYPES. It MUST NOT import a feature manifest.ts (manifests carry code: effect\nbodies, route handlers — importing one would pull runtime code into the security\nleaf and risk a cycle). When a new feature owns kernel patterns, add its\npure-data */security.ts here, NOT its manifest.\n\nCollisions fail LOUDLY (throw) rather than silently last-write-wins — two features\nclaiming the same pattern's write class or sensitive columns is a bug."
+    },
+    {
+      "id": "s:entities/features/security.ts#FEATURE_WRITE_POLICY",
+      "parent": "f:entities/features/security.ts",
+      "label": "FEATURE_WRITE_POLICY",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/security.ts",
+      "line": 44,
+      "prose": "Every feature's write-class rows, merged. Folded into the effective\n KERNEL_WRITE_POLICY by policy.ts (`{...CORE, ...FEATURE_WRITE_POLICY}`)."
+    },
+    {
+      "id": "s:entities/features/security.ts#FEATURE_SENSITIVE_COLUMNS",
+      "parent": "f:entities/features/security.ts",
+      "label": "FEATURE_SENSITIVE_COLUMNS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/features/security.ts",
+      "line": 51,
+      "prose": "Every feature's egress-sensitive columns, merged. Folded into the effective\n SENSITIVE_COLUMNS by policy.ts."
     },
     {
       "id": "f:entities/features/system-tasks/manifest.ts",
@@ -2697,22 +3024,13 @@
       "prose": "Extract text from a PDF via unpdf (serverless pdf.js). Pages merged."
     },
     {
-      "id": "s:shared/IO/extract.ts#ExtractionStatus",
-      "parent": "f:shared/IO/extract.ts",
-      "label": "ExtractionStatus",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "shared/IO/extract.ts",
-      "line": 62
-    },
-    {
       "id": "s:shared/IO/extract.ts#extractionPlan",
       "parent": "f:shared/IO/extract.ts",
       "label": "extractionPlan",
       "kind": "symbol",
       "sub": "function",
       "path": "shared/IO/extract.ts",
-      "line": 65,
+      "line": 63,
       "prose": "Classify what extraction a content type gets, without doing the work."
     },
     {
@@ -4022,23 +4340,13 @@
       "prose": "The default rendering for a facet that carries no explicit format — derived\nfrom its declared type, so a datetime is friendly and a boolean is a check\nwithout anyone having to say so. Truth (the type) drives presentation."
     },
     {
-      "id": "s:shared/core/format-palette.ts#isNumericFormat",
-      "parent": "f:shared/core/format-palette.ts",
-      "label": "isNumericFormat",
-      "kind": "symbol",
-      "sub": "function",
-      "path": "shared/core/format-palette.ts",
-      "line": 55,
-      "prose": "Whether a resolved format sorts and aligns as a number (table concerns)."
-    },
-    {
       "id": "s:shared/core/format-palette.ts#resolveFormat",
       "parent": "f:shared/core/format-palette.ts",
       "label": "resolveFormat",
       "kind": "symbol",
       "sub": "function",
       "path": "shared/core/format-palette.ts",
-      "line": 64,
+      "line": 59,
       "prose": "The resolve chain: view override ?? facet intrinsic ?? foreign-key reference ??\ntype default. A declared foreign key (hasLink) wins over the type default — an\nFK facet is a reference by nature — but an explicit format still overrides it.\nUnknown ids fall through (a stale format never crashes a render — it degrades\nto the next source), so the resolver always returns a real FormatId."
     },
     {
@@ -4048,7 +4356,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/core/format-palette.ts",
-      "line": 79,
+      "line": 74,
       "prose": "Validate a view's per-facet `formats` override map: an object of\nfacet-name → format-id. `hasFacet` null = pattern unknown → skip the\nfacet-existence check (format-id checks still run). Returns [] when valid."
     },
     {
@@ -4058,7 +4366,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/core/format-palette.ts",
-      "line": 98,
+      "line": 93,
       "prose": "Agent-facing prose, generated from the palette so the contract can't drift\nfrom what's enforced. Embedded in the _views + set_facet_format docs."
     },
     {
@@ -4387,6 +4695,415 @@
       "label": "react",
       "kind": "external",
       "sub": "module"
+    },
+    {
+      "id": "f:worker-configuration.d.ts",
+      "parent": "c:.",
+      "label": "worker-configuration.d.ts",
+      "kind": "file",
+      "sub": "worker-configuration.d.ts",
+      "path": "worker-configuration.d.ts",
+      "prose": "eslint-disable"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#httpServerHandler",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "httpServerHandler",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12620
+    },
+    {
+      "id": "s:worker-configuration.d.ts#onRequest",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "onRequest",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12659
+    },
+    {
+      "id": "s:worker-configuration.d.ts#PipelineRecord",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "PipelineRecord",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12678
+    },
+    {
+      "id": "s:worker-configuration.d.ts#PipelineBatchMetadata",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "PipelineBatchMetadata",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12679
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Pipeline",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Pipeline",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12683
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__RPC_STUB_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__RPC_STUB_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12748,
+      "prose": "Branded types for identifying `WorkerEntrypoint`/`DurableObject`/`Target`s.\nTypeScript uses *structural* typing meaning anything with the same shape as type `T` is a `T`.\nFor the classes exported by `cloudflare:workers` we want *nominal* typing (i.e. we only want to\naccept `WorkerEntrypoint` from `cloudflare:workers`, not any other class with the same shape)"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__RPC_TARGET_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__RPC_TARGET_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12749
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__WORKER_ENTRYPOINT_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__WORKER_ENTRYPOINT_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12750
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__DURABLE_OBJECT_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__DURABLE_OBJECT_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12751
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__WORKFLOW_ENTRYPOINT_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__WORKFLOW_ENTRYPOINT_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12752
+    },
+    {
+      "id": "s:worker-configuration.d.ts#RpcTargetBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "RpcTargetBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12753
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkerEntrypointBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkerEntrypointBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12756
+    },
+    {
+      "id": "s:worker-configuration.d.ts#DurableObjectBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "DurableObjectBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12759
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowEntrypointBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowEntrypointBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12762
+    },
+    {
+      "id": "s:worker-configuration.d.ts#EntrypointBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "EntrypointBranded",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12765
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Stubable",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Stubable",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12767,
+      "prose": "Types that can be used through `Stub`s"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Stub",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Stub",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12789
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Provider",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Provider",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12836,
+      "prose": "Base type for all other types providing RPC-like interfaces.\nRewrites all methods/properties to be `MethodOrProperty`s, while preserving callable types.\n`Reserved` names (e.g. stub method names like `dup()`) and symbols can't be accessed over RPC."
+    },
+    {
+      "id": "s:worker-configuration.d.ts#RpcStub",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "RpcStub",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12884
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowDurationLabel",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowDurationLabel",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12919
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowSleepDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowSleepDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12920
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowDelayDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowDelayDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12921
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowTimeoutDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowTimeoutDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12922
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowRetentionDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowRetentionDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12923
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowBackoff",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowBackoff",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12924
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepSensitivity",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepSensitivity",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12925
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepConfig",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepConfig",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12926
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowCronSchedule",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowCronSchedule",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12935
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowEvent",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowEvent",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12941
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepEvent",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepEvent",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12948
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepContext",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepContext",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12954
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowRollbackContext",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowRollbackContext",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12962
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowRollbackHandler",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowRollbackHandler",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12967
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepRollbackOptions",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepRollbackOptions",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12968
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowInstanceStatus",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowInstanceStatus",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12982
+    },
+    {
+      "id": "s:worker-configuration.d.ts#waitUntil",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "waitUntil",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12990
+    },
+    {
+      "id": "s:worker-configuration.d.ts#withEnv",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "withEnv",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12991
+    },
+    {
+      "id": "s:worker-configuration.d.ts#withExports",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "withExports",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12992
+    },
+    {
+      "id": "s:worker-configuration.d.ts#withEnvAndExports",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "withEnvAndExports",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12993
+    },
+    {
+      "id": "s:worker-configuration.d.ts#env",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "env",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12994
+    },
+    {
+      "id": "s:worker-configuration.d.ts#exports",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "exports",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12995
+    },
+    {
+      "id": "s:worker-configuration.d.ts#cache",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "cache",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12996
+    },
+    {
+      "id": "s:worker-configuration.d.ts#tracing",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "tracing",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12997
+    },
+    {
+      "id": "s:worker-configuration.d.ts#NonRetryableError",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "NonRetryableError",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "worker-configuration.d.ts",
+      "line": 14376,
+      "prose": "NonRetryableError allows for a user to throw a fatal error\nthat makes a Workflow instance fail immediately without triggering a retry"
     }
   ],
   "edges": [

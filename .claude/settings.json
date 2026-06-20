@@ -1,5 +1,8 @@
 {
   "enabledPlugins": {
     "mnemion-test@mnemion-marketplace": true
+  },
+  "worktree": {
+    "baseRef": "head"
   }
 }
