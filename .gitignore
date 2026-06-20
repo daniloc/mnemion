@@ -30,3 +30,6 @@ worker-configuration.d.ts
 # coherence transient job files (generated docs in docs/coherence are committed)
 mnemion-js/.coherence/
 
+
+# Workflow/agent isolation worktrees (transient)
+.claude/worktrees/

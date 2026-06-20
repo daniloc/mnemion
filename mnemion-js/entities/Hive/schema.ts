@@ -1082,6 +1082,12 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     if (gaps.length) console.warn(`[schema] unclassified sensitive columns (add to SENSITIVE_COLUMNS): ${gaps.join(", ")}`);
   } catch { /* PRAGMA best-effort */ }
 
+  // --- data-is-destiny: warn on a stored aggregate of rows the schema retains ---
+  try {
+    const denorm = findStoredDerivedAggregates(db);
+    if (denorm.length) console.warn(`[schema] data-is-destiny (stored derivable aggregate):\n  ${denorm.join("\n  ")}`);
+  } catch { /* best-effort */ }
+
   // --- Dev seed: populate with realistic data when no secret is configured ---
 
   if (!env?.MNEMION_SECRET && env?.DEV_SEED) {
@@ -1168,6 +1174,50 @@ function verifyFieldsIntegrity(db: any): void {
   if (drifts.length > 0) {
     console.warn(`[mnemion] schema integrity drift detected (${drifts.length}):\n  ${drifts.join("\n  ")}`);
   }
+}
+
+// === data-is-destiny: the decidable "no-hybrid" core ===
+//
+// The doctrine ("store truth once, derive its consequences") is semantic in
+// general — "is this value derivable?" can't be decided from a schema. But it has
+// a DECIDABLE core: a pattern must not STORE an aggregate of rows it also RETAINS.
+// That IS decidable from `_fields` alone — it fires only when BOTH halves are
+// present: a facet named like an aggregate (count/total/tally/sum/num) AND a child
+// pattern whose rows reference this one (so the aggregate is COUNT(*)/SUM over
+// retained rows). It stays SILENT on the legitimate fork the convergence
+// experiment surfaced — a bare counter with no retained instances is the stored
+// truth, not a denormalization (you chose not to keep the events) — and on stored
+// measurements that aren't aggregates of anything (no children to derive from).
+// The label/summary/preview class is deliberately NOT name-matched here: a tag's
+// `label` IS its primitive value, so naming alone false-positives; only the
+// aggregate-beside-retained-source relationship is unambiguous.
+//
+// This iterates the LIVE `_fields` schema, so a feature that adds the hybrid is
+// caught with no hand-list to maintain. Advisory at boot (warn, never throw — a
+// deliberate materialized aggregate is a valid override, but it must be a
+// conscious, reviewed choice); the totality TEST makes it a hard build ratchet.
+const AGGREGATE_FACET_RE = /(^|_)(count|total|tally|sum|num)(_|$)/i;
+
+export function findStoredDerivedAggregates(db: any): string[] {
+  // parent pattern -> the child patterns whose rows reference it (retained source).
+  const childrenOf = new Map<string, string[]>();
+  const refs = db.exec(
+    "SELECT object_name, references_object FROM _fields WHERE references_object IS NOT NULL"
+  ).toArray() as { object_name: string; references_object: string }[];
+  for (const r of refs) {
+    if (!childrenOf.has(r.references_object)) childrenOf.set(r.references_object, []);
+    childrenOf.get(r.references_object)!.push(r.object_name);
+  }
+  const out: string[] = [];
+  const facets = db.exec("SELECT object_name, name FROM _fields").toArray() as { object_name: string; name: string }[];
+  for (const f of facets) {
+    if (!AGGREGATE_FACET_RE.test(f.name)) continue;
+    const kids = childrenOf.get(f.object_name);
+    if (kids && kids.length) {
+      out.push(`"${f.object_name}".${f.name} stores an aggregate while ${kids.map((k) => `"${k}"`).join("/")} retains the rows that derive it — derive it via COUNT(*)/SUM at read time (data-is-destiny), or justify the materialization`);
+    }
+  }
+  return out;
 }
 
 // === Integrity check: write-class policy totality ===
