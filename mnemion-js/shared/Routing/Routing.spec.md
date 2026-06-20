@@ -7,6 +7,7 @@ Declarative HTTP dispatch and session machinery: pattern-matched route table plu
 - router.ts imports ../core/constants
 - routes/auth.ts exists at this node
 - routes/io.ts exists at this node
+- routes/io.ts imports ../router
 
 ## why
 

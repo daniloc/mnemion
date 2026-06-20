@@ -17,6 +17,11 @@ import { applyKernelRules, immutableFieldError, type KernelContext } from "./ker
 import { isInternalWriteProtected, isKernelPattern, isValidWriteTarget } from "./policy";
 import { getMemoryPolicy } from "./prime";
 import { uri } from "../../shared/core/constants";
+import {
+  KERNEL_COLUMN_SET,
+  CALLER_EXCLUDED_ON_CREATE,
+  STRUCTURAL_KERNEL_COLUMNS,
+} from "./kernel-columns";
 
 // === Types ===
 
@@ -45,19 +50,17 @@ export interface DataContext {
 
 // === Constants ===
 
-// Auto-provided kernel columns excluded from the agent-supplied field set on
-// create (id is autoincrement; the rest are system-managed). created_by/updated_by
-// are attribution columns set from ctx.actor, never from caller input.
-const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at", "created_by", "updated_by"]);
-
-// Columns that always exist on a pattern table regardless of declared facets.
-// Used to validate user-supplied identifiers (facets list, sort field) before
-// they're interpolated into SQL — identifiers can't be bound, so they must be
-// confirmed real to prevent injection via the quoting escape.
-const KERNEL_SELECTABLE = new Set(["id", "version", "created_at", "updated_at", "archived_at", "created_by", "updated_by"]);
+// Kernel column slices live in ./kernel-columns (the canonical home):
+//  - CALLER_EXCLUDED_ON_CREATE — auto-provided columns stripped from the
+//    agent-supplied field set on create (created_by/updated_by stamped from ctx.actor).
+//  - KERNEL_COLUMN_SET — every column that always exists on a pattern table
+//    regardless of declared facets; used to validate user-supplied identifiers
+//    (facets list, sort field) before they're interpolated into SQL — identifiers
+//    can't be bound, so they must be confirmed real to prevent injection via the
+//    quoting escape.
 
 function isValidColumn(ctx: DataContext, pattern: string, name: string): boolean {
-  return KERNEL_SELECTABLE.has(name) || ctx.facetMeta(pattern, name) != null;
+  return KERNEL_COLUMN_SET.has(name) || ctx.facetMeta(pattern, name) != null;
 }
 
 const LIMITS = {
@@ -458,9 +461,8 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
     const isDataset = ctx.patternClass(patternName) === "dataset";
 
-    const SKIP_KEYS = new Set(["id", "version", "created_at", "updated_at", "archived_at"]);
     for (const [key, val] of Object.entries(data)) {
-      if (SKIP_KEYS.has(key)) continue;
+      if (STRUCTURAL_KERNEL_COLUMNS.includes(key)) continue;
       const meta = ctx.facetMeta(patternName, key);
       if (!meta)
         return { error: true, message: `Facet "${key}" does not exist on "${patternName}".${suggestFacet(key, patternName, ctx)}` };
@@ -522,7 +524,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           }
         }
 
-        const fields = Object.keys(data).filter((k) => !KERNEL_COLUMNS.has(k));
+        const fields = Object.keys(data).filter((k) => !CALLER_EXCLUDED_ON_CREATE.has(k));
         // Attribution: stamp created_by + updated_by from the session actor.
         const cols = [...fields.map((f) => `"${f}"`), `"created_by"`, `"updated_by"`].join(", ");
         const placeholders = [...fields, "_cb", "_ub"].map(() => "?").join(", ");
@@ -542,6 +544,11 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         if (!data.id) return { error: true, message: "id is required for update" };
         const kernelVersion = ctx.hasKernelVersion(patternName);
 
+        // NOT the kernel column set: this is the write-path immutable-on-update
+        // slice. updated_at is reset by SQL, created_by is untouched, and
+        // updated_by is appended below — so they are deliberately writable here
+        // and excluded from this strip list. version is stripped only when it's
+        // the kernel auto-increment (optimistic-lock check below reads it raw).
         const stripCols = ["id", "created_at", "archived_at"];
         if (kernelVersion) stripCols.push("version");
         const fields = Object.keys(data).filter((k) => !stripCols.includes(k));

@@ -1,5 +1,7 @@
 # Cambium Skills
 
+> **⚠️ Historical design doc.** Predates the **Cambium → Mnemion** rename and the current architecture. Vocabulary is pre-rename (`cambium://` → `mnemion://`, `record` → `entry`, `${CAMBIUM_TOKEN}`/`X-Cambium-Token` → Mnemion equivalents) and the marketplace/skill-delivery mechanism here is aspirational, not a description of shipped code. Kept for the design *rationale*. **For current truth, see [`CLAUDE.md`](../../CLAUDE.md).**
+
 ## Skills as schema objects, served as a live marketplace
 
 A Cambium instance can serve itself as a Claude Code plugin marketplace. Skills are records in schema objects, authored through the same `mutate` tool used for everything else. The Worker synthesizes a marketplace-compliant directory structure from those records on every request. No git repo, no static files, no build step. The agent says "make a skill," writes records, and it's installable.

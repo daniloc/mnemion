@@ -12,9 +12,10 @@
 // and they fail loudly in tests on rename.
 
 import { DurableObject } from "cloudflare:workers";
-import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/constants";
+import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR, IDENTIFIER_RE } from "../../shared/core/constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
+import { KERNEL_COLUMN_SET, STRUCTURAL_KERNEL_COLUMNS } from "./kernel-columns";
 import { IMMUTABLE, expandShortcut, normalizeHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
 import { deriveLabel } from "./labels";
@@ -334,7 +335,7 @@ export class HiveDO extends DurableObject {
         if (f.format) facet.format = f.format;
         return facet;
       }),
-      kernel_columns: ["id", "version", "created_at", "updated_at", "archived_at"],
+      kernel_columns: [...STRUCTURAL_KERNEL_COLUMNS],
     }, null, 2);
   }
 
@@ -625,8 +626,7 @@ export class HiveDO extends DurableObject {
     // target_pattern / target_facet are interpolated as SQL identifiers below.
     // They were validated when the token was created, but re-check here so a
     // malformed/legacy constraint can never break out of the identifier quoting.
-    const IDENT_RE = /^[a-z_][a-z0-9_-]*$/;
-    if (typeof constraints.target_pattern !== "string" || !IDENT_RE.test(constraints.target_pattern) || !this.patternExists(constraints.target_pattern))
+    if (typeof constraints.target_pattern !== "string" || !IDENTIFIER_RE.test(constraints.target_pattern) || !this.patternExists(constraints.target_pattern))
       return this.errorJson("Upload token has an invalid target pattern");
     // Uploads write user patterns only. consumeUpload uses raw UPDATE (not
     // executeMutate), so it must enforce the kernel/internal-write boundary
@@ -634,7 +634,7 @@ export class HiveDO extends DurableObject {
     // closes the _web_cache / _system_docs poisoning path directly.
     if (!isValidWriteTarget(constraints.target_pattern))
       return this.errorJson("Upload token has an invalid target pattern");
-    if (typeof constraints.target_facet !== "string" || !IDENT_RE.test(constraints.target_facet))
+    if (typeof constraints.target_facet !== "string" || !IDENTIFIER_RE.test(constraints.target_facet))
       return this.errorJson("Upload token has an invalid target facet");
 
     const contentBytes = new TextEncoder().encode(content).length;
@@ -830,7 +830,7 @@ export class HiveDO extends DurableObject {
       `SELECT operation, old_data, new_data, created_at FROM _mutation_log WHERE table_name = ? AND record_id = ? ORDER BY id ASC`,
       pattern, id
     ).toArray() as any[];
-    const IGNORE = new Set(["id", "version", "created_at", "updated_at", "archived_at", "created_by", "updated_by"]);
+    const IGNORE = KERNEL_COLUMN_SET;
     const parse = (s: string | null) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
     const revisions = rows.map((r) => {
       const oldD = parse(r.old_data);

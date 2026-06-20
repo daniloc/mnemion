@@ -12,6 +12,11 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 - hive.ts imports cloudflare:workers
 - hive.ts imports ./data
 - policy.ts exists at this node
+- kernel-columns.ts exists at this node
+- data.ts imports ./kernel-columns
+- evolution.ts imports ./kernel-columns
+- schema.ts imports ./kernel-columns
+- hive.ts imports ./kernel-columns
 - data.ts exists at this node
 - mutate-gate.ts exists at this node
 - mutate-gate.ts imports ./policy

@@ -91,6 +91,31 @@ export function extractBasicPassword(request: Request): string | null {
   }
 }
 
+/**
+ * The Bearer-token serve gate, in one place. Parses `Authorization: Bearer
+ * <token>` and validates it against the required `scope` via the hive. The ONLY
+ * thing a served/ingress route varies is the scope string (`read:output:<path>`,
+ * `write:input:<path>`, …); the header parse + the `validateAccessToken` call —
+ * the security invariant — live here so they can't drift per call site, and a new
+ * served route inherits the exact gate by passing only its scope.
+ *
+ * Returns `null` when the request is authorized (proceed); otherwise the `401
+ * Unauthorized` Response the caller returns directly. Call sites still own their
+ * surrounding allow-list (visibility !== "public") and the dev-mode 404 refusal;
+ * this owns only the common Bearer parse + validate that was copied verbatim.
+ */
+export async function denyUnlessBearerScope(
+  ctx: RouteContext,
+  scope: string,
+): Promise<Response | null> {
+  const authHeader = ctx.request.headers.get("Authorization");
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token || !(await ctx.hive.validateAccessToken(token, scope))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  return null;
+}
+
 // === Session cookies ===
 
 const SESSION_COOKIE = "__session";

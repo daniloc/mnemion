@@ -1,4 +1,4 @@
-import type { RouteHandler } from "../router";
+import { type RouteHandler, denyUnlessBearerScope } from "../router";
 import { zipSync, strToU8 } from "fflate";
 import { extractionPlan, decodeText, capText } from "../../IO/extract";
 
@@ -22,12 +22,8 @@ export const serveSharedEntry: RouteHandler = async (ctx) => {
     if (!ctx.env.MNEMION_SECRET) {
       return new Response("Not found", { status: 404 });
     }
-    const authHeader = ctx.request.headers.get("Authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    const scope = `read:entry:${ctx.params.pattern}:${ctx.params.id}`;
-    if (!token || !(await ctx.hive.validateAccessToken(token, scope))) {
-      return new Response("Unauthorized", { status: 401 });
-    }
+    const denied = await denyUnlessBearerScope(ctx, `read:entry:${ctx.params.pattern}:${ctx.params.id}`);
+    if (denied) return denied;
   }
 
   const body = JSON.stringify(result.entry, null, 2);
@@ -99,11 +95,8 @@ export const serveOutput: RouteHandler = async (ctx) => {
     if (!ctx.env.MNEMION_SECRET) {
       return new Response("Not found", { status: 404 });
     }
-    const authHeader = ctx.request.headers.get("Authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token || !(await ctx.hive.validateAccessToken(token, `read:output:${ctx.params.path}`))) {
-      return new Response("Unauthorized", { status: 401 });
-    }
+    const denied = await denyUnlessBearerScope(ctx, `read:output:${ctx.params.path}`);
+    if (denied) return denied;
   }
 
   const etag = `"${new Date(result.updated_at).getTime()}"`;
@@ -183,11 +176,8 @@ export const servePublication: RouteHandler = async (ctx) => {
     if (!ctx.env.MNEMION_SECRET) {
       return new Response("Not found", { status: 404 });
     }
-    const authHeader = ctx.request.headers.get("Authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token || !(await ctx.hive.validateAccessToken(token, `read:publication:${ctx.params.path}`))) {
-      return new Response("Unauthorized", { status: 401 });
-    }
+    const denied = await denyUnlessBearerScope(ctx, `read:publication:${ctx.params.path}`);
+    if (denied) return denied;
   }
 
   // ETag derives from max(publication.updated_at, latest served entry) — content
@@ -232,11 +222,8 @@ export const receiveInput: RouteHandler = async (ctx) => {
     if (!ctx.env.MNEMION_SECRET) {
       return new Response("Not found", { status: 404 });
     }
-    const authHeader = ctx.request.headers.get("Authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token || !(await ctx.hive.validateAccessToken(token, `write:input:${ctx.params.path}`))) {
-      return new Response("Unauthorized", { status: 401 });
-    }
+    const denied = await denyUnlessBearerScope(ctx, `write:input:${ctx.params.path}`);
+    if (denied) return denied;
   }
 
   const body = await ctx.request.text();
@@ -331,11 +318,8 @@ export const serveDocument: RouteHandler = async (ctx) => {
     if (!ctx.env.MNEMION_SECRET) {
       return new Response("Not found", { status: 404 });
     }
-    const authHeader = ctx.request.headers.get("Authorization");
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token || !(await ctx.hive.validateAccessToken(token, `read:document:${id}`))) {
-      return new Response("Unauthorized", { status: 401 });
-    }
+    const denied = await denyUnlessBearerScope(ctx, `read:document:${id}`);
+    if (denied) return denied;
   }
 
   const etag = `"${new Date(doc.stored_at).getTime()}"`;

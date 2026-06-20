@@ -20,6 +20,7 @@ import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
 import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns } from "./policy";
+import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
 
@@ -1103,7 +1104,7 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 // Drift is reported, not thrown — a degraded boot is recoverable; a refusing
 // boot is not. Real fix is to derive name/required/etc. from PRAGMA at read
 // time and shrink _fields to only its semantic-only columns.
-const KERNEL_COLS = new Set(["id", "version", "created_at", "updated_at", "archived_at", "created_by", "updated_by"]);
+const KERNEL_COLS = KERNEL_COLUMN_SET;
 
 function verifyFieldsIntegrity(db: any): void {
   const drifts: string[] = [];

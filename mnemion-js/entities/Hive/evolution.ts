@@ -12,9 +12,10 @@
 // create_pattern reserves the `_` namespace here so a user pattern can never
 // collide with the kernel namespace that isKernelPattern keys on.
 
-import { PRODUCT_NAME, uri } from "../../shared/core/constants";
+import { PRODUCT_NAME, uri, IDENTIFIER_RE } from "../../shared/core/constants";
 import { ensureAuditTriggers } from "./schema";
 import { isKernelPattern } from "./policy";
+import { FACET_RESERVED_COLUMNS } from "./kernel-columns";
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
 import type { StoreIndex, IndexFacetEntry } from "./hive";
 
@@ -28,27 +29,23 @@ export interface EvolutionContext {
   entryExists(pattern: string, id: number): boolean;
 }
 
-// === Constants (shared with hive.ts — could be centralized later) ===
+// === Constants ===
 
 const SQLITE_TYPE_MAP: Record<string, string> = {
   text: "TEXT", number: "REAL", integer: "INTEGER", boolean: "INTEGER", datetime: "TEXT", select: "TEXT",
 };
-
-const KERNEL_COLUMNS = new Set(["id", "created_at", "updated_at", "archived_at"]);
 
 const LIMITS = {
   NAME_MAX_LEN: 64,
   FACETS_PER_PATTERN: 64,
 };
 
-const NAME_RE = /^[a-z_][a-z0-9_-]*$/;
-
 const PATTERN_CLASSES = new Set(["knowledge", "dataset"]);
 
 function validateName(kind: string, name: string): string | null {
   if (!name || name.length > LIMITS.NAME_MAX_LEN)
     return `${kind} name must be 1–${LIMITS.NAME_MAX_LEN} characters, got ${name?.length ?? 0}`;
-  if (!NAME_RE.test(name))
+  if (!IDENTIFIER_RE.test(name))
     return `${kind} name must be lowercase, start with a letter, and contain only a-z, 0-9, hyphens, underscores. Got: "${name}"`;
   return null;
 }
@@ -64,7 +61,7 @@ function validateFacets(
     const nameErr = validateName("Facet", a.name);
     if (nameErr) return nameErr;
     if (!SQLITE_TYPE_MAP[a.type]) return `Unknown facet type: ${a.type}`;
-    if (KERNEL_COLUMNS.has(a.name))
+    if (FACET_RESERVED_COLUMNS.has(a.name))
       return `Facet "${a.name}" is a kernel-provided column and cannot be defined by the user`;
     if (existingFacets?.some((e) => e.name === a.name))
       return `Facet "${a.name}" already exists on the pattern`;

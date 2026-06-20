@@ -1,5 +1,7 @@
 # Cambium
 
+> **⚠️ Historical design doc.** Written before the project was renamed **Cambium → Mnemion** and before the current architecture solidified. The vocabulary here is pre-rename and no longer matches the code: `record`/`object` → `entry`/`pattern`, `cambium://` → `mnemion://`, `CambiumDO` → split into `HiveDO` + `SessionDO`, "six/eight tools" → 8 tools. Several mechanisms described as future (`_route_log`, queues, the route DSL) were built differently or not at all. Kept for the design *rationale* (the "why") only. **For current truth, see [`CLAUDE.md`](../../CLAUDE.md).**
+
 ## Unified memory between agent surfaces and the humans who work with them
 
 Cambium is an MCP server on Cloudflare Workers that provides persistent, evolving shared memory between a human and their AI agents across Claude.ai, Claude Code, the Anthropic API, and a native iOS app.
