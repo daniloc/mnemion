@@ -24,7 +24,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 - mutate-gate.ts imports ./policy
 - prime.ts imports ./policy
 - boundary "kernel write boundary" at writeClass via test "write-policy totality"
-- boundary "kernel read+write capability" at query via test "context-capability totality"
+- boundary "kernel read+write capability" at query via guard "context-capability totality"
 - boundary "egress-sensitivity totality" at SENSITIVE_COLUMNS via test "egress-sensitivity totality"
 - boundary "pattern-effects totality" at PATTERN_EFFECTS via test "pattern-effects totality"
 - boundary "facet/kernel-column collision" at FACET_RESERVED_COLUMNS via test "facet-kernel-collision totality"
