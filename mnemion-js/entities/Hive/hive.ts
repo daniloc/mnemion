@@ -15,7 +15,7 @@ import { DurableObject } from "cloudflare:workers";
 import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/constants";
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
-import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
+import { IMMUTABLE, expandShortcut, normalizeHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
 import { deriveLabel } from "./labels";
 import * as cred from "../../shared/Auth/credentials";
@@ -27,6 +27,7 @@ import * as pubs from "../../shared/IO/publications";
 import * as web from "../../shared/IO/web";
 import * as docs from "./documents";
 import * as rnd from "./render";
+import * as fed from "./federation";
 
 // === Types ===
 
@@ -912,98 +913,25 @@ export class HiveDO extends DurableObject {
   }
 
   // === Federated resolve: foreign hive URIs ===
+  //
+  // Evicted into federation.ts: the allow-list consent check and the
+  // token-bearing fetch are co-located there as a unit so an approved host and a
+  // contacted host can never drift apart. The DO hands the module a NARROW
+  // context — only the bound `_federation_hosts` lookup (never `db`) + errorJson —
+  // and keeps the thin RPC wrapper. `resolve` (above) still decides local vs.
+  // federated and dispatches here.
+
+  /** The federation module's narrowed hands: the consent allow-list (bound over
+   *  the `_federation_hosts` lookup, never `db`) + errorJson. */
+  private fedCtx(): fed.FederationContext {
+    return {
+      isHostAllowed: (h) => this.isFederationHostAllowed(h),
+      errorJson: (m) => this.errorJson(m),
+    };
+  }
 
   private async federatedResolve(host: string, path: string): Promise<string> {
-    const [cleanPath, queryString] = path.split("?");
-    const params = new URLSearchParams(queryString || "");
-    const token = params.get("token");
-
-    if (!cleanPath) {
-      return this.errorJson(`Foreign URI ${uri(host + "/")} requires a path after the host`);
-    }
-
-    // SSRF guard: refuse to fetch loopback / private / link-local / internal
-    // targets. Federation is for sovereign public hives; an attacker-influenced
-    // URI must not be able to probe internal infrastructure or cloud metadata.
-    if (isBlockedFederationHost(host)) {
-      return this.errorJson(`Refusing to federate with non-public host: ${host}`);
-    }
-
-    // Consent boundary: only federate with hosts the human has explicitly
-    // approved (entries in _federation_hosts). This is what stops an agent —
-    // possibly acting on untrusted content — from sending this hive's access
-    // token (?token=) to an arbitrary attacker-controlled host.
-    if (!this.isFederationHostAllowed(host)) {
-      return this.errorJson(
-        `Host "${normalizeHost(host)}" is not on this hive's federation allow-list, so resolve will not contact it (and will not send any token). ` +
-        `If the human approves federating with it, add it: mutate(pattern: "_federation_hosts", data: {host: "${normalizeHost(host)}"}).`
-      );
-    }
-
-    // Build the fetch URL from the SAME normalized host we authorized above —
-    // never the raw segment — so "what we approved" and "what we contact" can't
-    // diverge.
-    let currentUrl = `https://${normalizeHost(host)}/o/${cleanPath}`;
-
-    // Manual redirect handling. The host block + consent allow-list are only
-    // meaningful if every hop is re-validated: with the default redirect:"follow"
-    // a compromised or redirecting peer could bounce us to 169.254.169.254 /
-    // loopback (SSRF) or carry the owner's token to an un-approved host. We
-    // follow at most MAX_REDIRECTS hops, re-checking the block list AND the
-    // allow-list on each, and only send the token to allow-listed hosts.
-    const MAX_REDIRECTS = 3;
-
-    try {
-      let response: Response;
-      for (let hop = 0; ; hop++) {
-        const headers: Record<string, string> = {};
-        if (token) headers["Authorization"] = `Bearer ${token}`;
-        response = await fetch(currentUrl, { headers, redirect: "manual" });
-
-        const location = response.headers.get("Location");
-        if (response.status >= 300 && response.status < 400 && location) {
-          if (hop >= MAX_REDIRECTS) {
-            return this.errorJson(`Foreign hive ${host} exceeded the redirect limit for: ${cleanPath}`);
-          }
-          let next: URL;
-          try {
-            next = new URL(location, currentUrl);
-          } catch {
-            return this.errorJson(`Foreign hive ${host} returned an invalid redirect for: ${cleanPath}`);
-          }
-          if (next.protocol !== "https:") {
-            return this.errorJson(`Refusing to follow non-https redirect from ${host} (token not sent).`);
-          }
-          if (isBlockedFederationHost(next.host) || !this.isFederationHostAllowed(next.host)) {
-            return this.errorJson(`Refusing to follow redirect from ${host} to non-allow-listed host ${next.host} (token not sent).`);
-          }
-          currentUrl = next.toString();
-          continue;
-        }
-        break;
-      }
-
-      if (!response.ok) {
-        const status = response.status;
-        if (status === 401) return this.errorJson(`Foreign hive at ${host} requires authorization for: ${cleanPath}`);
-        if (status === 404) return this.errorJson(`Not found on foreign hive ${host}: ${cleanPath}`);
-        return this.errorJson(`Foreign hive ${host} returned ${status} for: ${cleanPath}`);
-      }
-
-      const content = await response.text();
-      const contentType = response.headers.get("Content-Type") || "text/plain";
-
-      // Parse JSON responses so they nest cleanly
-      if (contentType.includes("application/json")) {
-        try {
-          return JSON.stringify({ federated: true, host, path: cleanPath, content: JSON.parse(content) }, null, 2);
-        } catch { /* fall through to text */ }
-      }
-
-      return JSON.stringify({ federated: true, host, path: cleanPath, content_type: contentType, content }, null, 2);
-    } catch (e: any) {
-      return this.errorJson(`Failed to reach foreign hive at ${host}: ${e.message}`);
-    }
+    return fed.federatedResolve(this.fedCtx(), host, path);
   }
 
   async search(term: string, objectsJson: string, limit: number): Promise<string> {

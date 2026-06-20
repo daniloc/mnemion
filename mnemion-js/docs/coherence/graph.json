@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-06-20 01:20Z",
+  "generatedAt": "2026-06-20 03:14Z",
   "root": "mnemion-js",
-  "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
+  "absRoot": "/Users/daniloc/Documents/Dev/mnemion/.claude/worktrees/agent-ae41229165b904b7e/mnemion-js",
   "nodes": [
     {
       "id": "c:.",
@@ -29,9 +29,19 @@
         "hive.ts imports ./data",
         "policy.ts exists at this node",
         "data.ts exists at this node",
-        "prime.ts imports ./policy"
+        "prime.ts imports ./policy",
+        "passes test \"write-policy totality\"",
+        "passes test \"context-capability totality\"",
+        "passes test \"pattern-effects totality\"",
+        "effects.ts exists at this node",
+        "documents.ts exists at this node",
+        "hive.ts imports ./documents",
+        "render.ts exists at this node",
+        "hive.ts imports ./render",
+        "federation.ts exists at this node",
+        "hive.ts imports ./federation"
       ],
-      "why": "HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints precisely so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf source of truth for \"which patterns agents can write, through which path, what gate fires\" — unclassified kernel patterns fail CLOSED (System → denied) so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary cannot drift between layers.\n\nReads share the SAME boundary, on the same flag. `DataContext.trusted` is required and gates kernel access symmetrically: an untrusted context (`!trusted`) may neither write a kernel pattern nor read one. Served/untrusted reads (public page chart/metric, OG card, publication source, `/o/entry`) go through `servedDataCtx`/`servedQuery` (which set `trusted: false`), where the `data.ts` engine refuses any kernel pattern — so a serve sink physically cannot read `_access_tokens`/`_members`/etc. Because the flag is required (no default), a NEW serve path can't silently inherit kernel access; it fails CLOSED. This replaced a block-list of scattered per-sink `isKernelPattern` checks that failed open. The read totality is the served-entry-point enumeration in `security.test.ts`, the analogue of `policy.test.ts` for writes. Instance identity is configuration, not request data: `currentHost()` is authoritative on `WORKER_HOST` and IGNORES the inbound `Host`, so an attacker cannot poison a capability URL (`upload_url`/`page_url`/`og_image`) by sending a spoofed `Host` on an unauthenticated request (e.g. a `/ws` upgrade)."
+      "why": "HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints precisely so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf source of truth for \"which patterns agents can write, through which path, what gate fires\" — unclassified kernel patterns fail CLOSED (System → denied) so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary cannot drift between layers.\n\nReads share the SAME boundary, on the same flag. `DataContext.trusted` is required and gates kernel access symmetrically: an untrusted context (`!trusted`) may neither write a kernel pattern nor read one. The trust decision is a CAPABILITY, not a per-call-site convention: `HiveDO` exposes two named constructors over a trust-agnostic `ctxFields` — `ownerDataCtx` (the ONLY `trusted: true`) and `servedDataCtx` (`trusted: false`) — and there is no trust parameter to dial at a call site. Served/untrusted reads (public page chart/metric, OG card, publication source, `/o/entry`) AND untrusted writes (ingress, upload) go through `servedDataCtx`, where the `data.ts` engine refuses any kernel pattern — so a serve/ingress sink physically cannot read or write `_access_tokens`/`_members`/etc. The served public-page + OG-card render orchestration lives in its own module (`render.ts`), handed a narrow `RenderContext` that exposes ONLY the served reader (`servedQuery`) — never `db`, never a trusted context, no way to construct one — so the render path's single data access IS the kernel-refusing chokepoint. That made the old per-block `isKernelPattern` guard in `renderBlockHtml` provably redundant (a kernel-named block just reads back empty through `servedQuery`); it was deleted, leaving one chokepoint instead of a guard to forget per block type. Because trust is fixed by the constructor (and the engine flag is required, no default), a NEW serve path can't silently inherit kernel access; it fails CLOSED. `context-capability totality` guards that the split can't rot back into a trust-defaulting factory. This replaced a block-list of scattered per-sink `isKernelPattern` checks that failed open. The read totality is the served-entry-point enumeration in `security.test.ts`, the analogue of `policy.test.ts` for writes. Instance identity is configuration, not request data: `currentHost()` is authoritative on `WORKER_HOST` and IGNORES the inbound `Host`, so an attacker cannot poison a capability URL (`upload_url`/`page_url`/`og_image`) by sending a spoofed `Host` on an unauthenticated request (e.g. a `/ws` upgrade).\n\nCross-hive (foreign-URI) resolution lives in its own module (`federation.ts`), the one place that sends THIS hive's access token (`?token=` → `Authorization: Bearer`) to another origin. Its token-send is CO-LOCATED with the allow-list consent check in a single function (`federatedResolve`) precisely so the approved host and the contacted host can never drift apart: a token is attached only to a request whose host is BOTH not `isBlockedFederationHost` (SSRF block) AND `isHostAllowed` (the `_federation_hosts` consent allow-list), and that pair is re-validated on the INITIAL request AND on EVERY redirect hop, in lockstep with the fetch loop. Splitting the gate from the fetch — across modules or call sites — would let a future edit move one without the other; here they move as a unit. The DO hands the module a NARROW `FederationContext` — only the bound allow-list lookup (`isHostAllowed`, wrapping `_federation_hosts`, never `db`) + `errorJson` — so federation cannot read anything else; `resolve` stays on the DO and decides local vs. federated before dispatching here. This is the security analysis's \"condition #2\"."
     },
     {
       "id": "c:entities/Session",
@@ -172,6 +182,100 @@
       "line": 708
     },
     {
+      "id": "f:entities/Hive/documents.ts",
+      "parent": "c:entities/Hive",
+      "label": "documents.ts",
+      "kind": "file",
+      "sub": "entities/Hive/documents.ts",
+      "path": "entities/Hive/documents.ts",
+      "prose": "documents.ts — document-store lifecycle (R2-backed blobs), evicted from HiveDO.\n\nReceives a narrow DocumentsContext, never `this` and never a trusted executeMutate.\nIts writes are SYSTEM bookkeeping on _documents' IMMUTABLE columns (r2_key / size /\ncontent_type / stored_at / extracted_text / extraction_status) — the columns agents\ncannot set through mutate — so they stay narrow, specific UPDATEs rather than a new\ngeneral write chokepoint. The DO keeps thin RPC wrappers; this holds the logic."
+    },
+    {
+      "id": "s:entities/Hive/documents.ts#DocumentsContext",
+      "parent": "f:entities/Hive/documents.ts",
+      "label": "DocumentsContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/documents.ts",
+      "line": 11
+    },
+    {
+      "id": "s:entities/Hive/documents.ts#consumeDocumentUpload",
+      "parent": "f:entities/Hive/documents.ts",
+      "label": "consumeDocumentUpload",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/documents.ts",
+      "line": 24,
+      "prose": "Record a completed upload: bind the R2 key + metadata to the document entry and\n burn the single-use token."
+    },
+    {
+      "id": "s:entities/Hive/documents.ts#recordExtraction",
+      "parent": "f:entities/Hive/documents.ts",
+      "label": "recordExtraction",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/documents.ts",
+      "line": 52,
+      "prose": "Record extracted text + status, then re-embed so the text joins prime recall."
+    },
+    {
+      "id": "s:entities/Hive/documents.ts#extractDocument",
+      "parent": "f:entities/Hive/documents.ts",
+      "label": "extractDocument",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/documents.ts",
+      "line": 73,
+      "prose": "Schedule async PDF text extraction: mark pending, read the blob from R2, extract,\n record. Returns immediately; the work outlives the RPC via schedule()."
+    },
+    {
+      "id": "s:entities/Hive/documents.ts#resolveDocument",
+      "parent": "f:entities/Hive/documents.ts",
+      "label": "resolveDocument",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/documents.ts",
+      "line": 95,
+      "prose": "Resolve a document for serving. Returns found:false until bytes exist."
+    },
+    {
+      "id": "f:entities/Hive/effects.ts",
+      "parent": "c:entities/Hive",
+      "label": "effects.ts",
+      "kind": "file",
+      "sub": "entities/Hive/effects.ts",
+      "path": "entities/Hive/effects.ts",
+      "prose": "effects.ts — declarative pattern effects, the SIDE-EFFECTING half of the kernel.\n\nkernel.ts holds the PURE pre-mutation hooks (ON_CREATE/ON_WRITE): they validate\nand transform DATA before insert, no I/O. This file is their symmetric impure\ntwin: orchestration that runs AROUND a commit — mint a sub-token, schedule an R2\ndelete, build a capability URL, run a task. Keyed by pattern, scannable as a\ntable, so adding a side-effecting pattern is one entry instead of another\n`if (patternName === …)` branch in mutate().\n\nAn effect receives an `EffectContext` — the DO's NARROWED hands — never `this`,\nand never a raw trusted `executeMutate` (that would be a second uncontrolled write\nchokepoint). The one sanctioned internal write is `internalCreate`.\n\nTwo phases, mirroring the kernel hooks but with a side-effect contract:\n  before — runs PRE-commit; may read; may abort by throwing (reserve for effects\n           that MUST succeed for the write to be valid).\n  after  — runs POST-commit; best-effort / annotating. A failed URL or token\n           DEGRADES the result (matches today), it never unwinds the committed row."
+    },
+    {
+      "id": "s:entities/Hive/effects.ts#EffectContext",
+      "parent": "f:entities/Hive/effects.ts",
+      "label": "EffectContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/effects.ts",
+      "line": 20
+    },
+    {
+      "id": "s:entities/Hive/effects.ts#PatternEffect",
+      "parent": "f:entities/Hive/effects.ts",
+      "label": "PatternEffect",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/effects.ts",
+      "line": 40
+    },
+    {
+      "id": "s:entities/Hive/effects.ts#PATTERN_EFFECTS",
+      "parent": "f:entities/Hive/effects.ts",
+      "label": "PATTERN_EFFECTS",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "entities/Hive/effects.ts",
+      "line": 52
+    },
+    {
       "id": "f:entities/Hive/evolution.ts",
       "parent": "c:entities/Hive",
       "label": "evolution.ts",
@@ -246,6 +350,34 @@
       "line": 610
     },
     {
+      "id": "f:entities/Hive/federation.ts",
+      "parent": "c:entities/Hive",
+      "label": "federation.ts",
+      "kind": "file",
+      "sub": "entities/Hive/federation.ts",
+      "path": "entities/Hive/federation.ts",
+      "prose": "federation.ts — cross-hive (foreign-URI) resolution, evicted from HiveDO.\n\nThis is the security-critical seam: it is the only place that sends THIS\nhive's access token (?token= → Authorization: Bearer) to another origin. The\nentire point of keeping it as one module is CO-LOCATION — the allow-list\nconsent check and the token-bearing fetch live side-by-side in `federatedResolve`,\nso \"the host the human approved\" and \"the host we actually contacted\" can never\ndrift apart. A token is attached only to a request whose host is BOTH\n(a) not `isBlockedFederationHost(host)` (SSRF block) AND (b) `ctx.isHostAllowed(host)`\n(consent allow-list) — and that pair is re-checked on the INITIAL request AND on\nEVERY redirect hop, in lockstep with the fetch loop. Splitting the gate from the\nfetch would let a future edit move one without the other; here they move as a unit.\n\nFederationContext is deliberately narrow: a bound `isHostAllowed(host)` (which\nwraps the `_federation_hosts` lookup — the module never sees `db`) plus `errorJson`.\n`isBlockedFederationHost` / `normalizeHost` are pure and imported directly."
+    },
+    {
+      "id": "s:entities/Hive/federation.ts#FederationContext",
+      "parent": "f:entities/Hive/federation.ts",
+      "label": "FederationContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/federation.ts",
+      "line": 20
+    },
+    {
+      "id": "s:entities/Hive/federation.ts#federatedResolve",
+      "parent": "f:entities/Hive/federation.ts",
+      "label": "federatedResolve",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/federation.ts",
+      "line": 32,
+      "prose": "Resolve a foreign-hive URI (`mnemion://other.hive.dev/entry/axioms/7`) by\n fetching `https://<host>/o/<path>`, optionally carrying `?token=` as a Bearer.\n The allow-list/SSRF gate and the token-bearing fetch are co-located here so an\n approved host and a contacted host can never diverge."
+    },
+    {
       "id": "f:entities/Hive/hive.ts",
       "parent": "c:entities/Hive",
       "label": "hive.ts",
@@ -262,7 +394,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/hive.ts",
-      "line": 35
+      "line": 34
     },
     {
       "id": "s:entities/Hive/hive.ts#IndexPatternEntry",
@@ -271,7 +403,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/hive.ts",
-      "line": 43
+      "line": 42
     },
     {
       "id": "s:entities/Hive/hive.ts#IndexFacetEntry",
@@ -280,7 +412,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/hive.ts",
-      "line": 55
+      "line": 54
     },
     {
       "id": "s:entities/Hive/hive.ts#HiveDO",
@@ -289,7 +421,7 @@
       "kind": "symbol",
       "sub": "class",
       "path": "entities/Hive/hive.ts",
-      "line": 72
+      "line": 71
     },
     {
       "id": "s:entities/Hive/hive.ts#db()",
@@ -298,7 +430,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 78
+      "line": 77
     },
     {
       "id": "s:entities/Hive/hive.ts#migrateTokenHashes()",
@@ -307,7 +439,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 94,
+      "line": 93,
       "prose": "One-time cleanup of secrets that leaked BEFORE born-hashing: hash any legacy\n plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64), and\n scrub any raw token the old post-insert path left in the `_mutation_log`\n audit trail. Idempotent; a near-no-op after the first cold start."
     },
     {
@@ -317,7 +449,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 125,
+      "line": 126,
       "prose": "Born-hashed secrets: for a CREATE of a pattern with a `secret` column\n (SENSITIVE_COLUMNS), generate the preimage in app code and set the column to\n its DIGEST *before* the row is inserted — so the audit trigger, the broadcast,\n and any read only ever see the hash. Returns the raw preimage for the one-time\n response (the only place it exists). Mutates `data` in place; returns null for\n non-secret patterns / non-create ops."
     },
     {
@@ -327,7 +459,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 134
+      "line": 135
     },
     {
       "id": "s:entities/Hive/hive.ts#instanceUrl()",
@@ -336,7 +468,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 148,
+      "line": 149,
       "prose": "A public URL on this instance — the one place upload_url / page_url /\n og_image hand-build `https://{host}/{path}` from the live host."
     },
     {
@@ -346,7 +478,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 154
+      "line": 155
     },
     {
       "id": "s:entities/Hive/hive.ts#getCharter()",
@@ -355,7 +487,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 218
+      "line": 219
     },
     {
       "id": "s:entities/Hive/hive.ts#getRecentActivity()",
@@ -364,7 +496,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 227
+      "line": 228
     },
     {
       "id": "s:entities/Hive/hive.ts#getMaintenanceStatus()",
@@ -373,7 +505,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 272
+      "line": 273
     },
     {
       "id": "s:entities/Hive/hive.ts#computeMaintenanceStatus()",
@@ -382,7 +514,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 276
+      "line": 277
     },
     {
       "id": "s:entities/Hive/hive.ts#getStaleEntries()",
@@ -391,7 +523,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 324
+      "line": 325
     },
     {
       "id": "s:entities/Hive/hive.ts#evoCtx()",
@@ -400,7 +532,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 393
+      "line": 394
     },
     {
       "id": "s:entities/Hive/hive.ts#proposeChange()",
@@ -409,7 +541,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 401
+      "line": 402
     },
     {
       "id": "s:entities/Hive/hive.ts#getPendingChange()",
@@ -418,7 +550,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 408,
+      "line": 409,
       "prose": "Peek at a pending change's spec without applying it — lets the SessionDO\ndecide whether the change needs a consent round-trip (e.g. set_sharing to a\nnon-private visibility, which publishes an entry over HTTP)."
     },
     {
@@ -428,7 +560,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 419
+      "line": 420
     },
     {
       "id": "s:entities/Hive/hive.ts#revertChange()",
@@ -437,7 +569,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 427
+      "line": 428
     },
     {
       "id": "s:entities/Hive/hive.ts#getSchema()",
@@ -446,7 +578,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 437
+      "line": 438
     },
     {
       "id": "s:entities/Hive/hive.ts#getHistory()",
@@ -455,7 +587,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 473
+      "line": 474
     },
     {
       "id": "s:entities/Hive/hive.ts#getEntry()",
@@ -464,7 +596,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 481
+      "line": 482
     },
     {
       "id": "s:entities/Hive/hive.ts#listPatterns()",
@@ -473,16 +605,27 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 514
+      "line": 515
     },
     {
-      "id": "s:entities/Hive/hive.ts#dataCtx()",
+      "id": "s:entities/Hive/hive.ts#ctxFields()",
       "parent": "f:entities/Hive/hive.ts",
-      "label": "dataCtx()",
+      "label": "ctxFields()",
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 521
+      "line": 526,
+      "prose": "Shared DataContext fields, trust-AGNOSTIC. The trust flag is deliberately NOT\n a parameter here — it is fixed by the named constructor a caller chooses\n (`ownerDataCtx` / `servedDataCtx`), so trust can never be dialed at a call\n site — there is no trust boolean to misremember."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#ownerDataCtx()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "ownerDataCtx()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 551,
+      "prose": "TRUSTED context — full kernel read + write. The owner/agent path (MCP session,\n browser session, internal writes). The ONLY constructor that sets `trusted: true`;\n if you are handed this you can reach kernel data, so it is never given to\n orchestration that serves untrusted surfaces."
     },
     {
       "id": "s:entities/Hive/hive.ts#servedDataCtx()",
@@ -491,8 +634,18 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 548,
-      "prose": "A read context for SERVED/untrusted surfaces (public page, /o, /p, OG,\n federation). Marked `trusted: false` — the SAME flag that confines untrusted\n writes — so the engine refuses any kernel pattern for a served read. A serve\n path physically cannot reach `_access_tokens`/`_members`/etc., and new serve\n sinks inherit the boundary by using this context."
+      "line": 561,
+      "prose": "UNTRUSTED context for SERVED surfaces (public page, /o, /p, OG, federation)\n AND untrusted WRITES (ingress, upload). `trusted: false` is the SAME flag the\n engine uses to refuse any kernel pattern, symmetric across read and write — so\n a serve/ingress path physically cannot reach `_access_tokens`/`_members`/etc.\n Orchestration handed only this constructor cannot forge a trusted write: the\n boundary is a capability, not a per-call-site convention."
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#effectCtx()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "effectCtx()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 568,
+      "prose": "The DO's narrowed hands handed to a pattern effect (effects.ts) — capabilities,\n never `this` and never a raw trusted `executeMutate`. The one sanctioned trusted\n write is `internalCreate`."
     },
     {
       "id": "s:entities/Hive/hive.ts#servedQuery()",
@@ -501,7 +654,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 555,
+      "line": 600,
       "prose": "query() for a served/untrusted surface — refuses kernel patterns at the\n engine. Every public/OG/publication read goes through this, so the kernel\n read-boundary lives at one chokepoint instead of a check per serve sink."
     },
     {
@@ -511,7 +664,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 560,
+      "line": 605,
       "prose": "A pattern's class: \"dataset\" (structured records) or \"knowledge\" (default)."
     },
     {
@@ -521,7 +674,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 564
+      "line": 609
     },
     {
       "id": "s:entities/Hive/hive.ts#mutate()",
@@ -530,7 +683,17 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 568
+      "line": 613
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#docsCtx()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "docsCtx()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 680,
+      "prose": "Narrow capabilities handed to the documents module (documents.ts) — db +\n R2 env + broadcast/embed/schedule, never `this`."
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeDocumentUpload()",
@@ -539,8 +702,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 671,
-      "prose": "Record a completed upload: bind the R2 key + metadata to the document entry\n and burn the single-use token. The route has already streamed the bytes to\n R2; on any failure here it deletes that orphaned object."
+      "line": 691
     },
     {
       "id": "s:entities/Hive/hive.ts#recordExtraction()",
@@ -549,8 +711,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 701,
-      "prose": "Record extracted text + status on a document, then re-embed so the text\n joins prime recall (search already covers the facet). Called by the upload\n route after it pulls text from the bytes (inline for text, async for PDF)."
+      "line": 694
     },
     {
       "id": "s:entities/Hive/hive.ts#extractDocument()",
@@ -559,8 +720,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 725,
-      "prose": "Schedule async PDF text extraction inside the DO (which has a real\n waitUntil — the route ctx does not). Marks pending, then reads the blob\n back from R2, extracts, and records. Returns immediately; the work\n outlives the RPC via ctx.waitUntil. Best-effort: failures land as status."
+      "line": 697
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveDocument()",
@@ -569,8 +729,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 749,
-      "prose": "Resolve a document for serving. Returns found:false until bytes exist."
+      "line": 700
     },
     {
       "id": "s:entities/Hive/hive.ts#batchMutate()",
@@ -579,7 +738,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 761
+      "line": 704
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeUpload()",
@@ -588,7 +747,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 799
+      "line": 742
     },
     {
       "id": "s:entities/Hive/hive.ts#webCtx()",
@@ -597,7 +756,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 876
+      "line": 819
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveWeb()",
@@ -606,7 +765,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 880
+      "line": 823
     },
     {
       "id": "s:entities/Hive/hive.ts#resolve()",
@@ -615,7 +774,17 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 904
+      "line": 847
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#fedCtx()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "fedCtx()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 926,
+      "prose": "The federation module's narrowed hands: the consent allow-list (bound over\n the `_federation_hosts` lookup, never `db`) + errorJson."
     },
     {
       "id": "s:entities/Hive/hive.ts#federatedResolve()",
@@ -624,7 +793,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 974
+      "line": 933
     },
     {
       "id": "s:entities/Hive/hive.ts#search()",
@@ -633,7 +802,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1067
+      "line": 937
     },
     {
       "id": "s:entities/Hive/hive.ts#getMutationLog()",
@@ -642,7 +811,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1073
+      "line": 943
     },
     {
       "id": "s:entities/Hive/hive.ts#getEntryHistory()",
@@ -651,7 +820,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1090,
+      "line": 960,
       "prose": "Revision history for one entry, oldest→newest: the audit log scoped to\n (pattern, id), with each UPDATE diffed (changed facet: from → to) and\n version/timestamp churn filtered out. The create is the first revision."
     },
     {
@@ -661,37 +830,18 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1117,
+      "line": 987,
       "prose": "The display label for one entry — what a reference to it should show\n (deriveLabel: title-ish facet, else #id). Used by reference-format chips."
     },
     {
-      "id": "s:entities/Hive/hive.ts#aggRows()",
+      "id": "s:entities/Hive/hive.ts#renderCtx()",
       "parent": "f:entities/Hive/hive.ts",
-      "label": "aggRows()",
+      "label": "renderCtx()",
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1133,
-      "prose": "Aggregate rows for a block (reuses the query engine: group_by x, agg y).\n Still used by the metric block (no x) — chart blocks go through chartData."
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#chartData()",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "chartData()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/hive.ts",
-      "line": 1150,
-      "prose": "Resolve a chart block's data into the payload both server renderers expect:\n raw x,y points for scatter; a pivoted multi-series set when `series` is set\n (non-round marks); a flat aggregate otherwise (incl. pie/donut). Fetch\n params come from chartQuery (the same source the client renderer uses), so\n the `:unit` bucket is split correctly: q.group_by GROUPs BY the full\n \"facet:unit\" field while q.sort and the row read-key rc.x use the bare\n alias the engine emits — passing the full field as the sort field is what\n the engine rejected, flattening bucketed charts to empty."
-    },
-    {
-      "id": "s:entities/Hive/hive.ts#renderBlockHtml()",
-      "parent": "f:entities/Hive/hive.ts",
-      "label": "renderBlockHtml()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/hive.ts",
-      "line": 1175
+      "line": 1007,
+      "prose": "The render module's narrowed hands: only `servedQuery`, the untrusted reader\n that refuses kernel patterns at the engine. Never `db`, never a trusted ctx."
     },
     {
       "id": "s:entities/Hive/hive.ts#getPublicPageRow()",
@@ -700,7 +850,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1203
+      "line": 1011
     },
     {
       "id": "s:entities/Hive/hive.ts#renderPublicPage()",
@@ -709,7 +859,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1209
+      "line": 1017
     },
     {
       "id": "s:entities/Hive/hive.ts#renderPageOgSvg()",
@@ -718,7 +868,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1235
+      "line": 1023
     },
     {
       "id": "s:entities/Hive/hive.ts#getSystemDocList()",
@@ -727,7 +877,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1251
+      "line": 1031
     },
     {
       "id": "s:entities/Hive/hive.ts#getSystemDoc()",
@@ -736,7 +886,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1264
+      "line": 1044
     },
     {
       "id": "s:entities/Hive/hive.ts#renderInstanceDoc()",
@@ -745,7 +895,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1294
+      "line": 1074
     },
     {
       "id": "s:entities/Hive/hive.ts#computeStorageStats()",
@@ -754,7 +904,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1307
+      "line": 1087
     },
     {
       "id": "s:entities/Hive/hive.ts#runTask()",
@@ -763,7 +913,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1338
+      "line": 1118
     },
     {
       "id": "s:entities/Hive/hive.ts#primeCtx()",
@@ -772,7 +922,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1368
+      "line": 1148
     },
     {
       "id": "s:entities/Hive/hive.ts#embedAfterMutate()",
@@ -781,7 +931,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1376
+      "line": 1156
     },
     {
       "id": "s:entities/Hive/hive.ts#prime()",
@@ -790,7 +940,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1393
+      "line": 1178
     },
     {
       "id": "s:entities/Hive/hive.ts#seedVectors()",
@@ -799,7 +949,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1513
+      "line": 1298
     },
     {
       "id": "s:entities/Hive/hive.ts#getCurrentIndex()",
@@ -808,7 +958,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1537
+      "line": 1322
     },
     {
       "id": "s:entities/Hive/hive.ts#isFederationHostAllowed()",
@@ -817,7 +967,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1589,
+      "line": 1374,
       "prose": "True if `host` has been explicitly approved for federation (active _federation_hosts row)."
     },
     {
@@ -827,7 +977,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1600
+      "line": 1385
     },
     {
       "id": "s:entities/Hive/hive.ts#entryExists()",
@@ -836,7 +986,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1606
+      "line": 1391
     },
     {
       "id": "s:entities/Hive/hive.ts#hasKernelVersion()",
@@ -845,7 +995,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1615,
+      "line": 1400,
       "prose": "True if the table's `version` column is the kernel auto-increment, not a user field."
     },
     {
@@ -855,7 +1005,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1634,
+      "line": 1419,
       "prose": "Two-phase consent that survives session churn. First call with a key arms\n it (10-minute TTL) and returns false — the caller should surface the\n confirmation message. Re-issuing the same key while armed consumes it and\n returns true — the caller proceeds. Durable in DO storage because\n sessionless MCP clients land every call on a fresh SessionDO, where an\n in-memory set can never complete the handshake. The consent signal is the\n deliberate re-issue of identical arguments; the TTL bounds how long an\n armed confirmation can wait. Fails closed: storage errors never confirm."
     },
     {
@@ -865,7 +1015,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1655
+      "line": 1440
     },
     {
       "id": "s:entities/Hive/hive.ts#getPasskeys()",
@@ -874,7 +1024,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1656
+      "line": 1441
     },
     {
       "id": "s:entities/Hive/hive.ts#storePasskey()",
@@ -883,7 +1033,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1657
+      "line": 1442
     },
     {
       "id": "s:entities/Hive/hive.ts#updatePasskeyCounter()",
@@ -892,7 +1042,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1660
+      "line": 1445
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAccessToken()",
@@ -901,7 +1051,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1661
+      "line": 1446
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveTokenConstraints()",
@@ -910,7 +1060,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1668,
+      "line": 1453,
       "prose": "Validate a token's scope AND return its parsed constraints in one hashed\n lookup. The token column is a digest at rest, so a raw `WHERE token = ?`\n query (as marketplace did) matches nothing — callers needing constraints\n must go through this."
     },
     {
@@ -920,7 +1070,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1673
+      "line": 1463
     },
     {
       "id": "s:entities/Hive/hive.ts#isMemberActive()",
@@ -929,7 +1079,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1676
+      "line": 1466
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveRegisterToken()",
@@ -938,7 +1088,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1677
+      "line": 1467
     },
     {
       "id": "s:entities/Hive/hive.ts#getRegisterToken()",
@@ -947,7 +1097,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1678
+      "line": 1468
     },
     {
       "id": "s:entities/Hive/hive.ts#approveRegisterToken()",
@@ -956,7 +1106,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1679
+      "line": 1469
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAccessToken()",
@@ -965,7 +1115,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1680
+      "line": 1470
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAuthCode()",
@@ -974,7 +1124,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1681
+      "line": 1471
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAuthCode()",
@@ -983,7 +1133,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1682
+      "line": 1472
     },
     {
       "id": "s:entities/Hive/hive.ts#exportPattern()",
@@ -992,7 +1142,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1686
+      "line": 1476
     },
     {
       "id": "s:entities/Hive/hive.ts#getSharedEntry()",
@@ -1001,7 +1151,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1731
+      "line": 1521
     },
     {
       "id": "s:entities/Hive/hive.ts#resolvePublication()",
@@ -1010,7 +1160,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1758
+      "line": 1550
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveOutput()",
@@ -1019,7 +1169,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1824
+      "line": 1618
     },
     {
       "id": "s:entities/Hive/hive.ts#getInputVisibility()",
@@ -1028,7 +1178,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1837
+      "line": 1631
     },
     {
       "id": "s:entities/Hive/hive.ts#processInput()",
@@ -1037,7 +1187,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1850
+      "line": 1644
     },
     {
       "id": "s:entities/Hive/hive.ts#fetch()",
@@ -1046,7 +1196,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1887
+      "line": 1681
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketMessage()",
@@ -1055,7 +1205,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1903
+      "line": 1697
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketClose()",
@@ -1064,7 +1214,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1907
+      "line": 1701
     },
     {
       "id": "s:entities/Hive/hive.ts#broadcastChange()",
@@ -1073,7 +1223,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1911
+      "line": 1705
     },
     {
       "id": "s:entities/Hive/hive.ts#errorJson()",
@@ -1082,7 +1232,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1925
+      "line": 1719
     },
     {
       "id": "x:cloudflare:workers",
@@ -1568,7 +1718,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 246
+      "line": 249
     },
     {
       "id": "s:entities/Hive/policy.ts#secretColumn",
@@ -1577,7 +1727,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 251,
+      "line": 254,
       "prose": "The single `secret` (born-hashed) column for a pattern, or null."
     },
     {
@@ -1587,8 +1737,18 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 258,
+      "line": 261,
       "prose": "Strip sensitive columns from a row about to leave the DO — the one sieve every\n egress routes through (broadcast, export, served read, mutate response). Shallow\n copy; null/undefined passes through."
+    },
+    {
+      "id": "s:entities/Hive/policy.ts#sealAll",
+      "parent": "f:entities/Hive/policy.ts",
+      "label": "sealAll",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/policy.ts",
+      "line": 272,
+      "prose": "seal a list of rows — the sanctioned form for any served path emitting many\n rows, so no caller hand-rolls `.map(seal)` and forgets the pattern arg."
     },
     {
       "id": "s:entities/Hive/policy.ts#findUnclassifiedSensitiveColumns",
@@ -1597,7 +1757,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 270
+      "line": 281
     },
     {
       "id": "s:entities/Hive/policy.ts#patchRejected",
@@ -1606,7 +1766,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 282,
+      "line": 293,
       "prose": "True if patch must be rejected for this pattern (any consent-gated pattern —\n patch skips the kernel validation hooks and the confirmation round-trip)."
     },
     {
@@ -1616,7 +1776,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/policy.ts",
-      "line": 289,
+      "line": 300,
       "prose": "Whether an escalating create/update/unarchive needs the confirmation\n round-trip, given the data being written (for on_expose visibility checks).\n patch_only patterns never round-trip; patch is handled by patchRejected."
     },
     {
@@ -1784,6 +1944,42 @@
       "prose": "Follow foreign key links one hop from an entry."
     },
     {
+      "id": "f:entities/Hive/render.ts",
+      "parent": "c:entities/Hive",
+      "label": "render.ts",
+      "kind": "file",
+      "sub": "entities/Hive/render.ts",
+      "path": "entities/Hive/render.ts",
+      "prose": "render.ts — served public-page + OG-card render orchestration, evicted from HiveDO.\n\nThis module renders agent-authored public pages (HTML + an OG chart card) for\nunauthenticated, edge-cacheable URLs. Its ONLY data access is `servedQuery` —\nthe untrusted reader, which refuses kernel patterns at the engine (data.ts\nquery()'s `!ctx.trusted` check). RenderContext deliberately exposes nothing\nelse: no `db`, no owner/trusted context, no way to construct one. That is the\npoint of the eviction — a served sink that physically cannot read a kernel\npattern. Everything else this module needs is a PURE helper imported directly\n(chart SVG, chart spec, XSS escape, the page CSS). The DO keeps thin RPC\nwrappers; this holds the logic."
+    },
+    {
+      "id": "s:entities/Hive/render.ts#RenderContext",
+      "parent": "f:entities/Hive/render.ts",
+      "label": "RenderContext",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "entities/Hive/render.ts",
+      "line": 17
+    },
+    {
+      "id": "s:entities/Hive/render.ts#renderPublicPage",
+      "parent": "f:entities/Hive/render.ts",
+      "label": "renderPublicPage",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/render.ts",
+      "line": 100
+    },
+    {
+      "id": "s:entities/Hive/render.ts#renderPageOgSvg",
+      "parent": "f:entities/Hive/render.ts",
+      "label": "renderPageOgSvg",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/render.ts",
+      "line": 124
+    },
+    {
       "id": "f:entities/Hive/schema.ts",
       "parent": "c:entities/Hive",
       "label": "schema.ts",
@@ -1818,7 +2014,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 1210,
+      "line": 1216,
       "prose": "=== Integrity check: write-class policy totality ===\n\nEvery agent-facing kernel pattern must declare a write class in policy.ts.\nwriteClass() fails CLOSED (System — denied) for any unclassified `_` pattern,\nso a newly added kernel table is safe by default — but silently un-writable is\na bug, not a feature. This warns loudly at boot so a missing classification is\ncaught the moment the table ships, not when a reviewer finds the next hole.\nCode-vs-code (KERNEL_TABLES vs KERNEL_WRITE_POLICY) — no DB needed; exported so\nthe admission-matrix test asserts it statically too."
     },
     {
@@ -1828,7 +2024,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 1228,
+      "line": 1234,
       "prose": "Audit exemption (high-frequency append-only logs whose change history is the\ndata itself — auditing them would just churn the bounded _mutation_log) is a\nper-pattern behavior declared in the policy registry (policy.ts), alongside\nwrite class, so it's covered by the same boot-time totality check."
     },
     {
@@ -3967,6 +4163,415 @@
       "label": "react",
       "kind": "external",
       "sub": "module"
+    },
+    {
+      "id": "f:worker-configuration.d.ts",
+      "parent": "c:.",
+      "label": "worker-configuration.d.ts",
+      "kind": "file",
+      "sub": "worker-configuration.d.ts",
+      "path": "worker-configuration.d.ts",
+      "prose": "eslint-disable"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#httpServerHandler",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "httpServerHandler",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12620
+    },
+    {
+      "id": "s:worker-configuration.d.ts#onRequest",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "onRequest",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12659
+    },
+    {
+      "id": "s:worker-configuration.d.ts#PipelineRecord",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "PipelineRecord",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12678
+    },
+    {
+      "id": "s:worker-configuration.d.ts#PipelineBatchMetadata",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "PipelineBatchMetadata",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12679
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Pipeline",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Pipeline",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12683
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__RPC_STUB_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__RPC_STUB_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12748,
+      "prose": "Branded types for identifying `WorkerEntrypoint`/`DurableObject`/`Target`s.\nTypeScript uses *structural* typing meaning anything with the same shape as type `T` is a `T`.\nFor the classes exported by `cloudflare:workers` we want *nominal* typing (i.e. we only want to\naccept `WorkerEntrypoint` from `cloudflare:workers`, not any other class with the same shape)"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__RPC_TARGET_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__RPC_TARGET_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12749
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__WORKER_ENTRYPOINT_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__WORKER_ENTRYPOINT_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12750
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__DURABLE_OBJECT_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__DURABLE_OBJECT_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12751
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__WORKFLOW_ENTRYPOINT_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__WORKFLOW_ENTRYPOINT_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12752
+    },
+    {
+      "id": "s:worker-configuration.d.ts#RpcTargetBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "RpcTargetBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12753
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkerEntrypointBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkerEntrypointBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12756
+    },
+    {
+      "id": "s:worker-configuration.d.ts#DurableObjectBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "DurableObjectBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12759
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowEntrypointBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowEntrypointBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12762
+    },
+    {
+      "id": "s:worker-configuration.d.ts#EntrypointBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "EntrypointBranded",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12765
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Stubable",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Stubable",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12767,
+      "prose": "Types that can be used through `Stub`s"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Stub",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Stub",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12789
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Provider",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Provider",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12836,
+      "prose": "Base type for all other types providing RPC-like interfaces.\nRewrites all methods/properties to be `MethodOrProperty`s, while preserving callable types.\n`Reserved` names (e.g. stub method names like `dup()`) and symbols can't be accessed over RPC."
+    },
+    {
+      "id": "s:worker-configuration.d.ts#RpcStub",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "RpcStub",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12884
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowDurationLabel",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowDurationLabel",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12919
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowSleepDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowSleepDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12920
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowDelayDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowDelayDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12921
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowTimeoutDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowTimeoutDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12922
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowRetentionDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowRetentionDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12923
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowBackoff",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowBackoff",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12924
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepSensitivity",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepSensitivity",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12925
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepConfig",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepConfig",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12926
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowCronSchedule",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowCronSchedule",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12935
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowEvent",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowEvent",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12941
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepEvent",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepEvent",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12948
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepContext",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepContext",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12954
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowRollbackContext",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowRollbackContext",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12962
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowRollbackHandler",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowRollbackHandler",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12967
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepRollbackOptions",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepRollbackOptions",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12968
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowInstanceStatus",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowInstanceStatus",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12982
+    },
+    {
+      "id": "s:worker-configuration.d.ts#waitUntil",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "waitUntil",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12990
+    },
+    {
+      "id": "s:worker-configuration.d.ts#withEnv",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "withEnv",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12991
+    },
+    {
+      "id": "s:worker-configuration.d.ts#withExports",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "withExports",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12992
+    },
+    {
+      "id": "s:worker-configuration.d.ts#withEnvAndExports",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "withEnvAndExports",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "worker-configuration.d.ts",
+      "line": 12993
+    },
+    {
+      "id": "s:worker-configuration.d.ts#env",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "env",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12994
+    },
+    {
+      "id": "s:worker-configuration.d.ts#exports",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "exports",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12995
+    },
+    {
+      "id": "s:worker-configuration.d.ts#cache",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "cache",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12996
+    },
+    {
+      "id": "s:worker-configuration.d.ts#tracing",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "tracing",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12997
+    },
+    {
+      "id": "s:worker-configuration.d.ts#NonRetryableError",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "NonRetryableError",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "worker-configuration.d.ts",
+      "line": 14376,
+      "prose": "NonRetryableError allows for a user to throw a fatal error\nthat makes a Workflow instance fail immediately without triggering a retry"
     }
   ],
   "edges": [
