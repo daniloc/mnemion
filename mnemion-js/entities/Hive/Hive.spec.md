@@ -21,6 +21,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 - hive.ts imports ./render
 - federation.ts exists at this node
 - hive.ts imports ./federation
+- reports.ts exists at this node
+- hive.ts imports ./reports
 
 ## why
 

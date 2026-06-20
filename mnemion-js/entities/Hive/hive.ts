@@ -28,6 +28,7 @@ import * as web from "../../shared/IO/web";
 import * as docs from "./documents";
 import * as rnd from "./render";
 import * as fed from "./federation";
+import * as reports from "./reports";
 
 // === Types ===
 
@@ -225,168 +226,34 @@ export class HiveDO extends DurableObject {
     return charter;
   }
 
+  // === Read-orchestration reports (delegated to reports.ts) ===
+  //
+  // Recent activity, the maintenance nag, the stale-review surface, and the
+  // system-doc / instance-doc readers live in reports.ts: pure owner-context
+  // read+format builders, no writes and no security boundary. The DO injects a
+  // narrow ReportsContext (db + bound currentHost/patternClass/errorJson) and
+  // keeps thin RPC wrappers with identical signatures.
+  private reportsCtx(): reports.ReportsContext {
+    return {
+      db: this.db,
+      patternClass: (name) => this.patternClass(name),
+      currentHost: () => this.currentHost(),
+      errorJson: (m) => this.errorJson(m),
+    };
+  }
+
   async getRecentActivity(limit: number = 10): Promise<string> {
-    // Most recently modified entries across all non-kernel patterns
-    const patterns = this.db.exec(
-      "SELECT name FROM _objects WHERE archived_at IS NULL AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name"
-    ).toArray() as { name: string }[];
-
-    const all: { pattern: string; id: number; summary: string; updated_at: string }[] = [];
-
-    for (const pat of patterns) {
-      try {
-        // Get text/select facets to build a summary
-        const facets = this.db.exec(
-          "SELECT name FROM _fields WHERE object_name = ? AND type IN ('text', 'select') ORDER BY id",
-          pat.name
-        ).toArray() as { name: string }[];
-
-        const firstFacet = facets[0]?.name;
-        const selectCols = firstFacet ? `, "${firstFacet}"` : "";
-
-        const rows = this.db.exec(
-          `SELECT id, updated_at${selectCols} FROM "${pat.name}" WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT ?`,
-          limit
-        ).toArray() as any[];
-
-        for (const row of rows) {
-          const preview = firstFacet && row[firstFacet]
-            ? String(row[firstFacet]).slice(0, 120)
-            : "";
-          all.push({
-            pattern: pat.name,
-            id: row.id,
-            summary: preview,
-            updated_at: row.updated_at,
-          });
-        }
-      } catch { /* table may not exist */ }
-    }
-
-    // Sort by recency, take top N
-    all.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    return JSON.stringify(all.slice(0, limit));
+    return reports.getRecentActivity(this.reportsCtx(), limit);
   }
 
   // === Memory maintenance ===
 
   async getMaintenanceStatus(): Promise<string> {
-    return JSON.stringify(this.computeMaintenanceStatus(), null, 2);
-  }
-
-  private computeMaintenanceStatus(): {
-    last_pass_at: string | null;
-    days_since_last_pass: number | null;
-    interval_days: number;
-    overdue: boolean;
-  } {
-    const DAY = 86_400_000;
-
-    let intervalDays = 14;
-    try {
-      const r = this.db.exec(
-        `SELECT "value" FROM "_charter" WHERE "key" = 'maintenance_interval_days' AND archived_at IS NULL`
-      ).toArray() as any[];
-      const v = Number(r[0]?.value);
-      if (Number.isFinite(v) && v > 0) intervalDays = v;
-    } catch { /* charter may not exist yet */ }
-
-    let lastPass: string | null = null;
-    try {
-      const r = this.db.exec(
-        `SELECT MAX(created_at) as t FROM "_maintenance_passes" WHERE archived_at IS NULL`
-      ).toArray() as any[];
-      lastPass = r[0]?.t ?? null;
-    } catch { /* table may not exist yet */ }
-
-    if (lastPass) {
-      const t = priming.parseDbDate(lastPass);
-      const days = t != null ? Math.floor((Date.now() - t) / DAY) : null;
-      return {
-        last_pass_at: lastPass,
-        days_since_last_pass: days,
-        interval_days: intervalDays,
-        overdue: days != null && days >= intervalDays,
-      };
-    }
-
-    // Never run — only nag once the hive is older than the interval, using the
-    // first schema change as its birth. Fresh hives stay quiet.
-    let overdue = false;
-    try {
-      const r = this.db.exec(`SELECT MIN(created_at) as t FROM _schema_history`).toArray() as any[];
-      const birth = priming.parseDbDate(r[0]?.t ?? undefined);
-      overdue = birth != null && (Date.now() - birth) / DAY >= intervalDays;
-    } catch { /* no history — fresh hive */ }
-
-    return { last_pass_at: null, days_since_last_pass: null, interval_days: intervalDays, overdue };
+    return reports.getMaintenanceStatus(this.reportsCtx());
   }
 
   async getStaleEntries(days?: number): Promise<string> {
-    const patterns = this.db.exec(
-      "SELECT name FROM _objects WHERE archived_at IS NULL AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name"
-    ).toArray() as { name: string }[];
-
-    const stale: any[] = [];
-    for (const pat of patterns) {
-      // Dataset patterns don't go stale — a recorded observation is history, not
-      // memory awaiting review. Skip them in the maintenance surface.
-      if (this.patternClass(pat.name) === "dataset") continue;
-      const policy = priming.getMemoryPolicy(this.db, pat.name);
-      const horizon = days ?? (policy.half_life_days != null ? policy.half_life_days * 3 : 90);
-      const modifier = `-${Math.round(horizon)} days`;
-
-      try {
-        // Preview from the first text/select facet (same convention as getRecentActivity)
-        const facets = this.db.exec(
-          "SELECT name FROM _fields WHERE object_name = ? AND type IN ('text', 'select') ORDER BY id",
-          pat.name
-        ).toArray() as { name: string }[];
-        const firstFacet = facets[0]?.name;
-        const selectCols = firstFacet ? `, e."${firstFacet}"` : "";
-
-        // Stale = neither updated nor recalled inside the horizon
-        const rows = this.db.exec(
-          `SELECT e.id, e.updated_at, MAX(l.accessed_at) as last_primed${selectCols}
-           FROM "${pat.name}" e
-           LEFT JOIN "_entry_access_log" l ON l.pattern = ? AND l.entry_id = e.id
-           WHERE e.archived_at IS NULL
-           GROUP BY e.id
-           HAVING e.updated_at < datetime('now', ?) AND COALESCE(MAX(l.accessed_at), e.updated_at) < datetime('now', ?)
-           ORDER BY e.updated_at ASC`,
-          pat.name, modifier, modifier
-        ).toArray() as any[];
-
-        for (const row of rows) {
-          const item: any = {
-            pattern: pat.name,
-            id: row.id,
-            uri: uri(`entry/${pat.name}/${row.id}`),
-            preview: firstFacet && row[firstFacet] ? String(row[firstFacet]).slice(0, 120) : "",
-            updated_at: row.updated_at,
-            last_primed: row.last_primed ?? null,
-            horizon_days: horizon,
-          };
-          try {
-            const sup = this.db.exec(
-              `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
-              pat.name, row.id
-            ).toArray() as any[];
-            if (sup.length > 0) item.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
-          } catch { /* _links may not exist */ }
-          stale.push(item);
-        }
-      } catch { /* table may not exist */ }
-    }
-
-    stale.sort((a, b) => String(a.updated_at).localeCompare(String(b.updated_at)));
-    const capped = stale.slice(0, 100);
-    return JSON.stringify({
-      stale: capped,
-      count: capped.length,
-      total: stale.length,
-      guidance: "Read-only review surface. Propose supersession or archival to the human; never bulk-archive unprompted. See the memory-maintenance system doc.",
-    }, null, 2);
+    return reports.getStaleEntries(this.reportsCtx(), days);
   }
 
   // === Schema evolution (delegated to evolution.ts) ===
@@ -891,12 +758,12 @@ export class HiveDO extends DurableObject {
     }
 
     if (path === "_system/" || path === "_system") {
-      return this.getSystemDocList();
+      return reports.getSystemDocList(this.reportsCtx());
     }
 
     const sysMatch = path.match(/^_system\/([^/]+?)(\/default)?$/);
     if (sysMatch) {
-      return this.getSystemDoc(sysMatch[1], !!sysMatch[2]);
+      return reports.getSystemDoc(this.reportsCtx(), sysMatch[1], !!sysMatch[2]);
     }
 
     // mutation or mutation/{pattern}?limit=N
@@ -1027,91 +894,10 @@ export class HiveDO extends DurableObject {
   }
 
   // === System docs ===
-
-  private getSystemDocList(): string {
-    const rows = this.db.exec(
-      `SELECT slug, title FROM "_system_docs" ORDER BY slug`
-    ).toArray() as { slug: string; title: string }[];
-    return JSON.stringify({
-      docs: rows.map((r) => ({
-        slug: r.slug,
-        title: r.title,
-        uri: uri(`_system/${r.slug}`),
-      })),
-    }, null, 2);
-  }
-
-  private getSystemDoc(slug: string, returnDefault: boolean): string {
-    const rows = this.db.exec(
-      `SELECT * FROM "_system_docs" WHERE slug = ?`,
-      slug
-    ).toArray() as any[];
-    if (rows.length === 0) return this.errorJson(`No system doc with slug: ${slug}`);
-    const doc = rows[0];
-    let content = returnDefault ? doc.default_content : (doc.content ?? doc.default_content);
-
-    // Instance doc is fully computed at resolve time — regenerate host-related
-    // lines from the most recently observed Host header rather than serving the
-    // seed-time snapshot, which baked in a possibly-stale env.WORKER_HOST.
-    if (slug === "instance" && !returnDefault) {
-      content = this.renderInstanceDoc() + this.computeStorageStats();
-    }
-
-    return JSON.stringify({
-      slug: doc.slug,
-      title: doc.title,
-      content,
-      // Instance content is always freshly computed, so the seed-vs-customized
-      // distinction doesn't apply — the flag would only ever compare the
-      // placeholder to itself and lie. Other docs use the normal check.
-      is_default: slug === "instance"
-        ? false
-        : (doc.content === null || doc.content === doc.default_content),
-      uri: uri(`_system/${doc.slug}`),
-    }, null, 2);
-  }
-
-  private renderInstanceDoc(): string {
-    const host = this.currentHost();
-    return `# Instance Info
-
-- **Host**: ${host}
-- **Base URL**: https://${host}
-- **MCP endpoint**: https://${host}/mcp
-- **Upload endpoint**: https://${host}/upload/{token}
-- **Shared entries**: https://${host}/o/entry/{pattern}/{id}
-- **Egress outputs**: https://${host}/o/{path}
-- **Ingress inputs**: https://${host}/i/{path}`;
-  }
-
-  private computeStorageStats(): string {
-    try {
-      const tables = this.db.exec(
-        "SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name"
-      ).toArray() as { name: string }[];
-      let totalEntries = 0;
-      let totalBytes = 0;
-      for (const t of tables) {
-        try {
-          const cols = this.db.exec(`PRAGMA table_info("${t.name}")`).toArray() as any[];
-          const textCols = cols.filter((c: any) => c.type === "TEXT" || c.type === "").map((c: any) => c.name);
-          const sumExpr = textCols.length
-            ? textCols.map((c: string) => `COALESCE(LENGTH("${c}"), 0)`).join(" + ")
-            : "0";
-          const r = this.db.exec(
-            `SELECT COUNT(*) as c, SUM(${sumExpr}) as bytes FROM "${t.name}" WHERE archived_at IS NULL`
-          ).one() as any;
-          totalEntries += r.c;
-          totalBytes += r.bytes || 0;
-        } catch { /* table may be missing */ }
-      }
-      const mutations = (this.db.exec("SELECT COUNT(*) as c FROM _mutation_log").one() as any).c;
-      const fmt = (b: number) => b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / (1024 * 1024)).toFixed(1)} MB`;
-      return `\n\n## Storage\n\n- **Data**: ${fmt(totalBytes)} · **Patterns**: ${tables.length} · **Active entries**: ${totalEntries} · **Mutations logged**: ${mutations}`;
-    } catch {
-      return "";
-    }
-  }
+  //
+  // The system-doc / instance-doc / storage-stats readers live in reports.ts.
+  // The DO keeps the URI-dispatch entry points (in `resolve`) and injects
+  // `currentHost` (DO instance state) through the ReportsContext.
 
   // === System tasks ===
 
@@ -1271,7 +1057,7 @@ export class HiveDO extends DurableObject {
     // MCP init instructions, and prime is the universal handshake.
     let maintenance: { last_pass_days_ago: number | null; message: string } | undefined;
     try {
-      const status = this.computeMaintenanceStatus();
+      const status = reports.computeMaintenanceStatus(this.reportsCtx());
       if (status.overdue) {
         maintenance = {
           last_pass_days_ago: status.days_since_last_pass,
