@@ -1,7 +1,7 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { SessionDO } from "../entities/Session/session";
 import { HiveDO } from "../entities/Hive/hive";
-import { HIVE_ID } from "../shared/core/constants";
+import { HIVE_ID, HEX_TOKEN_RE } from "../shared/core/constants";
 import { Method, Auth, createRouter, type Route, type RouteHandler, type Env } from "../shared/Routing/router";
 import { FEATURES } from "../entities/features";
 import { composeRoutes } from "../entities/features/compose";
@@ -44,9 +44,9 @@ const CORE_ROUTES: Route[] = [
   { method: Method.POST, pattern: "/auth/passkey/complete", handler: passkeyComplete },
 
   // Invite approval (human passkey gate before a register token can be used)
-  { method: Method.GET,  pattern: "/invite/:token",          auth: Auth.CONFIGURED, where: { token: /^[a-fA-F0-9]+$/ }, handler: invitePage },
-  { method: Method.POST, pattern: "/invite/:token/begin",    auth: Auth.CONFIGURED, where: { token: /^[a-fA-F0-9]+$/ }, handler: inviteBegin },
-  { method: Method.POST, pattern: "/invite/:token/complete", auth: Auth.CONFIGURED, where: { token: /^[a-fA-F0-9]+$/ }, handler: inviteComplete },
+  { method: Method.GET,  pattern: "/invite/:token",          auth: Auth.CONFIGURED, where: { token: HEX_TOKEN_RE }, handler: invitePage },
+  { method: Method.POST, pattern: "/invite/:token/begin",    auth: Auth.CONFIGURED, where: { token: HEX_TOKEN_RE }, handler: inviteBegin },
+  { method: Method.POST, pattern: "/invite/:token/complete", auth: Auth.CONFIGURED, where: { token: HEX_TOKEN_RE }, handler: inviteComplete },
 
   // Session login (for browser pages)
   { method: Method.GET,  pattern: "/login",                auth: Auth.CONFIGURED, handler: loginPage },
@@ -62,7 +62,7 @@ const CORE_ROUTES: Route[] = [
   // /page/* (pages feature) and /f/* (documents feature) routes are declared in
   // their feature manifests and appended below via composeRoutes(FEATURES).
   { method: Method.POST, pattern: "/i/:path",              handler: receiveInput },
-  { method: Method.POST, pattern: "/upload/:token",        where: { token: /^[a-fA-F0-9]+$/ }, handler: upload },
+  { method: Method.POST, pattern: "/upload/:token",        where: { token: HEX_TOKEN_RE }, handler: upload },
   { method: Method.GET,  pattern: "/export/:pattern",       auth: Auth.SESSION, handler: exportPattern },
 
   // Pages (JSON APIs for the React SPA; the SPA itself is served as static assets)

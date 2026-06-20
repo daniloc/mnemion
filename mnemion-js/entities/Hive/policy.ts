@@ -30,7 +30,7 @@
 // every enforcement layer derives from it without cycles; write-class is
 // computed at read time, never persisted, to avoid denormalizing the constant.
 
-import { FEATURE_WRITE_POLICY, FEATURE_SENSITIVE_COLUMNS } from "../features/security";
+import { FEATURE_WRITE_POLICY, FEATURE_SENSITIVE_COLUMNS, FEATURE_DECLARED_SENSITIVE } from "../features/security";
 
 // === Write classes ===
 
@@ -250,8 +250,10 @@ export function isAuditExempt(pattern: string): boolean {
 //   - `redact`: never serialized off the DO at all (stripped by `seal`); the
 //     data plane has no legitimate need for it.
 // Broadcast, audit, export, and served reads all derive from this, so adding a
-// new secret column protects every egress at once — and `findUnclassifiedSensitiveColumns`
-// fails loud if a secret-shaped column has no policy (the egress totality check).
+// new secret column protects every egress at once. Two oracles fail loud on a gap:
+// `verifyEgressTotality` (the DECLARED-domain totality — every column a feature
+// declares survives into the composed registry) and `findUnclassifiedSensitiveColumns`
+// (the complementary name heuristic — a secret-NAMED column with no policy at all).
 export type SensitivityKind = "secret" | "redact";
 export interface SensitiveColumn { column: string; kind: SensitivityKind }
 
@@ -297,9 +299,15 @@ export function sealAll(pattern: string, rows: Record<string, unknown>[]): Recor
 }
 
 // A column whose NAME looks like a credential on any KERNEL table must be
-// classified above, or it's an egress gap. The analogue of verifyWritePolicyTotality.
-// Name heuristic — not exhaustive (a reviewer still classifies the unobvious), but
-// covers the conventional credential shapes incl. any `*_key` / `*_secret` suffix.
+// classified above, or it's an egress gap. This is a NAME HEURISTIC, NOT a totality
+// oracle: it only catches columns whose name MATCHES SECRET_NAME_RE (the
+// conventional credential shapes, incl. any `*_key` / `*_secret` suffix). It cannot
+// see a sensitive column with an innocuous name (e.g. documents' `r2_key` only
+// matches because of the `_key` suffix; a column named `handle` would slip past), so
+// a reviewer still classifies the unobvious. The DECLARED-domain totality — every
+// column a feature actually declared survives into the composed registry — is
+// verifyEgressTotality below; this heuristic is the complementary "did you forget to
+// classify a secret-NAMED column at all" check.
 const SECRET_NAME_RE = /^(token|secret|password|credential|credential_id|recovery_code|totp_secret|[a-z0-9]*_(key|secret))$/i;
 export function findUnclassifiedSensitiveColumns(tableColumns: Record<string, string[]>): string[] {
   const gaps: string[] = [];
@@ -307,6 +315,27 @@ export function findUnclassifiedSensitiveColumns(tableColumns: Record<string, st
     if (!isKernelPattern(table)) continue;
     const classified = new Set((SENSITIVE_COLUMNS[table] ?? []).map((c) => c.column));
     for (const col of cols) if (SECRET_NAME_RE.test(col) && !classified.has(col)) gaps.push(`${table}.${col}`);
+  }
+  return gaps;
+}
+
+// EGRESS TOTALITY over the DECLARED domain — the read/serialization dual of
+// verifyWritePolicyTotality. Where the write check walks the live KERNEL_TABLES,
+// this walks the live FEATURE_SECURITY registry (via FEATURE_DECLARED_SENSITIVE):
+// every sensitive column ANY feature declares MUST survive into the composed,
+// effective SENSITIVE_COLUMNS. This catches the exact bug the old two-hand-list
+// barrel allowed — a feature's `sensitiveColumns` silently dropped from the
+// composition (so it inherited no `seal`/audit/export redaction) while its write
+// policy still wired. A gap here means a declared redact/secret column would leak.
+// Code-vs-code (FEATURE_SECURITY vs the composed SENSITIVE_COLUMNS) — no DB needed.
+export function verifyEgressTotality(): string[] {
+  const gaps: string[] = [];
+  for (const { pattern, column } of FEATURE_DECLARED_SENSITIVE) {
+    const present = (SENSITIVE_COLUMNS[pattern] ?? []).some((c) => c.column === column);
+    if (!present) gaps.push(`${pattern}.${column} declared sensitive by a feature but absent from the composed SENSITIVE_COLUMNS (egress unprotected)`);
+  }
+  if (gaps.length > 0) {
+    console.warn(`[mnemion] egress-sensitivity gaps detected (${gaps.length}):\n  ${gaps.join("\n  ")}`);
   }
   return gaps;
 }

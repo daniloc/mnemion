@@ -568,17 +568,24 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
             ...values
           );
 
-          if (data.version != null) {
-            const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
-            if (changes.c === 0)
-              return { error: true, message: `Version conflict: entry ${data.id} in "${patternName}" has been modified. Re-read and retry.` };
-          }
+          // A 0-row UPDATE must never report success: with a version it's an
+          // optimistic-lock conflict; without one the row is missing or already
+          // archived (the trailing SELECT has no archived filter, so it would
+          // otherwise hand back a stale/archived row as if the write landed).
+          const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
+          if (changes.c === 0)
+            return data.version != null
+              ? { error: true, message: `Version conflict: entry ${data.id} in "${patternName}" has been modified. Re-read and retry.` }
+              : { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
         } else {
           values.push(data.id);
           ctx.db.exec(
             `UPDATE "${patternName}" SET ${sets}, updated_by = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
             ...values
           );
+          const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
+          if (changes.c === 0)
+            return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
         }
 
         const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = ?`, data.id).one();
@@ -637,16 +644,21 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
             `UPDATE "${patternName}" SET "${data.facet}" = ?, updated_by = ?, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
             ...bindings
           );
-          if (data.version != null) {
-            const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
-            if (changes.c === 0)
-              return { error: true, message: `Version conflict: entry ${data.id} in "${patternName}" has been modified. Re-read and retry.` };
-          }
+          // A 0-row patch must not silently succeed (mirrors update): version → lock
+          // conflict; no version → the row vanished/was archived since the pre-read.
+          const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
+          if (changes.c === 0)
+            return data.version != null
+              ? { error: true, message: `Version conflict: entry ${data.id} in "${patternName}" has been modified. Re-read and retry.` }
+              : { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
         } else {
           ctx.db.exec(
             `UPDATE "${patternName}" SET "${data.facet}" = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
             patched, ctx.actor, data.id
           );
+          const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
+          if (changes.c === 0)
+            return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
         }
 
         const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = ?`, data.id).one();
@@ -659,6 +671,11 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           `UPDATE "${patternName}" SET archived_at = datetime('now'), updated_at = datetime('now'), updated_by = ? WHERE id = ? AND archived_at IS NULL`,
           ctx.actor, data.id
         );
+        // 0 rows ⇒ the entry doesn't exist or is already archived: don't report a
+        // successful archive for a no-op the caller can't distinguish from success.
+        const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
+        if (changes.c === 0)
+          return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
         return { operation: "archive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
       }
 

@@ -355,6 +355,75 @@ describe("Mutate - Archive", () => {
   });
 });
 
+// A 0-row update/patch/archive must report an error, not a success object built
+// from the post-write SELECT (which has no archived filter and so would echo the
+// stale/archived row as if the write landed). Regression for the silent-success
+// bug where the changes()==0 guard ran only when a version was supplied.
+describe("missing/archived-row writes don't report false success", () => {
+  it("update of an archived entry with no version → not-found error", async () => {
+    const store = getStore();
+    await createPattern(store, "notes", [{ name: "body", type: "text" }]);
+    const c = await createEntry(store, "notes", { body: "v1" });
+    await store.mutate("notes", "archive", JSON.stringify({ id: c.entry.id }));
+
+    const r = JSON.parse(await store.mutate("notes", "update", JSON.stringify({ id: c.entry.id, body: "v2" })));
+    expect(r.error).toBe(true);
+    expect(r.message).toMatch(/not found/i);
+    expect(r.entry).toBeUndefined();
+  });
+
+  it("update of a never-existing id with no version → not-found error", async () => {
+    const store = getStore();
+    await createPattern(store, "notes2", [{ name: "body", type: "text" }]);
+    const r = JSON.parse(await store.mutate("notes2", "update", JSON.stringify({ id: 9999, body: "x" })));
+    expect(r.error).toBe(true);
+    expect(r.message).toMatch(/not found/i);
+  });
+
+  it("patch of an archived entry with no version → not-found error", async () => {
+    const store = getStore();
+    await createPattern(store, "notes3", [{ name: "body", type: "text" }]);
+    const c = await createEntry(store, "notes3", { body: "hello world" });
+    await store.mutate("notes3", "archive", JSON.stringify({ id: c.entry.id }));
+
+    const r = JSON.parse(await store.mutate("notes3", "patch", JSON.stringify({
+      id: c.entry.id, facet: "body", match: "world", replacement: "there",
+    })));
+    expect(r.error).toBe(true);
+    expect(r.entry).toBeUndefined();
+  });
+
+  it("archive of an already-archived entry → not-found/no-op error, not success", async () => {
+    const store = getStore();
+    await createPattern(store, "notes4", [{ name: "body", type: "text" }]);
+    const c = await createEntry(store, "notes4", { body: "x" });
+    const first = JSON.parse(await store.mutate("notes4", "archive", JSON.stringify({ id: c.entry.id })));
+    expect(first.error).toBeUndefined(); // first archive succeeds
+
+    const second = JSON.parse(await store.mutate("notes4", "archive", JSON.stringify({ id: c.entry.id })));
+    expect(second.error).toBe(true);
+    expect(second.message).toMatch(/not found/i);
+  });
+
+  it("archive of a never-existing id → not-found error", async () => {
+    const store = getStore();
+    await createPattern(store, "notes5", [{ name: "body", type: "text" }]);
+    const r = JSON.parse(await store.mutate("notes5", "archive", JSON.stringify({ id: 4242 })));
+    expect(r.error).toBe(true);
+    expect(r.message).toMatch(/not found/i);
+  });
+
+  it("a normal update on an active row still succeeds (positive control, same shape)", async () => {
+    const store = getStore();
+    await createPattern(store, "notes6", [{ name: "body", type: "text" }]);
+    const c = await createEntry(store, "notes6", { body: "v1" });
+    const r = JSON.parse(await store.mutate("notes6", "update", JSON.stringify({ id: c.entry.id, body: "v2" })));
+    expect(r.error).toBeUndefined();
+    expect(r.operation).toBe("update");
+    expect(r.entry.body).toBe("v2");
+  });
+});
+
 // === User Version Field (e.g. semver on _plugins) ===
 
 describe("User Version Field", () => {

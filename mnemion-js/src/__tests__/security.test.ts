@@ -3,7 +3,8 @@ import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
 import { query } from "../../entities/Hive/data";
 import { KERNEL_TABLES } from "../../entities/Hive/schema";
-import { seal, findUnclassifiedSensitiveColumns, SENSITIVE_COLUMNS } from "../../entities/Hive/policy";
+import { seal, findUnclassifiedSensitiveColumns, verifyEgressTotality, SENSITIVE_COLUMNS } from "../../entities/Hive/policy";
+import { FEATURE_DECLARED_SENSITIVE } from "../../entities/features/security";
 import { hashToken } from "../../shared/Auth/credentials";
 
 // Regression guards for the security review fixes. These exercise the mutate /
@@ -136,6 +137,44 @@ describe("outward egress sieve: export strips EVERY classified sensitive column 
       }
     }
     expect(exercisedWithRows).toBeGreaterThan(0); // _access_tokens had a row → the assertion actually ran
+  });
+});
+
+// The DECLARED-domain totality: the real oracle for the old false one. The barrel
+// (entities/features/security.ts) used to compose write policy from one hand-list
+// and sensitive columns from ANOTHER, and the second silently omitted pages — with
+// no oracle to catch a dropped contribution. Now both maps derive from the one
+// FEATURE_SECURITY array, and verifyEgressTotality asserts EVERY column any feature
+// declares survives into the composed SENSITIVE_COLUMNS. This is a real totality over
+// the live feature registry, not over a hand-list.
+describe("egress-sensitivity totality", () => {
+  it("every feature-declared sensitive column survives into the composed SENSITIVE_COLUMNS (the boot oracle is clean)", () => {
+    expect(verifyEgressTotality()).toEqual([]);
+  });
+
+  it("a feature's declared sensitive columns are actually present in the effective registry (not just the oracle's word)", () => {
+    expect(FEATURE_DECLARED_SENSITIVE.length).toBeGreaterThan(0); // at least documents.r2_key
+    for (const { pattern, column } of FEATURE_DECLARED_SENSITIVE) {
+      const cols = (SENSITIVE_COLUMNS[pattern] ?? []).map((c) => c.column);
+      expect(cols, `${pattern}.${column} must be composed into SENSITIVE_COLUMNS`).toContain(column);
+    }
+  });
+
+  it("documents.r2_key — the reference feature-declared sensitive column — is sealed off every egress", () => {
+    // Concrete regression for the omitted-contribution bug: r2_key reaches the
+    // composed registry, so `seal` strips it.
+    expect(FEATURE_DECLARED_SENSITIVE).toContainEqual({ pattern: "_documents", column: "r2_key" });
+    expect(seal("_documents", { id: 1, title: "x", r2_key: "secret-handle" })).toEqual({ id: 1, title: "x" });
+  });
+
+  it("catches a dropped contribution (oracle flags a feature-declared column missing from the registry)", () => {
+    // Prove the oracle has teeth without mutating the real registry: a column the
+    // registry doesn't contain is reported as a gap by the same predicate.
+    const declared = [{ pattern: "_documents", column: "r2_key" }, { pattern: "_documents", column: "never_composed_col" }];
+    const gaps = declared.filter(({ pattern, column }) =>
+      !(SENSITIVE_COLUMNS[pattern] ?? []).some((c) => c.column === column),
+    );
+    expect(gaps).toEqual([{ pattern: "_documents", column: "never_composed_col" }]);
   });
 });
 

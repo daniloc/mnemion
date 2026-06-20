@@ -15,7 +15,7 @@
 import { PRODUCT_NAME, uri, IDENTIFIER_RE } from "../../shared/core/constants";
 import { ensureAuditTriggers } from "./schema";
 import { isKernelPattern } from "./policy";
-import { KERNEL_COLUMN_SET } from "./kernel-columns";
+import { FACET_RESERVED_COLUMNS, USER_OVERRIDABLE_KERNEL_COLUMNS } from "./kernel-columns";
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
 import type { StoreIndex, IndexFacetEntry } from "./reports";
 
@@ -61,7 +61,7 @@ function validateFacets(
     const nameErr = validateName("Facet", a.name);
     if (nameErr) return nameErr;
     if (!SQLITE_TYPE_MAP[a.type]) return `Unknown facet type: ${a.type}`;
-    if (KERNEL_COLUMN_SET.has(a.name))
+    if (FACET_RESERVED_COLUMNS.has(a.name))
       return `Facet "${a.name}" is a kernel-provided column (auto-added to every pattern) and cannot be defined by the user`;
     if (existingFacets?.some((e) => e.name === a.name))
       return `Facet "${a.name}" already exists on the pattern`;
@@ -160,7 +160,11 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     },
     apply(change, { db }) {
       const colDefs = change.facets.map(facetToDDL);
-      const hasUserVersion = change.facets.some((a: any) => a.name === "version");
+      // `version` is the one user-overridable kernel column (USER_OVERRIDABLE_KERNEL_COLUMNS,
+      // the same declaration FACET_RESERVED_COLUMNS excludes) — a user `version` facet
+      // replaces the kernel default below. Every other kernel column is reserved, so it
+      // can never appear here.
+      const hasUserVersion = change.facets.some((a: any) => USER_OVERRIDABLE_KERNEL_COLUMNS.has(a.name));
       const kernelCols = [
         ...(hasUserVersion ? [] : ["version INTEGER NOT NULL DEFAULT 0"]),
         "created_at TEXT NOT NULL DEFAULT (datetime('now'))",
@@ -223,6 +227,15 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       if (!pat) return `Pattern "${change.pattern_name}" does not exist`;
       if (pat.facets.length + change.facets.length > LIMITS.FACETS_PER_PATTERN)
         return `Adding ${change.facets.length} facets would exceed the limit of ${LIMITS.FACETS_PER_PATTERN} facets per pattern`;
+      // A NOT NULL column added to an EXISTING table needs a DEFAULT — SQLite
+      // rejects `ALTER TABLE ADD COLUMN <c> <T> NOT NULL` with no default
+      // unconditionally ("Cannot add a NOT NULL column with default value NULL"),
+      // so the apply would always throw. (CREATE TABLE in create_pattern is fine,
+      // hence this check lives here and not in the shared validateFacets.)
+      for (const a of change.facets) {
+        if (a.required && a.default_value == null)
+          return `Facet "${a.name}": a required facet added to an existing pattern must provide a default_value (existing entries need a value for the new column).`;
+      }
       return validateFacets(change.facets, ctx, pat.facets);
     },
     preview(change, preview) {

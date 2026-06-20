@@ -22,10 +22,14 @@ export function uri(path: string): string {
 // don't fold that one in here.
 export const IDENTIFIER_RE = /^[a-z_][a-z0-9_-]*$/;
 
-/** True if `name` is a valid Mnemion pattern/facet identifier. */
-export function isValidIdentifier(name: string): boolean {
-  return IDENTIFIER_RE.test(name);
-}
+// === Hex token rule ===
+//
+// Route-param guard for hex-encoded capability tokens (invite, upload, document
+// upload). Variable-length: any run of hex digits. One home so the five route
+// rows that gate a `:token` param share the same shape. The fixed-length
+// variant (/^[a-fA-F0-9]{32}$/) is a DIFFERENT rule (exact length) and stays
+// inline at its single call site.
+export const HEX_TOKEN_RE = /^[a-fA-F0-9]+$/;
 
 // === Hive identity ===
 //

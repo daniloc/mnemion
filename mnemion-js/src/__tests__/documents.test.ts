@@ -58,6 +58,27 @@ describe("_documents create", () => {
   });
 });
 
+// batchMutate must fire PATTERN_EFFECTS per-op just like single-op mutate, or a
+// batched _documents create returns no upload ticket (the bytes can never be
+// stored). Regression for the effects-skipped-in-batch bug.
+describe("batchMutate fires _documents effects", () => {
+  it("a batched _documents create carries an upload_url / token, matching single-op", async () => {
+    const store = getStore();
+    const batch = JSON.parse(await store.batchMutate(JSON.stringify([
+      { pattern: "_documents", operation: "create", data: { title: "batched-doc" } },
+    ])));
+    expect(batch.batch).toBe(true);
+    const r = batch.results[0];
+    expect(r.error).toBeUndefined();
+    expect(r.upload_token).toBeDefined();
+    expect(r.upload_token.length).toBe(32);
+    expect(r.upload_url).toContain(`/f/${r.upload_token}`);
+    // The minted token is real: it can record an upload (DB-only path).
+    const rec = JSON.parse(await store.consumeDocumentUpload(r.upload_token, "documents/batched", "text/plain", 12));
+    expect(rec.uploaded).toBe(true);
+  });
+});
+
 describe("document upload token minting", () => {
   it("requires document_id and an existing document", async () => {
     const store = getStore();

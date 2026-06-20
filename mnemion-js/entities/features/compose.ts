@@ -3,8 +3,9 @@
 // routes, and the kernel hooks (onCreate/onWrite/immutable) are WIRED into their
 // host files (see the per-composer comments for the exact host + call site);
 // write-policy/egress-sensitivity compose in the security.ts barrel, not here,
-// because policy.ts is a dependency-free leaf. Only the tools composer is still
-// DESIGNED (signature present, wired once tools.ts adopts the array).
+// because policy.ts is a dependency-free leaf. The tools and system-docs composers
+// are still DESIGNED (signatures present, no host imports them yet — wired once
+// tools.ts / schema.ts adopt the array).
 //
 // Composition runs at MODULE LOAD for static registries (effects, tools metadata)
 // and at BOOT for stateful ones (patterns/DDL/migrations/system-docs, which touch
@@ -114,11 +115,14 @@ export function composeRoutes(features: Feature[]): FeatureRoute[] {
   return out;
 }
 
-/** TOOLS.  HOST: tools.ts `TOOLS` concatenates `composeTools(FEATURES)` (the
- *  metadata half, feeding /api/tools + MCP registration listing); session.ts
- *  calls each feature tool's `register(server, hive)` during MCP setup (the
- *  handler half). WHERE IT RUNS: tools metadata at module load; `register` once
- *  per session at MCP init. Composer asserts tool-name uniqueness. */
+/** TOOLS.  DESIGNED — NOT YET WIRED (consistent with the file header). No host
+ *  imports composeTools today: tools.ts does NOT yet concatenate it, and session.ts
+ *  does NOT yet call each feature tool's `register`. When tools.ts adopts the array,
+ *  `TOOLS` will concatenate `composeTools(FEATURES)` (the metadata half, feeding
+ *  /api/tools + MCP registration listing) and session.ts will call each feature
+ *  tool's `register(server, hive)` during MCP setup (the handler half) — metadata at
+ *  module load, `register` once per session at MCP init. Composer asserts tool-name
+ *  uniqueness so the seam is correct the moment it's wired. */
 export function composeTools(features: Feature[]): NonNullable<Feature["tools"]> {
   const out: NonNullable<Feature["tools"]> = [];
   const seen = new Set<string>();
@@ -176,9 +180,11 @@ export function composeImmutable(features: Feature[]): Record<string, ImmutableR
   return out;
 }
 
-/** SYSTEM DOCS.  HOST: schema.ts seed list concatenates
- *  `composeSystemDocs(FEATURES)`. WHERE IT RUNS: boot, alongside the core doc
- *  seeding. Composer asserts slug uniqueness. */
+/** SYSTEM DOCS.  DESIGNED — NOT YET WIRED (consistent with the file header). No
+ *  host imports composeSystemDocs today: schema.ts does NOT yet concatenate it. When
+ *  schema.ts adopts the array, its seed list will concatenate
+ *  `composeSystemDocs(FEATURES)` at boot, alongside the core doc seeding. Composer
+ *  asserts slug uniqueness so the seam is correct the moment it's wired. */
 export function composeSystemDocs(features: Feature[]): FeatureSystemDoc[] {
   const out: FeatureSystemDoc[] = [];
   const seen = new Set<string>();

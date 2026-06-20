@@ -493,6 +493,16 @@ export class HiveDO extends DurableObject {
     const onces: (Record<string, string> | null)[] = [];
     for (const op of operations) onces.push(await this.mintSecrets(op.pattern, op.data, op.operation));
 
+    // Pattern effects, mirroring the single-op path: `before` runs pre-commit (it
+    // is synchronous — e.g. capturing a doc's R2 key before archive), `after` runs
+    // post-commit (async — minting a _documents upload token + attaching upload_url).
+    // The data writes stay atomic inside transactionSync; effects are post-commit
+    // side effects, so they run outside it (same as the single path).
+    const effectCtx = this.effectCtx(actor);
+    const effectsPerOp = operations.map(op => eff.PATTERN_EFFECTS[op.pattern]);
+    const scratches = operations.map((op, i) =>
+      effectsPerOp[i]?.before ? (effectsPerOp[i]!.before!(op.data, op.operation, effectCtx) || {}) : {});
+
     const ctx = this.ownerDataCtx(actor);
     const results: any[] = [];
     this.ctx.storage.transactionSync(() => {
@@ -509,6 +519,12 @@ export class HiveDO extends DurableObject {
     this.broadcastChange(affectedPatterns);
     for (const r of results) {
       this.embedAfterMutate(r.pattern, r.operation, r.entry?.id);
+    }
+    // Post-commit effects, per-op, exactly as the single path attaches them to the
+    // result object (e.g. result.upload_url for a batched _documents create).
+    for (let i = 0; i < operations.length; i++) {
+      const after = effectsPerOp[i]?.after;
+      if (after) await after(results[i].entry, results[i], operations[i].data, operations[i].operation, scratches[i], effectCtx);
     }
     return JSON.stringify({ batch: true, results, count: results.length }, null, 2);
   }

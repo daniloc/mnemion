@@ -77,7 +77,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
 
   docs/coherence/      Generated: _graph.html, _overview.html, graph.json, why-proposals.md
   AGENTS.md            Generated agent map (coherence overview)
-  vite.config.ts       Main SSR + client build (SchemaViewer/HiveMap/LinkMap/EntryDetail)
+  vite.config.ts       Canvas SSR build (src/pages/canvas-server.ts → the /canvas page shell; the legacy SchemaViewer/HiveMap/LinkMap/EntryDetail SSR pages are retired)
   vite.canvas.ts       Separate build for canvas-client.client.txt → dist/canvas/
   scripts/setup.sh     First-run setup: generates secret, deploys, opens passkey registration
 ```
@@ -273,7 +273,8 @@ chokepoint. The boundaries:
 
 - **Untrusted reads & writes** → one required `trusted` flag on `DataContext`,
   symmetric: an untrusted context (`!ctx.trusted`) may neither WRITE a kernel
-  pattern (`executeUntrustedWrite`) nor READ one (`query`/`search`/`aggregate`).
+  pattern (the mutate engine refuses it via `!ctx.trusted &&
+  !isValidWriteTarget(patternName)`) nor READ one (`query`/`search`/`aggregate`).
   Writes enter untrusted via ingress/upload; reads via `servedDataCtx`/
   `servedQuery` (public page, OG, publication, `/o/entry`). The flag is required
   (no default) so a new serve/ingress path can't silently inherit kernel access —

@@ -19,6 +19,7 @@
 //                          it stays a single doc, not split per-feature)
 
 import type { Feature } from "../feature";
+import { HEX_TOKEN_RE } from "../../../shared/core/constants";
 import { uploadDocument, serveDocument } from "../../../shared/Routing/routes/io";
 import { patterns as documentsPatterns, migrations as documentsMigrations } from "./schema";
 import { onCreate as documentsOnCreate, immutable as documentsImmutable } from "./hooks";
@@ -44,7 +45,7 @@ export const documents: Feature = {
   // /f/:id serves a stored blob (numeric-id-guarded, visibility-gated). The /f/
   // backendPrefix keeps an unmatched GET off the SPA shell.
   routes: [
-    { method: "POST", pattern: "/f/:token", where: { token: /^[a-fA-F0-9]+$/ }, handler: uploadDocument, backendPrefix: "/f/" },
+    { method: "POST", pattern: "/f/:token", where: { token: HEX_TOKEN_RE }, handler: uploadDocument, backendPrefix: "/f/" },
     { method: "GET",  pattern: "/f/:id",    where: { id: /^\d+$/ },              handler: serveDocument },
   ],
   effects: {
