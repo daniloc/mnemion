@@ -18,10 +18,6 @@ import { initializeSchema } from "./schema";
 import { IMMUTABLE, expandShortcut, normalizeHost, isBlockedFederationHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
 import { deriveLabel } from "./labels";
-import { renderChartSvg, chartOgSvg, type ChartPayload } from "../../shared/core/chart-svg";
-import { pivotSeries, resolveChart, chartQuery, aggSpec } from "../../shared/core/chart-spec";
-import { escapeXml } from "../../shared/core/escape";
-import PUBLIC_PAGE_CSS from "./public-page.css";
 import * as cred from "../../shared/Auth/credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
@@ -30,6 +26,7 @@ import * as priming from "./prime";
 import * as pubs from "../../shared/IO/publications";
 import * as web from "../../shared/IO/web";
 import * as docs from "./documents";
+import * as rnd from "./render";
 
 // === Types ===
 
@@ -1072,77 +1069,15 @@ export class HiveDO extends DurableObject {
   }
 
   // === Public pages (server-rendered HTML + OG card, for sharing) ===
+  // Render orchestration lives in render.ts. The DO hands it ONLY the served
+  // reader (renderCtx) — no `db`, no trusted context — so a served sink cannot
+  // reach a kernel pattern. The DO keeps the `_pages` row read (a trusted DO
+  // read) + thin RPC wrappers io.ts calls.
 
-  /** Aggregate rows for a block (reuses the query engine: group_by x, agg y).
-   *  Still used by the metric block (no x) — chart blocks go through chartData. */
-  private async aggRows(pattern: string, x: string | undefined, y: string | undefined, agg: string | undefined, sort: string): Promise<any[]> {
-    const aggregate = aggSpec(agg || (y ? "sum" : "count"), y);
-    try {
-      // servedQuery refuses kernel patterns at the engine — the one read-boundary.
-      const r = JSON.parse(this.servedQuery(pattern, "", "", sort || "", 200, false, x || "", aggregate));
-      return r.rows || [];
-    } catch { return []; }
-  }
-
-  /** Resolve a chart block's data into the payload both server renderers expect:
-   *  raw x,y points for scatter; a pivoted multi-series set when `series` is set
-   *  (non-round marks); a flat aggregate otherwise (incl. pie/donut). Fetch
-   *  params come from chartQuery (the same source the client renderer uses), so
-   *  the `:unit` bucket is split correctly: q.group_by GROUPs BY the full
-   *  "facet:unit" field while q.sort and the row read-key rc.x use the bare
-   *  alias the engine emits — passing the full field as the sort field is what
-   *  the engine rejected, flattening bucketed charts to empty. */
-  private async chartData(b: any): Promise<ChartPayload> {
-    const rc = resolveChart(b);
-    const q = chartQuery(rc);
-    try {
-      // servedQuery refuses kernel patterns — protects the OG path too, which
-      // reaches chartData without renderBlockHtml's per-block guard.
-      if (q.kind === "scatter") {
-        const r = JSON.parse(this.servedQuery(b.pattern, "", q.facets ?? "", "", q.limit, false, "", ""));
-        const data = (r.entries || []).map((e: any) => ({ label: String(e[rc.x!] ?? ""), value: Number(e[rc.y!]) || 0 }));
-        return { multi: false, data };
-      }
-      if (q.kind === "series") {
-        const r = JSON.parse(this.servedQuery(b.pattern, "", "", q.sort ?? "", q.limit, false, q.group_by ?? "", q.aggregate ?? ""));
-        const { rows, keys } = pivotSeries(r.rows || [], rc.x!, rc.series!);
-        return { multi: true, data: { xKey: rc.x!, rows, keys } };
-      }
-      const r = JSON.parse(this.servedQuery(b.pattern, "", "", q.sort ?? "", q.limit, false, q.group_by ?? "", q.aggregate ?? ""));
-      const data = (r.rows || []).map((row: any) => ({ label: String(row[rc.x!] ?? ""), value: Number(row.value) || 0 }));
-      return { multi: false, data };
-    } catch {
-      if (q.kind === "series") return { multi: true, data: { xKey: rc.x ?? "", rows: [], keys: [] } };
-      return { multi: false, data: [] };
-    }
-  }
-
-  private async renderBlockHtml(b: any): Promise<string> {
-    const w = b.width === "half" ? "w-half" : b.width === "third" ? "w-third" : "w-full";
-    const e = (v: unknown) => escapeXml(String(v ?? ""));
-    // Defense-in-depth: a block whose pattern is a kernel control table must
-    // never reach an unauthenticated reader (token values as chart labels, etc).
-    // Render the empty placeholder instead of querying it — applies to every
-    // pattern-reading block type (chart, metric, and any future view/entry/list).
-    if (b?.pattern && isKernelPattern(b.pattern)) {
-      return `<div class="pb-empty ${w}"></div>`;
-    }
-    switch (b.type) {
-      case "heading": return `<h2 class="pb-h ${w}">${e(b.text)}</h2>`;
-      case "text": return `<p class="pb-t ${w}">${e(b.text)}</p>`;
-      case "metric": {
-        const rows = await this.aggRows(b.pattern, undefined, b.metric, b.agg, "");
-        const v = rows[0] ? Number(rows[0].value) : null;
-        return `<div class="pb-metric ${w}"><div class="pb-metric-n">${v == null ? "—" : new Intl.NumberFormat("en").format(v)}</div><div class="pb-metric-l">${e(b.label)}</div></div>`;
-      }
-      case "chart": {
-        const payload = await this.chartData(b);
-        const has = payload.multi ? payload.data.rows.length : payload.data.length;
-        const svg = has ? renderChartSvg(b.mark || "bar", payload, { stack: b.stack === true }) : `<div class="pb-empty">no data</div>`;
-        return `<figure class="pb-chart ${w}">${b.title ? `<figcaption class="pb-chart-t">${e(b.title)}</figcaption>` : ""}<div class="pb-chart-c">${svg}</div>${b.caption ? `<figcaption class="pb-chart-cap">${e(b.caption)}</figcaption>` : ""}</figure>`;
-      }
-      default: return ""; // embeds (view/entry/list) aren't served on public pages yet
-    }
+  /** The render module's narrowed hands: only `servedQuery`, the untrusted reader
+   *  that refuses kernel patterns at the engine. Never `db`, never a trusted ctx. */
+  private renderCtx(): rnd.RenderContext {
+    return { servedQuery: (p, f, fa, s, l, c, g, a) => this.servedQuery(p, f, fa, s, l, c, g, a) };
   }
 
   private getPublicPageRow(path: string): any | null {
@@ -1154,41 +1089,13 @@ export class HiveDO extends DurableObject {
   async renderPublicPage(path: string): Promise<string | null> {
     const row = this.getPublicPageRow(path);
     if (!row) return null;
-    let blocks: any[] = [];
-    try { blocks = JSON.parse(row.blocks || "[]"); } catch { /* */ }
-    // DoS backstop: each chart/metric block is a DB aggregate run sequentially
-    // on the single-threaded DO, on an unauthenticated edge-cacheable URL. Cap
-    // the render so a page with hundreds of heavy blocks can't pin the DO;
-    // overflow blocks are silently dropped.
-    const MAX_BLOCKS = 32;
-    if (Array.isArray(blocks) && blocks.length > MAX_BLOCKS) blocks = blocks.slice(0, MAX_BLOCKS);
-    const parts: string[] = [];
-    for (const b of blocks) parts.push(await this.renderBlockHtml(b));
-    const title = escapeXml(row.title || row.name);
-    const desc = escapeXml(row.description || "");
-    const og = `/page/${encodeURIComponent(path)}/og.png`;
-    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title}</title>
-<meta property="og:title" content="${title}">
-${desc ? `<meta property="og:description" content="${desc}"><meta name="description" content="${desc}">` : ""}
-<meta property="og:type" content="article"><meta property="og:image" content="${og}">
-<meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="${og}">
-<style>${PUBLIC_PAGE_CSS}</style></head>
-<body><main class="pb"><h1 class="pb-title">${title}</h1>${desc ? `<p class="pb-desc">${desc}</p>` : ""}<div class="pb-grid">${parts.join("")}</div><footer class="pb-foot">made with Mnemion</footer></main></body></html>`;
+    return rnd.renderPublicPage(this.renderCtx(), row, path);
   }
 
   async renderPageOgSvg(path: string): Promise<string | null> {
     const row = this.getPublicPageRow(path);
     if (!row) return null;
-    let blocks: any[] = [];
-    try { blocks = JSON.parse(row.blocks || "[]"); } catch { /* */ }
-    const chart = blocks.find((b: any) => b.type === "chart");
-    if (!chart) return null;
-    const data = await this.chartData(chart);
-    // An empty chart would render a blank 1200×630 card — serve no OG image instead.
-    const empty = data.multi ? data.data.rows.length === 0 : data.data.length === 0;
-    if (empty) return null;
-    return chartOgSvg(row.title || row.name, chart.mark || "bar", data, chart.stack === true);
+    return rnd.renderPageOgSvg(this.renderCtx(), row);
   }
 
   // === System docs ===
