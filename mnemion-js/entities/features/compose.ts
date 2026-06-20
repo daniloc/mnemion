@@ -36,20 +36,23 @@ export function composeEffects(features: Feature[]): Record<string, PatternEffec
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// DESIGNED composers (signatures only — wired when their host registry adopts
-// the array). Each documents WHERE the composition runs and HOW the host file
-// changes from a literal to a derivation. Kept here so the design lives next to
-// the type, and so the next agent has a concrete landing spot.
+// Composers. `effects` (above), `patterns`, and `migrations` are WIRED into their
+// host files; the remainder (writePolicy/routes/tools/systemDocs) are either wired
+// elsewhere (writePolicy via the pure-data security barrel, routes via index.ts) or
+// DESIGNED (signatures only — wired when their host registry adopts the array). Each
+// documents WHERE the composition runs and HOW the host file changes from a literal
+// to a derivation, so the design lives next to the type.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** PATTERNS + DDL.  HOST: schema.ts `KERNEL_PATTERNS` literal becomes
- *  `[...CORE_KERNEL_PATTERNS, ...composePatterns(FEATURES)]`.
- *  WHERE IT RUNS: boot — schema.ts already iterates KERNEL_PATTERNS to run DDL +
- *  seed _fields; a feature's patterns join that list, so DDL, _fields metadata,
- *  and the write-class totality check (`findUnclassifiedKernelPatterns`) all pick
- *  them up unchanged. Composer asserts no two features (or a feature + core)
- *  declare the same pattern name. */
-export function composePatterns(features: Feature[]): Feature["patterns"] {
+/** PATTERNS + DDL.  WIRED.  HOST: schema.ts `KERNEL_TABLES` literal becomes
+ *  `[...CORE_KERNEL_TABLES, ...composePatterns(FEATURES)]`.
+ *  WHERE IT RUNS: boot — schema.ts iterates KERNEL_TABLES to run DDL + seed _fields,
+ *  so a feature's patterns join that list and DDL, _fields metadata, the
+ *  DDL↔_fields drift oracle (`verifyFieldsIntegrity`), and the write-class totality
+ *  check (`verifyWritePolicyTotality`) all pick them up unchanged. Composer asserts
+ *  no two features declare the same pattern name; a feature↔core collision is caught
+ *  by the write-policy `mergeDisjoint` in policy.ts. */
+export function composePatterns(features: Feature[]): NonNullable<Feature["patterns"]> {
   const out: NonNullable<Feature["patterns"]> = [];
   const seen = new Set<string>();
   for (const f of features)
@@ -76,9 +79,12 @@ export function composeWritePolicy(features: Feature[]): Record<string, unknown>
   return out;
 }
 
-/** MIGRATIONS.  HOST: schema.ts `runMigrations` switch gains a tail loop over
- *  `composeMigrations(FEATURES)` (sorted by version, run if > stored schema
- *  version). WHERE IT RUNS: boot, after core migrations. Composer asserts version
+/** MIGRATIONS.  WIRED.  HOST: schema.ts's boot migration pile gains a tail loop
+ *  over `composeMigrations(FEATURES)`. Core migrations are an append-only pile of
+ *  idempotent (PRAGMA-guarded) ALTER blocks run on EVERY boot with no stored-version
+ *  gate, so feature migrations run the same way — `version` is purely the global
+ *  ordering + collision slot, not a run condition. WHERE IT RUNS: boot, after the
+ *  kernel DDL loop + core migrations. Composer sorts by version and asserts version
  *  uniqueness across features so two features can't claim the same slot. */
 export function composeMigrations(features: Feature[]): NonNullable<Feature["migrations"]> {
   const out: NonNullable<Feature["migrations"]> = [];

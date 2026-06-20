@@ -2,7 +2,10 @@
 //
 // Live slots: `effects` (the post-mutate link-back) + `routes` (the public-page
 // HTTP edges). Other registries it touches:
-//   patterns     → schema.ts (_pages DDL + path index)
+//   patterns     → ./schema.ts (pure data: _pages DDL + path index + facets),
+//                  folded into schema.ts's KERNEL_TABLES by composePatterns. Wired
+//                  below. (No feature migration — every _pages column is in the base
+//                  DDL.)
 //   writePolicy  → ./security.ts (pure data: _pages write class), composed into the
 //                  effective KERNEL_WRITE_POLICY by entities/features/security.ts.
 //                  Re-exported below so the footprint is legible from the dir.
@@ -10,6 +13,7 @@
 
 import type { Feature } from "../feature";
 import { servePage, servePageOg, servePageOgPng } from "../../../shared/Routing/routes/io";
+import { patterns as pagesPatterns } from "./schema";
 
 // Security footprint as pure data, foldable into the policy.ts leaf without pulling
 // this manifest's code. Re-exported so the dir shows its whole footprint.
@@ -17,6 +21,9 @@ export { writePolicy } from "./security";
 
 export const pages: Feature = {
   name: "pages",
+  // Pattern structure (DDL/facets/index), owned by the feature dir (./schema.ts,
+  // pure data) and composed into schema.ts's KERNEL_TABLES at boot.
+  patterns: pagesPatterns,
   // Public-page serving + OG-card edges, spliced into the route table by
   // composeRoutes. Handlers stay in routes/io.ts. The og.svg/og.png variants are
   // declared before the catch-all /page/:path; their regexes don't overlap (a

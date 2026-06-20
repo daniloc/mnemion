@@ -25,14 +25,18 @@
 import type { PatternEffect } from "../Hive/effects";
 
 /** A kernel-pattern declaration as schema.ts expects it (DDL + facet metadata +
- *  doctrine). Kept as the existing shape so a feature can hand schema.ts a row
- *  verbatim. */
+ *  doctrine). Kept as the existing `KernelTable` shape so a feature can hand
+ *  schema.ts a row verbatim — composePatterns folds these into KERNEL_TABLES, and
+ *  the boot DDL loop / _fields seeding / verifyFieldsIntegrity treat them
+ *  identically to a CORE row. `indexes` mirror the KernelTable field (a feature
+ *  pattern may carry its own unique/partial indexes, e.g. _pages' path index). */
 export interface FeaturePattern {
   name: string;
   description: string;
-  doctrine?: string;
+  doctrine: string;
   ddl: string;
-  facets: Array<Record<string, unknown>>;
+  indexes?: string[];
+  facets: Array<{ name: string; type: string; required: boolean; options?: string[] }>;
 }
 
 /** A one-shot, idempotent ALTER/backfill keyed by a monotonic version, mirroring

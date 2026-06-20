@@ -19,8 +19,9 @@ import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/con
 import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
-import { describeBlockPalette } from "../../shared/core/block-palette";
 import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns } from "./policy";
+import { FEATURES } from "../features";
+import { composePatterns, composeMigrations } from "../features/compose";
 
 // System docs — imported as raw text, placeholders resolved at load time
 import schemaEvolutionRaw from "../../src/system-docs/schema-evolution.md";
@@ -83,7 +84,14 @@ interface KernelTable {
   facets: KernelFacet[];
 }
 
-export const KERNEL_TABLES: KernelTable[] = [
+// CORE kernel tables — the infra/core patterns whose structure isn't owned by a
+// feature. A FEATURE owns its pattern's structure (DDL/facets/index) in its dir
+// (entities/features/<name>/schema.ts, pure data); composePatterns folds those rows
+// back into the EXPORTED KERNEL_TABLES below. Every consumer of KERNEL_TABLES (the
+// boot DDL loop, _fields seeding, verifyFieldsIntegrity, verifyWritePolicyTotality,
+// the security tests) reads the COMPOSED array, so a feature pattern is treated
+// identically to a core one.
+const CORE_KERNEL_TABLES: KernelTable[] = [
   {
     name: "_access_tokens",
     description: `Unified access tokens. Token auto-generated on create. Scope controls what the token can do — hierarchical prefix matching (e.g. "read" matches "read:entry:axioms:7"). Constraints holds scope-specific JSON (e.g. upload target). Single-use tokens are consumed on first use.
@@ -421,40 +429,8 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       { name: "accessed_at", type: "datetime", required: false },
     ],
   },
-  {
-    name: "_documents",
-    description: "Document store. Each entry is metadata for a file whose bytes live in R2 (never in the hive). Two-step upload: create the entry (the response carries a single-use upload_url), then POST the file to it. Served at GET /f/{id}, gated by the entry's visibility. On upload, text is extracted into extracted_text so document contents are searchable (search) and recallable (prime). Bytes are immutable; the metadata is the evolvable knowledge layer that points at them — link documents to other entries like any pattern.",
-    doctrine: "Create a document entry with at least a title (plus optional description, tags); the create response includes a single-use upload_url and token — POST the file bytes there to store them in R2. The r2_key, size, content_type, stored_at, extracted_text, and extraction_status facets are filled by the system on upload — never set them yourself. On upload, text is extracted (text files inline, PDFs in the background) into extracted_text, which makes document CONTENTS searchable via search and recallable via prime; extraction_status reports done/pending/failed/unsupported. visibility defaults to private (not served); set it to unlisted (token-gated) or public ONLY when the human approves publishing the file — that flip is consent-gated. Archive an entry to delete both the metadata and the R2 object.",
-    ddl: `CREATE TABLE IF NOT EXISTS "_documents" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "title" TEXT NOT NULL,
-      "description" TEXT,
-      "tags" TEXT,
-      "content_type" TEXT,
-      "size" INTEGER,
-      "r2_key" TEXT,
-      "stored_at" TEXT,
-      "extracted_text" TEXT,
-      "extraction_status" TEXT,
-      "visibility" TEXT NOT NULL DEFAULT 'private',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT,
-      version INTEGER NOT NULL DEFAULT 0
-    )`,
-    facets: [
-      { name: "title", type: "text", required: true },
-      { name: "description", type: "text", required: false },
-      { name: "tags", type: "text", required: false },
-      { name: "content_type", type: "text", required: false },
-      { name: "size", type: "integer", required: false },
-      { name: "r2_key", type: "text", required: false },
-      { name: "stored_at", type: "datetime", required: false },
-      { name: "extracted_text", type: "text", required: false },
-      { name: "extraction_status", type: "text", required: false },
-      { name: "visibility", type: "text", required: false },
-    ],
-  },
+  // _documents → owned by the documents feature
+  //   (entities/features/documents/schema.ts), composed into KERNEL_TABLES below.
   {
     name: "_maintenance_passes",
     description: "Record of memory maintenance passes — reviewing stale entries, proposing supersessions and archives, ratifying memory policies. 'Days since last pass' is derived from the latest row and announced to connecting agents.",
@@ -571,37 +547,8 @@ ${describeViewPalette()}`,
       { name: "config", type: "text", required: false },
     ],
   },
-  {
-    name: "_pages",
-    description: `Agent-authored pages — arbitrary compositions that reference any patterns and entries. A page is a list of blocks (metric, chart, an embedded pattern view, a specific entry, prose) arranged in a grid. Build one when the human wants a dashboard or an overview you didn't pre-design. Set a unique "path" (slug) per page.
-
-${describeBlockPalette()}`,
-    doctrine: `Compose a page when the human wants a custom dashboard or overview across patterns. Blocks are declarative data interpreted against a fixed component palette — never code. Reference real patterns/entries; the kernel rejects a page that names a missing pattern, facet, or an unknown block type. The create/update response carries page_url — give it to the human so they can open the page. Pages are private by default (page_url opens only in the signed-in app); set visibility: public to serve it over the web at /page/{path} with an OG unfurl card (og_image) — that flip is consent-gated.`,
-    ddl: `CREATE TABLE IF NOT EXISTS "_pages" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "name" TEXT NOT NULL,
-      "path" TEXT NOT NULL,
-      "title" TEXT,
-      "description" TEXT,
-      "blocks" TEXT,
-      "visibility" TEXT DEFAULT 'private',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT,
-      version INTEGER NOT NULL DEFAULT 0
-    )`,
-    indexes: [
-      `CREATE UNIQUE INDEX IF NOT EXISTS "_pages_path_active" ON "_pages" ("path") WHERE archived_at IS NULL`,
-    ],
-    facets: [
-      { name: "name", type: "text", required: true },
-      { name: "path", type: "text", required: true },
-      { name: "title", type: "text", required: false },
-      { name: "description", type: "text", required: false },
-      { name: "blocks", type: "text", required: false },
-      { name: "visibility", type: "select", required: false, options: ["private", "public"] },
-    ],
-  },
+  // _pages → owned by the pages feature
+  //   (entities/features/pages/schema.ts), composed into KERNEL_TABLES below.
   {
     name: "_system_docs",
     description: "System documentation for agent orientation. Editable but requires confirmation. Set content to null to restore defaults.",
@@ -623,6 +570,19 @@ ${describeBlockPalette()}`,
       { name: "default_content", type: "text", required: true },
     ],
   },
+];
+
+// The EXPORTED kernel surface: CORE infra patterns + each feature's own pattern
+// structure (DDL/facets/index), composed from the pure-data feature schema modules
+// via the FEATURES barrel. composePatterns asserts no two features declare the same
+// pattern name (a feature↔core name clash is caught by policy.ts's mergeDisjoint at
+// module load). Everything downstream — the boot DDL loop, _fields seeding,
+// verifyFieldsIntegrity, verifyWritePolicyTotality, and the security tests that
+// iterate KERNEL_TABLES — reads THIS composed array, so a feature pattern is
+// indistinguishable from a core one and the DDL↔_fields drift oracle stays green.
+export const KERNEL_TABLES: KernelTable[] = [
+  ...CORE_KERNEL_TABLES,
+  ...composePatterns(FEATURES),
 ];
 
 // === Initialization ===
@@ -831,19 +791,10 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   } catch {}
 
-  // --- v12: add extraction columns to _documents (existing tables need ALTER) ---
-
-  try {
-    const docCols = db.exec(`PRAGMA table_info("_documents")`).toArray() as any[];
-    if (docCols.length) {
-      if (!docCols.some((c: any) => c.name === "extracted_text")) {
-        db.exec(`ALTER TABLE "_documents" ADD COLUMN "extracted_text" TEXT`);
-      }
-      if (!docCols.some((c: any) => c.name === "extraction_status")) {
-        db.exec(`ALTER TABLE "_documents" ADD COLUMN "extraction_status" TEXT`);
-      }
-    }
-  } catch {}
+  // --- v12: add extraction columns to _documents ---
+  //   MOVED → entities/features/documents/schema.ts (the documents feature owns its
+  //   schema migration). Composed back in via the composeMigrations(FEATURES) loop
+  //   below, which runs the same way the core pile does (idempotent, every boot).
 
   // --- v15: shared hive — multi-member passkeys + token/member attribution ---
   //
@@ -892,6 +843,20 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
       db.exec(`ALTER TABLE "_access_tokens" ADD COLUMN "approved_at" TEXT`);
     }
   } catch {}
+
+  // --- Feature-owned migrations ---
+  //
+  // Each feature owns its own schema migrations in its dir
+  // (entities/features/<name>/schema.ts); composeMigrations folds them into one
+  // version-sorted, collision-checked list. They run here, alongside the core pile,
+  // the same way: idempotent (PRAGMA/IF-NOT-EXISTS guarded), every boot, no
+  // stored-version gate — `version` is the global ordering/collision slot, not a run
+  // condition. Runs AFTER the kernel DDL loop (the target tables exist) and BEFORE
+  // _fields seeding / audit triggers / verifyFieldsIntegrity (which must see the
+  // migrated columns). Today: documents v12 (extracted_text / extraction_status).
+  for (const m of composeMigrations(FEATURES)) {
+    try { m.apply(db); } catch { /* idempotent best-effort, like the core pile */ }
+  }
 
   // --- GC: expire short-term fragments older than 30 days ---
 
