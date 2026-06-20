@@ -520,11 +520,14 @@ export class HiveDO extends DurableObject {
 
   // === Data operations (delegated to data.ts) ===
 
-  private dataCtx(actor: string = OWNER_ACTOR, trusted: boolean = true): data.DataContext {
+  /** Shared DataContext fields, trust-AGNOSTIC. The trust flag is deliberately NOT
+   *  a parameter here — it is fixed by the named constructor a caller chooses
+   *  (`ownerDataCtx` / `servedDataCtx`), so trust can never be dialed at a call
+   *  site — there is no trust boolean to misremember. */
+  private ctxFields(actor: string = OWNER_ACTOR): Omit<data.DataContext, "trusted"> {
     return {
       db: this.db,
       actor,
-      trusted,
       patternExists: (name) => this.patternExists(name),
       listPatterns: () => this.db.exec("SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name").toArray().map((r: any) => r.name as string),
       entryExists: (pattern, id) => this.entryExists(pattern, id),
@@ -542,13 +545,22 @@ export class HiveDO extends DurableObject {
     };
   }
 
-  /** A read context for SERVED/untrusted surfaces (public page, /o, /p, OG,
-   *  federation). Marked `trusted: false` — the SAME flag that confines untrusted
-   *  writes — so the engine refuses any kernel pattern for a served read. A serve
-   *  path physically cannot reach `_access_tokens`/`_members`/etc., and new serve
-   *  sinks inherit the boundary by using this context. */
-  private servedDataCtx(): data.DataContext {
-    return { ...this.dataCtx(), trusted: false };
+  /** TRUSTED context — full kernel read + write. The owner/agent path (MCP session,
+   *  browser session, internal writes). The ONLY constructor that sets `trusted: true`;
+   *  if you are handed this you can reach kernel data, so it is never given to
+   *  orchestration that serves untrusted surfaces. */
+  private ownerDataCtx(actor: string = OWNER_ACTOR): data.DataContext {
+    return { ...this.ctxFields(actor), trusted: true };
+  }
+
+  /** UNTRUSTED context for SERVED surfaces (public page, /o, /p, OG, federation)
+   *  AND untrusted WRITES (ingress, upload). `trusted: false` is the SAME flag the
+   *  engine uses to refuse any kernel pattern, symmetric across read and write — so
+   *  a serve/ingress path physically cannot reach `_access_tokens`/`_members`/etc.
+   *  Orchestration handed only this constructor cannot forge a trusted write: the
+   *  boundary is a capability, not a per-call-site convention. */
+  private servedDataCtx(actor: string = OWNER_ACTOR): data.DataContext {
+    return { ...this.ctxFields(actor), trusted: false };
   }
 
   /** query() for a served/untrusted surface — refuses kernel patterns at the
@@ -564,7 +576,7 @@ export class HiveDO extends DurableObject {
   }
 
   async query(patternName: string, filterJson: string, facets: string, sortField: string, limit: number, countOnly: boolean, groupBy: string = "", aggregateJson: string = ""): Promise<string> {
-    return data.query(this.dataCtx(), patternName, filterJson, facets, sortField, limit, countOnly, groupBy, aggregateJson);
+    return data.query(this.ownerDataCtx(), patternName, filterJson, facets, sortField, limit, countOnly, groupBy, aggregateJson);
   }
 
   async mutate(patternName: string, operation: string, dataJson: string, actor: string = OWNER_ACTOR): Promise<string> {
@@ -602,7 +614,7 @@ export class HiveDO extends DurableObject {
     // its digest BEFORE insert, so the raw never lands in the row/audit/broadcast.
     const minted = await this.mintSecrets(patternName, parsed, operation);
 
-    const result = data.executeMutate(this.dataCtx(actor), patternName, operation, parsed);
+    const result = data.executeMutate(this.ownerDataCtx(actor), patternName, operation, parsed);
     if (!result.error) {
       if (conflictCheck?.neighbors.length) {
         result.possible_overlap = [
@@ -633,7 +645,7 @@ export class HiveDO extends DurableObject {
           constraints: JSON.stringify({ document_id: result.entry.id }),
         };
         const tokMinted = await this.mintSecrets("_access_tokens", tokData, "create"); // born-hashed
-        const tok = data.executeMutate(this.dataCtx(actor), "_access_tokens", "create", tokData);
+        const tok = data.executeMutate(this.ownerDataCtx(actor), "_access_tokens", "create", tokData);
         const rawTok = tokMinted?.token;
         if (!tok.error && rawTok) {
           result.upload_token = rawTok; // raw, shown once (DB holds the digest)
@@ -778,7 +790,7 @@ export class HiveDO extends DurableObject {
     const onces: (Record<string, string> | null)[] = [];
     for (const op of operations) onces.push(await this.mintSecrets(op.pattern, op.data, op.operation));
 
-    const ctx = this.dataCtx(actor);
+    const ctx = this.ownerDataCtx(actor);
     const results: any[] = [];
     this.ctx.storage.transactionSync(() => {
       for (const op of operations) {
@@ -1067,7 +1079,7 @@ export class HiveDO extends DurableObject {
   }
 
   async search(term: string, objectsJson: string, limit: number): Promise<string> {
-    return data.search(this.dataCtx(), term, objectsJson, limit);
+    return data.search(this.ownerDataCtx(), term, objectsJson, limit);
   }
 
   // === Mutation log ===
@@ -1893,7 +1905,7 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
     // Untrusted context: this is a public, unauthenticated HTTP path entering
     // below the MCP consent layer. executeMutate refuses any kernel target for
     // an untrusted write, so a repointed/legacy endpoint can't reach _shared et al.
-    const result = data.executeMutate(this.dataCtx(OWNER_ACTOR, false), input.target_pattern, "create", entryData);
+    const result = data.executeMutate(this.servedDataCtx(), input.target_pattern, "create", entryData);
     if (!result.error) this.broadcastChange([input.target_pattern]);
     return JSON.stringify(result, null, 2);
   }
