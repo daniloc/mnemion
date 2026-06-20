@@ -1106,9 +1106,10 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
   //     for egress (SENSITIVE_COLUMNS), or it could leak through a serializer. ---
   try {
     const kernelCols: Record<string, string[]> = {};
-    for (const obj of allObjects) {
-      const name = obj.name as string;
-      if (!name.startsWith("_")) continue;
+    // Enumerate ALL `_`-prefixed tables (not just _objects rows) so raw-DDL kernel
+    // tables like _passkeys are covered — matching the security.test oracle exactly.
+    const tables = (db.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'`).toArray() as any[]).map((t: any) => t.name as string);
+    for (const name of tables) {
       kernelCols[name] = (db.exec(`PRAGMA table_info("${name}")`).toArray() as any[]).map((c: any) => c.name as string);
     }
     const gaps = findUnclassifiedSensitiveColumns(kernelCols);

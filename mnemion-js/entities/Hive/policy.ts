@@ -241,6 +241,9 @@ export interface SensitiveColumn { column: string; kind: SensitivityKind }
 export const SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> = {
   _access_tokens: [{ column: "token", kind: "secret" }],
   _passkeys: [{ column: "public_key", kind: "redact" }, { column: "credential_id", kind: "redact" }],
+  // r2_key is the random, non-enumerable handle to a document's bytes in R2 — a
+  // capability that has no business riding a /ws delta or an export.
+  _documents: [{ column: "r2_key", kind: "redact" }],
 };
 
 export function sensitiveColumns(pattern: string): SensitiveColumn[] {
@@ -266,7 +269,9 @@ export function seal<T extends Record<string, unknown> | null | undefined>(patte
 
 // A column whose NAME looks like a credential on any KERNEL table must be
 // classified above, or it's an egress gap. The analogue of verifyWritePolicyTotality.
-const SECRET_NAME_RE = /^(token|secret|password|private_key|public_key|credential|credential_id|api_key)$/i;
+// Name heuristic — not exhaustive (a reviewer still classifies the unobvious), but
+// covers the conventional credential shapes incl. any `*_key` / `*_secret` suffix.
+const SECRET_NAME_RE = /^(token|secret|password|credential|credential_id|recovery_code|totp_secret|[a-z0-9]*_(key|secret))$/i;
 export function findUnclassifiedSensitiveColumns(tableColumns: Record<string, string[]>): string[] {
   const gaps: string[] = [];
   for (const [table, cols] of Object.entries(tableColumns)) {

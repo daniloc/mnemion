@@ -1382,15 +1382,16 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
     // are degraded locally; query/mutate (the UI surface) are unaffected. The
     // test suite leaves this unset so embedding is still exercised.
     if ((this.env as any).SKIP_EMBED) return;
-    // Kernel control tables (_access_tokens, _members, …) are not memory — never
-    // embed them for recall (the same set prime excludes). _documents et al. that
-    // ARE prime-included still embed.
-    if (isKernelPattern(pattern) && !primeIncluded(pattern)) return;
     const ctx = this.primeCtx();
     if (operation === "archive") {
+      // Always attempt removal — this also GCs any LEGACY vector left over from
+      // before kernel patterns were excluded from embedding (a no-op if none).
       this.ctx.waitUntil(priming.removeEntry(ctx, pattern, id));
     } else {
-      // Dataset patterns are records, not memory — never embedded for recall.
+      // Kernel control tables (_access_tokens, _members, …) are not memory — never
+      // embed them for recall (the same set prime excludes). _documents et al. that
+      // ARE prime-included still embed. Dataset patterns are records, not memory.
+      if (isKernelPattern(pattern) && !primeIncluded(pattern)) return;
       if (this.patternClass(pattern) === "dataset") return;
       this.ctx.waitUntil(priming.embedEntry(ctx, pattern, id, precomputed));
     }
@@ -1674,9 +1675,12 @@ ${desc ? `<meta property="og:description" content="${desc}"><meta name="descript
   async resolveTokenConstraints(token: string, requiredScope: string): Promise<string> {
     const t = await cred.findAccessToken(this.db, token);
     if (!t || !cred.scopeMatches(t.scope, requiredScope)) return JSON.stringify({ valid: false });
-    let constraints: unknown = null;
-    try { constraints = t.constraints ? JSON.parse(t.constraints) : null; } catch { /* malformed → no constraints, still valid */ }
-    return JSON.stringify({ valid: true, constraints });
+    // Absent constraints = no scope restriction (intended). Present-but-MALFORMED
+    // constraints must fail CLOSED — never widen a scoped token to full access
+    // because its constraints JSON couldn't be parsed.
+    if (!t.constraints) return JSON.stringify({ valid: true, constraints: null });
+    try { return JSON.stringify({ valid: true, constraints: JSON.parse(t.constraints) }); }
+    catch { return JSON.stringify({ valid: false }); }
   }
   async resolveTokenActor(token: string, requiredScope: string) {
     return cred.resolveTokenActor(this.db, token, requiredScope);

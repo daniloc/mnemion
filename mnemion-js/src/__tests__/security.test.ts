@@ -4,6 +4,7 @@ import type { HiveDO } from "../../entities/Hive/hive";
 import { query } from "../../entities/Hive/data";
 import { KERNEL_TABLES } from "../../entities/Hive/schema";
 import { seal, findUnclassifiedSensitiveColumns } from "../../entities/Hive/policy";
+import { hashToken } from "../../shared/Auth/credentials";
 
 // Regression guards for the security review fixes. These exercise the mutate /
 // evolution chokepoints (RPC = below the consent layer, runs the kernel hooks),
@@ -91,6 +92,30 @@ describe("seal: the egress sieve strips sensitive columns from any serialized ro
     expect(seal("_passkeys", { id: 1, public_key: "k", credential_id: "c", counter: 3 })).toEqual({ id: 1, counter: 3 });
     expect(seal("goals", { id: 1, title: "x" })).toEqual({ id: 1, title: "x" });
     expect(seal("_access_tokens", null)).toBeNull();
+  });
+});
+
+describe("marketplace token-constraint resolution fails CLOSED on malformed constraints", () => {
+  it("malformed constraints → valid:false (never widens a scoped token to full access)", async () => {
+    const store = getStore();
+    const raw = "cafebabecafebabecafebabecafebabe";
+    await runInDurableObject(store, async (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO "_access_tokens" (token, scope, constraints) VALUES (?, 'marketplace', ?)`,
+        await hashToken(raw), "{not valid json",
+      );
+    });
+    expect(JSON.parse(await store.resolveTokenConstraints(raw, "marketplace")).valid).toBe(false);
+  });
+  it("absent constraints → valid:true (unscoped token, intended), well-formed → constraints returned", async () => {
+    const store = getStore();
+    const a = "0000aaaa0000aaaa0000aaaa0000aaaa", b = "1111bbbb1111bbbb1111bbbb1111bbbb";
+    await runInDurableObject(store, async (_i, state) => {
+      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope) VALUES (?, 'marketplace')`, await hashToken(a));
+      state.storage.sql.exec(`INSERT INTO "_access_tokens" (token, scope, constraints) VALUES (?, 'marketplace', ?)`, await hashToken(b), JSON.stringify({ plugins: ["x"] }));
+    });
+    expect(JSON.parse(await store.resolveTokenConstraints(a, "marketplace"))).toEqual({ valid: true, constraints: null });
+    expect(JSON.parse(await store.resolveTokenConstraints(b, "marketplace"))).toEqual({ valid: true, constraints: { plugins: ["x"] } });
   });
 });
 
