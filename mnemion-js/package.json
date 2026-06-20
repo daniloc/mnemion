@@ -19,7 +19,8 @@
     "enable-documents": "bash scripts/enable-documents.sh",
     "coherence:docs": "coherence docs",
     "coherence:verify": "coherence verify",
-    "coherence:onboard": "coherence onboard"
+    "coherence:onboard": "coherence onboard",
+    "cruft": "npx --yes ts-prune -p tsconfig.json | grep -v 'used in module'"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.8.0",
