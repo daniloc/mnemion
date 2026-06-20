@@ -15,7 +15,11 @@
 // kernel pattern can never silently default to agent-writable through every path.
 //
 // This module is a leaf: it imports nothing from the enforcement layers, so they
-// can all derive from it without cycles.
+// can all derive from it without cycles. The ONE import it does carry — the
+// feature-security barrel (entities/features/security.ts) — is itself pure DATA +
+// TYPES (each feature's */security.ts imports only `import type` from here), so the
+// leaf property holds: no enforcement-layer code, no runtime cycle. (It deliberately
+// does NOT import a feature manifest.ts; those carry code.)
 //
 // @why That question was previously answered hole-by-hole across three layers
 // plus eleven scattered startsWith("_") checks, and every missed cell was a
@@ -25,6 +29,8 @@
 // silently default to agent-writable; the module is a dependency-free leaf so
 // every enforcement layer derives from it without cycles; write-class is
 // computed at read time, never persisted, to avoid denormalizing the constant.
+
+import { FEATURE_WRITE_POLICY, FEATURE_SENSITIVE_COLUMNS } from "../features/security";
 
 // === Write classes ===
 
@@ -51,13 +57,13 @@ export enum WriteClass {
 //                out-of-band passkey approval at /invite/{token}, not a re-issue.
 type ConsentCondition = "always" | "on_expose" | "patch_only";
 
-interface ConsentPolicy {
+export interface ConsentPolicy {
   condition: ConsentCondition;
   /** Shown to the agent on the first (unconfirmed) call. */
   message: string;
 }
 
-interface KernelPolicy {
+export interface KernelPolicy {
   class: WriteClass;
   consent?: ConsentPolicy;
   // Behavioral flags that used to live as invisible, hand-maintained sets keyed
@@ -74,9 +80,17 @@ interface KernelPolicy {
 // One row per kernel pattern. User patterns are NOT listed — their absence (any
 // non-`_` name) is what makes them User class. The `_` namespace is reserved for
 // the kernel (create_pattern refuses `_`-prefixed names), so every `_` pattern is
-// enumerated here and the boot-time totality check asserts it against KERNEL_TABLES.
+// enumerated — across this CORE map and the per-feature contributions composed in
+// below — and the boot-time totality check asserts the COMPOSED map against
+// KERNEL_TABLES.
+//
+// CORE_KERNEL_WRITE_POLICY holds the infra/core patterns. A FEATURE owns its own
+// pattern's write class in its dir (entities/features/<name>/security.ts), composed
+// back into the EXPORTED effective KERNEL_WRITE_POLICY below. policy.ts stays a
+// dependency-free leaf because it imports only the pure-data feature-security barrel
+// (which imports only data + types), never a feature manifest (which carries code).
 
-export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
+const CORE_KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
   // --- Consent-gated: agent-writable via MCP only, human round-trip ---
   _members: {
     class: WriteClass.Consent,
@@ -118,15 +132,8 @@ export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
         "System docs affect all future agent sessions. Confirm this edit will make future runs more effective. Call mutate again with the same arguments to proceed.",
     },
   },
-  _documents: {
-    class: WriteClass.Consent,
-    consent: {
-      condition: "on_expose",
-      message:
-        "Making this document non-private serves its file over HTTP at /f/{id} (public = readable by anyone and edge-cached; unlisted = readable by anyone with an access token). Only proceed if the human approved publishing this file. Call mutate again with the same arguments to proceed.",
-    },
-    primeInclude: true, // document contents are searchable + recallable
-  },
+  // _documents → owned by the documents feature
+  //   (entities/features/documents/security.ts), composed in below.
   _access_tokens: {
     class: WriteClass.Consent,
     consent: {
@@ -151,16 +158,8 @@ export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
   _maintenance_passes: { class: WriteClass.Open },
   _canvases: { class: WriteClass.Open },
   _views: { class: WriteClass.Open }, // agent-authored UI view specs; owner-facing, not exposed externally
-  _pages: {
-    // Private page edits flow freely (iterate with the agent); publishing one
-    // (visibility public) is consent-gated — it serves hive data over HTTP.
-    class: WriteClass.Consent,
-    consent: {
-      condition: "on_expose",
-      message:
-        "Making this page public serves it over HTTP at /page/{path} — anyone with the link can read it, including the data its blocks pull from the hive. Only proceed if the human approved publishing this page. Call mutate again with the same arguments to proceed.",
-    },
-  },
+  // _pages → owned by the pages feature
+  //   (entities/features/pages/security.ts), composed in below.
   // Promotion from _short_term_fragments is the intended writer, but direct
   // agent writes have never been denied — kept Open to preserve that behavior.
   _long_term_fragments: { class: WriteClass.Open, primeInclude: true }, // consolidated memory surfaces in recall
@@ -176,6 +175,19 @@ export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
   _mutation_log: { class: WriteClass.System },
   _schema_history: { class: WriteClass.System },
   _pending_changes: { class: WriteClass.System },
+};
+
+// The EFFECTIVE registry every derivation reads: CORE infra rows + each feature's
+// own write class, composed from the pure-data feature-security barrel. A feature
+// pattern with no row here still fails CLOSED (writeClass → System/denied), and the
+// boot-time totality check (verifyWritePolicyTotality) asserts THIS composed map
+// covers every KERNEL_TABLES pattern — so a feature that forgets its policy is
+// denied AND flagged, never silently agent-writable. A collision (CORE vs feature)
+// would be masked by spread, so the barrel throws on feature↔feature collisions and
+// the totality/admission-matrix tests pin the full keyset.
+export const KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
+  ...CORE_KERNEL_WRITE_POLICY,
+  ...FEATURE_WRITE_POLICY,
 };
 
 // === Derivations — every gate reads through these, never re-derives ===
@@ -238,12 +250,20 @@ export function isAuditExempt(pattern: string): boolean {
 export type SensitivityKind = "secret" | "redact";
 export interface SensitiveColumn { column: string; kind: SensitivityKind }
 
-export const SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> = {
+const CORE_SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> = {
   _access_tokens: [{ column: "token", kind: "secret" }],
   _passkeys: [{ column: "public_key", kind: "redact" }, { column: "credential_id", kind: "redact" }],
-  // r2_key is the random, non-enumerable handle to a document's bytes in R2 — a
-  // capability that has no business riding a /ws delta or an export.
-  _documents: [{ column: "r2_key", kind: "redact" }],
+  // _documents.r2_key → owned by the documents feature
+  //   (entities/features/documents/security.ts), composed in below.
+};
+
+// The EFFECTIVE sensitivity registry: CORE columns + each feature's own. Every
+// egress (seal/sealAll, the audit trigger, export) and the egress totality oracle
+// (findUnclassifiedSensitiveColumns) read THIS composed map, so a feature's
+// redacted/secret columns inherit every egress + the loud-fail oracle unchanged.
+export const SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> = {
+  ...CORE_SENSITIVE_COLUMNS,
+  ...FEATURE_SENSITIVE_COLUMNS,
 };
 
 export function sensitiveColumns(pattern: string): SensitiveColumn[] {

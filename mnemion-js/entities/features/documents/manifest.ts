@@ -5,8 +5,12 @@
 // registries that still own them — not duplicated definitions, so there is
 // exactly one source of truth per registry until migration.
 //
-//   patterns/writePolicy → entities/Hive/schema.ts (_documents DDL) +
-//                          entities/Hive/policy.ts (_documents write class)
+//   patterns             → entities/Hive/schema.ts (_documents DDL)
+//   writePolicy + egress → ./security.ts (pure data: _documents write class +
+//                          r2_key redaction), composed into the effective
+//                          KERNEL_WRITE_POLICY / SENSITIVE_COLUMNS by
+//                          entities/features/security.ts. Re-exported below so the
+//                          feature's security footprint is legible from its dir.
 //   migrations           → schema.ts v12 (extracted_text / extraction_status)
 //   systemDocs           → src/system-docs/http-io.md (shared with the other
 //                          HTTP-I/O features — egress/publications/ingress — so
@@ -14,6 +18,12 @@
 
 import type { Feature } from "../feature";
 import { uploadDocument, serveDocument } from "../../../shared/Routing/routes/io";
+
+// The feature's security footprint (write class + egress sensitivity) lives in a
+// pure-data sibling so policy.ts — the dependency-free security leaf — can fold it in
+// without importing this manifest (which carries code). Re-exported here so the whole
+// footprint is discoverable from the feature dir.
+export { writePolicy, sensitiveColumns } from "./security";
 
 export const documents: Feature = {
   name: "documents",

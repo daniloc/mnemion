@@ -2,11 +2,18 @@
 //
 // Live slots: `effects` (the post-mutate link-back) + `routes` (the public-page
 // HTTP edges). Other registries it touches:
-//   patterns/writePolicy → schema.ts (_pages DDL + path index) + policy.ts
-//   systemDocs           → src/system-docs/http-io.md (shared HTTP-I/O doc)
+//   patterns     → schema.ts (_pages DDL + path index)
+//   writePolicy  → ./security.ts (pure data: _pages write class), composed into the
+//                  effective KERNEL_WRITE_POLICY by entities/features/security.ts.
+//                  Re-exported below so the footprint is legible from the dir.
+//   systemDocs   → src/system-docs/http-io.md (shared HTTP-I/O doc)
 
 import type { Feature } from "../feature";
 import { servePage, servePageOg, servePageOgPng } from "../../../shared/Routing/routes/io";
+
+// Security footprint as pure data, foldable into the policy.ts leaf without pulling
+// this manifest's code. Re-exported so the dir shows its whole footprint.
+export { writePolicy } from "./security";
 
 export const pages: Feature = {
   name: "pages",
