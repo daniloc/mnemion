@@ -19,7 +19,8 @@
     "enable-documents": "bash scripts/enable-documents.sh",
     "coherence:docs": "coherence docs",
     "coherence:claude": "coherence claude",
-    "coherence:verify": "coherence verify",
+    "coherence:verify": "coherence verify --fast",
+    "coherence:verify:full": "coherence verify",
     "coherence:decompose": "coherence decompose",
     "coherence:onboard": "coherence onboard",
     "cruft": "npx --yes ts-prune -p tsconfig.json | grep -v 'used in module'"
