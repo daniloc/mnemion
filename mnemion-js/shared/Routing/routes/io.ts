@@ -1,13 +1,28 @@
-import { type RouteHandler, denyUnlessBearerScope } from "../router";
+import { type RouteHandler, type RouteContext, denyUnlessBearerScope, rateLimit, clientIp } from "../router";
 import { zipSync, strToU8 } from "fflate";
 import { extractionPlan, decodeText, capText } from "../../IO/extract";
 import { logWarn } from "../../core/log";
 
 const DOCUMENT_BYTES = 26_214_400; // 25 MB — mirrors data.LIMITS.DOCUMENT_BYTES
 
+// Early cap on buffered TEXT bodies (/i ingress, /upload). The downstream entry/
+// facet limit is 1 MB; this just bounds Worker memory before we buffer the body and
+// run the transform DSL, mirroring the 25 MB up-front cap on /f document uploads.
+// Rejects on Content-Length when present (the realistic large POST); a chunked body
+// with no Content-Length is still bounded by Cloudflare's 100 MB request ceiling.
+const MAX_TEXT_BODY = 4_194_304; // 4 MB
+function bodyTooLarge(ctx: RouteContext): Response | null {
+  const cl = Number(ctx.request.headers.get("content-length"));
+  if (Number.isFinite(cl) && cl > MAX_TEXT_BODY) {
+    return Response.json({ error: true, message: `Body too large: exceeds the ${MAX_TEXT_BODY / 1024 / 1024}MB limit for this endpoint.` }, { status: 413 });
+  }
+  return null;
+}
+
 // === Shared entries: GET /o/entry/:pattern/:id ===
 
 export const serveSharedEntry: RouteHandler = async (ctx) => {
+  const rl = await rateLimit(ctx.env.RL_PUBLIC, `o:${clientIp(ctx)}`); if (rl) return rl;
   const raw = await ctx.hive.getSharedEntry(ctx.params.pattern, Number(ctx.params.id));
   const result = JSON.parse(raw);
 
@@ -134,6 +149,7 @@ export function inertHeaders(
 }
 
 export const serveOutput: RouteHandler = async (ctx) => {
+  const rl = await rateLimit(ctx.env.RL_PUBLIC, `o:${clientIp(ctx)}`); if (rl) return rl;
   const raw = await ctx.hive.resolveOutput(ctx.params.path);
   const result = JSON.parse(raw);
 
@@ -202,6 +218,7 @@ export const servePageOgPng: RouteHandler = async (ctx) => {
 };
 
 export const servePublication: RouteHandler = async (ctx) => {
+  const rl = await rateLimit(ctx.env.RL_PUBLIC, `p:${clientIp(ctx)}`); if (rl) return rl;
   const raw = await ctx.hive.resolvePublication(ctx.params.path);
   const result = JSON.parse(raw);
 
@@ -253,6 +270,8 @@ export const servePublication: RouteHandler = async (ctx) => {
 // === Ingress: POST /i/:path — create entries via _inputs ===
 
 export const receiveInput: RouteHandler = async (ctx) => {
+  const big = bodyTooLarge(ctx); if (big) return big;
+  const limited = await rateLimit(ctx.env.RL_INGRESS, `i:${ctx.params.path}`); if (limited) return limited;
   const visRaw = await ctx.hive.getInputVisibility(ctx.params.path);
   const vis = JSON.parse(visRaw);
 
@@ -288,6 +307,7 @@ export const receiveInput: RouteHandler = async (ctx) => {
 // === Upload: POST /upload/:token — capability URL ===
 
 export const upload: RouteHandler = async (ctx) => {
+  const big = bodyTooLarge(ctx); if (big) return big;
   const content = await ctx.request.text();
   const result = await ctx.hive.consumeUpload(ctx.params.token, content);
   const parsed = JSON.parse(result);

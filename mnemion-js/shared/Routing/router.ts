@@ -24,6 +24,8 @@ export interface Env {
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;
   ASSETS?: Fetcher;  // static-assets binding for the React SPA (dist/web)
+  RL_INGRESS?: RateLimit; // optional limiter for the public WRITE surface (/i) — fails open if unbound
+  RL_PUBLIC?: RateLimit;  // optional limiter for the public READ surfaces (/o, /p, /marketplace) — fails open if unbound
 }
 
 export enum Method {
@@ -124,6 +126,26 @@ export async function denyUnlessBearerScope(
     return new Response("Unauthorized", { status: 401 });
   }
   return null;
+}
+
+// Rate-limit guard for the public surfaces (operational cost protection, NOT a
+// security boundary). Returns a 429 when the limiter rejects `key`, else null.
+// Fails OPEN by design: a missing binding (an env without it, or a runtime lacking
+// the simulator) or a limiter error lets the request through — the binding ships in
+// wrangler.toml but must never take down a deploy/test env that doesn't provide it.
+export async function rateLimit(limiter: RateLimit | undefined, key: string): Promise<Response | null> {
+  if (!limiter?.limit) return null;
+  try {
+    const { success } = await limiter.limit({ key });
+    if (!success) return new Response("Rate limit exceeded — slow down and retry shortly.", { status: 429, headers: { "Retry-After": "60" } });
+  } catch { /* limiter unavailable — fail open */ }
+  return null;
+}
+
+/** The requesting client's IP, for per-client rate-limit keys. Cloudflare sets
+ *  cf-connecting-ip; falls back to "unknown" off-platform (local/test). */
+export function clientIp(ctx: RouteContext): string {
+  return ctx.request.headers.get("cf-connecting-ip") || "unknown";
 }
 
 // === Session cookies ===

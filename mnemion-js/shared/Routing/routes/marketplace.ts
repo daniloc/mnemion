@@ -1,5 +1,5 @@
 import type { RouteHandler } from "../router";
-import { extractBasicPassword } from "../router";
+import { extractBasicPassword, rateLimit, clientIp } from "../router";
 import { handleMarketplaceGit, type MarketplacePlugin } from "../../IO/git";
 import { PRODUCT_NAME, URI_SCHEME } from "../../core/constants";
 
@@ -110,6 +110,7 @@ export const marketplaceToken: RouteHandler = async (ctx) => {
 // HiveDO has no marketplace-specific methods.
 
 export const marketplaceGit: RouteHandler = async (ctx) => {
+  const rl = await rateLimit(ctx.env.RL_PUBLIC, `m:${clientIp(ctx)}`); if (rl) return rl;
   const isPublic = ctx.url.pathname.startsWith("/marketplace/public");
   const publicOnly = isPublic || !ctx.env.MNEMION_SECRET;
 

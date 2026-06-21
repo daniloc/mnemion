@@ -69,6 +69,24 @@ binding = "VECTORIZE"
 index_name = "mnemion-vectors"
 remote = true
 
+# Rate Limiting (GA) — operational cost/DoS guards on the public surfaces. Built-in,
+# no provisioning. Enforced in code via router.ts `rateLimit`, which FAILS OPEN if a
+# binding is absent, so these are safe to remove and harmless where unsimulated.
+# RL_INGRESS: the public WRITE surface (POST /i/:path) — every accepted write creates
+# an entry + a billable Workers AI embedding + Vectorize upsert, so it's keyed per
+# endpoint path to cap attacker-driven cost amplification regardless of source IP.
+[[ratelimits]]
+name = "RL_INGRESS"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
+# RL_PUBLIC: the public READ surfaces (/o, /p, /marketplace) — keyed per client IP to
+# cap cache-busting enumeration that bypasses the 60s edge cache and hits the DO.
+[[ratelimits]]
+name = "RL_PUBLIC"
+namespace_id = "1002"
+simple = { limit = 200, period = 60 }
+
 # R2 bucket for document blobs (the bytes; metadata lives in the _documents pattern).
 # OPTIONAL — the document store. Mnemion runs fully without it; only file
 # upload/serve (/f) is unavailable until enabled. To turn it on:
