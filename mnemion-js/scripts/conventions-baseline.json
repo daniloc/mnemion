@@ -1,17 +1,5 @@
 [
   {
-    "name": "escapeLike",
-    "sites": 2
-  },
-  {
-    "name": "escapeXml",
-    "sites": 7
-  },
-  {
-    "name": "isValidColumn",
-    "sites": 5
-  },
-  {
     "name": "validateName",
     "sites": 3
   },

@@ -46,6 +46,9 @@ const SEED = new Set([
 // of a one-time human call, and keeps the flagged set real signal. A guard leaves
 // this map only when its stated cover is removed.
 const DISMISSED = {
+  escapeXml: "chokepoint-shaped HTML-escape guard — covered by the injection-lint ratchet (coarse; quoteIdent-style enshrinement is the structural upgrade)",
+  isValidColumn: "chokepoint-shaped SQL-identifier guard — covered by the injection-lint ratchet",
+  escapeLike: "chokepoint-shaped LIKE-escape guard — covered by the injection-lint ratchet",
   sealAll: "covered by the egress-sensitivity boundary (SENSITIVE_COLUMNS / verifyEgressTotality)",
   isDevAutoApprove: "covered by auth-fail-closed.test.ts (the name heuristic missed its describe)",
   isPrivateIPv4: "internal helper of isBlockedFederationHost — covered by the SSRF block-host totality",
