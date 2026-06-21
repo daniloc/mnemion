@@ -16,7 +16,7 @@ See [`CLAUDE.md`](CLAUDE.md) for architecture and internals.
 
 ### The model
 
-- **Hive** — the whole store (one per user)
+- **Hive** — the whole store (one per user — optionally shared by several people as members)
 - **Pattern** — an organizing structure, like a table (e.g. `tasks`, `decisions`, `people`)
 - **Entry** — an instance within a pattern (a single row)
 - **Facet** — a typed dimension of an entry (a column)
@@ -100,7 +100,7 @@ Patterns can grow HTTP endpoints. Five kinds of agent-defined I/O, all expressed
 - **Egress** (`_outputs`) — agent-constructed static responses at arbitrary `/o/{path}` URLs.
 - **Ingress** (`_inputs`) — `POST /i/{path}` endpoints accept inbound data and create entries in target patterns, with an optional declarative transform DSL to map incoming fields.
 
-**Federation** is a property of `resolve`: any URI whose first path segment contains a dot is treated as a foreign hostname. `mnemion://other.hive.dev/entry/axioms/7` becomes a GET to `https://other.hive.dev/o/entry/axioms/7`. Private cross-hive access is granted via `?token=<code>` (auth code → Bearer header). No federation protocol — sovereign hives, voluntary connections, edge-cached public responses.
+**Federation** is a property of `resolve`: any URI whose first path segment contains a dot is treated as a foreign hostname. `mnemion://other.hive.dev/entry/axioms/7` becomes a GET to `https://other.hive.dev/o/entry/axioms/7`. It's **consent-gated**: `resolve` refuses a cross-hive URI — and never sends a token — unless you've allow-listed the peer host first (an active `_federation_hosts` entry, added through a confirmation round-trip); loopback/private/metadata hosts are blocked outright (SSRF). Once a host is allow-listed, private access is granted via `?token=<code>` (auth code → Bearer header), re-validated on every redirect hop. No federation protocol — sovereign hives, voluntary connections, edge-cached public responses.
 
 ### Publishing: the publication surface
 
@@ -136,7 +136,7 @@ To enable it:
 
 The binding ships **commented out** because a binding to a non-existent bucket fails deploy — that's what keeps Mnemion deployable on a fresh account. `npm run enable-documents` uncomments it after the bucket exists (and tells you to enable R2 first if you haven't). Until then, creating a `_documents` entry still succeeds (and returns a note that uploads are unavailable), `POST /f` returns `503`, and connecting agents are told document storage is off so they can flag it to you.
 
-**Search story — metadata yes, contents not yet.** A document's metadata (title, description, tags) is a normal entry: it's covered by `search` (cross-pattern full-text) and surfaces in `prime` like anything else. The file's *contents* are **not** extracted or indexed — a PDF's body text is opaque to search and recall. Bridging that is the planned text-extraction seam: on upload, pull text from text/PDF files into a facet so it joins both the FTS index and the embedding index. Until then, give documents good titles/tags and link them to text entries so they're reachable through their neighbors.
+**Search story — metadata *and* contents.** A document's metadata (title, description, tags) is a normal entry, covered by `search` and surfaced in `prime`. And on upload the file's **text is extracted** into the `extracted_text` facet (text-family inline; PDFs via `unpdf` in the background) and the entry is re-embedded — so document **contents** join both the full-text index (`search`) and the embedding index (`prime`). `extraction_status` reports `done` / `pending` / `failed` / `unsupported`. (Chunked embeddings for very long documents are a future refinement.)
 
 ### Web URL adapters
 
@@ -163,17 +163,28 @@ Because a skill's `skill_md` is just a record, a skill can teach an agent how to
 
 ### The web UI
 
-The web app is a **React + Vite** single-page app, served by the worker as static assets — a pattern browser and entry editor with live updates over WebSocket: a `mutate` broadcasts a granular delta that patches one entry, so only its card re-renders. Each pattern renders per an optional agent-authored **view spec** (`board` / `table` / `list` / `cards`) interpreted against a fixed React component palette — declarative data, never code.
+The web app is a **React + Vite** single-page app, served by the worker as static assets — a pattern browser and entry editor with live updates over WebSocket: a `mutate` broadcasts a granular delta that patches a single entry in a normalized client store, so only that one card re-renders.
 
-Browser sessions authenticate via passkey-backed OAuth. The same session cookie also gates the API endpoints the UI uses. (The one non-React web surface is the MCP `render` fragment — plain TS, embedded in MCP-Apps-capable hosts.)
+**Agent-authored, customizable pages.** Each pattern's page is rendered from an optional **view spec** the agent writes *as data* into the `_views` pattern — no code, no deploy. A spec picks a `view_type` from a fixed palette and maps the pattern's facets to UI roles:
+
+- **`cards`** — a responsive grid (the default).
+- **`board`** — Kanban columns grouped by a facet (`group_by`); cards drag between columns and the move writes back.
+- **`table`** — rows with columns mapped to facets.
+- **`list`** — compact rows.
+
+The palette is a fixed set of React components (`web/src/views.tsx`); the spec is declarative data interpreted against it. So an agent can lay out a pattern's UI mid-conversation by writing a `_views` entry — the same "structure is data" discipline as schema evolution, applied to the interface.
+
+Browser sessions authenticate via passkey-backed OAuth; the session cookie also gates the API endpoints the UI uses. (The one non-React web surface is the MCP `render` fragment — plain TS, embedded in MCP-Apps-capable hosts.)
 
 ### Auth model
 
 Layered, behind OAuth 2.1 with PKCE and Dynamic Client Registration:
 
-- **Master secret** — high-entropy random hex, set by `npm run setup`. The bootstrap credential and the fallback for headless agents.
-- **Passkey** (WebAuthn) — optional convenience layer for browser-based OAuth. Registered once via the URL `npm run setup` prints. Replaces the master secret for normal use.
-- **Access tokens** (`_access_tokens`) — scoped bearer tokens with hierarchical prefix matching (`*`, `read`, `read:entry:axioms:7`, `upload`, `marketplace`). Used by remote agents, single-use uploads, federated peers, and the private plugin marketplace.
+- **Master secret** — high-entropy random hex, set by `npm run setup`. The bootstrap credential and the fallback for headless agents. With no secret set, the instance **fails closed**.
+- **Passkey** (WebAuthn) — convenience layer for browser-based OAuth. Registered once via the URL `npm run setup` prints. Replaces the master secret for normal use.
+- **Access tokens** (`_access_tokens`) — scoped bearer tokens with hierarchical prefix matching (`*`, `read` / `read:entry:axioms:7`, `write`, `upload`, `document`, `marketplace`, `register`). Used by remote agents, single-use uploads, federated peers, and the private plugin marketplace. Tokens are stored **hashed** (the raw value is shown once, at mint), and minting a broad/portable scope is consent-gated.
+
+**One hive, several people.** A hive has a `_members` roster — an `owner` plus members, each with a role and `active`/`suspended` status. Inviting someone is a deliberate, in-person act: an agent creates the member and mints a single-use `register` token, but the token is **inert** until an existing member approves it at `/invite/{token}` with their passkey — only then can the invitee register their own passkey at `/setup`. Every write is attributed (`created_by`/`updated_by`) to the member who made it; suspending or archiving a member stops their logins and tokens.
 
 ### Architecture in one paragraph
 
