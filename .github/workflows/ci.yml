@@ -1,0 +1,98 @@
+name: CI
+
+# The self-enforcing declarations in this repo (write-class totality, egress
+# sensitivity, the trust-capability split, the tools SSOT) only protect the
+# system if their oracles actually run before merge. This workflow is that gate:
+# the unit suite + the project's ratchet checks + spec/code coherence, plus a
+# live MCP smoke that drives the real /mcp agent surface end to end.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A newer push to the same ref cancels the in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The wrangler [build] hook (scripts/build-hook.sh) skips the deploy-only work
+# (Vectorize provisioning + the React SPA build, both network/account-bound) when
+# DEV is set in the SHELL. --var only sets the worker runtime var, not the shell,
+# so set it here for every job — keeps the build offline and account-free in CI.
+env:
+  DEV: "true"
+
+defaults:
+  run:
+    working-directory: mnemion-js
+
+jobs:
+  checks:
+    name: tests · ratchets · coherence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # wrangler + coherence require Node >= 22
+          cache: npm
+          cache-dependency-path: mnemion-js/package-lock.json
+
+      - run: npm ci
+
+      # The worker entry statically imports the canvas/fragment bundles from
+      # dist/ (gitignored), so they must exist before vitest loads the worker.
+      - name: Build worker page bundles
+        run: npm run build:pages
+
+      # Unit suite — runs in the real workerd runtime (vitest-pool-workers),
+      # including the totality oracles (policy / egress / context-capability /
+      # tools-ssot / served-bearer-gating).
+      - name: Test
+        run: npm test
+
+      # Ratchets: no new conventions, no new raw SQL interpolation sites.
+      - name: Convention ratchet
+        run: npm run conventions:check
+      - name: Injection-lint ratchet
+        run: npm run injection-lint:check
+
+      # Specs must still match the code (boundary ratchet anchors invariants to
+      # chokepoint + oracle claims).
+      - name: Coherence
+        run: npm run coherence:verify
+
+  mcp-smoke:
+    name: live /mcp surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mnemion-js/package-lock.json
+
+      - run: npm ci
+
+      # Start a local dev worker (DEV mode, seeded, embeddings skipped — no
+      # Cloudflare account or network needed), wait for it, then drive the real
+      # MCP protocol path: OAuth token -> SessionDO -> Zod -> consent gate ->
+      # HiveDO. This is the surface that can pass /api+RPC tests yet break
+      # through MCP, so it gets its own end-to-end check. Worker + smoke share
+      # one shell so the backgrounded worker is reliably cleaned up.
+      - name: MCP smoke
+        run: |
+          npx wrangler dev --var DEV:true --var DEV_SEED:true --var SKIP_EMBED:1 --port 4281 > /tmp/worker.log 2>&1 &
+          WPID=$!
+          trap "kill $WPID 2>/dev/null || true" EXIT
+          for i in $(seq 1 120); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4281/mcp || true)
+            case "$code" in 2*|3*|4*) echo "worker ready (HTTP $code) after ${i}s"; break;; esac
+            if [ "$i" -eq 120 ]; then echo "worker never became ready"; cat /tmp/worker.log; exit 1; fi
+            sleep 1
+          done
+          MCP_URL=http://127.0.0.1:4281/mcp npm run mcp:smoke || { echo '--- worker.log ---'; cat /tmp/worker.log; exit 1; }

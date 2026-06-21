@@ -44,6 +44,16 @@ function ok(label, cond, detail) {
 const { tools } = await client.listTools();
 ok("tools/list returns the agent toolset", ["mutate", "propose_change", "apply_change", "query"].every((n) => tools.map((t) => t.name).includes(n)), tools.map((t) => t.name).join(", "));
 
+// Idempotency: the dev worker may persist DO state across runs (.wrangler/state),
+// so a `notes/mcp` view from a prior smoke would collide on the UNIQUE(pattern,
+// name) index below. Archive any leftover before re-creating, so the smoke is
+// re-runnable locally and in CI alike. (archive is de-escalation — never gated.)
+const existing = await client.callTool({ name: "query", arguments: { pattern: "_views", filter: ["pattern=notes", "name=mcp"] } });
+try {
+  for (const e of (JSON.parse(txt(existing)).entries ?? []))
+    await client.callTool({ name: "mutate", arguments: { pattern: "_views", operation: "archive", data: { id: e.id } } });
+} catch { /* no prior row, or query shape changed — the create below is the real assertion */ }
+
 // 1) Author a view through MCP — must NOT be consent-blocked, must pass Zod.
 const v = await client.callTool({ name: "mutate", arguments: { pattern: "_views", operation: "create", data: { pattern: "notes", name: "mcp", view_type: "table", config: JSON.stringify({ columns: ["title", "body"] }) } } });
 ok("mutate _views (author a view) succeeds through MCP, no confirmation_required", !v.isError && !/confirmation_required|error/i.test(txt(v)), txt(v));
