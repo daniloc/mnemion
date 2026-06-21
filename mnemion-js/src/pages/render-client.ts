@@ -12,7 +12,7 @@ import { render } from "./render-view";
 
 const root = document.getElementById("root")!;
 
-const app = new App({ name: "Mnemion", version: "0.1.0" });
+const app = new App({ name: "Mnemion", version: "0.5.0" });
 // Must be set before connect() so the initial tool result isn't missed.
 app.ontoolresult = (params: any) =>
   render(root, params?.structuredContent ?? params?.result?.structuredContent ?? params);
