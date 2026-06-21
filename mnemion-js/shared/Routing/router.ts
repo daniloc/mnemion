@@ -80,6 +80,15 @@ export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   return diff === 0;
 }
 
+/** Dev auto-approve is OPT-IN, never the default. A missing MNEMION_SECRET alone
+ *  used to mean "auto-approve every request as the owner" — fail-OPEN: a secretless
+ *  PRODUCTION deploy served every owner-only API unauthenticated. It now applies
+ *  ONLY when DEV is also explicitly set (the dev script + [env.test] set it), so an
+ *  unconfigured instance fails CLOSED. "Unconfigured" means no access, not all access. */
+export function isDevAutoApprove(env: { MNEMION_SECRET?: unknown; DEV?: unknown }): boolean {
+  return !env.MNEMION_SECRET && env.DEV === "true";
+}
+
 export function extractBasicPassword(request: Request): string | null {
   const auth = request.headers.get("Authorization");
   if (!auth?.startsWith("Basic ")) return null;
@@ -264,16 +273,29 @@ export function createRouter(routes: Route[]) {
       // Default actor (dev mode, or non-session routes) is the owner sentinel;
       // a validated browser session resolves the actual member.
       let actor = OWNER_ACTOR;
-      if (auth === Auth.SESSION && env.MNEMION_SECRET) {
-        const sessionActor = await validateSession(request, env.MNEMION_SECRET, env.OAUTH_KV);
-        if (!sessionActor) {
-          const returnTo = encodeURIComponent(url.pathname + url.search);
-          return new Response(null, {
-            status: 302,
-            headers: { Location: `/login?return=${returnTo}` },
-          });
+      if (auth === Auth.SESSION) {
+        if (env.MNEMION_SECRET) {
+          const sessionActor = await validateSession(request, env.MNEMION_SECRET, env.OAUTH_KV);
+          if (!sessionActor) {
+            const returnTo = encodeURIComponent(url.pathname + url.search);
+            return new Response(null, {
+              status: 302,
+              headers: { Location: `/login?return=${returnTo}` },
+            });
+          }
+          actor = sessionActor;
+        } else if (!isDevAutoApprove(env)) {
+          // FAIL CLOSED. A missing MNEMION_SECRET used to mean "auto-approve as
+          // owner" — so a secretless PRODUCTION deploy served every owner-only API
+          // (/api, /export, /ws) unauthenticated. "Unconfigured" must mean NO
+          // access, not ALL access. Dev auto-approve is now opt-IN (DEV=true, set
+          // by the dev script + [env.test]); an unconfigured instance locks down.
+          return new Response(
+            "This instance is not configured (no MNEMION_SECRET). Run `npm run setup` to secure it.",
+            { status: 503 },
+          );
         }
-        actor = sessionActor;
+        // else: no secret + DEV=true → dev auto-approve (actor stays the owner sentinel).
       }
 
       // Extract params

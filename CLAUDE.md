@@ -110,7 +110,7 @@ Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the wo
 - **Master secret** (`MNEMION_SECRET`): High-entropy random hex, set via `npm run setup`. Root of trust — used to bootstrap the owner passkey and as fallback for headless agents. The user's Cloudflare login is the true credential; the secret is ephemeral and replaceable. Master-secret logins resolve to the `owner` actor.
 - **Passkey** (WebAuthn): Optional convenience layer for browser-based OAuth. Registered via one-time setup URL. Stored in HiveDO `_passkeys` table — **one credential per member** (re-registering a member replaces only that member's row). If any passkey is registered, `/authorize` shows passkey-first UI with secret fallback. Authentication offers all members' credentials and resolves the actor from the one used.
 - **Access tokens** (`_access_tokens`): Scoped bearer tokens for remote agents, uploads, marketplace, and federated access. Created via `mutate`. Scope matching is hierarchical prefix-based. Optional `member` column attributes a token to a member; the OAuth external-token path resolves the session's actor from it (member-less → `owner` sentinel; suspended/archived member → refused).
-- **No secret configured** = dev mode (auto-approves).
+- **No secret configured** = **fail CLOSED** (owner-only `Auth.SESSION` APIs return 503), UNLESS `DEV=true` is explicitly set — then it's dev mode (auto-approves as owner). The dev scripts and `[env.test]` set `DEV`; a real deploy does not, so a secretless production deploy locks down instead of serving every owner API unauthenticated. "Unconfigured" means no access, not all access (`isDevAutoApprove` in `shared/Routing/router.ts`).
 
 ### Shared hive (multi-member)
 

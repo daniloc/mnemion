@@ -95,6 +95,10 @@ name = "mnemion-test"
 
 [env.test.vars]
 WORKER_HOST = "your-test-worker.workers.dev"
+# Explicit dev opt-in: this env runs without MNEMION_SECRET, so DEV=true enables the
+# auto-approve-as-owner posture. The default/prod env never sets DEV, so a secretless
+# production deploy fails CLOSED instead of serving owner APIs unauthenticated.
+DEV = "true"
 
 [env.test.assets]
 directory = "./dist/web"
