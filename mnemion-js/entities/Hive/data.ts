@@ -89,6 +89,24 @@ function errorJson(message: string): string {
   return JSON.stringify({ error: true, message });
 }
 
+// `filterJson` is an agent-mutable, untrusted value (e.g. `_publications.filters`
+// stored at create *or update* — only ON_CREATE validates it, an update can plant
+// malformed JSON) that reaches this engine on unauthenticated served reads. Parse
+// it at the consumption chokepoint, treating any malformed/wrong-shaped value as a
+// structured error rather than an unhandled throw → router 500 (public DoS). On
+// success returns the string[]; on failure returns null and the caller short-circuits
+// with the supplied error message. Validates shape: must be a JSON array of strings.
+function parseFilterJson(filterJson: string): string[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(filterJson);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || !parsed.every((f) => typeof f === "string")) return null;
+  return parsed as string[];
+}
+
 // === Facet value validation (dataset patterns) ===
 //
 // Knowledge patterns stay permissive — facet types are advisory, everything is
@@ -221,7 +239,8 @@ export function query(
     let countSql = `SELECT COUNT(*) as count FROM "${patternName}" WHERE archived_at IS NULL`;
     const countBindings: (string | number)[] = [];
     if (filterJson) {
-      const filters: string[] = JSON.parse(filterJson);
+      const filters = parseFilterJson(filterJson);
+      if (filters == null) return errorJson("Invalid filter: must be a JSON array of expression strings.");
       for (const expr of filters) {
         const parsed = parseFilter(ctx, patternName, expr);
         if (parsed == null) return errorJson(`Invalid filter expression: ${expr}`);
@@ -234,7 +253,11 @@ export function query(
       const r = ctx.db.exec(countSql, ...countBindings).one() as { count: number };
       return JSON.stringify({ pattern: patternName, count: r.count }, null, 2);
     } catch (err: any) {
-      return errorJson(`Query failed: ${err.message}`);
+      // Generic message, never the raw SQLite error — query() routes through the
+      // untrusted servedQuery, so an interpolated err.message would leak table/
+      // column names on the public surface. Mirrors executeMutate's hardening.
+      logError("query.failed", err, { pattern: patternName });
+      return errorJson("Query failed");
     }
   }
 
@@ -256,7 +279,8 @@ export function query(
 
   const bindings: (string | number)[] = [];
   if (filterJson) {
-    const filters: string[] = JSON.parse(filterJson);
+    const filters = parseFilterJson(filterJson);
+    if (filters == null) return errorJson("Invalid filter: must be a JSON array of expression strings.");
     for (const expr of filters) {
       const parsed = parseFilter(ctx, patternName, expr);
       if (parsed == null) return errorJson(`Invalid filter expression: ${expr}`);
@@ -281,7 +305,10 @@ export function query(
     const rows = ctx.db.exec(sql, ...bindings).toArray();
     return JSON.stringify({ pattern: patternName, entries: rows, count: rows.length }, null, 2);
   } catch (err: any) {
-    return errorJson(`Query failed: ${err.message}`);
+    // See the count branch: generic message + log, never the raw SQLite error,
+    // because this is the untrusted served read path.
+    logError("query.failed", err, { pattern: patternName });
+    return errorJson("Query failed");
   }
 }
 
@@ -388,7 +415,8 @@ function aggregate(
 
   const bindings: (string | number)[] = [];
   if (filterJson) {
-    const filters: string[] = JSON.parse(filterJson);
+    const filters = parseFilterJson(filterJson);
+    if (filters == null) return errorJson("Invalid filter: must be a JSON array of expression strings.");
     for (const expr of filters) {
       const parsed = parseFilter(ctx, patternName, expr);
       if (parsed == null) return errorJson(`Invalid filter expression: ${expr}`);
@@ -421,7 +449,10 @@ function aggregate(
       count: rows.length,
     }, null, 2);
   } catch (err: any) {
-    return errorJson(`Aggregate failed: ${err.message}`);
+    // Generic message + log, never raw SQLite — aggregate() shares query()'s
+    // untrusted served read path.
+    logError("query.failed", err, { pattern: patternName });
+    return errorJson("Aggregate failed");
   }
 }
 

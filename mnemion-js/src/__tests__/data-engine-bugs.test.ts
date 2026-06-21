@@ -7,6 +7,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
+import { query as engineQuery, type DataContext } from "../../entities/Hive/data";
 
 function getStore(): DurableObjectStub<HiveDO> {
   const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);
@@ -239,5 +240,152 @@ describe("write-path DB errors return structured errors (not raw throws)", () =>
     // Atomic: the first op must NOT have partially committed.
     const rows = await query(store, "_charter", ["key=dup_key_batch"]);
     expect(rows.entries.length).toBe(0);
+  });
+});
+
+// === Unauthenticated public routes must not 500 on agent-mutated kernel config ===
+//
+// Both `_publications.filters` and `_inputs.facet_mapping` are validated only in
+// ON_CREATE; an `update` can plant malformed JSON post-create. The malformed value
+// is then JSON.parse'd at request time on UNAUTHENTICATED served routes (GET /p,
+// POST /i). Pre-fix that parse was outside the engine's try/catch → an unhandled
+// SyntaxError/TypeError propagated to the router as a 500 — a persistent,
+// agent-armed public DoS. The fix moves the guard to the consumption chokepoint:
+// a malformed value yields the engine's structured { error, message }, never a throw.
+describe("public routes fail closed on malformed agent-mutated kernel config", () => {
+  async function makePublication(store: DurableObjectStub<HiveDO>, path: string) {
+    // notes pattern + one entry, then a publication projecting it.
+    await createPattern(store, "pubnotes", [{ name: "title", type: "text", required: true }]);
+    await create(store, "pubnotes", { title: "hello" });
+    const pub = await mutate(store, "_publications", "create", {
+      path, source_pattern: "pubnotes", format: "json",
+    });
+    if (pub.error) throw new Error(pub.message);
+    return pub.entry;
+  }
+
+  it("(a) malformed _publications.filters (set via update) → clean 404, not a throw/500", async () => {
+    const store = getStore();
+    const pub = await makePublication(store, "broken-filters");
+
+    // Plant malformed JSON via update — ON_CREATE validated filters, but update
+    // re-runs no such hook, so the bad value lands in the column.
+    const upd = await mutate(store, "_publications", "update", {
+      id: pub.id, version: pub.version, filters: "status=done",  // not a JSON array
+    });
+    expect(upd.error).toBeUndefined();
+
+    // The served path (servedQuery → query()'s now-guarded filter parse →
+    // resolvePublication) must RESOLVE, never reject. Pre-fix the unguarded
+    // JSON.parse threw out of the engine → router 500. Post-fix the engine
+    // returns a structured error, which resolvePublication maps to a clean 404.
+    const raw = await store.resolvePublication("broken-filters");
+    const result = JSON.parse(raw);
+    expect(result.found).toBe(false);
+    // No raw parse/SQLite text ever rides out on the served path.
+    expect(raw).not.toMatch(/SyntaxError|Unexpected token|SQLITE/i);
+  });
+
+  it("(a') filters that is valid JSON but the wrong shape (not array of strings) → clean 404", async () => {
+    const store = getStore();
+    const pub = await makePublication(store, "wrong-shape-filters");
+    const upd = await mutate(store, "_publications", "update", {
+      id: pub.id, version: pub.version, filters: JSON.stringify({ status: "done" }),  // object, not array
+    });
+    expect(upd.error).toBeUndefined();
+
+    const result = JSON.parse(await store.resolvePublication("wrong-shape-filters"));
+    expect(result.found).toBe(false);
+  });
+
+  it("(b) malformed _inputs.facet_mapping (set via update) → structured error from processInput, not a 500", async () => {
+    const store = getStore();
+    await createPattern(store, "innotes", [{ name: "title", type: "text" }]);
+    const input = await mutate(store, "_inputs", "create", {
+      path: "ingest-x", target_pattern: "innotes", facet_mapping: JSON.stringify({ title: "$.body.title" }),
+    });
+    if (input.error) throw new Error(input.message);
+
+    // Plant malformed JSON post-create (ON_CREATE no longer guards on update).
+    const upd = await mutate(store, "_inputs", "update", {
+      id: input.entry.id, version: input.entry.version, facet_mapping: "{not json",
+    });
+    expect(upd.error).toBeUndefined();
+
+    // POST /i/{path} routes through processInput — must resolve to a structured error.
+    const raw = await store.processInput("ingest-x", JSON.stringify({ title: "hi" }), "{}", "{}");
+    const result = JSON.parse(raw);
+    expect(result.error).toBe(true);
+    expect(result.message).toMatch(/facet_mapping/i);
+  });
+
+  it("(b') facet_mapping that is valid JSON but not an object (array) → structured error", async () => {
+    const store = getStore();
+    await createPattern(store, "innotes2", [{ name: "title", type: "text" }]);
+    const input = await mutate(store, "_inputs", "create", {
+      path: "ingest-y", target_pattern: "innotes2", facet_mapping: JSON.stringify({ title: "$.body.title" }),
+    });
+    const upd = await mutate(store, "_inputs", "update", {
+      id: input.entry.id, version: input.entry.version, facet_mapping: JSON.stringify(["title"]),
+    });
+    expect(upd.error).toBeUndefined();
+
+    const result = JSON.parse(await store.processInput("ingest-y", "{}", "{}", "{}"));
+    expect(result.error).toBe(true);
+    expect(result.message).toMatch(/facet_mapping/i);
+  });
+});
+
+// === Read-path errors are generic — no raw SQLite text leaks on the served plane ===
+//
+// query()/aggregate() run untrusted via servedQuery. A DB-level throw (here a
+// SQL type error from comparing text against a value the engine couldn't reject
+// up front) must surface as a GENERIC "Query failed" — never an interpolated
+// err.message echoing table/column names. Mirrors executeMutate's hardening so
+// the served path can't leak schema by construction, not by caller discipline.
+describe("read-path errors return a generic message with no raw SQLite text", () => {
+  // Build a minimal trusted DataContext whose db.exec throws a SQLite-flavored
+  // error mentioning a table/column — exactly what would leak if interpolated.
+  function ctxThatThrows(): DataContext {
+    return {
+      db: {
+        exec() {
+          throw new Error('SQLITE_ERROR: no such column: secret_token in table "_access_tokens"');
+        },
+      } as any,
+      patternExists: () => true,
+      listPatterns: () => ["notes"],
+      entryExists: () => true,
+      hasKernelVersion: () => true,
+      facetMeta: () => ({ type: "text" }),
+      patternClass: () => "knowledge",
+      actor: "owner",
+      trusted: true,
+    };
+  }
+
+  // The raw SQLite vocabulary the genericized catch must NEVER surface.
+  const leaks = /SQLITE|no such column|secret_token|_access_tokens/;
+
+  it("query: a DB throw returns 'Query failed' with no raw err.message", () => {
+    const result = JSON.parse(engineQuery(ctxThatThrows(), "notes", "", "", "", 100, false));
+    expect(result.error).toBe(true);
+    expect(result.message).toBe("Query failed");
+    expect(result.message).not.toMatch(leaks);
+  });
+
+  it("query (count_only): a DB throw returns 'Query failed' with no raw err.message", () => {
+    const result = JSON.parse(engineQuery(ctxThatThrows(), "notes", "", "", "", 100, true));
+    expect(result.error).toBe(true);
+    expect(result.message).toBe("Query failed");
+    expect(result.message).not.toMatch(leaks);
+  });
+
+  it("aggregate: a DB throw returns 'Aggregate failed' with no raw err.message", () => {
+    // group_by routes into aggregate(); the exec throw lands in its catch.
+    const result = JSON.parse(engineQuery(ctxThatThrows(), "notes", "", "", "", 100, false, "title"));
+    expect(result.error).toBe(true);
+    expect(result.message).toBe("Aggregate failed");
+    expect(result.message).not.toMatch(leaks);
   });
 });

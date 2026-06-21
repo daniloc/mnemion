@@ -1280,7 +1280,19 @@ export class HiveDO extends DurableObject {
     let entryData: Record<string, unknown>;
 
     if (input.facet_mapping) {
-      const mapping = JSON.parse(input.facet_mapping) as Record<string, string>;
+      // facet_mapping is Open-class and mutable post-create (only ON_CREATE
+      // validates it). This is an unauthenticated POST /i/{path}; a malformed
+      // value must fail closed to a structured error, not an unhandled throw →
+      // router 500 (public DoS). Validate shape: must be a JSON object.
+      let mapping: Record<string, string>;
+      try {
+        const parsed = JSON.parse(input.facet_mapping);
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+          throw new Error("not an object");
+        mapping = parsed as Record<string, string>;
+      } catch {
+        return this.errorJson("Input endpoint misconfigured: facet_mapping is not a valid JSON object");
+      }
       let parsedBody: unknown = null;
       try { parsedBody = JSON.parse(body); } catch { /* not JSON */ }
 

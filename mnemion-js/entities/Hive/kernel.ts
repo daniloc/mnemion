@@ -698,13 +698,22 @@ export function applyKernelRules(
     }
   }
 
+  // On create, run ON_CREATE first, then fall through to ON_WRITE (if present)
+  // chaining the transformed data. A pattern may legitimately declare BOTH — its
+  // create-shape hook AND an every-write validation — and both must fire on a
+  // create. The create hook can add/transform fields (e.g. _access_tokens sets
+  // expires_at), so ON_WRITE must see the *post-create* data. If ON_CREATE errors,
+  // short-circuit and never reach ON_WRITE.
+  let working = data;
   if (operation === "create" && ON_CREATE[pattern]) {
-    return ON_CREATE[pattern](data, ctx);
+    const created = ON_CREATE[pattern](working, ctx);
+    if ('error' in created) return created;
+    working = created;
   }
 
   if (operation !== "archive" && ON_WRITE[pattern]) {
-    return ON_WRITE[pattern](data, operation, ctx);
+    return ON_WRITE[pattern](working, operation, ctx);
   }
 
-  return data;
+  return working;
 }

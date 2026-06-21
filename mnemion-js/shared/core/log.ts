@@ -21,15 +21,31 @@ function serializeErr(err: unknown): LogFields {
   return { error: String(err) };
 }
 
+/** Does this value look like a throwable worth serializing as an error (rather
+ *  than spreading as a fields record)? */
+function isThrowable(v: unknown): boolean {
+  return v instanceof Error || (typeof v === "object" && v !== null && "stack" in v);
+}
+
 function emit(
   level: "error" | "warn",
   event: string,
   fields: LogFields | undefined,
   err: unknown,
-  hasErr: boolean,
 ): void {
-  const payload: LogFields = { event, ...(fields ?? {}) };
-  if (hasErr) Object.assign(payload, serializeErr(err));
+  // Defensive against the positional asymmetry between logError (err is arg2) and
+  // logWarn (err is arg3): if a caller passes a throwable into the `fields` slot,
+  // serialize it as an error instead of spreading its enumerable props as fields
+  // (which would drop the message/stack). An explicit `err` always wins.
+  let errToSerialize = err;
+  let fieldsToSpread = fields;
+  if (err === undefined && isThrowable(fields)) {
+    errToSerialize = fields;
+    fieldsToSpread = undefined;
+  }
+
+  const payload: LogFields = { event, ...(fieldsToSpread ?? {}) };
+  if (errToSerialize !== undefined) Object.assign(payload, serializeErr(errToSerialize));
   const line = JSON.stringify(payload);
   if (level === "error") console.error(line);
   else console.warn(line);
@@ -38,11 +54,11 @@ function emit(
 /** A caught failure worth investigating. `err` is the throwable (serialized to
  *  message/name/stack); `fields` add structured context (ids, the op, the path). */
 export function logError(event: string, err?: unknown, fields?: LogFields): void {
-  emit("error", event, fields, err, arguments.length >= 2);
+  emit("error", event, fields, err);
 }
 
 /** A degraded-but-handled path that must not vanish silently (a swallowed
  *  side-effect failure, a fallback taken, an optional capability unavailable). */
 export function logWarn(event: string, fields?: LogFields, err?: unknown): void {
-  emit("warn", event, fields, err, arguments.length >= 3);
+  emit("warn", event, fields, err);
 }

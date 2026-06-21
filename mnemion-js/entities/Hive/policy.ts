@@ -420,10 +420,40 @@ export function isBroadTokenScope(scope: string): boolean {
   if (/^(upload|document)(:|$)/.test(scope)) return false;
   // benign: minted inert, gated by the /invite passkey approval
   if (scope === "register") return false;
-  // a fully-qualified read/write naming ONE resource (read:entry:<pattern>:<id>,
-  // read:output:<path>, write:input:<path>, read:document:<id>) is narrow; a bare
-  // class key (read, read:entry, write:input, …) grants the whole class → broad.
+
+  // A read/write scope is NARROW only when it names a single LEAF resource —
+  // because scopeMatches grants a token EVERY required scope that prefixes from
+  // it at a `:` boundary, so a scope that stops ABOVE a leaf is a portable master
+  // key to the whole subtree beneath it. The served resource grammar (the
+  // required-scope strings in shared/Routing/routes/io.ts) is:
+  //
+  //   read:entry:<pattern>:<id>   (4)  one shared entry           → LEAF / narrow
+  //   read:output:<path>          (3)  one output                 → LEAF / narrow
+  //   read:publication:<path>     (3)  one publication            → LEAF / narrow
+  //   read:document:<id>          (3)  one document               → LEAF / narrow
+  //   write:input:<path>          (3)  one ingress endpoint       → LEAF / narrow
+  //
+  //   read:entry:<pattern>        (3)  EVERY id in a pattern       → CLASS / broad
+  //   read:entry                  (2)  every entry everywhere      → CLASS / broad
+  //   read, write                 (1)  the whole class            → CLASS / broad
+  //   *                                everything                  → broad
+  //
+  // The naive `parts.length >= 3` cutoff treated `read:entry:<pattern>` (a
+  // pattern-WIDE class key, 3 parts) as a single-resource grant — minting it
+  // skipped the round-trip yet handed out a master key to every entry in the
+  // pattern. So classification is by RESOURCE KIND, not raw length: `entry`
+  // addresses a leaf with TWO trailing segments (pattern + id), everything else
+  // with ONE. We require the scope to reach the leaf depth for its kind.
   const parts = scope.split(":");
-  if ((parts[0] === "read" || parts[0] === "write") && parts.length >= 3) return false;
-  return true; // *, bare read/write, read:entry, write:input, marketplace, unknown → broad
+  const [root, kind] = parts;
+  if (root === "read" || root === "write") {
+    // Leaf depth = root + kind + the kind's address segments. `entry` needs a
+    // pattern AND an id (4); output/publication/document/input name one leaf (3).
+    // A future read:<kind>:<class> whose 3rd segment is itself a CLASS (like
+    // entry's pattern) rather than a leaf id belongs on this list, NOT the 3-part
+    // default — otherwise it would be misclassified narrow, the exact bug here.
+    const leafDepth = kind === "entry" ? 4 : 3;
+    if (parts.length >= leafDepth) return false; // reaches a single leaf → narrow
+  }
+  return true; // *, bare read/write, read:entry, read:entry:<pattern>, marketplace, unknown → broad
 }
