@@ -27,6 +27,8 @@
     "conventions:check": "node scripts/conventions.mjs --check",
     "injection-lint": "node scripts/injection-lint.mjs",
     "injection-lint:check": "node scripts/injection-lint.mjs --check",
+    "atlas": "node scripts/atlas.mjs",
+    "atlas:check": "node scripts/atlas.mjs --check",
     "cruft": "npx --yes ts-prune -p tsconfig.json | grep -v 'used in module'"
   },
   "dependencies": {

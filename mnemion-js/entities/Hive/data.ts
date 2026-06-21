@@ -17,6 +17,7 @@ import { applyKernelRules, immutableFieldError, type KernelContext } from "./ker
 import { isInternalWriteProtected, isKernelPattern, isValidWriteTarget } from "./policy";
 import { getMemoryPolicy } from "./prime";
 import { uri } from "../../shared/core/constants";
+import { quoteIdent } from "../../shared/core/sql";
 import { logError } from "../../shared/core/log";
 import {
   KERNEL_COLUMN_SET,
@@ -236,7 +237,7 @@ export function query(
   }
 
   if (countOnly) {
-    let countSql = `SELECT COUNT(*) as count FROM "${patternName}" WHERE archived_at IS NULL`;
+    let countSql = `SELECT COUNT(*) as count FROM ${quoteIdent(patternName)} WHERE archived_at IS NULL`;
     const countBindings: (string | number)[] = [];
     if (filterJson) {
       const filters = parseFilterJson(filterJson);
@@ -270,12 +271,12 @@ export function query(
         return errorJson(`Unknown facet "${f}" on "${patternName}".${suggestFacet(f, patternName, ctx)}`);
     }
     if (!requested.includes("id")) requested.unshift("id");
-    sql += ` ${requested.map((f) => `"${f}"`).join(", ")}`;
+    sql += ` ${requested.map((f) => quoteIdent(f)).join(", ")}`;
   } else {
     sql += ` *`;
   }
 
-  sql += ` FROM "${patternName}" WHERE archived_at IS NULL`;
+  sql += ` FROM ${quoteIdent(patternName)} WHERE archived_at IS NULL`;
 
   const bindings: (string | number)[] = [];
   if (filterJson) {
@@ -295,7 +296,7 @@ export function query(
     const col = desc ? sortField.slice(1) : sortField;
     if (!isValidColumn(ctx, patternName, col))
       return errorJson(`Cannot sort by unknown facet "${col}" on "${patternName}".${suggestFacet(col, patternName, ctx)}`);
-    sql += ` ORDER BY "${col}" ${desc ? "DESC" : "ASC"}`;
+    sql += ` ORDER BY ${quoteIdent(col)} ${desc ? "DESC" : "ASC"}`;
   }
 
   const clampedLimit = Math.min(limit || 100, LIMITS.QUERY_ROWS);
@@ -334,14 +335,14 @@ function parseFilter(
   if (!isValidColumn(ctx, patternName, field))
     return `Cannot filter by unknown facet "${field}" on "${patternName}".${suggestFacet(field, patternName, ctx)}`;
   if (op === "~")
-    return { clause: `"${field}" LIKE ? ESCAPE '\\'`, bindings: [`%${escapeLike(value)}%`] };
+    return { clause: `${quoteIdent(field)} LIKE ? ESCAPE '\\'`, bindings: [`%${escapeLike(value)}%`] };
   if (op === "|=") {
     const values = value.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
     if (values.length === 0) return null;
     const placeholders = values.map(() => "?").join(",");
-    return { clause: `"${field}" IN (${placeholders})`, bindings: values };
+    return { clause: `${quoteIdent(field)} IN (${placeholders})`, bindings: values };
   }
-  return { clause: `"${field}" ${op} ?`, bindings: [value] };
+  return { clause: `${quoteIdent(field)} ${op} ?`, bindings: [value] };
 }
 
 // === Aggregate ===
@@ -368,9 +369,9 @@ function aggregate(
     if (unit !== undefined) {
       const fmt = BUCKET_FORMATS[unit];
       if (!fmt) return errorJson(`Unknown bucket unit "${unit}". Use one of: ${Object.keys(BUCKET_FORMATS).join(", ")}`);
-      groupExprs.push({ expr: `strftime('${fmt}', "${facet}")`, alias: facet });
+      groupExprs.push({ expr: `strftime('${fmt}', ${quoteIdent(facet)})`, alias: facet });
     } else {
-      groupExprs.push({ expr: `"${facet}"`, alias: facet });
+      groupExprs.push({ expr: quoteIdent(facet), alias: facet });
     }
   }
 
@@ -400,7 +401,7 @@ function aggregate(
       if (!spec.facet) return errorJson(`Aggregate "${fn}" requires a facet`);
       if (!isValidColumn(ctx, patternName, spec.facet))
         return errorJson(`Cannot aggregate unknown facet "${spec.facet}" on "${patternName}".${suggestFacet(spec.facet, patternName, ctx)}`);
-      expr = `${fn.toUpperCase()}("${spec.facet}")`;
+      expr = `${fn.toUpperCase()}(${quoteIdent(spec.facet)})`;
       defaultAlias = `${fn}_${spec.facet}`;
     }
     const alias = spec.as ?? defaultAlias;
@@ -411,7 +412,7 @@ function aggregate(
   }
 
   const selectParts = [...groupExprs, ...aggExprs].map((e) => `${e.expr} AS "${e.alias}"`);
-  let sql = `SELECT ${selectParts.join(", ")} FROM "${patternName}" WHERE archived_at IS NULL`;
+  let sql = `SELECT ${selectParts.join(", ")} FROM ${quoteIdent(patternName)} WHERE archived_at IS NULL`;
 
   const bindings: (string | number)[] = [];
   if (filterJson) {
@@ -495,7 +496,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
       // Callers pass trusted literals, but validate as defense in depth.
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(pattern) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) return null;
       try {
-        const row = ctx.db.exec(`SELECT "${field}" AS v FROM "${pattern}" WHERE id = ?`, id).toArray()[0];
+        const row = ctx.db.exec(`SELECT ${quoteIdent(field)} AS v FROM ${quoteIdent(pattern)} WHERE id = ?`, id).toArray()[0];
         return row ? row.v : null;
       } catch {
         return null;
@@ -565,7 +566,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
             if (val == null || val === "") continue;
             if (!ctx.facetMeta(patternName, facet)) continue;
             const existing = ctx.db.exec(
-              `SELECT id FROM "${patternName}" WHERE "${facet}" = ? AND archived_at IS NULL LIMIT 3`, val
+              `SELECT id FROM ${quoteIdent(patternName)} WHERE ${quoteIdent(facet)} = ? AND archived_at IS NULL LIMIT 3`, val
             ).toArray() as { id: number }[];
             for (const e of existing) {
               (overlap ??= []).push({
@@ -579,12 +580,12 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
         const fields = Object.keys(data).filter((k) => !CALLER_EXCLUDED_ON_CREATE.has(k));
         // Attribution: stamp created_by + updated_by from the session actor.
-        const cols = [...fields.map((f) => `"${f}"`), `"created_by"`, `"updated_by"`].join(", ");
+        const cols = [...fields.map((f) => quoteIdent(f)), quoteIdent("created_by"), quoteIdent("updated_by")].join(", ");
         const placeholders = [...fields, "_cb", "_ub"].map(() => "?").join(", ");
         const values = [...fields.map((f) => data[f]), ctx.actor, ctx.actor];
 
-        ctx.db.exec(`INSERT INTO "${patternName}" (${cols}) VALUES (${placeholders})`, ...values);
-        const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = last_insert_rowid()`).one();
+        ctx.db.exec(`INSERT INTO ${quoteIdent(patternName)} (${cols}) VALUES (${placeholders})`, ...values);
+        const row = ctx.db.exec(`SELECT * FROM ${quoteIdent(patternName)} WHERE id = last_insert_rowid()`).one();
         const result: any = { operation: "create", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${(row as any).id}`) };
         if (overlap?.length) {
           result.possible_overlap = overlap;
@@ -607,7 +608,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         const fields = Object.keys(data).filter((k) => !stripCols.includes(k));
         if (fields.length === 0) return { error: true, message: "No facets to update" };
 
-        const sets = fields.map((f) => `"${f}" = ?`).join(", ");
+        const sets = fields.map((f) => `${quoteIdent(f)} = ?`).join(", ");
         const values = fields.map((f) => data[f]);
         values.push(ctx.actor); // updated_by — bound right after the SET facets
 
@@ -617,7 +618,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           if (data.version != null) { where += ` AND version = ?`; values.push(data.version); }
 
           ctx.db.exec(
-            `UPDATE "${patternName}" SET ${sets}, updated_by = ?, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
+            `UPDATE ${quoteIdent(patternName)} SET ${sets}, updated_by = ?, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
             ...values
           );
 
@@ -633,7 +634,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         } else {
           values.push(data.id);
           ctx.db.exec(
-            `UPDATE "${patternName}" SET ${sets}, updated_by = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+            `UPDATE ${quoteIdent(patternName)} SET ${sets}, updated_by = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
             ...values
           );
           const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
@@ -641,7 +642,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
             return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
         }
 
-        const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = ?`, data.id).one();
+        const row = ctx.db.exec(`SELECT * FROM ${quoteIdent(patternName)} WHERE id = ?`, data.id).one();
         return { operation: "update", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${data.id}`) };
       }
 
@@ -667,7 +668,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         let current: string;
         try {
           const row = ctx.db.exec(
-            `SELECT "${data.facet}" FROM "${patternName}" WHERE id = ? AND archived_at IS NULL`, data.id
+            `SELECT ${quoteIdent(data.facet as string)} FROM ${quoteIdent(patternName)} WHERE id = ? AND archived_at IS NULL`, data.id
           ).one() as any;
           if (!row) return { error: true, message: `Entry ${data.id} not found in "${patternName}"` };
           current = row[data.facet as string] ?? "";
@@ -704,7 +705,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           let where = `id = ? AND archived_at IS NULL`;
           if (data.version != null) { where += ` AND version = ?`; bindings.push(data.version); }
           ctx.db.exec(
-            `UPDATE "${patternName}" SET "${data.facet}" = ?, updated_by = ?, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
+            `UPDATE ${quoteIdent(patternName)} SET ${quoteIdent(data.facet as string)} = ?, updated_by = ?, version = version + 1, updated_at = datetime('now') WHERE ${where}`,
             ...bindings
           );
           // A 0-row patch must not silently succeed (mirrors update): version → lock
@@ -716,7 +717,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
               : { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
         } else {
           ctx.db.exec(
-            `UPDATE "${patternName}" SET "${data.facet}" = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+            `UPDATE ${quoteIdent(patternName)} SET ${quoteIdent(data.facet as string)} = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
             patched, ctx.actor, data.id
           );
           const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
@@ -724,14 +725,14 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
             return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
         }
 
-        const row = ctx.db.exec(`SELECT * FROM "${patternName}" WHERE id = ?`, data.id).one();
+        const row = ctx.db.exec(`SELECT * FROM ${quoteIdent(patternName)} WHERE id = ?`, data.id).one();
         return { operation: "patch", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${data.id}`) };
       }
 
       case "archive": {
         if (!data.id) return { error: true, message: "id is required for archive" };
         ctx.db.exec(
-          `UPDATE "${patternName}" SET archived_at = datetime('now'), updated_at = datetime('now'), updated_by = ? WHERE id = ? AND archived_at IS NULL`,
+          `UPDATE ${quoteIdent(patternName)} SET archived_at = datetime('now'), updated_at = datetime('now'), updated_by = ? WHERE id = ? AND archived_at IS NULL`,
           ctx.actor, data.id
         );
         // 0 rows ⇒ the entry doesn't exist or is already archived: don't report a
@@ -776,7 +777,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
       case "unarchive": {
         if (!data.id) return { error: true, message: "id is required for unarchive" };
         ctx.db.exec(
-          `UPDATE "${patternName}" SET archived_at = NULL, updated_at = datetime('now'), updated_by = ? WHERE id = ? AND archived_at IS NOT NULL`,
+          `UPDATE ${quoteIdent(patternName)} SET archived_at = NULL, updated_at = datetime('now'), updated_by = ? WHERE id = ? AND archived_at IS NOT NULL`,
           ctx.actor, data.id
         );
         // 0 rows ⇒ the entry doesn't exist or is already active: don't report a
@@ -822,12 +823,12 @@ export function search(ctx: DataContext, term: string, objectsJson: string, limi
     ).toArray() as any[]).map((r: any) => r.name as string);
     if (textFields.length === 0) continue;
 
-    const conditions = textFields.map((f) => `"${f}" LIKE ? ESCAPE '\\'`).join(" OR ");
+    const conditions = textFields.map((f) => `${quoteIdent(f)} LIKE ? ESCAPE '\\'`).join(" OR ");
     const bindings = textFields.map(() => `%${escapeLike(term)}%`);
 
     try {
       const rows = ctx.db.exec(
-        `SELECT * FROM "${objName}" WHERE archived_at IS NULL AND (${conditions}) LIMIT ?`,
+        `SELECT * FROM ${quoteIdent(objName)} WHERE archived_at IS NULL AND (${conditions}) LIMIT ?`,
         ...bindings, limit
       ).toArray();
 
