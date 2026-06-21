@@ -47,17 +47,28 @@ jobs:
       - name: Build worker page bundles
         run: npm run build:pages
 
+      # The React SPA (dist/web) is gitignored AND the wrangler build hook skips
+      # it under DEV=true, so it isn't built above. routes.test.ts drives the
+      # ASSETS-served SPA shell (GET / and unknown browser routes must fall back
+      # to dist/web/index.html), which 404s without this build. Build it here.
+      - name: Build web SPA
+        run: npm run build:web
+
       # Unit suite — runs in the real workerd runtime (vitest-pool-workers),
       # including the totality oracles (policy / egress / context-capability /
       # tools-ssot / served-bearer-gating).
       - name: Test
         run: npm test
 
-      # Ratchets: no new conventions, no new raw SQL interpolation sites.
+      # Ratchets: no new conventions, no new raw SQL interpolation sites, and the
+      # trust atlas stays in sync with the boundary claims (no managed chokepoint
+      # left off the atlas, no dangling edge).
       - name: Convention ratchet
         run: npm run conventions:check
       - name: Injection-lint ratchet
         run: npm run injection-lint:check
+      - name: Atlas drift
+        run: npm run atlas:check
 
       # Specs must still match the code (boundary ratchet anchors invariants to
       # chokepoint + oracle claims).
