@@ -26,7 +26,7 @@ Mnemion ships **empty**. There is no prescribed schema. The first conversation c
 
 ### The agent surface
 
-Seven MCP tools, scoped to act on entries of any shape:
+Eight MCP tools, scoped to act on entries of any shape:
 
 | Tool | What it's for |
 |------|---------------|
@@ -37,8 +37,9 @@ Seven MCP tools, scoped to act on entries of any shape:
 | `resolve` | Read anything by URI. Supports `mnemion://` URIs, federated cross-hive URIs (e.g. `mnemion://other.hive.dev/entry/axioms/7`), and `https://` URLs — the last fetches and caches web pages and Bluesky threads so they're available to future `prime` recalls. |
 | `propose_change` | Two-phase schema evolution, phase one. Validates a structural change and returns a preview without committing. |
 | `apply_change` | Two-phase schema evolution, phase two. Commits a previously proposed change. Also handles point-in-time *revert* — restores all data (not just schema) to before a given history entry. |
+| `render` | Visual twin of the read tools. Returns a rich UI table (`view=patterns` or `view=entries`) via an MCP-Apps fragment in capable hosts, with a text fallback everywhere else. |
 
-Tool metadata is centralized in `src/tools.ts` and powers both the MCP server registration and the in-app help view.
+Tool metadata is centralized in `entities/Session/tools.ts` and powers both the MCP server registration and the in-app help view.
 
 ### What resources agents read
 
@@ -94,7 +95,7 @@ A hive that only accumulates eventually whispers stale things back. Mnemion coun
 Patterns can grow HTTP endpoints. Five kinds of agent-defined I/O, all expressed as entries:
 
 - **Publications** (`_publications`) — the hive's publication surface. An entry declares a path, a source query, and a transport (**HTML, RSS, JSON, or Markdown with YAML frontmatter**); `GET /p/{path}` renders **live pattern data at request time** — nothing rendered is ever stored, so the page can't go stale. HTML ships opinionated defaults (semantic markup, light/dark, no JS) with two seams: a per-entry `{{facet}}` template (values escaped, template text raw) and a `css` override appended after the defaults. Superseded entries are excluded by default — public projections show current truth. Creation is consent-gated like sharing.
-- **Documents** (`_documents`) — an R2-backed file store (**optional — requires R2; see below**). A `_documents` entry holds agent-defined metadata (title, description, tags, visibility); the bytes live in R2, never in the hive. Creating an entry returns a single-use `upload_url`; you `POST` the file (≤25 MB) and it's served at `GET /f/{id}`, gated by the entry's visibility. The metadata is the evolvable knowledge layer; the file is immutable truth it points at — references, not copies, the same discipline as the canvas. Archiving the entry deletes the blob. Making a file non-private is consent-gated.
+- **Documents** (`_documents`) — an R2-backed file store (**optional — requires R2; see below**). A `_documents` entry holds agent-defined metadata (title, description, tags, visibility); the bytes live in R2, never in the hive. Creating an entry returns a single-use `upload_url`; you `POST` the file (≤25 MB) and it's served at `GET /f/{id}`, gated by the entry's visibility. The metadata is the evolvable knowledge layer; the file is immutable truth it points at — references, not copies. Archiving the entry deletes the blob. Making a file non-private is consent-gated.
 - **Shared entries** (`_shared`) — flip an entry to `public` and it becomes readable at `/o/entry/{pattern}/{id}`, edge-cached. Flip to `unlisted` and it's readable by anyone with an auth-code token.
 - **Egress** (`_outputs`) — agent-constructed static responses at arbitrary `/o/{path}` URLs.
 - **Ingress** (`_inputs`) — `POST /i/{path}` endpoints accept inbound data and create entries in target patterns, with an optional declarative transform DSL to map incoming fields.
@@ -162,14 +163,9 @@ Because a skill's `skill_md` is just a record, a skill can teach an agent how to
 
 ### The web UI
 
-Mnemion serves Svelte-based pages directly from the worker (no SvelteKit — Svelte as a component framework only):
+The web app is a **React + Vite** single-page app, served by the worker as static assets — a pattern browser and entry editor with live updates over WebSocket: a `mutate` broadcasts a granular delta that patches one entry, so only its card re-renders. Each pattern renders per an optional agent-authored **view spec** (`board` / `table` / `list` / `cards`) interpreted against a fixed React component palette — declarative data, never code.
 
-- **SchemaViewer** — pattern browser and entry editor. Live updates over WebSocket.
-- **HiveMap** — force-directed visualization of patterns, sized by entry count.
-- **LinkMap** — cross-pattern reference graph, showing how patterns connect via links.
-- **Canvas** — a tldraw-based infinite canvas for spatial thinking. Murderboard-style: drag pattern entries onto the canvas, group them, draw connections, annotate. Entry shapes store *only references* (`{pattern, entryId}`) and hydrate live from the underlying entries — the canvas never goes stale relative to the data.
-
-Browser sessions authenticate via passkey-backed OAuth. The same session cookie also gates the API endpoints the UI uses.
+Browser sessions authenticate via passkey-backed OAuth. The same session cookie also gates the API endpoints the UI uses. (The one non-React web surface is the MCP `render` fragment — plain TS, embedded in MCP-Apps-capable hosts.)
 
 ### Auth model
 
@@ -181,7 +177,7 @@ Layered, behind OAuth 2.1 with PKCE and Dynamic Client Registration:
 
 ### Architecture in one paragraph
 
-A single Cloudflare Worker hosts everything. Two Durable Objects: **SessionDO** (one per MCP session, runs the protocol) and **HiveDO** (one per user, owns all SQLite storage — patterns, entries, facets, links, audit logs, the works). Embeddings live in Vectorize. OAuth tokens live in KV. Workers AI generates embeddings on every mutate. The full routing surface is declared as a table in `src/index.ts`; the full schema-evolution surface as a table in `src/evolution.ts`. Code is structured as scannable schematics, not procedural chains — see [`CLAUDE.md`](CLAUDE.md) for the design principles ("data is destiny," "code as schematic") that govern the codebase.
+A single Cloudflare Worker hosts everything. Two Durable Objects: **SessionDO** (one per MCP session, runs the protocol) and **HiveDO** (one per user, owns all SQLite storage — patterns, entries, facets, links, audit logs, the works). Embeddings live in Vectorize. OAuth tokens live in KV. Workers AI generates embeddings on every mutate. The full routing surface is declared as a table in `src/index.ts`; the full schema-evolution surface as a table in `entities/Hive/evolution.ts`. Code is structured as scannable schematics, not procedural chains — see [`CLAUDE.md`](CLAUDE.md) for the design principles ("data is destiny," "code as schematic") that govern the codebase.
 
 ## Deploy to Cloudflare
 
@@ -193,7 +189,9 @@ Clicking the button clones the repo to your own GitHub, provisions the resources
 (KV is auto-provisioned; the Vectorize index is created by the build step), wires
 up CI/CD via Workers Builds, and deploys. You'll be prompted for one secret,
 **`MNEMION_SECRET`** — paste a high-entropy value (e.g. `openssl rand -hex 32`).
-Leaving it blank brings the instance up in **insecure dev mode**, so set it.
+This is required: with no secret set, the instance **fails closed** — `/authorize`
+and the owner APIs return `503` and nothing is usable until you set it. (Dev-mode
+auto-approve is a separate, explicit `DEV=true` opt-in that a real deploy never sets.)
 
 After it deploys, register your owner passkey **once**:
 
@@ -226,8 +224,9 @@ npm run setup
 
 1. Finds or creates the `mnemion-vectors` Vectorize index (768 dims, cosine — matches the Workers AI `bge-base-en-v1.5` embedding model)
 2. Generates a 256-bit master secret and pushes it as `MNEMION_SECRET`
-3. Builds the Svelte client + SSR bundles and deploys the worker — the `OAUTH_KV` namespace is auto-provisioned on this first deploy (no id needed in `wrangler.toml`) and stays linked thereafter
-4. Prints (and optionally opens) a one-time URL: `https://<your-worker>.workers.dev/setup?token=<secret>`
+3. Builds the MCP render fragment and deploys the worker — the `OAUTH_KV` namespace is auto-provisioned on this first deploy (no id needed in `wrangler.toml`) and stays linked thereafter
+4. Pins `WORKER_HOST` to the deployed host and redeploys — the instance treats `WORKER_HOST` as the authoritative host for every generated URL (`upload_url` / `page_url` / `og_image`) and ignores the inbound `Host` header when it's set, so a spoofed `Host` can't poison a capability URL
+5. Prints (and optionally opens) a one-time URL: `https://<your-worker>.workers.dev/setup?token=<secret>`
 
 Open that URL once in a browser to register a passkey. After that, browser-based OAuth uses the passkey; the master secret remains as a fallback for headless agents and re-registration.
 
@@ -258,10 +257,10 @@ Re-running `npm run setup` rotates the master secret and replaces your passkey.
 ## Local development
 
 ```bash
-npm run dev        # builds frontend, runs wrangler dev on :8787 in dev mode (no secret required)
+npm run dev        # concurrently: wrangler dev (worker + DOs, seeded) + Vite HMR for the React app — open the Vite URL
 npm test           # vitest suite (runs in workerd via @cloudflare/vitest-pool-workers)
 ```
 
-For frontend-only iteration with mock data: `cd mnemion-js && npm run preview`.
+For React-app-only iteration: `cd mnemion-js && npm run dev:app`.
 
-Dev mode auto-approves OAuth (`Auth.DEV`), so you can hit the worker without a passkey or secret.
+The dev scripts pass `--var DEV:true` — the **explicit** opt-in for dev-mode OAuth auto-approve (`Auth.DEV`), so locally you can hit the worker without a passkey or secret. A real deploy never sets `DEV`, so the same secretless state fails closed in production.
