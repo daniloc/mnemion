@@ -40,6 +40,22 @@ const SEED = new Set([
   "seal", "sealAll", "servedQuery", "currentHost", "inertHeaders",
   "scopeMatches", "applyKernelRules", "normalizeHost", "writeClass",
 ]);
+// Triage, codified: guards the detector surfaces but that are NOT unguarded
+// conventions — each is covered by another contract or is not a fail-open guard.
+// Encoding the judgment here (with its reason) makes the triage repeatable instead
+// of a one-time human call, and keeps the flagged set real signal. A guard leaves
+// this map only when its stated cover is removed.
+const DISMISSED = {
+  sealAll: "covered by the egress-sensitivity boundary (SENSITIVE_COLUMNS / verifyEgressTotality)",
+  isDevAutoApprove: "covered by auth-fail-closed.test.ts (the name heuristic missed its describe)",
+  isPrivateIPv4: "internal helper of isBlockedFederationHost — covered by the SSRF block-host totality",
+  normalizeHost: "feeds isBlockedFederationHost + the federation fetch — covered transitively by SSRF + federation tests",
+  isMemberActive: "enforced inside the applyKernelRules kernel-hook chokepoint, not at scattered sites",
+  ensureAuditTriggers: "idempotent infra setup, not a fail-open guard",
+  verifyFieldsIntegrity: "a boot integrity verifier (itself a check), not a remembered guard",
+  hasPasskey: "a read ('does a passkey exist') used to choose UI, not a security gate",
+};
+
 // Imperative debt-markers: comments telling a future author to remember something.
 const IMPERATIVE =
   /\/\/.*\b(any new |callers? must|must (call|always|route|go through|seal|use|never)|by convention|remember to|don'?t forget|be sure to|make sure (to|that)|always (call|use|route|seal|go)|never (forget|bypass|skip)|every (new )?\w+ (must|should))\b/i;
@@ -117,12 +133,13 @@ for (const [name, { defFile }] of guards) {
   if (sites < 1) continue; // definition-only / unused
   const isAnchored = anchored.has(name);
   const oracle = hasOracle(name);
-  let status;
-  if (isAnchored) status = "ANCHORED";       // a coherence boundary chokepoint — best
+  let status, reason = "";
+  if (DISMISSED[name]) { status = "dismissed"; reason = DISMISSED[name]; }
+  else if (isAnchored) status = "ANCHORED";  // a coherence boundary chokepoint — best
   else if (oracle) status = "ORACLE";        // a totality test, not yet a formal boundary
   else if (sites <= 1) status = "single";    // one site — not a block-list
   else status = "CONVENTION";                // fan-out + no contract — the flag
-  rows.push({ name, sites, status, def: defFile.replace(ROOT + "/", "") });
+  rows.push({ name, sites, status, reason, def: defFile.replace(ROOT + "/", "") });
 }
 rows.sort((a, b) => b.sites - a.sites);
 const conventions = rows.filter((r) => r.status === "CONVENTION");
@@ -153,6 +170,7 @@ for (const r of rows) {
   const flag = r.status === "CONVENTION" ? "  ◀ CONVENTION (no contract)"
     : r.status === "ANCHORED" ? "  ✓ boundary"
     : r.status === "ORACLE" ? "  ✓ totality test"
+    : r.status === "dismissed" ? `  — dismissed: ${r.reason}`
     : "";
   console.log(`  ${pad(r.name, 26)} ${pad(r.sites, 11)} ${pad(r.status, 12)}${flag}`);
 }

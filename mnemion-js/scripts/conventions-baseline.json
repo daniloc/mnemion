@@ -1,13 +1,5 @@
 [
   {
-    "name": "denyUnlessBearerScope",
-    "sites": 5
-  },
-  {
-    "name": "ensureAuditTriggers",
-    "sites": 4
-  },
-  {
     "name": "escapeLike",
     "sites": 2
   },
@@ -16,36 +8,8 @@
     "sites": 7
   },
   {
-    "name": "hasPasskey",
-    "sites": 5
-  },
-  {
-    "name": "isBlockedFederationHost",
-    "sites": 5
-  },
-  {
-    "name": "isDevAutoApprove",
-    "sites": 2
-  },
-  {
-    "name": "isMemberActive",
-    "sites": 4
-  },
-  {
-    "name": "isPrivateIPv4",
-    "sites": 5
-  },
-  {
     "name": "isValidColumn",
     "sites": 5
-  },
-  {
-    "name": "normalizeHost",
-    "sites": 6
-  },
-  {
-    "name": "sealAll",
-    "sites": 2
   },
   {
     "name": "validateName",
@@ -53,10 +17,6 @@
   },
   {
     "name": "validateRegisterToken",
-    "sites": 3
-  },
-  {
-    "name": "verifyFieldsIntegrity",
     "sites": 3
   }
 ]
