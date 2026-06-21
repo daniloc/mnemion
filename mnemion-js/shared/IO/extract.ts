@@ -48,14 +48,19 @@ export function isPdf(contentType: string): boolean {
 
 /** Decode raw bytes as UTF-8 text (lossy on invalid sequences). */
 export function decodeText(bytes: ArrayBuffer): string {
-  return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  // No options: fatal defaults to false (lossy — invalid sequences → U+FFFD),
+  // which is what we want. Avoids @types/node v25's churny
+  // TextDecoderConstructorOptions (it made ignoreBOM required).
+  return new TextDecoder("utf-8").decode(bytes);
 }
 
 /** Extract text from a PDF via unpdf (serverless pdf.js). Pages merged. */
 export async function extractPdfText(bytes: ArrayBuffer): Promise<string> {
   const { getDocumentProxy, extractText } = await import("unpdf");
   const doc = await getDocumentProxy(new Uint8Array(bytes));
-  const { text } = await extractText(doc, { mergePages: true });
+  // mergePages:true yields a single string, but keep the defensive array handling
+  // (older unpdf returned string[]); cast so the array branch isn't narrowed to never.
+  const { text } = (await extractText(doc, { mergePages: true })) as { text: string | string[] };
   return typeof text === "string" ? text : Array.isArray(text) ? text.join("\n") : "";
 }
 
