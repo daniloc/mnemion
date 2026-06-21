@@ -75,7 +75,7 @@ Entropy is the divergence of **Intent** (specs), **Structure** (imports), and **
 
 **Adding a kernel pattern:** classify it in `KERNEL_TABLES` and `KERNEL_WRITE_POLICY`; set field rules in `IMMUTABLE`/`ON_CREATE`; declare every sensitive column; add a lifecycle hook only if it needs one (absence is the correct default). The matrix/totality tests fail until it's classified everywhere required.
 
-**Adding a feature:** one directory under `entities/features/<name>/` + one `FEATURES` barrel line. Its manifest *feeds* the central registries; enforcement stays central. Follow `project-docs/active/authoring-a-feature.md`. Keep `security.ts`/`hooks.ts` leaf-clean (`import type` only). (Paths under `project-docs/` are repo-root-relative — not under `mnemion-js/`, where the dev commands run.)
+**Adding a feature:** one directory under `entities/features/<name>/` + one `FEATURES` barrel line. Its manifest *feeds* the central registries; enforcement stays central. Follow `project-docs/archived/authoring-a-feature.md`. Keep `security.ts`/`hooks.ts` leaf-clean (`import type` only). (Paths under `project-docs/` are repo-root-relative — not under `mnemion-js/`, where the dev commands run.)
 
 **Adding a serve path, stored secret, generated URL, or content egress:** route it through the *existing* boundary — do not re-implement the guard. Served reads via `servedDataCtx`/`servedQuery`; outward emission via `seal`/`sealAll`; secrets born hashed; host from `WORKER_HOST` config, never request data; agent-authored egress stays inert (`Content-Security-Policy: sandbox`).
 

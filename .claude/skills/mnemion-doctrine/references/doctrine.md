@@ -82,4 +82,4 @@ The *process* exhibited the same restoring force as the code:
 
 ## Source provenance
 
-Distilled from the June 15–21, 2026 commit arc (`b0c2667` … the convention-detector / injection-lint / trust-atlas / manifold-enshrinement coda) and the session transcripts in which it was articulated. Related repo docs that are partial approximations of this whole: `project-docs/active/self-enforcing-declarations.md`, `project-docs/active/write-class-policy.md`, `project-docs/data-is-destiny.md`, and the `## why` blocks across the `*.spec.md` tree.
+Distilled from the June 15–21, 2026 commit arc (`b0c2667` … the convention-detector / injection-lint / trust-atlas / manifold-enshrinement coda) and the session transcripts in which it was articulated. Related repo docs that are partial approximations of this whole: `project-docs/archived/self-enforcing-declarations.md`, `project-docs/archived/write-class-policy.md`, `project-docs/data-is-destiny.md`, and the `## why` blocks across the `*.spec.md` tree.

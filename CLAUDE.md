@@ -17,7 +17,7 @@ primitives; `src/` keeps the worker entry, the Svelte frontend, agent docs, and
 tests.
 
 ```
-project-docs/active/   Design documents (the "why" and "what")
+project-docs/archived/   Design documents (the "why" and "what")
 mnemion-js/            Cloudflare Worker — MCP server (the "how")
   Mnemion.spec.md      Root spec: OAuth-wrapped MCP server, one declarative route table
   coherence.config.json  Coherence harness config (component dirs, adapters)
@@ -50,7 +50,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
     compose.ts         Composers deriving each registry from FEATURES (fail loud on collision)
     security.ts        Dependency-free barrel folding each feature's pure-data security.ts into the policy leaf
     <name>/            manifest.ts (required) + optional schema.ts / security.ts / hooks.ts as the feature needs (documents = the fullest reference; system-tasks is manifest-only). Feature specs live in the shared entities/features/Features.spec.md, not a per-feature file.
-                       → How to add one: project-docs/active/authoring-a-feature.md
+                       → How to add one: project-docs/archived/authoring-a-feature.md
   entities/Session/    (SessionDO — per-session McpAgent; Session.spec.md)
     session.ts         McpAgent, MCP protocol handler (per-session DO)
     tools.ts           Tool metadata SSOT — feeds session.ts MCP registration and /api/tools
@@ -114,7 +114,7 @@ Layered auth behind OAuth 2.1. The `workers-oauth-provider` package wraps the wo
 
 ### Shared hive (multi-member)
 
-One hive, several people. Hive identity (which Durable Object) is decoupled from actor identity (which person): `HIVE_ID` (`shared/core/constants.ts`, literal `"user:owner"` — a rename for clarity, not a re-key) names the single store every member authenticates into; the authenticated member's label rides in the OAuth session props as `actor`, separate from `hiveId`. Design doc: `project-docs/active/shared-hive.md`.
+One hive, several people. Hive identity (which Durable Object) is decoupled from actor identity (which person): `HIVE_ID` (`shared/core/constants.ts`, literal `"user:owner"` — a rename for clarity, not a re-key) names the single store every member authenticates into; the authenticated member's label rides in the OAuth session props as `actor`, separate from `hiveId`. Design doc: `project-docs/archived/shared-hive.md`.
 
 - **Members** (`_members` kernel pattern): the roster. `label` (immutable handle, the join key for passkeys/tokens), `display_name`, `role` (`owner`|`member`), `status` (`active`|`suspended`). The `owner` member is seeded on boot and reserved. Creating a member is consent-gated at the MCP layer (it grants standing access to the whole hive).
 - **Invite flow**: (1) create the `_members` row with `label` + `display_name` (the inviting agent names them); (2) mint a `register`-scoped access token with `member: "<label>"` (forced single-use; the hook refuses `owner` and any non-active-roster member); (3) the token is minted **inert** — an existing member must approve it in person at `/invite/{token}` via passkey (master-secret fallback) before it works; (4) once approved, give the invitee its `/setup?token=...` URL, where they register their own passkey, bound to that member. The setup endpoints accept either the master secret (owner bootstrap) or an **approved** `register` token (invitee). The passkey approval — not the agent-satisfiable mutate round-trip — is the real human-consent gate: `approved_at` is IMMUTABLE on the mutate path and set only by the approval endpoint, so an agent acting on injected content can mint an invite but never activate it.
@@ -262,7 +262,7 @@ Domain logic lives in pure-function modules with context injected. HiveDO builds
 
 ## Design principle: self-enforcing declarations
 
-The operational synthesis of the two principles above, for a codebase agents edit. Every invariant gets **one declarative home** (a table keyed by what it governs) that is simultaneously the spec an agent reads, the enforcement every gate derives from, and the oracle a totality check asserts completeness against — so spec, enforcement, and test can't drift. Five properties make a declaration self-enforcing: (1) one table, and it's data; (2) derive, never duplicate; (3) enforce at the chokepoint the invariant is about, not the convenient layer; (4) fail closed (absence → the safe state); (5) a totality check that fails loudly. Reference: `entities/Hive/policy.ts` (write-class registry) + `verifyWritePolicyTotality` + `src/__tests__/policy.test.ts`. Full doctrine and checklists: `project-docs/active/self-enforcing-declarations.md`. Quality metric: minimize the number of files an agent must touch in lockstep to add a pattern/tool/route/invariant — drive it toward one. Not for effects (keep imperative), one-offs, or history (migrations/audit logs).
+The operational synthesis of the two principles above, for a codebase agents edit. Every invariant gets **one declarative home** (a table keyed by what it governs) that is simultaneously the spec an agent reads, the enforcement every gate derives from, and the oracle a totality check asserts completeness against — so spec, enforcement, and test can't drift. Five properties make a declaration self-enforcing: (1) one table, and it's data; (2) derive, never duplicate; (3) enforce at the chokepoint the invariant is about, not the convenient layer; (4) fail closed (absence → the safe state); (5) a totality check that fails loudly. Reference: `entities/Hive/policy.ts` (write-class registry) + `verifyWritePolicyTotality` + `src/__tests__/policy.test.ts`. Full doctrine and checklists: `project-docs/archived/self-enforcing-declarations.md`. Quality metric: minimize the number of files an agent must touch in lockstep to add a pattern/tool/route/invariant — drive it toward one. Not for effects (keep imperative), one-offs, or history (migrations/audit logs).
 
 ## Design principle: security boundaries are self-enforcing declarations
 
@@ -327,7 +327,7 @@ pre-mutation hooks in `<name>/hooks.ts`, folded into `KERNEL_WRITE_POLICY` /
 `SENSITIVE_COLUMNS` / `ON_CREATE`/`ON_WRITE`/`IMMUTABLE` at the same chokepoints
 (`mergeDisjoint` throws if a feature shadows a CORE pattern). Enforcement stays
 central; only the *declaration* moved into the feature dir. **To add a feature:
-`project-docs/active/authoring-a-feature.md`** (the fork contract — it also lists the
+`project-docs/archived/authoring-a-feature.md`** (the fork contract — it also lists the
 sharp edges: keep `security.ts`/`hooks.ts` leaf-clean `import type` only, your
 write-class is a typo-prone string cast guarded by the totality test, declare every
 sensitive column).
@@ -338,7 +338,7 @@ A feature is one directory under `entities/features/<name>/`; its manifest FEEDS
 effect/route/tool/pattern/hook/write-policy registries above, composed at boot, each
 enforced at its chokepoint. Adding one = a directory + one `FEATURES` barrel line.
 Verify with `npm test`, `npm run coherence:verify`, `npm run cruft`. Full contract +
-sharp edges: `project-docs/active/{authoring-a-feature,feature-manifests}.md`.
+sharp edges: `project-docs/archived/{authoring-a-feature,feature-manifests}.md`.
 
 ## Coherence (spec ↔ code)
 

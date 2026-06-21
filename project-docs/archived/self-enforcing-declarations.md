@@ -81,4 +81,4 @@ The strongest agent-interpretability lever specific to this project: the agent-f
 - `src/policy.ts` — a self-enforcing declaration (write class + consent + behavioral flags).
 - `src/schema.ts:verifyWritePolicyTotality` — the loud totality check.
 - `src/__tests__/policy.test.ts` — the double-entry matrix (spec = oracle).
-- `project-docs/active/write-class-policy.md` — the worked example and its remaining seam.
+- `project-docs/archived/write-class-policy.md` — the worked example and its remaining seam.

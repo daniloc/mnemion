@@ -88,5 +88,5 @@ chokepoint it's about, with a totality test that fails loud.** Security is a *ca
 (the `trusted` flag, set only by `ownerDataCtx`), not a convention; side effects, routes,
 write-policy, and hooks are *registries composed from features*, not call-site edits. The
 coherence harness keeps the spec and code entangled as you edit. See
-`project-docs/active/{self-enforcing-declarations,feature-manifests,data-is-destiny}.md`
+`project-docs/archived/{self-enforcing-declarations,feature-manifests,data-is-destiny}.md`
 and the `## why` in each component's spec.
