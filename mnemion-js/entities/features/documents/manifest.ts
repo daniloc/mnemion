@@ -22,6 +22,7 @@ import type { Feature } from "../feature";
 import { HEX_TOKEN_RE } from "../../../shared/core/constants";
 import { logWarn } from "../../../shared/core/log";
 import { uploadDocument, serveDocument } from "../../../shared/Routing/routes/io";
+import { cached } from "../../../shared/Routing/router";
 import { patterns as documentsPatterns, migrations as documentsMigrations } from "./schema";
 import { onCreate as documentsOnCreate, immutable as documentsImmutable } from "./hooks";
 
@@ -47,7 +48,7 @@ export const documents: Feature = {
   // backendPrefix keeps an unmatched GET off the SPA shell.
   routes: [
     { method: "POST", pattern: "/f/:token", where: { token: HEX_TOKEN_RE }, handler: uploadDocument, backendPrefix: "/f/" },
-    { method: "GET",  pattern: "/f/:id",    where: { id: /^\d+$/ },              handler: serveDocument },
+    { method: "GET",  pattern: "/f/:id",    where: { id: /^\d+$/ },              handler: cached(serveDocument) },
   ],
   effects: {
     _documents: {

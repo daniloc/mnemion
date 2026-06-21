@@ -2,7 +2,7 @@ import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { SessionDO } from "../entities/Session/session";
 import { HiveDO } from "../entities/Hive/hive";
 import { HIVE_ID, HEX_TOKEN_RE } from "../shared/core/constants";
-import { Method, Auth, createRouter, type Route, type RouteHandler, type Env } from "../shared/Routing/router";
+import { Method, Auth, createRouter, cached, type Route, type RouteHandler, type Env } from "../shared/Routing/router";
 import { FEATURES } from "../entities/features";
 import { composeRoutes, assertWiredSlots } from "../entities/features/compose";
 import type { FeatureRoute } from "../entities/features/feature";
@@ -55,9 +55,9 @@ const CORE_ROUTES: Route[] = [
   { method: Method.POST, pattern: "/sessions/revoke",      auth: Auth.SECRET, handler: revokeSessions },
 
   // HTTP I/O
-  { method: Method.GET,  pattern: "/o/entry/:pattern/:id", where: { id: /^\d+$/ }, handler: serveSharedEntry },
-  { method: Method.GET,  pattern: "/o/:path",              handler: serveOutput },
-  { method: Method.GET,  pattern: "/p/:path",              handler: servePublication },
+  { method: Method.GET,  pattern: "/o/entry/:pattern/:id", where: { id: /^\d+$/ }, handler: cached(serveSharedEntry) },
+  { method: Method.GET,  pattern: "/o/:path",              handler: cached(serveOutput) },
+  { method: Method.GET,  pattern: "/p/:path",              handler: cached(servePublication) },
   // /page/* (pages feature) and /f/* (documents feature) routes are declared in
   // their feature manifests and appended below via composeRoutes(FEATURES).
   { method: Method.POST, pattern: "/i/:path",              handler: receiveInput },

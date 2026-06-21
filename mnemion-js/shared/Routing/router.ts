@@ -148,6 +148,28 @@ export function clientIp(ctx: RouteContext): string {
   return ctx.request.headers.get("cf-connecting-ip") || "unknown";
 }
 
+// Edge-cache wrapper for PUBLIC read handlers. On a GET, serve from Cloudflare's
+// per-colo cache (caches.default) when present — skipping the Worker AND the single
+// HiveDO entirely within the response's max-age, so viral/cache-busting public reads
+// don't serialize through the owner's DO. Only responses the handler marks
+// `Cache-Control: public` are stored (private/unlisted/304/errors never are), keyed by
+// request URL — so a public resource caches and a private one falls through on every
+// request. The put is awaited (a few ms, on the miss path only); a hit returns before
+// any DO work. A runtime without the Cache API is a transparent pass-through.
+export function cached(handler: RouteHandler): RouteHandler {
+  return async (ctx) => {
+    const cache = typeof caches !== "undefined" ? caches.default : undefined;
+    if (!cache || ctx.request.method !== "GET") return handler(ctx);
+    const hit = await cache.match(ctx.request);
+    if (hit) return hit;
+    const res = await handler(ctx);
+    if (res.status === 200 && (res.headers.get("Cache-Control") || "").includes("public")) {
+      try { await cache.put(ctx.request, res.clone()); } catch { /* cache unavailable — serve uncached */ }
+    }
+    return res;
+  };
+}
+
 // === Session cookies ===
 
 const SESSION_COOKIE = "__session";
