@@ -19,6 +19,7 @@ import { KERNEL_COLUMN_SET, STRUCTURAL_KERNEL_COLUMNS } from "./kernel-columns";
 import { expandShortcut, normalizeHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
 import { deriveLabel } from "./labels";
+import { logError } from "../../shared/core/log";
 import * as cred from "../../shared/Auth/credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
@@ -505,13 +506,23 @@ export class HiveDO extends DurableObject {
 
     const ctx = this.ownerDataCtx(actor);
     const results: any[] = [];
-    this.ctx.storage.transactionSync(() => {
-      for (const op of operations) {
-        const result = data.executeMutate(ctx, op.pattern, op.operation, op.data);
-        if (result.error) throw new Error(result.message);
-        results.push(result);
-      }
-    });
+    // transactionSync is atomic: any throw inside rolls the whole batch back.
+    // A per-op {error} (validation/kernel) is re-thrown to trigger that rollback;
+    // a raw DB write throw (constraint, disk) also unwinds it. Both must leave
+    // here as the SAME structured error a single mutate returns — not a raw throw
+    // across the RPC/MCP boundary — so the caught message is returned, not re-raised.
+    try {
+      this.ctx.storage.transactionSync(() => {
+        for (const op of operations) {
+          const result = data.executeMutate(ctx, op.pattern, op.operation, op.data);
+          if (result.error) throw new Error(result.message);
+          results.push(result);
+        }
+      });
+    } catch (err: any) {
+      logError("mutate.write_failed", err, { batch: true, operations: operations.length });
+      return this.errorJson(`Batch mutate failed: ${err.message}`);
+    }
     // Attach each one-time raw preimage to its result (DB holds only the digest).
     results.forEach((r, i) => { const o = onces[i]; if (o && r.entry) { for (const [c, raw] of Object.entries(o)) r.entry[c] = raw; r._once = o; } });
 

@@ -17,6 +17,7 @@ import { applyKernelRules, immutableFieldError, type KernelContext } from "./ker
 import { isInternalWriteProtected, isKernelPattern, isValidWriteTarget } from "./policy";
 import { getMemoryPolicy } from "./prime";
 import { uri } from "../../shared/core/constants";
+import { logError } from "../../shared/core/log";
 import {
   KERNEL_COLUMN_SET,
   CALLER_EXCLUDED_ON_CREATE,
@@ -759,6 +760,10 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         return { error: true, message: `Unknown operation: ${operation}. Use create, update, patch, archive, or unarchive.` };
     }
   } catch (err: any) {
+    // A DB write throw (constraint, disk, etc.) becomes the same structured
+    // error every read returns — symmetric with query/aggregate — and is logged
+    // with the write's context so the failure isn't lost at the RPC boundary.
+    logError("mutate.write_failed", err, { pattern: patternName, operation, id: data?.id });
     return { error: true, message: `Mutate failed: ${err.message}` };
   }
 }

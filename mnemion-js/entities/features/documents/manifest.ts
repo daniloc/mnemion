@@ -20,6 +20,7 @@
 
 import type { Feature } from "../feature";
 import { HEX_TOKEN_RE } from "../../../shared/core/constants";
+import { logWarn } from "../../../shared/core/log";
 import { uploadDocument, serveDocument } from "../../../shared/Routing/routes/io";
 import { patterns as documentsPatterns, migrations as documentsMigrations } from "./schema";
 import { onCreate as documentsOnCreate, immutable as documentsImmutable } from "./hooks";
@@ -80,7 +81,11 @@ export const documents: Feature = {
         // archive → free the R2 object: the metadata and the blob die together.
         const key = scratch.archivedDocKey as string | null | undefined;
         if (key && ctx.env.DOCUMENTS) {
-          ctx.schedule(ctx.env.DOCUMENTS.delete(key).catch(() => {}));
+          // Best-effort: a failed delete leaks an orphaned R2 blob (storage cost).
+          // Non-fatal — the entry is already archived — but log it so it isn't invisible.
+          ctx.schedule(ctx.env.DOCUMENTS.delete(key).catch((err: unknown) => {
+            logWarn("documents.r2_delete_failed", { r2_key: key, id: parsed.id }, err);
+          }));
         }
       },
     },

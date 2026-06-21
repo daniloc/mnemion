@@ -13,6 +13,7 @@
 // the decay clock), never from a stored counter, per data-is-destiny.
 
 import { uri } from "../../shared/core/constants";
+import { logWarn } from "../../shared/core/log";
 import { isKernelPattern, primeIncluded } from "./policy";
 
 // === Types ===
@@ -166,7 +167,11 @@ export async function embedEntry(ctx: PrimeContext, pattern: string, id: number,
       values,
       metadata: { pattern, entry_id: id },
     }]);
-  } catch { /* best-effort */ }
+  } catch (err) {
+    // Best-effort: a Vectorize/AI outage stops indexing recall but must not fail
+    // the write. Log it so the blackout is visible, not silent.
+    logWarn("prime.embed_failed", { pattern, id }, err);
+  }
 }
 
 // === Write-path: conflict surfacing ===
@@ -224,7 +229,11 @@ export async function removeEntry(ctx: PrimeContext, pattern: string, id: number
   if (!ctx.env.VECTORIZE) return;
   try {
     await ctx.env.VECTORIZE.deleteByIds([vectorId(pattern, id)]);
-  } catch { /* best-effort */ }
+  } catch (err) {
+    // Best-effort: a failed delete leaves a stale vector but must not fail the
+    // archive. Log it so the orphan is visible.
+    logWarn("prime.vector_delete_failed", { pattern, id }, err);
+  }
 }
 
 // === Read-path: prime ===
@@ -235,14 +244,20 @@ export async function prime(
   context: string,
   patterns?: string[],
   limit: number = 5,
-): Promise<{ results: PrimeResult[]; count: number }> {
+): Promise<{ results: PrimeResult[]; count: number; degraded?: true; degraded_reason?: string }> {
   if (!ctx.env.AI || !ctx.env.VECTORIZE) {
     return { results: [], count: 0 };
   }
 
-  // Embed the cue
+  // Embed the cue. A null here means the AI binding is present but the call
+  // failed — recall is unavailable, not the hive empty. Mark it (additive) so a
+  // caller can tell a blackout apart from a genuine no-match, but still return
+  // empty so prime never throws and degrades gracefully.
   const queryVector = await embed(ctx.env, context.slice(0, MAX_EMBED_CHARS));
-  if (!queryVector) return { results: [], count: 0 };
+  if (!queryVector) {
+    logWarn("prime.recall_degraded", { stage: "embed" });
+    return { results: [], count: 0, degraded: true, degraded_reason: "recall_unavailable" };
+  }
 
   // Query Vectorize (topK capped at 20 when returning metadata). Best-effort:
   // a failing index degrades recall to empty, never breaks the prime response.
@@ -253,8 +268,9 @@ export async function prime(
       topK,
       returnMetadata: "all",
     });
-  } catch {
-    return { results: [], count: 0 };
+  } catch (err) {
+    logWarn("prime.recall_degraded", { stage: "query" }, err);
+    return { results: [], count: 0, degraded: true, degraded_reason: "recall_unavailable" };
   }
 
   if (!matches?.matches?.length) return { results: [], count: 0 };

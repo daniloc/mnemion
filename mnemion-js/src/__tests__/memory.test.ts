@@ -4,7 +4,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
-import { decayMultiplier } from "../../entities/Hive/prime";
+import { decayMultiplier, prime, type PrimeContext } from "../../entities/Hive/prime";
 
 function getStore(): DurableObjectStub<HiveDO> {
   const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);
@@ -321,6 +321,55 @@ describe("write protection", () => {
     const r = JSON.parse(await store.mutate("_entry_access_log", "create", JSON.stringify({ pattern: "x", entry_id: 1 })));
     expect(r.error).toBe(true);
     expect(r.message).toMatch(/managed by the system/);
+  });
+});
+
+// === Prime recall blackout is distinguishable from an empty hive ===
+
+describe("prime degraded marker", () => {
+  // A no-op db: prime never reaches a query when embedding/KNN fails first.
+  const db = { exec: () => ({ toArray: () => [], one: () => ({}) }) };
+  const baseCtx = (env: any): PrimeContext => ({ env, db, patternExists: () => false });
+
+  it("marks degraded + reason when the embed call fails", async () => {
+    // AI present but throws — recall is unavailable, not the hive empty.
+    const env = {
+      AI: { run: async () => { throw new Error("AI outage"); } },
+      VECTORIZE: { query: async () => ({ matches: [] }) },
+    };
+    const r = await prime(baseCtx(env), "anything", undefined, 5);
+    expect(r.results).toEqual([]);
+    expect(r.degraded).toBe(true);
+    expect(r.degraded_reason).toBe("recall_unavailable");
+  });
+
+  it("marks degraded when the Vectorize query fails", async () => {
+    const env = {
+      AI: { run: async () => ({ data: [[0.1, 0.2, 0.3]] }) },
+      VECTORIZE: { query: async () => { throw new Error("index outage"); } },
+    };
+    const r = await prime(baseCtx(env), "anything", undefined, 5);
+    expect(r.results).toEqual([]);
+    expect(r.degraded).toBe(true);
+    expect(r.degraded_reason).toBe("recall_unavailable");
+  });
+
+  it("does NOT mark a genuinely empty (no-match) result", async () => {
+    // Embed + query both succeed, just no matches — this is an empty hive, not a blackout.
+    const env = {
+      AI: { run: async () => ({ data: [[0.1, 0.2, 0.3]] }) },
+      VECTORIZE: { query: async () => ({ matches: [] }) },
+    };
+    const r = await prime(baseCtx(env), "anything", undefined, 5);
+    expect(r.results).toEqual([]);
+    expect(r.degraded).toBeUndefined();
+    expect(r.degraded_reason).toBeUndefined();
+  });
+
+  it("does not throw and stays empty when AI/Vectorize are absent", async () => {
+    const r = await prime(baseCtx({}), "anything", undefined, 5);
+    expect(r.results).toEqual([]);
+    expect(r.degraded).toBeUndefined(); // capability-absent ≠ outage
   });
 });
 

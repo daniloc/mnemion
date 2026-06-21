@@ -18,6 +18,18 @@ directory = "./dist/web"
 binding = "ASSETS"
 
 
+# Workers Logs — the lightweight, Cloudflare-native observability primitive.
+# Ingests every console.* line for 7 days and (invocation_logs) attaches per-
+# request metadata — method/url/status/outcome/rayId — automatically, so the
+# code logs only the event + context (see shared/core/log.ts). No external sink,
+# no tail worker, no Logpush. Without this block console output is not retained
+# past a live `wrangler tail`, leaving nothing to read after an incident.
+[observability]
+enabled = true
+  [observability.logs]
+  invocation_logs = true
+  head_sampling_rate = 1
+
 [vars]
 # Cold-start fallback only — the runtime prefers the inbound request Host header.
 # Used solely by the _system/instance doc when no HTTP request has been observed
@@ -92,6 +104,14 @@ renamed_classes = [{from = "StoreDO", to = "HiveDO"}]
 # Provision with: wrangler deploy --env test (and create its own OAUTH_KV namespace).
 [env.test]
 name = "mnemion-test"
+
+# Named environments don't inherit top-level observability — redeclare it so the
+# federation-peer/test deploy also retains logs.
+[env.test.observability]
+enabled = true
+  [env.test.observability.logs]
+  invocation_logs = true
+  head_sampling_rate = 1
 
 [env.test.vars]
 WORKER_HOST = "your-test-worker.workers.dev"

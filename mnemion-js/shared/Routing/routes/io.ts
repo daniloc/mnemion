@@ -1,6 +1,7 @@
 import { type RouteHandler, denyUnlessBearerScope } from "../router";
 import { zipSync, strToU8 } from "fflate";
 import { extractionPlan, decodeText, capText } from "../../IO/extract";
+import { logWarn } from "../../core/log";
 
 const DOCUMENT_BYTES = 26_214_400; // 25 MB — mirrors data.LIMITS.DOCUMENT_BYTES
 
@@ -278,7 +279,10 @@ export const uploadDocument: RouteHandler = async (ctx) => {
   const parsed = JSON.parse(result);
   if (parsed.error) {
     // Token invalid/used or document gone — don't leave an orphan blob behind.
-    await ctx.env.DOCUMENTS.delete(key).catch(() => {});
+    // A failed cleanup leaks an orphaned R2 blob (storage cost); non-fatal, but log it.
+    await ctx.env.DOCUMENTS.delete(key).catch((err: unknown) => {
+      logWarn("documents.r2_delete_failed", { r2_key: key }, err);
+    });
     return Response.json(parsed, { status: 400 });
   }
 

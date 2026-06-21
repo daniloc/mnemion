@@ -7,6 +7,7 @@
 // general write chokepoint. The DO keeps thin RPC wrappers; this holds the logic.
 import * as cred from "../../shared/Auth/credentials";
 import { capText, extractPdfText } from "../../shared/IO/extract";
+import { logWarn } from "../../shared/core/log";
 
 export interface DocumentsContext {
   db: any;
@@ -83,7 +84,10 @@ export async function extractDocument(ctx: DocumentsContext, id: number): Promis
       if (!obj) { await recordExtraction(ctx, id, "", "failed"); return; }
       const text = capText(await extractPdfText(await obj.arrayBuffer()));
       await recordExtraction(ctx, id, text, text.trim() ? "done" : "empty");
-    } catch {
+    } catch (err) {
+      // Already recorded as a queryable status (extraction_status: failed); also
+      // log so a systemic extractor outage is visible, not just per-document.
+      logWarn("documents.extraction_failed", { id }, err);
       await recordExtraction(ctx, id, "", "failed");
     }
   })());

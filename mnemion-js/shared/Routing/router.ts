@@ -10,6 +10,7 @@
 
 import type { HiveDO } from "../../entities/Hive/hive";
 import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "../core/constants";
+import { logError } from "../core/log";
 
 // === Types ===
 
@@ -312,7 +313,22 @@ export function createRouter(routes: Route[]) {
       const hiveId = env.MNEMION_HIVE.idFromName(HIVE_ID);
       const hive = env.MNEMION_HIVE.get(hiveId) as DurableObjectStub<HiveDO>;
 
-      return route.handler({ request, url, env, params, hive, actor });
+      // Per-route error boundary (defense-in-depth beneath handle()'s catch):
+      // a throw from any matched handler is logged with route attribution and
+      // answered with a generic 500 — internals logged, never leaked. The matched
+      // route's pattern + the pathname give per-route attribution; query string is
+      // omitted (it can carry tokens). Since this returns the 500 itself, the
+      // outer handle() catch only fires for throws OUTSIDE routing.
+      try {
+        return await route.handler({ request, url, env, params, hive, actor });
+      } catch (err) {
+        logError("route.handler_threw", err, {
+          method: request.method,
+          pattern: route.pattern,
+          path: url.pathname,
+        });
+        return new Response("Internal Server Error", { status: 500 });
+      }
     }
 
     return new Response("Not found", { status: 404 });

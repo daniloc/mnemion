@@ -587,8 +587,18 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           patterns ? JSON.stringify(patterns) : "",
           limit ?? 10
         );
+        // Surface a recall blackout so the agent can tell "recall is temporarily
+        // unavailable" from "the hive is empty" — the marker rides the prime
+        // payload (additive; absent on a genuine empty result).
+        let degraded = false;
+        try { degraded = JSON.parse(result).degraded === true; } catch { /* keep the raw body */ }
         return {
-          content: [{ type: "text" as const, text: result }],
+          content: [
+            ...(degraded
+              ? [{ type: "text" as const, text: "Note: semantic recall is temporarily unavailable (embedding/index outage) — these results are empty for that reason, NOT because the hive is empty. Retry shortly." }]
+              : []),
+            { type: "text" as const, text: result },
+          ],
         };
       }
     );

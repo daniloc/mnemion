@@ -6,6 +6,7 @@ import { Method, Auth, createRouter, type Route, type RouteHandler, type Env } f
 import { FEATURES } from "../entities/features";
 import { composeRoutes, assertWiredSlots } from "../entities/features/compose";
 import type { FeatureRoute } from "../entities/features/feature";
+import { logError } from "../shared/core/log";
 
 // Auth
 import { authorize, authVerify, setupPage, setupBegin, setupComplete, passkeyBegin, passkeyComplete, loginPage, loginBegin, loginComplete, loginVerify, revokeSessions, invitePage, inviteBegin, inviteComplete } from "../shared/Routing/routes/auth";
@@ -154,11 +155,20 @@ function isAppRoute(path: string): boolean {
 }
 
 async function handle(request: Request, env: Env): Promise<Response> {
-  const res = await dispatch(request, env);
-  if (res.status === 404 && request.method === "GET" && env.ASSETS && isAppRoute(new URL(request.url).pathname)) {
-    return env.ASSETS.fetch(new Request(new URL("/index.html", request.url), { headers: request.headers }));
+  // Top-level error boundary: any throw outside routing (the router catch handles
+  // per-route handler throws and returns its own 500) is logged with sanitized
+  // context — method + pathname ONLY, never url.search, which can carry tokens —
+  // and answered with a generic 500. Error internals are logged, never leaked.
+  try {
+    const res = await dispatch(request, env);
+    if (res.status === 404 && request.method === "GET" && env.ASSETS && isAppRoute(new URL(request.url).pathname)) {
+      return env.ASSETS.fetch(new Request(new URL("/index.html", request.url), { headers: request.headers }));
+    }
+    return res;
+  } catch (err) {
+    logError("request.unhandled", err, { method: request.method, path: new URL(request.url).pathname });
+    return new Response("Internal Server Error", { status: 500 });
   }
-  return res;
 }
 
 // === Export ===

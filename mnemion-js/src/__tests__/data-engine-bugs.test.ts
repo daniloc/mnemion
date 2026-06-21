@@ -207,3 +207,37 @@ describe("BUG 5: patch required-facet guard on datasets", () => {
     expect(r.entry.title).toBe("kept");
   });
 });
+
+// === Write-path errors are structured, symmetric with the read path ===
+//
+// A DB write throw (here a UNIQUE-index collision on _charter.key) must surface
+// as the SAME { error, message } the read paths return — never a raw throw out
+// of the RPC/MCP boundary. _charter is Open write-class with a unique active
+// `key` index and no app-level dedup, so a duplicate key fails at SQL.
+describe("write-path DB errors return structured errors (not raw throws)", () => {
+  it("single mutate: a UNIQUE violation returns { error, message } instead of throwing", async () => {
+    const store = getStore();
+    const first = await mutate(store, "_charter", "create", { key: "dup_key_single", value: "a" });
+    expect(first.error).toBeUndefined();
+
+    // The contract under test: this must RESOLVE with a structured error, not reject.
+    const r = await mutate(store, "_charter", "create", { key: "dup_key_single", value: "b" });
+    expect(r.error).toBe(true);
+    expect(typeof r.message).toBe("string");
+    expect(r.message).toMatch(/Mutate failed/);
+  });
+
+  it("batch mutate: a UNIQUE violation rolls back atomically and returns a structured error", async () => {
+    const store = getStore();
+    const r = await store.batchMutate(JSON.stringify([
+      { pattern: "_charter", operation: "create", data: { key: "dup_key_batch", value: "a" } },
+      { pattern: "_charter", operation: "create", data: { key: "dup_key_batch", value: "b" } },
+    ])).then(JSON.parse);
+    // Structured error, not a raw throw across the boundary.
+    expect(r.error).toBe(true);
+    expect(r.message).toMatch(/Batch mutate failed/);
+    // Atomic: the first op must NOT have partially committed.
+    const rows = await query(store, "_charter", ["key=dup_key_batch"]);
+    expect(rows.entries.length).toBe(0);
+  });
+});
