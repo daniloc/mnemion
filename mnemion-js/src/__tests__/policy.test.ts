@@ -39,7 +39,6 @@ const EXPECTED: Record<string, WriteClass> = {
   _system_tasks: WriteClass.Open,
   _short_term_fragments: WriteClass.Open,
   _maintenance_passes: WriteClass.Open,
-  _canvases: WriteClass.Open,
   _views: WriteClass.Open,
   _pages: WriteClass.Consent,
   _long_term_fragments: WriteClass.Open,

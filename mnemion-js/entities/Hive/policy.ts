@@ -165,7 +165,6 @@ const CORE_KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
   _system_tasks: { class: WriteClass.Open },
   _short_term_fragments: { class: WriteClass.Open, primeInclude: true }, // working memory surfaces in recall
   _maintenance_passes: { class: WriteClass.Open },
-  _canvases: { class: WriteClass.Open },
   _views: { class: WriteClass.Open }, // agent-authored UI view specs; owner-facing, not exposed externally
   // _pages → owned by the pages feature
   //   (entities/features/pages/security.ts), composed in below.

@@ -502,26 +502,6 @@ Adding a member is a two-step invite: (1) create the member here with label + di
     ],
   },
   {
-    name: "_canvases",
-    description: "Infinite canvases for spatial thinking. Each canvas stores a tldraw document snapshot as its source of truth.",
-    doctrine: "Create canvases when the human wants to organize thinking spatially. The snapshot facet holds the full tldraw document state — do not modify it directly. Use the canvas UI or dedicated canvas tools.",
-    ddl: `CREATE TABLE IF NOT EXISTS "_canvases" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      "name" TEXT NOT NULL,
-      "folder" TEXT,
-      "snapshot" TEXT NOT NULL DEFAULT '{}',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT,
-      version INTEGER NOT NULL DEFAULT 0
-    )`,
-    facets: [
-      { name: "name", type: "text", required: true },
-      { name: "folder", type: "text", required: false },
-      { name: "snapshot", type: "text", required: false },
-    ],
-  },
-  {
     name: "_views",
     description: `Agent-authored UI views. Each entry adapts how a pattern's entries are rendered in the web app: a view_type (the layout) plus a config that maps the pattern's facets to UI roles. The owner's agent customizes the desk by writing these — e.g. render "tasks" as a board grouped by status. Set name "default" for a pattern's primary view; one view per (pattern, name). The config is declarative data interpreted against a fixed component palette, never code.
 
@@ -851,6 +831,22 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
       db.exec(`ALTER TABLE "_access_tokens" ADD COLUMN "approved_at" TEXT`);
     }
   } catch {}
+
+  // --- v16: drop _canvases (Canvas feature retired) ---
+  //
+  // The Canvas spatial-thinking surface is gone, so the _canvases kernel pattern
+  // is removed from every registry (KERNEL_TABLES / KERNEL_WRITE_POLICY /
+  // CORE_ON_CREATE). Fresh installs never create it; deployed instances that have
+  // the table clean it up here. Drop the audit triggers + the parallel _objects /
+  // _fields metadata rows too, the way the v5 token-table consolidation does, so
+  // the table leaves no agent-facing trace.
+
+  for (const op of ["insert", "update", "delete"]) {
+    try { db.exec(`DROP TRIGGER IF EXISTS "_audit__canvases_${op}"`); } catch {}
+  }
+  try { db.exec(`DROP TABLE IF EXISTS "_canvases"`); } catch {}
+  db.exec(`DELETE FROM _objects WHERE name = '_canvases'`);
+  db.exec(`DELETE FROM _fields WHERE object_name = '_canvases'`);
 
   // --- Feature-owned migrations ---
   //

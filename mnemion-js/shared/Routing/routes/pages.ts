@@ -71,6 +71,19 @@ export const queryLabel: RouteHandler = async (ctx) => {
   return new Response(result, { headers: { "Content-Type": "application/json" } });
 };
 
+// === Resolve API: proxy hive.resolve() for link fetching ===
+
+export const resolveUri: RouteHandler = async (ctx) => {
+  const body = await ctx.request.json() as { uri: string };
+  if (!body.uri) {
+    return Response.json({ error: true, message: "uri is required" }, { status: 400 });
+  }
+  const result = await ctx.hive.resolve(body.uri);
+  return new Response(result, {
+    headers: { "Content-Type": "application/json" },
+  });
+};
+
 export const liveSocket: RouteHandler = async (ctx) => {
   if (ctx.request.headers.get("Upgrade") !== "websocket") {
     return new Response("Expected WebSocket", { status: 426 });

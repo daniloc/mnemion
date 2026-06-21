@@ -15,9 +15,7 @@ import { serveSharedEntry, serveOutput, servePublication, receiveInput, upload, 
 // Marketplace
 import { seedMarketplace, marketplaceToken, marketplaceGit } from "../shared/Routing/routes/marketplace";
 // Pages (JSON APIs the React SPA consumes)
-import { queryIndex, queryEntries, queryTools, queryHistory, queryLabel, mutateEntry, evolveSchema, liveSocket } from "../shared/Routing/routes/pages";
-// Canvas
-import { canvasPage, listCanvases, saveCanvas, resolveUri } from "../shared/Routing/routes/canvas";
+import { queryIndex, queryEntries, queryTools, queryHistory, queryLabel, mutateEntry, evolveSchema, resolveUri, liveSocket } from "../shared/Routing/routes/pages";
 // Dev
 import { seedTestData, seedVectors } from "../shared/Routing/routes/dev";
 
@@ -75,12 +73,7 @@ const CORE_ROUTES: Route[] = [
   { method: Method.POST, pattern: "/api/mutate/:pattern",  auth: Auth.SESSION, handler: mutateEntry },
   { method: Method.POST, pattern: "/api/evolve",           auth: Auth.SESSION, handler: evolveSchema },
   { method: Method.GET,  pattern: "/ws",                   auth: Auth.SESSION, handler: liveSocket },
-
-  // Canvas
-  { method: Method.GET,  pattern: "/canvas",           auth: Auth.SESSION, handler: canvasPage },
-  { method: Method.GET,  pattern: "/api/canvases",     auth: Auth.SESSION, handler: listCanvases },
-  { method: Method.POST, pattern: "/api/canvas",       auth: Auth.SESSION, handler: saveCanvas },
-  { method: Method.POST, pattern: "/api/resolve",      auth: Auth.SESSION, handler: resolveUri },
+  { method: Method.POST, pattern: "/api/resolve",          auth: Auth.SESSION, handler: resolveUri },
 
   // Dev / Admin
   { method: Method.ANY,  pattern: "/dev/seed",              auth: Auth.DEV, handler: seedTestData },
@@ -147,7 +140,7 @@ const dispatch = createRouter(routes);
 const BACKEND_PREFIXES = [
   "/api", "/mcp", "/o/", "/p/", "/i/", "/upload/", "/export/", "/ws",
   "/token", "/register", "/authorize", "/auth/", "/setup", "/login",
-  "/sessions/", "/invite/", "/marketplace", "/dev/", "/.well-known", "/canvas",
+  "/sessions/", "/invite/", "/marketplace", "/dev/", "/.well-known",
   ...FEATURE_ROUTES.flatMap((r) => (r.backendPrefix ? [r.backendPrefix] : [])),
 ];
 function isAppRoute(path: string): boolean {

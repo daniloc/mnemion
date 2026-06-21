@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 # Pre-deploy build hook. Runs on every `wrangler deploy` (and in Workers Builds
 # for one-click installs): ensures the Vectorize index exists (Vectorize is not
-# auto-provisioned), then builds the Svelte client/SSR bundles the worker imports.
+# auto-provisioned), then builds the render fragment bundle the worker imports.
 [build]
 command = "bash scripts/build-hook.sh"
 

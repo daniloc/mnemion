@@ -44,8 +44,6 @@
   "html-value|shared/core/chart-svg.ts|path",
   "html-value|shared/core/chart-svg.ts|pts.join(\" L\")",
   "html-value|shared/core/view-palette.ts|describeFormatPalette()",
-  "html-value|src/pages/canvas-server.ts|body",
-  "html-value|src/pages/canvas-server.ts|clientScript",
   "sql-ident|entities/Hive/data.ts|alias",
   "sql-ident|entities/Hive/data.ts|best",
   "sql-ident|entities/Hive/data.ts|c",

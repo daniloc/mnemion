@@ -13,8 +13,8 @@ Source is organized into **component directories**, each with a co-located
 coherence harness derives a graph/agent-map from the spec tree + code and
 verifies the specs haven't rotted (see "Coherence" below). `entities/` are the
 two Durable Objects + their domain logic; `shared/` are cross-cutting
-primitives; `src/` keeps the worker entry, the Svelte frontend, agent docs, and
-tests.
+primitives; `src/` keeps the worker entry, the MCP render fragment, agent docs,
+and tests (the web app proper is React, under `web/`).
 
 ```
 project-docs/archived/   Design documents (the "why" and "what")
@@ -23,7 +23,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
   coherence.config.json  Coherence harness config (component dirs, adapters)
 
   src/index.ts         Route table + OAuthProvider config (the worker entry; wrangler `main`)
-  src/pages/           The Svelte remnants: Canvas.svelte (+ EntryDetail.svelte, used by Canvas) and the MCP `render` fragment (render-*.ts/html) + their canvas/fragment build entry points. The legacy SchemaViewer/HiveMap/LinkMap SSR pages are retired (web app is React, under web/)
+  src/pages/           The MCP `render` fragment (render-*.ts/html) + its fragment build entry point. Plain TS, no framework. The web app is React (under web/); the legacy Svelte pages (Canvas, SchemaViewer/HiveMap/LinkMap) are all retired
   src/system-docs/     Markdown files with {{placeholder}} syntax, loaded at runtime
   src/__tests__/       vitest (vitest-pool-workers)
 
@@ -61,8 +61,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
     routes/io.ts       /o/entry shared entries, /o/:path egress, /p/:path publications, /f documents, /i ingress, /upload
     routes/marketplace.ts  Token management, git endpoints (composes query + git adapter)
     routes/dev.ts      Dev-only seed routes (Auth.DEV gated, inert in production)
-    routes/canvas.ts   /canvas SSR page + /api/canvases, /api/canvas
-    routes/pages.ts    Svelte SSR pages, /api/* JSON endpoints, WebSocket proxy
+    routes/pages.ts    /api/* JSON endpoints (incl. /api/resolve), WebSocket proxy
   shared/Auth/         (Auth.spec.md)
     credentials.ts     Passkey CRUD, access token validation
     passkey.ts         WebAuthn passkey registration + authentication
@@ -79,8 +78,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
 
   docs/coherence/      Generated: _graph.html, _overview.html, graph.json, why-proposals.md
   AGENTS.md            Generated agent map (coherence overview)
-  vite.config.ts       Canvas SSR build (src/pages/canvas-server.ts → the /canvas page shell; the legacy SchemaViewer/HiveMap/LinkMap/EntryDetail SSR pages are retired)
-  vite.canvas.ts       Separate build for canvas-client.client.txt → dist/canvas/
+  vite.fragment.ts     Build for render-client.client.txt → dist/fragment/ (the MCP render fragment; the only non-React web build)
   scripts/setup.sh     First-run setup: generates secret, deploys, opens passkey registration
 ```
 
@@ -199,7 +197,6 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `_documents` — file-store metadata (title/tags/visibility + system-managed r2_key/size/content_type/stored_at); bytes live in R2, served at `/f/{id}`
 - `_system_docs` — agent orientation docs (seeded from `src/system-docs/*.md`)
 - `_web_cache` — adapter-fetched web content (Bluesky threads 24h, browser-rendered markdown 30d). TTL = re-fetch horizon, not eviction: active content is retained indefinitely as memory; only superseded duplicates are GC'd (7-day grace, pinned excluded). A re-fetch that returns empty keeps the existing snapshot (snapshot protection in web.ts). `pinned` column + `resolve(retain: true)` freeze a snapshot forever (always served, never re-fetched/GC'd) until `retain: false`; pinning stays system-managed (`_web_cache` is write-class System in `entities/Hive/policy.ts` — driven only through resolve, never agent mutate)
-- `_canvases` — tldraw document snapshots for the Canvas spatial-thinking UI (full document state in the `snapshot` facet — do not modify directly; mutate via canvas tools/UI). Entry-type shapes inside the snapshot store **only references** (`{type: 'entry', pattern, entryId, x, y, w, h}`) — display label and facet preview are hydrated at render time from the live entry. Do not denormalize entry data into the snapshot; it goes stale.
 - `_fragment_access_log` — append-only log of prime hits per short-term fragment. Promotion to `_long_term_fragments` is COUNT(*)-derived from this log, not a stored counter. GC'd alongside fragments. Audit-exempt (high-frequency append-only).
 - `_entry_access_log` — append-only log of prime hits per user-pattern entry. Feeds decay (`last_touch`) and the stale view. Audit-exempt, write-protected, GC'd at 90 days.
 - `_maintenance_passes` — record of completed memory-maintenance passes; days-since-last-pass is derived from the latest row, never stored.
@@ -212,7 +209,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - **AI**: Workers AI (embeddings) + Vectorize (KNN index, `mnemion-vectors` / per-env `*-vectors`)
 - **Validation**: Zod for tool parameter schemas
 - **Storage**: KV for OAuth tokens, DO SQLite for all user data
-- **Frontend**: Svelte 5 (component framework only, no SvelteKit), Vite for SSR + client builds
+- **Frontend**: React 19 + Vite (the web app, `web/`, served as static assets). The MCP `render` fragment is plain TS built by `vite.fragment.ts`. No Svelte.
 
 ### Wrangler bindings
 
@@ -246,7 +243,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 `project-docs/data-is-destiny.md` is doctrine. Operational rules derived from it:
 
 - **Store truth once, derive its consequences.** Counts, summaries, labels, and previews are computed at read time, not stored as columns. The `entry_count`/`latest_activity` on `/api/index` are SQL-computed every call. Entry labels are derived via `entities/Hive/labels.ts` (`deriveLabel`) wherever they're needed; never persisted.
-- **Snapshots store references, not denormalized data.** Canvas entry shapes hold `{pattern, entryId}` and hydrate from the live entry; `_fragment_access_log` is the source of promotion eligibility, not a stored counter.
+- **Derived state references the source, never denormalizes it.** `_fragment_access_log` is the source of promotion eligibility (COUNT-derived), not a stored counter; the index's `entry_count`/`latest_activity` are SQL-computed per call, not columns.
 - **Audit logs are exempt** — `_mutation_log`, `_schema_history`, `_pending_changes` are point-in-time records on purpose.
 - **Caches are bounded with explicit invalidation policy** — `_web_cache` has per-adapter TTLs (re-fetch horizon) with superseded-duplicate GC; resolved content is retained as durable memory, not evicted on TTL. Vectorize embeddings are re-upserted on every mutate via `embedAfterMutate`.
 - **Schema integrity is checked at boot.** `verifyFieldsIntegrity` in `schema.ts` walks every pattern and warns on drift between actual table DDL and the `_fields` metadata table — guards against migration mistakes producing lying agent-facing schemas. `_fields` is the long-standing partial duplication that justifies the check; full deduplication (deriving facet metadata from PRAGMA) is a future cleanup.
@@ -361,24 +358,20 @@ Declarative dispatch table in `shared/Routing/router.ts`. Routes are matched in 
 
 Route handlers are grouped by domain in `shared/Routing/routes/`. OAuthProvider intercepts `/mcp`, `/token`, `/register` before the dispatch table runs.
 
-## Svelte remnants (Canvas + MCP render fragment)
+## The MCP render fragment
 
-The web app proper is **React** (see Development below). Two Svelte surfaces remain,
-each with its own Vite build (chained in `npm run build:pages`), emitting `.client.txt`
-text modules consumed by route handlers via wrangler `[[rules]]`:
+The web app proper is **React** (see Development below). The one non-React web
+surface is the **MCP render fragment** — the `ui://mnemion/render` UI the `render`
+tool returns (`src/pages/render-*.ts`, plain TS, no framework). It's built by
+`vite.fragment.ts` into a self-contained `.client.txt` text module that
+`session.ts` inlines into the resource HTML (consumed via wrangler `[[rules]]`) and
+embeds in MCP-Apps-capable hosts.
 
-- **Canvas** (`/canvas`) — tldraw-based infinite canvas for spatial thinking; persists
-  snapshots to `_canvases` via `/api/canvas`. Murderboard-style: drag pattern instances,
-  group/note/link elements, draw connections. Uses the shared `EntryDetail.svelte` editor
-  overlay. Built by `vite.canvas.ts`; SSR-shelled + browser cookie-gated (`Auth.SESSION`,
-  HMAC-SHA256).
-- **MCP render fragment** — the `ui://mnemion/render` UI the `render` tool returns
-  (`render-*.ts`), built separately and embedded in MCP-Apps-capable hosts.
-
-- **No SvelteKit** — Svelte as component framework only; the worker serves the built modules.
+- **No Svelte.** The Svelte era is over: the Canvas spatial-thinking surface and the
+  legacy SSR pages (SchemaViewer / HiveMap / LinkMap, EntryDetail) are all retired;
+  their function lives in the React app under `web/`. The `_canvases` kernel pattern
+  is dropped (v16 migration).
 - WebSocket live updates via the Hibernatable API on HiveDO.
-- The legacy Svelte-SSR pages (SchemaViewer / HiveMap / LinkMap) are **retired** — their
-  function now lives in the React app under `web/`.
 - Test environment configured as `[env.test]` in wrangler.toml (Auth.DEV mode).
 
 ## Development
@@ -386,8 +379,8 @@ text modules consumed by route handlers via wrangler `[[rules]]`:
 The web app is **React + Vite** (`web/`), served by the worker as static assets
 (the `ASSETS` binding, `dist/web`). The worker owns `/mcp`, `/api/*`, `/o /p /f
 /i`, OAuth; everything else falls through to the SPA shell (`src/index.ts`
-`BACKEND_PREFIXES`). Canvas (`/canvas`) and the MCP render fragment are the only
-remaining Svelte (their own vite builds). The legacy Svelte-SSR notebook is retired.
+`BACKEND_PREFIXES`). The MCP render fragment (`vite.fragment.ts`) is the only
+non-React web build. The legacy Svelte surfaces (Canvas + the SSR notebook) are retired.
 
 ```bash
 cd mnemion-js
@@ -395,7 +388,7 @@ npm install
 npm run dev          # concurrently: wrangler dev (DOs + DEV_SEED data, :8787) +
                      # Vite HMR (:5173, proxies /api + /ws to the worker). Open :5173.
 npm run build:web    # React SPA → dist/web
-npm run build:pages  # canvas client + MCP fragment + canvas SSR (the Svelte remnants)
+npm run build:pages  # MCP render fragment → dist/fragment
 npm run types        # regenerate worker-configuration.d.ts from wrangler.toml
 npm run coherence:docs / coherence:verify   # spec graph + rot check (Node ≥22)
 

@@ -104,14 +104,14 @@ export function seedDevData(db: DB): void {
 
   // --- Entries ---
 
-  const g1 = ins(db, "goals", { title: "Ship the canvas feature", status: "active", notes: "Spatial thinking for Mnemion. SVG-based infinite canvas with notes, entries, links, and connections." });
+  const g1 = ins(db, "goals", { title: "Complete the React web migration", status: "active", notes: "Move the notebook UI onto React + Vite, served as static assets by the worker; retire the legacy SSR pages." });
   const g2 = ins(db, "goals", { title: "Improve local dev experience", status: "active", notes: "Make wrangler dev useful without deploying. Seed data, remote bindings, fast iteration." });
   const g3 = ins(db, "goals", { title: "Federation protocol", status: "planning", notes: "Cross-hive data sharing. Sovereign hives, voluntary connections, HTTP as protocol." });
 
-  ins(db, "tasks", { title: "Build Canvas.svelte with three-panel layout", status: "done", goal_id: g1, notes: "SVG stage, canvas list panel, object palette" });
-  ins(db, "tasks", { title: "Add canvas auto-save and persistence", status: "in-progress", goal_id: g1, notes: "Debounced snapshot save to _canvases pattern" });
-  ins(db, "tasks", { title: "Implement connection drawing between shapes", status: "in-progress", goal_id: g1 });
-  ins(db, "tasks", { title: "Add drag-to-canvas from pattern palette", status: "done", goal_id: g1 });
+  ins(db, "tasks", { title: "Build the notebook UI in React", status: "done", goal_id: g1, notes: "Normalized store, useSyncExternalStore, granular /ws deltas" });
+  ins(db, "tasks", { title: "Add optimistic-locking conflict UI", status: "in-progress", goal_id: g1, notes: "Surface version-mismatch on concurrent edits and offer a merge/reload choice" });
+  ins(db, "tasks", { title: "Render charts with recharts", status: "in-progress", goal_id: g1 });
+  ins(db, "tasks", { title: "Wire the SPA shell fallback in the worker", status: "done", goal_id: g1 });
   ins(db, "tasks", { title: "Seed realistic dev data on local startup", status: "in-progress", goal_id: g2 });
   ins(db, "tasks", { title: "Document dev workflow in CLAUDE.md", status: "todo", goal_id: g2 });
   ins(db, "tasks", { title: "Design federation URI resolution for foreign hives", status: "todo", goal_id: g3 });
@@ -119,12 +119,12 @@ export function seedDevData(db: DB): void {
 
   ins(db, "notes", { title: "Architecture insight: code as schematic", body: "The route table in index.ts is the reference example. Method, pattern, auth gate, handler — one line per route. The full surface is visible in 15 lines. The CHANGE_TYPES table follows the same pattern. Structure as declarative, scannable tables.", tags: "architecture, design" });
   ins(db, "notes", { title: "Vocabulary matters", body: "Renamed everything from database terms to biological vocabulary. Pattern, entry, facet, link, hive. It reshapes how agents think about the data — not rows in a table, but living structures in an organism.", tags: "naming, philosophy" });
-  ins(db, "notes", { title: "SVG canvas vs Konva", body: "Started with tldraw (React, commercial license) then switched to svelte-konva, then realized plain SVG with foreignObject gives us rich HTML shapes without any canvas library dependency. The browser IS the rendering engine.", tags: "canvas, architecture" });
+  ins(db, "notes", { title: "Chokepoints over block-lists", body: "A recurring bug is a structural question answered at call sites. Convert a block-list (N guards at N sinks — fails open the moment one is forgotten) into one chokepoint every path crosses, with a totality oracle proving it is the only path.", tags: "architecture, security" });
   ins(db, "notes", { title: "Fragment promotion works", body: "Short-term fragments that surface in 3+ prime calls auto-promote to long-term. The 30-day TTL on short-term handles cleanup. Write liberally — relevance is proved by recall, not by upfront judgment.", tags: "memory, prime" });
   ins(db, "notes", { title: "Session cookies for browser pages", body: "HMAC-SHA256 session cookies with 24h expiry. The session gate redirects to /login, which supports both passkey and master secret. Clean separation from the OAuth flow used by MCP clients.", tags: "auth" });
 
   ins(db, "bookmarks", { url: "https://developers.cloudflare.com/durable-objects/", title: "Durable Objects docs", description: "Reference for DO SQLite, alarms, websockets, PITR", tags: "cloudflare, reference" });
-  ins(db, "bookmarks", { url: "https://svelte.dev/docs/svelte/overview", title: "Svelte 5 docs", description: "Runes, snippets, SSR — the Svelte 5 way", tags: "svelte, reference" });
+  ins(db, "bookmarks", { url: "https://react.dev", title: "React docs", description: "Hooks, components, the React 19 way", tags: "react, reference" });
   ins(db, "bookmarks", { url: "https://modelcontextprotocol.io/", title: "MCP specification", description: "Model Context Protocol — tools, resources, prompts", tags: "mcp, reference" });
 
   ins(db, "frames", {
@@ -247,25 +247,6 @@ export function seedDevData(db: DB): void {
   ins(db, "_links", { source_pattern: "tasks", source_id: 1, target_pattern: "notes", target_id: 3, label: "inspired-by" });
   ins(db, "_links", { source_pattern: "goals", source_id: 1, target_pattern: "goals", target_id: 2, label: "depends-on" });
   ins(db, "_links", { source_pattern: "notes", source_id: 1, target_pattern: "bookmarks", target_id: 1, label: "references" });
-
-  // --- Canvases ---
-
-  const canvasSnapshot = JSON.stringify({
-    shapes: [
-      { id: "n1", type: "note", x: 100, y: 100, w: 200, h: 100, data: { text: "Canvas MVP: notes, entries, links, connections", color: "#e8c872" } },
-      { id: "n2", type: "note", x: 400, y: 80, w: 200, h: 100, data: { text: "Next: drag-and-drop from palette, named groups", color: "#4a6a8a" } },
-      { id: "e1", type: "entry", x: 100, y: 280, w: 240, h: 120, data: { pattern: "goals", entryId: g1, label: "Ship the canvas feature", facets: { status: "active" } } },
-      { id: "e2", type: "entry", x: 400, y: 280, w: 240, h: 120, data: { pattern: "goals", entryId: g2, label: "Improve local dev experience", facets: { status: "active" } } },
-    ],
-    connections: [
-      { id: "c1", from: "n1", to: "e1" },
-      { id: "c2", from: "n2", to: "e1" },
-      { id: "c3", from: "e1", to: "e2" },
-    ],
-    camera: { x: 0, y: 0, zoom: 1 },
-  });
-  ins(db, "_canvases", { name: "project roadmap", snapshot: canvasSnapshot });
-  ins(db, "_canvases", { name: "architecture notes", snapshot: "{}" });
 
   // --- Shared entry for testing /o/entry/ routes ---
 

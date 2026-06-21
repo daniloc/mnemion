@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 
 // Builds the MCP Apps fragment client (ui://mnemion/render) into a single
 // self-contained IIFE, emitted as a .client.txt text module that session.ts
-// inlines into the resource HTML. Mirrors vite.canvas.ts.
+// inlines into the resource HTML.
 export default defineConfig({
   build: {
     rollupOptions: {
