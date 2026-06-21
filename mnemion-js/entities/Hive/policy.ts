@@ -48,14 +48,19 @@ export enum WriteClass {
 }
 
 // When a Consent pattern's round-trip actually fires:
-//  - always:     every escalating create/update/unarchive needs confirmation.
-//  - on_expose:  only when the write exposes content over HTTP (visibility
-//                non-private) — creating a private document is benign.
-//  - patch_only: never round-tripped, but patch is still rejected (patch would
-//                bypass the kernel validation hooks and could set system-managed
-//                columns). Used for _access_tokens, whose real human gate is the
-//                out-of-band passkey approval at /invite/{token}, not a re-issue.
-type ConsentCondition = "always" | "on_expose" | "patch_only";
+//  - always:         every escalating create/update/unarchive needs confirmation.
+//  - on_expose:      only when the write exposes content over HTTP (visibility
+//                    non-private) — creating a private document is benign.
+//  - on_broad_token: only when minting a BROAD/portable token — full `*` access or a
+//                    whole-class read/write key (the kind an injected agent could mint
+//                    and EXFILTRATE as a standing credential). Narrow target-bound
+//                    (upload/document) and inert-until-approval (register) scopes are
+//                    benign and skip the round-trip. Predicate: isBroadTokenScope.
+//  - patch_only:     never round-tripped, but patch is still rejected. FORBIDDEN for a
+//                    credential-minting pattern (one with a `secret` column): create —
+//                    not patch — is the dangerous op there. findUngatedCredentialMints
+//                    enforces that as a totality oracle.
+type ConsentCondition = "always" | "on_expose" | "on_broad_token" | "patch_only";
 
 export interface ConsentPolicy {
   condition: ConsentCondition;
@@ -137,14 +142,18 @@ const CORE_KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
   _access_tokens: {
     class: WriteClass.Consent,
     consent: {
-      // Token creation is never round-tripped: ordinary tokens are benign, and
-      // register/invite tokens are minted inert and gated by an out-of-band
-      // passkey approval at /invite/{token} (a stronger, human-present gate an
-      // injected agent can't satisfy). patch is still rejected so it can't set
-      // the system-managed approved_at/consumed_at columns.
-      condition: "patch_only",
+      // Minting a BROAD token (full `*` access, or a whole-class read/write key)
+      // hands out a portable bearer credential — an injected agent could mint one
+      // and exfiltrate it for standing remote access (a `*` token even redeems as
+      // an owner login). So a broad mint round-trips, like every other standing
+      // grant (_members/_federation_hosts/_shared). Narrow target-bound (upload/
+      // document, constraints frozen, single-use) and inert (register, gated by the
+      // /invite passkey approval) scopes stay benign — those are the frequent legit
+      // flows. patch is still rejected (Consent class) so it can't set the
+      // system-managed approved_at/consumed_at columns.
+      condition: "on_broad_token",
       message:
-        "This token cannot be modified with patch.",
+        "Minting this token grants portable, standing access to the hive (a `*` token is a full owner credential; a bare `read`/`write` token reads or writes a whole class). Only proceed if the human asked to create this credential. Call mutate again with the same arguments to proceed.",
     },
   },
 
@@ -340,6 +349,31 @@ export function verifyEgressTotality(): string[] {
   return gaps;
 }
 
+// CREDENTIAL-MINT GATING TOTALITY — the consent dual of egress totality, derived
+// from SENSITIVE_COLUMNS × KERNEL_WRITE_POLICY (no new declaration). A pattern with
+// a `secret` column mints a born-hashed BEARER on every create — i.e. creating a
+// row hands out a portable, exfiltratable credential. So its create MUST be gated:
+// either System (never agent-writable) or Consent with a create-gating condition.
+// The `patch_only` condition is PROVABLY WRONG for a credential-minter — it declares
+// create benign while create is the dangerous op — and an Open class is worse (an
+// injected agent mints freely). This is the exact bug that shipped `_access_tokens`
+// as patch_only: an agent could mint + exfiltrate a broad/`*` bearer with no human
+// round-trip. Fail-closed: a secret-minting pattern whose create isn't gated fails
+// the build, so the misclassification is unexpressible.
+export function findUngatedCredentialMints(): string[] {
+  const gaps: string[] = [];
+  for (const [pattern, cols] of Object.entries(SENSITIVE_COLUMNS)) {
+    if (!cols.some((c) => c.kind === "secret")) continue; // mints a bearer iff a secret column
+    const policy = KERNEL_WRITE_POLICY[pattern];
+    const createGated =
+      policy?.class === WriteClass.System ||
+      (policy?.class === WriteClass.Consent && policy.consent?.condition !== "patch_only");
+    if (!createGated)
+      gaps.push(`${pattern} mints a secret (a portable credential) but its create is not consent-gated (class=${policy?.class ?? "User"}, condition=${policy?.consent?.condition ?? "none"}) — set Consent with a create-gating condition (always/on_broad_token), or System`);
+  }
+  return gaps;
+}
+
 /** True if patch must be rejected for this pattern (any consent-gated pattern —
  *  patch skips the kernel validation hooks and the confirmation round-trip). */
 export function patchRejected(pattern: string): boolean {
@@ -352,7 +386,7 @@ export function patchRejected(pattern: string): boolean {
 export function consentRoundTripRequired(
   pattern: string,
   operation: string | undefined,
-  data: { visibility?: unknown } | null | undefined,
+  data: { visibility?: unknown; scope?: unknown } | null | undefined,
 ): boolean {
   const policy = consentPolicy(pattern);
   if (!policy) return false;
@@ -367,5 +401,29 @@ export function consentRoundTripRequired(
     const vis = data?.visibility;
     return vis === "public" || vis === "unlisted";
   }
+  if (policy.condition === "on_broad_token") {
+    // unarchive carries no scope ({id} only) — can't tell, so gate (fail-closed).
+    if (operation === "unarchive") return true;
+    // absent/non-string scope defaults to "*" (the broadest) → round-trip.
+    return isBroadTokenScope(typeof data?.scope === "string" ? data.scope : "*");
+  }
   return true; // always
+}
+
+/** A token scope is BROAD if minting it hands out a portable credential that grants
+ *  a whole CLASS of resources (via the scopeMatches prefix rule) or full access —
+ *  the kind an injected agent could mint and exfiltrate. Narrow target-bound and
+ *  inert-until-approval scopes are benign (the frequent legit flows). Unknown shapes
+ *  fail CLOSED (broad). Used by the on_broad_token consent condition. */
+export function isBroadTokenScope(scope: string): boolean {
+  // benign: single-use & target-bound (constraints frozen IMMUTABLE_AFTER_CREATE)
+  if (/^(upload|document)(:|$)/.test(scope)) return false;
+  // benign: minted inert, gated by the /invite passkey approval
+  if (scope === "register") return false;
+  // a fully-qualified read/write naming ONE resource (read:entry:<pattern>:<id>,
+  // read:output:<path>, write:input:<path>, read:document:<id>) is narrow; a bare
+  // class key (read, read:entry, write:input, …) grants the whole class → broad.
+  const parts = scope.split(":");
+  if ((parts[0] === "read" || parts[0] === "write") && parts.length >= 3) return false;
+  return true; // *, bare read/write, read:entry, write:input, marketplace, unknown → broad
 }

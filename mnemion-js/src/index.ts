@@ -4,7 +4,7 @@ import { HiveDO } from "../entities/Hive/hive";
 import { HIVE_ID, HEX_TOKEN_RE } from "../shared/core/constants";
 import { Method, Auth, createRouter, type Route, type RouteHandler, type Env } from "../shared/Routing/router";
 import { FEATURES } from "../entities/features";
-import { composeRoutes } from "../entities/features/compose";
+import { composeRoutes, assertWiredSlots } from "../entities/features/compose";
 import type { FeatureRoute } from "../entities/features/feature";
 
 // Auth
@@ -98,6 +98,8 @@ const FEATURE_METHODS: Record<FeatureRoute["method"], Method> = {
 function toRoute(r: FeatureRoute): Route {
   return {
     method: FEATURE_METHODS[r.method],
+    // composeRoutes has already validated `r.auth` is a real Auth value (fail-closed),
+    // so this cast is sound rather than a silent NONE-on-typo trap.
     pattern: r.pattern,
     auth: r.auth ? (r.auth as Auth) : undefined,
     where: r.where,
@@ -107,9 +109,28 @@ function toRoute(r: FeatureRoute): Route {
   };
 }
 
+// Loudly reject any feature populating a slot that isn't wired into its host yet
+// (tools→session.ts, systemDocs→schema.ts) — otherwise it boots clean and is ignored.
+assertWiredSlots(FEATURES);
+
 // Composed feature routes (declared in entities/features/*/manifest.ts). Appended
 // AFTER core so a feature route can never shadow a core route (first-match-wins).
-const FEATURE_ROUTES = composeRoutes(FEATURES);
+// We pass IN the live Auth value set + CORE route keys so composeRoutes can fail
+// CLOSED on an invalid auth and reject a route that would be silently shadowed by core.
+const VALID_AUTH_VALUES: ReadonlySet<string> = new Set(Object.values(Auth));
+// Core keys are namespaced with the SAME method strings a FeatureRoute uses
+// ("GET"/"POST"/"ANY"), so the collision compare is apples-to-apples. Method.GET/POST
+// already equal "GET"/"POST"; only Method.ANY ("*") needs mapping back to "ANY".
+const METHOD_TO_FEATURE_STRING: Record<Method, FeatureRoute["method"]> = {
+  [Method.GET]: "GET", [Method.POST]: "POST", [Method.ANY]: "ANY",
+};
+const CORE_ROUTE_KEYS: ReadonlySet<string> = new Set(
+  CORE_ROUTES.map((r) => `${METHOD_TO_FEATURE_STRING[r.method]} ${r.pattern}`),
+);
+const FEATURE_ROUTES = composeRoutes(FEATURES, {
+  validAuthValues: VALID_AUTH_VALUES,
+  coreRouteKeys: CORE_ROUTE_KEYS,
+});
 
 // Full surface = core (above) + per-feature routes (in their manifests).
 const routes: Route[] = [...CORE_ROUTES, ...FEATURE_ROUTES.map(toRoute)];

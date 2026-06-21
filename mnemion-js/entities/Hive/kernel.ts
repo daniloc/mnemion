@@ -101,6 +101,13 @@ const CORE_ON_CREATE: Record<string, CreateHook> = {
     const scope = (data.scope as string) || "*";
     data.scope = scope;
 
+    // Defense-in-depth: a token scope must use a recognized ROOT, so an agent can't
+    // mint a weirdly-shaped scope string that scopeMatches' prefix rule might treat
+    // more broadly than intended. (The consent gate also round-trips broad scopes;
+    // this narrows the vocabulary the gate has to reason about.)
+    if (!/^(\*|register|upload|document|marketplace|read|write)(:|$)/.test(scope))
+      return { error: true, message: `Unrecognized token scope "${scope}". Use *, read[:…], write[:…], upload, document, marketplace, or register.` };
+
     // Token is BORN HASHED: hive.ts (mintSecrets) sets data.token to the system-
     // generated SHA-256 digest before this hook runs, so the raw preimage never
     // lands in the column/audit/broadcast. Accept ONLY that 64-hex digest — a
@@ -608,6 +615,12 @@ function isBlockedIPv6Bytes(b: number[]): boolean {
  * federation consent allow-list and per-hop redirect re-validation.
  */
 export function isBlockedFederationHost(host: string): boolean {
+  // Normalize FIRST, exactly as the federation fetch does (normalizeHost strips a
+  // leading scheme://). Otherwise this and the fetch derive DIFFERENT hosts: e.g.
+  // "x://169.254.169.254" → new URL("https://x://…").hostname === "x" (unblocked!)
+  // here, while the fetch's normalizeHost yields the metadata IP. Aligning the two
+  // closes the fail-open: the check sees the same host the request will contact.
+  host = normalizeHost(host);
   let hostname: string;
   try {
     hostname = new URL(`https://${host}`).hostname.toLowerCase();

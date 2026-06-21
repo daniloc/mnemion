@@ -429,7 +429,7 @@ export class HiveDO extends DurableObject {
       // Granular delta so the UI can patch one element instead of refetching the
       // whole pattern — the heart of "only the element the agent changed redraws".
       this.broadcastChange([patternName], { op: operation, id: result.entry?.id ?? parsed.id, entry: result.entry ?? null });
-      this.embedAfterMutate(patternName, operation, result.entry?.id, conflictCheck?.vector ?? undefined);
+      this.embedAfterMutate(patternName, operation, result.entry?.id ?? result.id, conflictCheck?.vector ?? undefined);
       // The raw preimage exists ONLY here — placed on the response AFTER the
       // (sealed) broadcast above, so the one-time mint value reaches the caller
       // while the DB, the audit log, and the /ws delta hold only the digest.
@@ -518,7 +518,7 @@ export class HiveDO extends DurableObject {
     const affectedPatterns = [...new Set(operations.map(op => op.pattern))];
     this.broadcastChange(affectedPatterns);
     for (const r of results) {
-      this.embedAfterMutate(r.pattern, r.operation, r.entry?.id);
+      this.embedAfterMutate(r.pattern, r.operation, r.entry?.id ?? r.id);
     }
     // Post-commit effects, per-op, exactly as the single path attaches them to the
     // result object (e.g. result.upload_url for a batched _documents create).

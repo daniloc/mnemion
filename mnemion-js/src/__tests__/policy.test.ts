@@ -165,8 +165,16 @@ describe("consent round-trip fires per condition", () => {
   it("_documents unarchive requires the round-trip (resulting visibility unknown from {id})", () => {
     expect(consentRoundTripRequired("_documents", "unarchive", { id: 5 })).toBe(true);
   });
-  it("_access_tokens is patch-only: create/update never round-trip, but patch is rejected", () => {
-    expect(consentRoundTripRequired("_access_tokens", "create", { scope: "read" })).toBe(false);
+  it("_access_tokens gates a BROAD/portable token mint, but not a narrow/inert one; patch always rejected", () => {
+    // broad / login-capable → round-trip (an injected agent can't silently mint+exfiltrate)
+    expect(consentRoundTripRequired("_access_tokens", "create", { scope: "*" })).toBe(true);
+    expect(consentRoundTripRequired("_access_tokens", "create", { scope: "read" })).toBe(true);
+    expect(consentRoundTripRequired("_access_tokens", "create", { scope: "write:input" })).toBe(true);
+    // narrow target-bound / inert → benign (the frequent legit flows)
+    expect(consentRoundTripRequired("_access_tokens", "create", { scope: "upload" })).toBe(false);
+    expect(consentRoundTripRequired("_access_tokens", "create", { scope: "register" })).toBe(false);
+    expect(consentRoundTripRequired("_access_tokens", "create", { scope: "read:entry:axioms:7" })).toBe(false);
+    // patch is still rejected regardless (Consent class)
     expect(patchRejected("_access_tokens")).toBe(true);
   });
 });

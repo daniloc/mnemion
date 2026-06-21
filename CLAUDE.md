@@ -31,7 +31,8 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
     hive.ts            DO kernel — the capability split (ownerDataCtx/servedDataCtx), write chokepoints (mutate/batchMutate/processInput/consumeUpload), RPC wiring, WebSocket
     data.ts            Query/mutate/search engine — the `trusted` read+write boundary (an untrusted ctx may neither read nor write a kernel pattern)
     kernel.ts          Pre-mutation hooks (ON_CREATE/ON_WRITE/IMMUTABLE), enforced at applyKernelRules — composed CORE + per-feature
-    policy.ts          Write-class + egress-sensitivity SSOT (KERNEL_WRITE_POLICY/SENSITIVE_COLUMNS); a dependency-free leaf, composed CORE + per-feature
+    policy.ts          Write-class + egress-sensitivity SSOT (KERNEL_WRITE_POLICY/SENSITIVE_COLUMNS) + the consent model + derived totality oracles (verifyWritePolicyTotality/verifyEgressTotality/findUngatedCredentialMints); a dependency-free leaf, composed CORE + per-feature
+    kernel-columns.ts  Dependency-free SSOT for the 7 auto-provided columns; FACET_RESERVED_COLUMNS / CALLER_EXCLUDED_ON_CREATE / STRUCTURAL_KERNEL_COLUMNS / USER_OVERRIDABLE derived from it (referenced by data/evolution/schema/hive)
     prime.ts           Auto-associative priming: Workers AI embeddings + Vectorize KNN
     evolution.ts       Schema evolution: CHANGE_TYPES declaration table, propose/apply/revert
     schema.ts          DDL, migrations, KERNEL_TABLES (composed CORE + per-feature), seeding, boot integrity/totality checks
@@ -48,7 +49,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
     feature.ts         The Feature type — the fork contract (effects/routes/tools/patterns/hooks/migrations slots)
     compose.ts         Composers deriving each registry from FEATURES (fail loud on collision)
     security.ts        Dependency-free barrel folding each feature's pure-data security.ts into the policy leaf
-    <name>/            manifest.ts + schema.ts + security.ts + hooks.ts + <name>.spec.md (documents = the reference feature)
+    <name>/            manifest.ts (required) + optional schema.ts / security.ts / hooks.ts as the feature needs (documents = the fullest reference; system-tasks is manifest-only). Feature specs live in the shared entities/features/Features.spec.md, not a per-feature file.
                        → How to add one: project-docs/active/authoring-a-feature.md
   entities/Session/    (SessionDO — per-session McpAgent; Session.spec.md)
     session.ts         McpAgent, MCP protocol handler (per-session DO)
@@ -70,6 +71,7 @@ mnemion-js/            Cloudflare Worker — MCP server (the "how")
     web.ts             Web URL resolution adapter dispatch (Bluesky, browser-rendering); _web_cache
     git.ts             Git protocol adapter (file tree → git pack, used by marketplace)
     extract.ts         Document text extraction (inline text, async PDF)
+    og-png.ts          SVG→PNG rasterizer for OG cards (used by routes/io.ts)
   shared/core/
     constants.ts       Product identity (PRODUCT_NAME, URI_SCHEME, uri() helper)
     dev-seed.ts        DEV_SEED-gated realistic data population (raw SQL, runs in DO ctor)

@@ -19,7 +19,7 @@ import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/con
 import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
-import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns } from "./policy";
+import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
@@ -810,6 +810,13 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     ).toArray() as any[];
     const pkSql = pkSqlRows[0]?.sql ?? "";
     if (/CHECK\s*\(\s*id\s*=\s*1\s*\)/i.test(pkSql)) {
+      // Crash-idempotent: boot is NOT in a transaction (each exec auto-commits), so a
+      // crash after a prior RENAME but before its DROP would leave a durable
+      // _passkeys_old — and the next boot's RENAME would throw "table _passkeys_old
+      // already exists", get swallowed by this try-block, and wedge _passkeys in the
+      // legacy CHECK(id=1) form forever (no second member could ever register). Drop
+      // any leftover first so the rebuild always completes.
+      db.exec(`DROP TABLE IF EXISTS _passkeys_old`);
       db.exec(`ALTER TABLE _passkeys RENAME TO _passkeys_old`);
       db.exec(`CREATE TABLE _passkeys (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1068,6 +1075,13 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 
   verifyWritePolicyTotality();
 
+  // --- Integrity: every credential-minting pattern (a `secret` column) must
+  //     consent-gate its create — minting a row hands out a portable bearer. ---
+  try {
+    const ungated = findUngatedCredentialMints();
+    if (ungated.length) console.warn(`[schema] credential mint not consent-gated:\n  ${ungated.join("\n  ")}`);
+  } catch { /* best-effort */ }
+
   // --- Integrity: every secret-shaped column on a kernel table must be classified
   //     for egress (SENSITIVE_COLUMNS), or it could leak through a serializer. ---
   try {
@@ -1191,6 +1205,14 @@ function verifyFieldsIntegrity(db: any): void {
 // The label/summary/preview class is deliberately NOT name-matched here: a tag's
 // `label` IS its primitive value, so naming alone false-positives; only the
 // aggregate-beside-retained-source relationship is unambiguous.
+//
+// KNOWN COVERAGE GAP (decidable-core only): "retained source" is read from FK facets
+// (`references_object`) — a schema-static signal. It does NOT cover rows related via
+// `_links` (the idiomatic Mnemion join), because link-children are a DATA property
+// (are there `_links` rows targeting P right now?), not a schema one, and almost any
+// pattern can be link-targeted — so checking it would over-flag (a false smell, the
+// thing we refuse to ship). The FK case is the unambiguous, decidable slice; the
+// `_links` hybrid stays the author's judgment.
 //
 // This iterates the LIVE `_fields` schema, so a feature that adds the hybrid is
 // caught with no hand-list to maintain. Advisory at boot (warn, never throw — a

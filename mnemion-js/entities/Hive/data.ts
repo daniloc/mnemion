@@ -222,8 +222,9 @@ export function query(
     if (filterJson) {
       const filters: string[] = JSON.parse(filterJson);
       for (const expr of filters) {
-        const parsed = parseFilter(expr);
-        if (!parsed) return errorJson(`Invalid filter expression: ${expr}`);
+        const parsed = parseFilter(ctx, patternName, expr);
+        if (parsed == null) return errorJson(`Invalid filter expression: ${expr}`);
+        if (typeof parsed === "string") return errorJson(parsed);
         countSql += ` AND ${parsed.clause}`;
         countBindings.push(...parsed.bindings);
       }
@@ -256,8 +257,9 @@ export function query(
   if (filterJson) {
     const filters: string[] = JSON.parse(filterJson);
     for (const expr of filters) {
-      const parsed = parseFilter(expr);
-      if (!parsed) return errorJson(`Invalid filter expression: ${expr}`);
+      const parsed = parseFilter(ctx, patternName, expr);
+      if (parsed == null) return errorJson(`Invalid filter expression: ${expr}`);
+      if (typeof parsed === "string") return errorJson(parsed);
       sql += ` AND ${parsed.clause}`;
       bindings.push(...parsed.bindings);
     }
@@ -282,11 +284,29 @@ export function query(
   }
 }
 
-function parseFilter(expr: string): { clause: string; bindings: string[] } | null {
+// Escape LIKE wildcards in a user-supplied value so `%`/`_` match literally.
+// Paired with `ESCAPE '\'` on the LIKE clause. The escape char itself is doubled
+// first so a literal backslash in the value can't accidentally escape something.
+function escapeLike(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/[%_]/g, (c) => "\\" + c);
+}
+
+// `parsed` is { clause, bindings } on success, or a string error message when
+// the filter references a column that doesn't exist on the pattern (BUG 3:
+// the field used to be interpolated unchecked — a served read could filter on
+// a non-projected column). Syntactically-invalid expressions still return null.
+function parseFilter(
+  ctx: DataContext,
+  patternName: string,
+  expr: string,
+): { clause: string; bindings: string[] } | string | null {
   const match = expr.match(/^(\w+)(\|=|=|!=|>=|<=|>|<|~)(.+)$/);
   if (!match) return null;
   const [, field, op, value] = match;
-  if (op === "~") return { clause: `"${field}" LIKE ?`, bindings: [`%${value}%`] };
+  if (!isValidColumn(ctx, patternName, field))
+    return `Cannot filter by unknown facet "${field}" on "${patternName}".${suggestFacet(field, patternName, ctx)}`;
+  if (op === "~")
+    return { clause: `"${field}" LIKE ? ESCAPE '\\'`, bindings: [`%${escapeLike(value)}%`] };
   if (op === "|=") {
     const values = value.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
     if (values.length === 0) return null;
@@ -369,8 +389,9 @@ function aggregate(
   if (filterJson) {
     const filters: string[] = JSON.parse(filterJson);
     for (const expr of filters) {
-      const parsed = parseFilter(expr);
-      if (!parsed) return errorJson(`Invalid filter expression: ${expr}`);
+      const parsed = parseFilter(ctx, patternName, expr);
+      if (parsed == null) return errorJson(`Invalid filter expression: ${expr}`);
+      if (typeof parsed === "string") return errorJson(parsed);
       sql += ` AND ${parsed.clause}`;
       bindings.push(...parsed.bindings);
     }
@@ -631,6 +652,16 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
         // Apply replacement
         const patched = current.slice(0, firstIdx) + (data.replacement as string) + current.slice(firstIdx + matchStr.length);
+
+        // Mirror update's guard: a patch must not empty a required facet on a
+        // dataset pattern. The create/update block enforces this, but patch
+        // bypasses it (the new value rides in data.replacement, not as a key).
+        if (ctx.patternClass(patternName) === "dataset" && (patched == null || patched === "")) {
+          const def = facetDefs(ctx, patternName).find((d) => d.name === data.facet && d.required);
+          if (def)
+            return { error: true, message: `Facet "${def.name}" is required on dataset "${patternName}" and cannot be cleared.` };
+        }
+
         const patchSize = estimateRecordBytes({ [data.facet as string]: patched });
         if (patchSize > LIMITS.ENTRY_BYTES)
           return { error: true, message: `Patched entry too large: ~${Math.round(patchSize / 1024)}KB exceeds the 1MB limit` };
@@ -716,6 +747,11 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           `UPDATE "${patternName}" SET archived_at = NULL, updated_at = datetime('now'), updated_by = ? WHERE id = ? AND archived_at IS NOT NULL`,
           ctx.actor, data.id
         );
+        // 0 rows ⇒ the entry doesn't exist or is already active: don't report a
+        // successful unarchive for a no-op the caller can't distinguish from success.
+        const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
+        if (changes.c === 0)
+          return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is not archived).` };
         return { operation: "unarchive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
       }
 
@@ -750,8 +786,8 @@ export function search(ctx: DataContext, term: string, objectsJson: string, limi
     ).toArray() as any[]).map((r: any) => r.name as string);
     if (textFields.length === 0) continue;
 
-    const conditions = textFields.map((f) => `"${f}" LIKE ?`).join(" OR ");
-    const bindings = textFields.map(() => `%${term}%`);
+    const conditions = textFields.map((f) => `"${f}" LIKE ? ESCAPE '\\'`).join(" OR ");
+    const bindings = textFields.map(() => `%${escapeLike(term)}%`);
 
     try {
       const rows = ctx.db.exec(

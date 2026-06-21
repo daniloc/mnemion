@@ -58,11 +58,25 @@ export function composeEffects(features: Feature[]): Record<string, PatternEffec
  *  check (`verifyWritePolicyTotality`) all pick them up unchanged. Composer asserts
  *  no two features declare the same pattern name; a feature↔core collision is caught
  *  by the write-policy `mergeDisjoint` in policy.ts. */
+// A kernel pattern is identified everywhere by its `_` prefix (isKernelPattern in
+// policy.ts is `startsWith("_")`). A feature pattern that omits the prefix would
+// fold into KERNEL_TABLES yet read as a User pattern at every gate — agent-writable,
+// the OPPOSITE of the fail-closed namespace intent. composePatterns forces the
+// prefix here (the chokepoint) so the namespace can't escape, rather than relying on
+// a downstream boot warn that only notices after the fact.
+const KERNEL_PATTERN_NAME_RE = /^_[a-z][a-z0-9_]*$/;
+
 export function composePatterns(features: Feature[]): NonNullable<Feature["patterns"]> {
   const out: NonNullable<Feature["patterns"]> = [];
   const seen = new Set<string>();
   for (const f of features)
     for (const p of f.patterns ?? []) {
+      if (!KERNEL_PATTERN_NAME_RE.test(p.name))
+        throw new Error(
+          `feature-pattern namespace escape: "${p.name}" (in "${f.name}") is not a kernel ` +
+            `pattern name. A feature pattern MUST be "_"-prefixed (match ${KERNEL_PATTERN_NAME_RE}) ` +
+            `or it folds into KERNEL_TABLES while reading as an agent-writable User pattern.`,
+        );
       if (seen.has(p.name)) throw new Error(`feature-pattern collision: "${p.name}" (in "${f.name}")`);
       seen.add(p.name);
       out.push(p);
@@ -83,7 +97,16 @@ export function composePatterns(features: Feature[]): NonNullable<Feature["patte
  *  gate, so feature migrations run the same way — `version` is purely the global
  *  ordering + collision slot, not a run condition. WHERE IT RUNS: boot, after the
  *  kernel DDL loop + core migrations. Composer sorts by version and asserts version
- *  uniqueness across features so two features can't claim the same slot. */
+ *  uniqueness across features so two features can't claim the same slot.
+ *
+ *  NOTE on feature-vs-CORE versions: the two share ONE version space BY DESIGN — a
+ *  feature carved out of core keeps its historical version for idempotent ordering
+ *  (e.g. `documents` owns v12, moved from the core pile). So there is no clean floor
+ *  that separates them; CORE versions live in schema.ts (an un-importable procedural
+ *  pile), so feature-vs-core uniqueness is the migration author's responsibility, the
+ *  same as adding to the core pile. This composer enforces what it CAN see —
+ *  feature-vs-feature uniqueness. (A `FEATURE_MIGRATION_MIN` floor was tried and
+ *  reverted: it broke `documents` v12, which legitimately lives in the core range.) */
 export function composeMigrations(features: Feature[]): NonNullable<Feature["migrations"]> {
   const out: NonNullable<Feature["migrations"]> = [];
   const versions = new Set<number>();
@@ -96,23 +119,89 @@ export function composeMigrations(features: Feature[]): NonNullable<Feature["mig
   return out.sort((a, b) => a.version - b.version);
 }
 
+/** Route-composition guardrails passed IN from src/index.ts (which owns the `Auth`
+ *  enum and the CORE route table). Threaded as plain data so compose.ts stays
+ *  dependency-light (no router-runtime import, no cycle). */
+export interface ComposeRoutesOptions {
+  /** The set of valid `Auth` enum VALUES (e.g. "none","dev","session"). A feature
+   *  route whose `auth` isn't one of these is rejected — fail-CLOSED, because an
+   *  unrecognized/typo'd/wrong-cased auth string would otherwise resolve to
+   *  Auth.NONE (`route.auth ?? Auth.NONE`) and silently serve UNAUTHENTICATED. */
+  validAuthValues: ReadonlySet<string>;
+  /** `${method} ${pattern}` keys of the CORE routes. A feature route matching one is
+   *  rejected — it would be silently DEAD (first-match-wins puts core ahead), the
+   *  forker's intent dropped on the floor. */
+  coreRouteKeys: ReadonlySet<string>;
+}
+
 /** ROUTES.  HOST: src/index.ts `routes[]` becomes `[...CORE_ROUTES,
- *  ...composeRoutes(FEATURES)]`, and BACKEND_PREFIXES absorbs each route's
+ *  ...composeRoutes(FEATURES, opts)]`, and BACKEND_PREFIXES absorbs each route's
  *  `backendPrefix`. WHERE IT RUNS: module load of index.ts (the route table is
  *  built once). Feature routes are appended AFTER core routes (declaration-order
  *  matching means a feature route can never shadow a core route), and the
- *  composer asserts no two features claim the same method+pattern. */
-export function composeRoutes(features: Feature[]): FeatureRoute[] {
+ *  composer asserts: (a) no two features claim the same method+pattern; (b) every
+ *  `auth` is a valid `Auth` enum VALUE (fail-closed — never silently NONE); (c) no
+ *  feature route collides with a CORE route (else silently dead). */
+export function composeRoutes(features: Feature[], opts: ComposeRoutesOptions): FeatureRoute[] {
   const out: FeatureRoute[] = [];
   const seen = new Set<string>();
   for (const f of features)
     for (const r of f.routes ?? []) {
       const key = `${r.method} ${r.pattern}`;
+      // (b) Validate auth against the live Auth value set BEFORE it can be cast to
+      // Auth and default to NONE at dispatch. Fail closed: a bad auth never serves.
+      if (r.auth !== undefined && !opts.validAuthValues.has(r.auth))
+        throw new Error(
+          `feature-route invalid auth: "${r.auth}" on ${key} (in "${f.name}") is not a valid Auth value ` +
+            `(one of: ${[...opts.validAuthValues].join(", ")}). An unrecognized auth would silently resolve ` +
+            `to Auth.NONE and serve UNAUTHENTICATED — fail closed instead.`,
+        );
+      // (c) A feature route can't shadow (and be killed by) a CORE route.
+      if (opts.coreRouteKeys.has(key))
+        throw new Error(
+          `feature-route shadows core: ${key} (in "${f.name}") matches a CORE route. ` +
+            `First-match-wins keeps core ahead, so the feature route would be silently dead.`,
+        );
       if (seen.has(key)) throw new Error(`feature-route collision: ${key} (in "${f.name}")`);
       seen.add(key);
       out.push(r);
     }
   return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// UNWIRED-SLOT GUARD.  Some Feature slots LOOK first-class but have no host
+// importer yet (`tools` → session.ts, `systemDocs` → schema.ts). A feature that
+// populates one compiles, boots clean, and is SILENTLY IGNORED — the verb never
+// registers, the doc never seeds. That silent no-op is a fork foot-gun. This guard
+// turns it LOUD: a feature declaring an unwired slot throws at compose time.
+//
+// UNWIRED_SLOTS is the single source of truth for which slots aren't plumbed. When a
+// slot gets wired (its composer gains a host importer), delete its row here in the
+// same change — the totality test (`unwired-slots`) keeps this list honest by
+// asserting each named slot's composer is indeed still importer-less in source.
+// ───────────────────────────────────────────────────────────────────────────
+
+const UNWIRED_SLOTS: ReadonlyArray<{ slot: keyof Feature; host: string }> = [
+  { slot: "tools", host: "session.ts" },
+  { slot: "systemDocs", host: "schema.ts" },
+];
+
+/** Throw if any feature populates a slot that isn't yet wired into its host file.
+ *  Runs at module load from src/index.ts (the guaranteed-to-run chokepoint), beside
+ *  composeRoutes. Converts a silent no-op into a clear, actionable error. */
+export function assertWiredSlots(features: Feature[]): void {
+  for (const f of features)
+    for (const { slot, host } of UNWIRED_SLOTS) {
+      const v = f[slot];
+      const populated = Array.isArray(v) ? v.length > 0 : v != null;
+      if (populated)
+        throw new Error(
+          `feature "${f.name}" declares \`${slot}\`, but the ${slot} slot is not yet wired into ${host} — ` +
+            `it would be silently ignored. Remove it, or wire ${slot} into ${host} first ` +
+            `(then drop "${slot}" from UNWIRED_SLOTS in compose.ts).`,
+        );
+    }
 }
 
 /** TOOLS.  DESIGNED — NOT YET WIRED (consistent with the file header). No host
