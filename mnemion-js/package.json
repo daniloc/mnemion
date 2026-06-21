@@ -2,6 +2,7 @@
   "name": "mnemion",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "build:pages": "vite build --config vite.fragment.ts",
     "build:web": "vite build --config vite.web.ts",
