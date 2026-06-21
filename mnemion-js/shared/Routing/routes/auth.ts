@@ -1,5 +1,5 @@
 import type { RouteHandler } from "../router";
-import { createSessionCookie, revokeAllSessions, timingSafeEqual } from "../router";
+import { createSessionCookie, revokeAllSessions, timingSafeEqual, isDevAutoApprove } from "../router";
 import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "../../core/constants";
 
 // Passkey module loaded lazily to avoid tslib issues in test environments
@@ -81,10 +81,21 @@ export const authorize: RouteHandler = async (ctx) => {
     return new Response("Invalid OAuth request", { status: 400 });
   }
 
-  // Dev mode: no secret configured, auto-approve
-  if (!ctx.env.MNEMION_SECRET) {
+  // Dev mode is an EXPLICIT opt-in (no secret AND DEV=true), exactly like every
+  // other auth path (isDevAutoApprove, router.ts). A secretless deploy WITHOUT
+  // DEV must NOT auto-grant an owner OAuth session — it fails CLOSED (503). This
+  // is the highest-value gate: completeOAuth here mints a full owner grant, so
+  // the bare `!MNEMION_SECRET` check used to be a fail-OPEN on a misconfigured
+  // production deploy (the one site the fail-closed reversal had missed).
+  if (isDevAutoApprove(ctx.env)) {
     const { redirectTo } = await completeOAuth(ctx.env, oauthReq);
     return new Response(null, { status: 302, headers: { Location: redirectTo } });
+  }
+  if (!ctx.env.MNEMION_SECRET) {
+    return new Response(
+      "This instance is not configured (no MNEMION_SECRET). Run `npm run setup` to provision it.",
+      { status: 503 },
+    );
   }
 
   // Store OAuth request for after verification
