@@ -141,6 +141,7 @@ const TRANSITION_MAPS = {
   // Request → host: instance identity is configuration, not request data.
   currentHost: {
     from: "public-egress", to: "owner-trusted", security: true,
+    anchoredBy: "resolveHost", // the instance-identity host resolution guard is filed at the pure resolveHost
     translates: "returns WORKER_HOST and IGNORES the inbound Host — a spoofed Host can't poison an owner capability URL",
   },
   // Agent SQL identifier → storage: defense-in-depth identifier quoting.
@@ -228,8 +229,15 @@ const edges = Object.entries(TRANSITION_MAPS).map(([sym, def]) => {
 // ─── 4 + 5. FLAGS ─────────────────────────────────────────────────────────────
 // (a) DRIFT: a spec boundary chokepoint with no TRANSITION_MAPS entry — UNLESS it is
 // a declared NON_TRANSITION (a structural boundary that holds within a chart).
+// A boundary chokepoint is accounted-for if it IS a transition, a declared
+// within-chart non-transition, OR the `anchoredBy` symbol a transition cites (its
+// oracle is filed at that symbol even though the crossing is labelled by another —
+// e.g. currentHost's guard lives at the pure resolveHost).
+const anchoredBySyms = new Set(
+  Object.values(TRANSITION_MAPS).map((d) => d.anchoredBy).filter(Boolean),
+);
 const drift = [...claims.keys()].filter(
-  (sym) => !(sym in TRANSITION_MAPS) && !(sym in NON_TRANSITION),
+  (sym) => !(sym in TRANSITION_MAPS) && !(sym in NON_TRANSITION) && !anchoredBySyms.has(sym),
 );
 // (b) DANGLING: a mapped symbol that no longer exists in source (pending excused).
 const dangling = edges.filter((e) => !e.present && !e.pending);

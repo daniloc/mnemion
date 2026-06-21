@@ -28,6 +28,7 @@ latent tear if it's a security crossing).
 
 | tier | from → to | chokepoint | oracle | re-establishes |
 | --- | --- | --- | --- | --- |
+| tier-1 | `public-egress` → `owner-trusted` | `currentHost` | instance-identity host resolution (via resolveHost) | returns WORKER_HOST and IGNORES the inbound Host — a spoofed Host can't poison an owner capability URL |
 | tier-1 | `public-egress` → `served-untrusted` | `denyUnlessBearerScope` | served bearer-gating totality | refuses an unlisted served read unless the request carries a bearer token whose scope matches |
 | tier-1 | `owner-trusted` → `federated` | `isBlockedFederationHost` | SSRF block-host totality | blocks loopback/private/link-local/metadata hosts outright — they can't be allow-listed or token-leaked-to |
 | tier-1 | `agent-mcp` → `owner-trusted` | `isBroadTokenScope` | broad-token scope-grammar totality | recognizes broad token scopes so minting one is consent-gated — an agent can't silently mint '*' standing access |
@@ -42,12 +43,9 @@ latent tear if it's a security crossing).
 | tier-2 | `storage` → `public-egress` | `sealAll` | born-hashed-secret totality (via SENSITIVE_COLUMNS) | strips SENSITIVE_COLUMNS from rows before they leave the DO (every served emission routes through it) |
 | tier-2 | `storage` → `public-egress` | `SENSITIVE_COLUMNS` | born-hashed-secret totality | declares secret/redact columns — born-hashed at mint and stripped by seal on every outward emission |
 | tier-2 | `agent-mcp` → `storage` | `writeClass` | write-policy totality | resolves a pattern's write-class (User/System/Internal) — a System/Internal pattern is not agent-writable |
-| tier-3 | `public-egress` → `owner-trusted` | `currentHost` | no boundary claim | returns WORKER_HOST and IGNORES the inbound Host — a spoofed Host can't poison an owner capability URL |
 
-**Tiers:** 7 enshrined · 7 totality-checked · 1 convention (15 crossings).
+**Tiers:** 8 enshrined · 7 totality-checked · 0 convention (15 crossings).
 
-### Headline — tier-3 security crossings (unmanaged)
+### Headline
 
-Security boundaries enforced by convention, not a chokepoint + totality oracle. Each is a latent tear:
-
-- `currentHost` (`public-egress` → `owner-trusted`) — returns WORKER_HOST and IGNORES the inbound Host — a spoofed Host can't poison an owner capability URL
+No tier-3 security crossings — every security transition is enshrined or totality-checked.

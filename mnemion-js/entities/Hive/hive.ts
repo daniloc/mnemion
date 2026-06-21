@@ -20,6 +20,7 @@ import { expandShortcut, normalizeHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
 import { deriveLabel } from "./labels";
 import { logError } from "../../shared/core/log";
+import { resolveHost } from "../../shared/core/host";
 import * as cred from "../../shared/Auth/credentials";
 import * as evo from "./evolution";
 import * as data from "./data";
@@ -101,15 +102,13 @@ export class HiveDO extends DurableObject {
   }
 
   private currentHost(): string {
-    // Prefer a meaningfully-configured WORKER_HOST and IGNORE the inbound Host
-    // header when it's set — generated URLs (upload_url / page_url / og_image /
-    // the instance doc) must not be poisoned by an attacker-controlled Host on
-    // an unauthenticated request (e.g. a /ws upgrade). Only fall back to the
-    // observed host (then the placeholder/localhost) when WORKER_HOST isn't a
-    // real value — i.e. local dev, where the inbound host is the right answer.
-    const configured = (this.env as any).WORKER_HOST;
-    if (configured && configured !== "your-worker.workers.dev") return configured;
-    return this.lastKnownHost ?? configured ?? "localhost";
+    // Generated URLs (upload_url / page_url / og_image / the instance doc) must
+    // not be poisoned by an attacker-controlled Host on an unauthenticated
+    // request (e.g. a /ws upgrade). The decision — configured WORKER_HOST wins
+    // and the inbound Host is IGNORED; observed host is the local-dev fallback —
+    // lives in the pure, testable resolveHost (shared/core/host.ts), anchored by
+    // the "instance-identity host" boundary.
+    return resolveHost((this.env as any).WORKER_HOST, this.lastKnownHost);
   }
 
   /** A public URL on this instance — the one place upload_url / page_url /
