@@ -1,0 +1,15 @@
+// Browser tsconfig for the MCP render fragment (src/pages/*).
+//
+// These files run in the BROWSER (built by vite.fragment.ts), not the worker, so
+// they need the DOM lib and must NOT pull in @cloudflare/workers-types / @types/node
+// (which would both conflict with DOM globals and mistype browser APIs). The worker
+// tsconfig excludes src/pages and checks everything else; together they give full,
+// correctly-scoped type coverage. Run via `npm run typecheck`.
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["./**/*", "../../shared/core/text.d.ts"]
+}

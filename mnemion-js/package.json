@@ -13,6 +13,7 @@
     "dev:built": "npm run build:pages && npm run build:web && wrangler dev --var DEV:true --var DEV_SEED:true",
     "deploy": "npm run build:pages && npm run build:web && wrangler deploy",
     "types": "wrangler types",
+    "typecheck": "tsc -p tsconfig.json && tsc -p src/pages/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "mcp:smoke": "node scripts/mcp-smoke.mjs",

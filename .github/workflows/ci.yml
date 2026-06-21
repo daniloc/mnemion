@@ -42,8 +42,8 @@ jobs:
 
       - run: npm ci
 
-      # The worker entry statically imports the canvas/fragment bundles from
-      # dist/ (gitignored), so they must exist before vitest loads the worker.
+      # The worker entry statically imports the render-fragment bundle from
+      # dist/ (gitignored), so it must exist before vitest loads the worker.
       - name: Build worker page bundles
         run: npm run build:pages
 
@@ -53,6 +53,15 @@ jobs:
       # to dist/web/index.html), which 404s without this build. Build it here.
       - name: Build web SPA
         run: npm run build:web
+
+      # Pure-TypeScript gate — the Vite/esbuild build only transpiles, it never
+      # type-checks. Two scoped tsconfigs: the worker (excludes the browser render
+      # fragment) and src/pages (DOM lib). `npm run types` refreshes the generated
+      # Env first so the check sees current bindings.
+      - name: Typecheck
+        run: |
+          npm run types
+          npm run typecheck
 
       # Unit suite — runs in the real workerd runtime (vitest-pool-workers),
       # including the totality oracles (policy / egress / context-capability /
