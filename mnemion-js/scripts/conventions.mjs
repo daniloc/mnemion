@@ -57,6 +57,7 @@ const DISMISSED = {
   ensureAuditTriggers: "idempotent infra setup, not a fail-open guard",
   verifyFieldsIntegrity: "a boot integrity verifier (itself a check), not a remembered guard",
   hasPasskey: "a read ('does a passkey exist') used to choose UI, not a security gate",
+  hasFacet: "a read ('does this facet exist on the pattern') used for validation messages — the write/read boundary is the trusted flag + writeClass + quoteIdent chokepoints, not this helper",
 };
 
 // Imperative debt-markers: comments telling a future author to remember something.
