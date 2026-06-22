@@ -31,6 +31,14 @@ jobs:
   checks:
     name: tests · ratchets · coherence
     runs-on: ubuntu-latest
+    # The unit suite reaches the REAL Workers AI + Vectorize bindings (remote = true
+    # in wrangler.toml — neither has a local simulator). The vitest pool opens a
+    # remote proxy session to the account, which is non-interactive in CI and so
+    # needs an API token (Workers AI:Read + Vectorize:Edit + Workers Scripts:Edit +
+    # Account Settings:Read) plus the account id. Absent these the pool can't start.
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -62,6 +70,17 @@ jobs:
         run: |
           npm run types
           npm run typecheck
+
+      # Point the VECTORIZE binding at a DEDICATED CI index for this run only.
+      # The remote Vectorize index is real, account-side state — isolatedStorage
+      # rolls back DO SQLite between tests but NOT remote upserts, so running
+      # against prod (mnemion-vectors) would leave test vectors in the live index
+      # and let KNN reads see cross-contaminated neighbors. The edit is on the
+      # ephemeral checkout only; the committed wrangler.toml stays prod-correct
+      # for deploys. (Create once: wrangler vectorize create mnemion-ci-vectors
+      # --dimensions=768 --metric=cosine — matches @cf/baai/bge-base-en-v1.5.)
+      - name: Isolate Vectorize index (CI)
+        run: sed -i 's/index_name = "mnemion-vectors"/index_name = "mnemion-ci-vectors"/' wrangler.toml
 
       # Unit suite — runs in the real workerd runtime (vitest-pool-workers),
       # including the totality oracles (policy / egress / context-capability /
@@ -97,6 +116,12 @@ jobs:
           cache-dependency-path: mnemion-js/package-lock.json
 
       - run: npm ci
+
+      # wrangler dev serves [assets] from ./dist/web (the React SPA, gitignored);
+      # under DEV=true the build hook skips the SPA build, so build it explicitly
+      # or wrangler refuses to boot ("assets.directory … does not exist").
+      - name: Build web SPA
+        run: npm run build:web
 
       # Start a local dev worker (DEV mode, seeded, embeddings skipped — no
       # Cloudflare account or network needed), wait for it, then drive the real
