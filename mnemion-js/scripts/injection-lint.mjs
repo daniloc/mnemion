@@ -112,5 +112,23 @@ if (mode === "--check") {
     console.error("  and safe — re-pin with --update-baseline.\n");
     process.exit(1);
   }
-  console.log("  ✓ injection ratchet held — no new raw interpolation sites.\n");
+  console.log("  ✓ injection ratchet held — no new raw interpolation sites.");
+  // Standing debt: each baselined site is a raw interpolation enshrinement (a
+  // quoteIdent-style fusion) would retire. The ratchet only blocks NEW sites; print
+  // the tolerated count + per-file breakdown so the surface stays visible and the
+  // goal (drain toward zero) is legible. A baselined site gone from code is dead
+  // weight to drop.
+  const byFile = {};
+  let stale = 0;
+  for (const k of base) {
+    const file = k.split("|")[1] ?? "?";
+    byFile[file] = (byFile[file] ?? 0) + 1;
+    if (!current.has(k)) stale++;
+  }
+  console.log(`\n  Baselined debt: ${base.size} reviewed interpolation site(s) tolerated (toward zero):`);
+  for (const [f, c] of Object.entries(byFile).sort((a, z) => z[1] - a[1])) {
+    console.log(`    ${String(c).padStart(3)}  ${f}`);
+  }
+  if (stale) console.log(`  (${stale} baselined site(s) no longer in code — re-pin with --update-baseline to drop them)`);
+  console.log("");
 }

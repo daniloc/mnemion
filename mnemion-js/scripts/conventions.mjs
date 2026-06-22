@@ -202,5 +202,16 @@ if (mode === "--check") {
     console.error("  Convert it to a contract, or (if intentional) re-pin with --update-baseline.\n");
     process.exit(1);
   }
-  console.log("\n  ✓ convention ratchet held — no new conventions.\n");
+  console.log("\n  ✓ convention ratchet held — no new conventions.");
+  // Surface the STANDING debt, not just the delta. The ratchet only blocks
+  // GROWTH; without this line a baselined convention can sit forever, invisible.
+  // Each entry is an un-enshrined crossing — the goal is to drain this to zero.
+  if (base.length) {
+    console.log(`\n  Baselined debt: ${base.length} convention(s) tolerated (toward zero):`);
+    for (const b of [...base].sort((a, z) => z.sites - a.sites)) {
+      const live = conventions.find((c) => c.name === b.name);
+      console.log(`    - ${b.name} (${b.sites} sites)${live ? "" : "  — gone from code; drop from baseline"}`);
+    }
+  }
+  console.log("");
 }
