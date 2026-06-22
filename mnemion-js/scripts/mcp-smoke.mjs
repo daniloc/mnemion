@@ -93,11 +93,17 @@ ok("invalid format rejected through MCP", badFmt.isError || /invalid|must be|enu
   const haveClip = await client.callTool({ name: "query", arguments: { pattern: "_clipboards", filter: ["target_pattern=smoke_leads"] } });
   let bound = false; try { bound = (JSON.parse(txt(haveClip)).entries ?? []).length > 0; } catch { /* */ }
   if (!bound) {
-    await client.callTool({ name: "mutate", arguments: { pattern: "_clipboards", operation: "create", data: {
+    const clipArgs = { pattern: "_clipboards", operation: "create", data: {
       name: "smoke_intake", target_pattern: "smoke_leads",
       fields: JSON.stringify([{ facet: "email", required: true, pattern: "^[^@]+@[^@]+$" }, { facet: "score", min: 0, max: 100 }]),
       completion: JSON.stringify({ require: "all", conditions: [{ metric: "count", op: ">=", value: 1 }] }),
-    } } });
+    } };
+    // Defining a clipboard is consent-gated: the first call returns confirmation_required;
+    // calling again with identical args confirms (the human-in-the-loop round-trip).
+    const first = await client.callTool({ name: "mutate", arguments: clipArgs });
+    if (/confirmation_required|confirm/i.test(txt(first)))
+      await client.callTool({ name: "mutate", arguments: clipArgs });
+    ok("clipboard creation is consent-gated then confirmable through MCP", /confirmation_required|confirm/i.test(txt(first)), txt(first));
   }
 
   const badSub = await client.callTool({ name: "mutate", arguments: { pattern: "smoke_leads", operation: "create", data: { email: "nope", score: 999 } } });

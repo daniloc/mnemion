@@ -42,6 +42,10 @@ export interface ClipboardSpec {
   cross_field: Array<Record<string, unknown>>;
   /** Completion contract evaluated against the submission log (entities/Hive/completion.ts). */
   completion: CompletionSpec | null;
+  /** Set to the column name when a JSON column failed to parse. A corrupt spec FAILS
+   *  CLOSED — every submission is rejected until the clipboard is fixed — rather than
+   *  silently disabling the rule it encodes (fail-open on a validation boundary). */
+  corrupt?: string;
 }
 
 /** One reported problem with a submission. The submission validator collects ALL of
@@ -201,14 +205,24 @@ function validateSubmission(
   clip: ClipboardSpec,
   data: any,
   operation: string,
+  currentRow?: Record<string, unknown>,
 ): SubmissionViolation[] {
   const violations: SubmissionViolation[] = [];
   const add = (facet: string, message: string) => violations.push({ facet, message });
+  const missingFacet = (f: string) => `references facet "${f}" which no longer exists on "${patternName}" — fix the clipboard`;
+
+  // Fail CLOSED: a clipboard whose JSON definition is corrupt rejects every submission
+  // until fixed, rather than silently dropping the rule the unparseable column encoded.
+  if (clip.corrupt) {
+    add(clip.corrupt, `the clipboard governing "${patternName}" has a corrupt "${clip.corrupt}" definition — fix the clipboard before submitting`);
+    return violations;
+  }
 
   const fieldSpecByFacet = new Map<string, Record<string, unknown>>();
   for (const f of clip.fields) if (typeof f.facet === "string") fieldSpecByFacet.set(f.facet, f);
 
-  // 1. Per supplied facet: existence, option membership, type coercion, value constraints.
+  // 1. Per SUPPLIED facet: existence, option membership, type coercion, value constraints.
+  //    (Only the supplied fields are coerced/stored; whole-row checks below use `row`.)
   for (const [key, val] of Object.entries(data)) {
     if (STRUCTURAL_KERNEL_COLUMNS.includes(key)) continue;
     const meta = ctx.facetMeta(patternName, key);
@@ -228,52 +242,56 @@ function validateSubmission(
     if (spec) for (const msg of validateFieldValue(data[key], spec)) add(key, msg);
   }
 
-  // 2. Required facets — the clipboard's `required:true` fields UNION the dataset's
-  //    own required-without-default facets. A referenced facet that no longer exists
-  //    is a loud violation (clipboard rot), not a skip.
+  // The FULL post-write row: a create produces `data`; an update/unarchive produces the
+  // current row OVERLAID with the (coerced) supplied fields. Whole-row invariants
+  // (required / cross-field / uniqueness) are judged against THIS — so a partial update
+  // or an unarchive cannot leave a row that violates the contract (the soundness the
+  // patch-rejection message promises). `data` carries coerced values, so the overlay is canonical.
+  const row: Record<string, unknown> = operation === "create" ? data : { ...(currentRow ?? {}), ...data };
+  const rowId = (data.id ?? currentRow?.id) as number | undefined;
+
+  // 2. Required facets — the clipboard's `required:true` fields UNION the dataset's own
+  //    required-without-default facets — must hold a non-empty value in the FINAL row.
   const required = new Set<string>();
   for (const f of clip.fields) if (f.required === true && typeof f.facet === "string") required.add(f.facet);
   for (const def of facetDefs(ctx, patternName)) if (def.required && !def.hasDefault) required.add(def.name);
   for (const facet of required) {
-    if (!ctx.facetMeta(patternName, facet)) { add(facet, `required by the clipboard but no longer exists on "${patternName}" — fix the clipboard`); continue; }
-    const present = Object.prototype.hasOwnProperty.call(data, facet);
-    const empty = data[facet] == null || data[facet] === "";
-    if (operation === "create" && (!present || empty)) add(facet, "is required");
-    else if (operation === "update" && present && empty) add(facet, "is required and cannot be cleared");
+    if (!ctx.facetMeta(patternName, facet)) { add(facet, `required but ${missingFacet(facet)}`); continue; }
+    if (row[facet] == null || row[facet] === "") add(facet, "is required");
   }
 
-  // 3. Cross-field comparisons — only when the operands are present (a partial update
-  //    that omits a side can't be judged; the row-complete create path catches it).
+  // 3. Cross-field comparisons over the final row — skip a rule only when an operand is
+  //    genuinely absent from the WHOLE row (not merely omitted from a partial payload).
   for (const rule of clip.cross_field) {
     const left = String(rule.left_facet);
-    if (!ctx.facetMeta(patternName, left)) { add(left, `cross-field references a facet that no longer exists — fix the clipboard`); continue; }
-    if (!(left in data) || data[left] == null) continue;
+    if (!ctx.facetMeta(patternName, left)) { add(left, `cross-field ${missingFacet(left)}`); continue; }
+    if (row[left] == null) continue;
     let right: unknown;
     if (rule.right_facet != null) {
       const rf = String(rule.right_facet);
-      if (!ctx.facetMeta(patternName, rf)) { add(left, `cross-field references "${rf}" which no longer exists — fix the clipboard`); continue; }
-      if (!(rf in data) || data[rf] == null) continue;
-      right = data[rf];
+      if (!ctx.facetMeta(patternName, rf)) { add(left, `cross-field ${missingFacet(rf)}`); continue; }
+      if (row[rf] == null) continue;
+      right = row[rf];
     } else {
       right = rule.literal;
     }
-    if (!compareValues(String(rule.op), data[left], right)) {
+    if (!compareValues(String(rule.op), row[left], right)) {
       const rhs = rule.right_facet != null ? `${rule.right_facet}` : JSON.stringify(rule.literal);
       add(left, `must be ${rule.op} ${rhs}`);
     }
   }
 
-  // 4. Composite uniqueness (dedupe-on-fill) — checks only when every facet in the
-  //    group is present. On update, exclude the row itself. A single DO serializes
-  //    writes, so the SELECT-then-INSERT is race-free across a concurrent fanout.
+  // 4. Composite uniqueness (dedupe-on-fill) over the final row. Excludes the row itself
+  //    on update/unarchive. A single DO serializes writes, so SELECT-then-write is
+  //    race-free across a concurrent fanout.
   for (const group of clip.unique_on) {
     if (!Array.isArray(group) || !group.length) continue;
-    if (!group.every((f) => f in data && data[f] != null)) continue;
-    if (!group.every((f) => ctx.facetMeta(patternName, f))) { add(group[0], `unique_on references a facet that no longer exists — fix the clipboard`); continue; }
+    if (!group.every((f) => row[f] != null)) continue;
+    if (!group.every((f) => ctx.facetMeta(patternName, f))) { add(group[0], `unique_on ${missingFacet(group.find((f) => !ctx.facetMeta(patternName, f)) || group[0])}`); continue; }
     try {
-      const params = group.map((f) => data[f]);
+      const params = group.map((f) => row[f]);
       let sql = `SELECT 1 FROM ${quoteIdent(patternName)} WHERE ${group.map((f) => `${quoteIdent(f)} = ?`).join(" AND ")} AND archived_at IS NULL`;
-      if (operation === "update" && data.id != null) { sql += ` AND id != ?`; params.push(data.id); }
+      if ((operation === "update" || operation === "unarchive") && rowId != null) { sql += ` AND id != ?`; params.push(rowId); }
       sql += ` LIMIT 1`;
       if (ctx.db.exec(sql, ...params).toArray().length)
         add(group.join("+"), `a non-archived entry with the same ${group.join(" + ")} already exists`);
@@ -283,6 +301,18 @@ function validateSubmission(
   }
 
   return violations;
+}
+
+/** The full current row of a clipboard-bound pattern, by id (no archived filter — an
+ *  unarchive validates the row it will reactivate). Null when the row is absent. */
+function fetchRow(ctx: DataContext, patternName: string, id: unknown): Record<string, unknown> | undefined {
+  if (id == null) return undefined;
+  try {
+    const r = ctx.db.exec(`SELECT * FROM ${quoteIdent(patternName)} WHERE id = ?`, id).toArray()[0];
+    return r ? (r as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Attach the derived completion progress to an accepted submission's result, so the
@@ -643,20 +673,26 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   if ('error' in ruled) return ruled;
   data = ruled;
 
-  // Size guard + facet validation. A clipboard-bound pattern's write is a SUBMISSION:
-  // validateSubmission owns ALL of its validation (type coercion + value constraints +
-  // required + cross-field + uniqueness) and collects EVERY violation, so the existing
-  // dataset first-fail loop is replaced for these patterns — never double-run. `clip`
-  // is hoisted so the create/update cases below can attach derived progress on accept.
+  // A clipboard-bound create/update/UNARCHIVE is a SUBMISSION, validated against the
+  // full post-write row (so a partial update or an unarchive can't leave the row
+  // violating the contract). `clip` is hoisted so the cases below attach derived progress.
   let clip: ClipboardSpec | null = null;
+  if (operation === "create" || operation === "update" || operation === "unarchive")
+    clip = ctx.clipboardFor(patternName);
+
   if (operation === "create" || operation === "update") {
     const size = estimateRecordBytes(data);
     if (size > LIMITS.ENTRY_BYTES)
       return { error: true, message: `Entry too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
+  }
 
-    clip = ctx.clipboardFor(patternName);
-    if (clip) {
-      const violations = validateSubmission(ctx, patternName, clip, data, operation);
+  if (clip) {
+    // For update/unarchive the partial payload alone can't be judged against whole-row
+    // invariants — resolve the current row and validate the row the write produces. A
+    // missing target row is left to the operation's own not-found handling below.
+    const currentRow = operation === "create" ? undefined : fetchRow(ctx, patternName, data.id);
+    if (operation === "create" || currentRow) {
+      const violations = validateSubmission(ctx, patternName, clip, data, operation, currentRow);
       if (violations.length)
         // Fold every violation INTO the message: the MCP mutate tool surfaces only
         // `message` on an error result, so the loud collect-all list has to ride in
@@ -668,7 +704,9 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           message: `Submission to "${patternName}" rejected — ${violations.length} problem(s): ${violations.map((v) => `${v.facet}: ${v.message}`).join("; ")}. Fix all and resubmit.`,
           violations,
         };
-    } else {
+    }
+  } else if (operation === "create" || operation === "update") {
+    {
       const isDataset = ctx.patternClass(patternName) === "dataset";
 
       for (const [key, val] of Object.entries(data)) {
@@ -950,7 +988,12 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
         if (changes.c === 0)
           return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is not archived).` };
-        return { operation: "unarchive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
+        // Reactivating a clipboard-bound row changes the derived completion tally —
+        // surface the new progress (the row was already re-validated by the submission
+        // gate above before the unarchive committed).
+        const result: any = { operation: "unarchive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
+        if (clip) attachSubmissionProgress(ctx, patternName, clip, result);
+        return result;
       }
 
       default:

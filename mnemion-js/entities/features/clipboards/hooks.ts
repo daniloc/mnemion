@@ -65,6 +65,8 @@ function validateDefinition(data: Record<string, unknown>, operation: string, ct
     );
 
   const hasFacet = (f: string) => ctx.facetMeta(target!, f) != null;
+  const facetType = (f: string) => ctx.facetMeta(target!, f)?.type;
+  const PATTERN_MAX_SOURCE = 512; // bound the agent-authored regex source (ReDoS surface)
 
   // --- fields: per-facet value constraints ---
   const fields = jsonColumn(data, "fields");
@@ -81,13 +83,24 @@ function validateDefinition(data: Record<string, unknown>, operation: string, ct
           return err(`unknown constraint "${key}" on facet "${spec.facet}". Known: ${CONSTRAINT_KEYS.join(", ")}`);
       if (spec.required != null && typeof spec.required !== "boolean")
         return err(`"required" must be a boolean on facet "${spec.facet}"`);
+      const ftype = facetType(spec.facet);
       if (spec.pattern != null) {
+        if (String(spec.pattern).length > PATTERN_MAX_SOURCE)
+          return err(`pattern for facet "${spec.facet}" is too long (max ${PATTERN_MAX_SOURCE} chars)`);
         try {
           new RegExp(String(spec.pattern));
         } catch {
           return err(`pattern for facet "${spec.facet}" is not a valid regular expression`);
         }
+        if (ftype !== "text" && ftype !== "select")
+          return err(`pattern only applies to a text facet, but "${spec.facet}" is ${ftype}`);
       }
+      // Constraint↔facet-type compatibility: a type-incompatible constraint would be
+      // accepted here and then reject EVERY submission. Catch it at definition instead.
+      if ((spec.min != null || spec.max != null) && ftype !== "number" && ftype !== "integer")
+        return err(`min/max only apply to a numeric facet, but "${spec.facet}" is ${ftype}`);
+      if ((spec.min_length != null || spec.max_length != null) && ftype !== "text" && ftype !== "select")
+        return err(`min_length/max_length only apply to a text facet, but "${spec.facet}" is ${ftype}`);
       if (spec.min != null && spec.max != null && Number(spec.min) > Number(spec.max))
         return err(`min > max on facet "${spec.facet}"`);
       if (spec.min_length != null && spec.max_length != null && Number(spec.min_length) > Number(spec.max_length))
@@ -159,6 +172,14 @@ function validateDefinition(data: Record<string, unknown>, operation: string, ct
           if (typeof fv === "string" && !hasFacet(fv))
             return err(`completion metric "${cond.metric}" references facet "${fv}" which does not exist on "${target}"`);
         }
+        // Param SHAPE (fail closed on a mis-typed value the presence check would pass):
+        // a `required` source set must be a non-empty string array (else the condition is
+        // silently unsatisfiable), and `period_days` must be a positive number (a falsy 0
+        // would otherwise be coerced to 1 day by the engine).
+        if (cond.required != null && (!Array.isArray(cond.required) || cond.required.length === 0 || !cond.required.every((x: unknown) => typeof x === "string")))
+          return err(`completion metric "${cond.metric}" needs "required" to be a non-empty array of source values`);
+        if (cond.period_days != null && (typeof cond.period_days !== "number" || !(cond.period_days > 0)))
+          return err(`completion metric "${cond.metric}" needs "period_days" to be a positive number`);
       }
     }
   }

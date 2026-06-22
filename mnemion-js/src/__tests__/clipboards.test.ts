@@ -267,3 +267,80 @@ describe("clipboard completion progress is derived from the submission log", () 
     expect(r.progress.complete).toBe(true);
   });
 });
+
+// === Review fixes: whole-row re-validation on update/unarchive, and definition guards ===
+
+describe("clipboard update and unarchive re-validate the whole row", () => {
+  async function bind(store: DurableObjectStub<HiveDO>) {
+    await createPattern(store, "ranges", [
+      { name: "label", type: "text" },
+      { name: "start", type: "integer" },
+      { name: "end", type: "integer" },
+    ]);
+    const d = await defineClipboard(store, {
+      name: "rng",
+      target_pattern: "ranges",
+      cross_field: [{ left_facet: "end", op: ">=", right_facet: "start" }],
+      unique_on: [["label"]],
+    });
+    expect(d.error).toBeUndefined();
+  }
+
+  it("rejects a partial update that violates a cross-field rule via the UNSUPPLIED operand", async () => {
+    const store = getStore();
+    await bind(store);
+    const ok = await submit(store, "ranges", { label: "a", start: 1, end: 9 });
+    expect(ok.error).toBeUndefined();
+    // Update ONLY end → 0. The merged row {start:1, end:0} violates end >= start, even
+    // though `start` isn't in the payload — the whole-row check must catch it.
+    const bad = await store.mutate("ranges", "update", JSON.stringify({ id: ok.entry.id, end: 0 })).then(JSON.parse);
+    expect(bad.error).toBe(true);
+    expect(facetsOf(bad.violations).has("end")).toBe(true);
+  });
+
+  it("rejects an unarchive that would duplicate a unique group created while archived", async () => {
+    const store = getStore();
+    await bind(store);
+    const a = await submit(store, "ranges", { label: "dup", start: 1, end: 2 });
+    await store.mutate("ranges", "archive", JSON.stringify({ id: a.entry.id }));
+    const b = await submit(store, "ranges", { label: "dup", start: 3, end: 4 }); // ok while `a` archived
+    expect(b.error).toBeUndefined();
+    const un = await store.mutate("ranges", "unarchive", JSON.stringify({ id: a.entry.id })).then(JSON.parse);
+    expect(un.error).toBe(true);
+    expect(facetsOf(un.violations).has("label")).toBe(true);
+  });
+});
+
+describe("clipboard definition guards (fail closed)", () => {
+  it("rejects a completion condition with period_days <= 0", async () => {
+    const store = getStore();
+    await createPattern(store, "ev", [{ name: "v", type: "integer" }]);
+    const r = await defineClipboard(store, {
+      name: "e", target_pattern: "ev",
+      completion: { conditions: [{ metric: "distinct_periods", op: ">=", value: 3, period_days: 0 }] },
+    });
+    expect(r.error).toBe(true);
+    expect(r.message).toMatch(/period_days/);
+  });
+
+  it("rejects an empty required source set", async () => {
+    const store = getStore();
+    await createPattern(store, "cov2", [{ name: "source", type: "text" }]);
+    const r = await defineClipboard(store, {
+      name: "c2", target_pattern: "cov2",
+      completion: { conditions: [{ metric: "sources_covered", op: ">=", value: 1, source_facet: "source", required: [] }] },
+    });
+    expect(r.error).toBe(true);
+    expect(r.message).toMatch(/required/);
+  });
+
+  it("rejects a numeric constraint on a non-numeric facet", async () => {
+    const store = getStore();
+    await createPattern(store, "txt", [{ name: "name", type: "text" }]);
+    const r = await defineClipboard(store, {
+      name: "t", target_pattern: "txt", fields: [{ facet: "name", min: 1, max: 5 }],
+    });
+    expect(r.error).toBe(true);
+    expect(r.message).toMatch(/min\/max only apply to a numeric facet/);
+  });
+});
