@@ -309,6 +309,14 @@ const CORE_ON_CREATE: Record<string, CreateHook> = {
     if (!data.target_pattern) return { error: true, message: "target is required (e.g. target: \"goals/9\")" };
     if (data.target_id == null) return { error: true, message: "target is required (e.g. target: \"goals/9\")" };
 
+    // Links connect user-pattern MEMORIES, not the control plane. A kernel target would
+    // weave _access_tokens/_members/_passkeys/etc. into the link graph — surfaced unsealed
+    // by followLinks (prime/resolve) and treated as superseded memory by a supersedes link.
+    // Mirror the _inputs/_publications kernel-target refusal.
+    for (const p of [data.source_pattern, data.target_pattern] as string[])
+      if (isKernelPattern(p))
+        return { error: true, message: `Links connect memories in user patterns, not kernel pattern "${p}".` };
+
     if (!ctx.patternExists(data.source_pattern as string))
       return { error: true, message: `Source pattern "${data.source_pattern}" does not exist` };
     if (!ctx.entryExists(data.source_pattern as string, data.source_id as number))
@@ -417,6 +425,21 @@ const CORE_ON_CREATE: Record<string, CreateHook> = {
 export type WriteHook = (data: Record<string, unknown>, operation: string, ctx: KernelContext) => HookResult;
 
 const CORE_ON_WRITE: Record<string, WriteHook> = {
+  // _members create-time validation (reserve "owner", enum status) is in ON_CREATE; this
+  // ON_WRITE re-validates on UPDATE too — otherwise a trusted update could set role:"owner"
+  // (the reservation is create-only) or an invalid status, bypassing the create checks.
+  _members(data) {
+    if (data.role !== undefined) {
+      if (!["owner", "member"].includes(data.role as string))
+        return { error: true, message: `Invalid role "${data.role}". Use "member" ("owner" is reserved).` };
+      if ((data.role as string) === "owner")
+        return { error: true, message: 'Role "owner" is reserved for the founding member and cannot be assigned via mutate.' };
+    }
+    if (data.status !== undefined && !["active", "suspended"].includes(data.status as string))
+      return { error: true, message: `Invalid status "${data.status}". Use "active" or "suspended".` };
+    return data;
+  },
+
   _views(data, operation, ctx) {
     const isCreate = operation === "create";
     // A partial update carries only the changed fields; the rest stay on the

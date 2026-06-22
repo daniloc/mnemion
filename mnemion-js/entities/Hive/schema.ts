@@ -717,14 +717,13 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   } catch {}
 
-  // --- v9: add access_count to _short_term_fragments (superseded by v10) ---
-
-  try {
-    const fragCols = db.exec(`PRAGMA table_info("_short_term_fragments")`).toArray() as any[];
-    if (fragCols.length && !fragCols.some((c: any) => c.name === "access_count")) {
-      db.exec(`ALTER TABLE "_short_term_fragments" ADD COLUMN "access_count" INTEGER NOT NULL DEFAULT 0`);
-    }
-  } catch {}
+  // --- v9: NEUTRALIZED (superseded by v10) ---
+  //
+  // v9 once ADDed access_count to _short_term_fragments. v10 (below) drops it. Because
+  // both run every boot with column-presence guards, leaving v9 in place meant v9 re-ADDed
+  // the column and v10 immediately DROPped it on EVERY cold start — and DROP COLUMN
+  // rewrites the whole table. Removing the v9 ADD ends the ping-pong; v10 still drops the
+  // column on any legacy install that still carries it.
 
   // --- v10: replace access_count counter with derived count via _fragment_access_log ---
   //
@@ -1293,12 +1292,14 @@ export function ensureAuditTriggers(db: any, tableName: string): void {
   const newJson = columns.map((c) => col("NEW", c)).join(", ");
   const oldJson = columns.map((c) => col("OLD", c)).join(", ");
 
-  // For a table with sensitive columns, DROP and recreate the triggers so the
-  // NULL-ing takes effect on an ALREADY-DEPLOYED hive (CREATE TRIGGER IF NOT EXISTS
-  // is a no-op against a pre-existing trigger that still captured the raw value).
-  if (sensitive.size) {
-    for (const op of ["insert", "update", "delete"]) db.exec(`DROP TRIGGER IF EXISTS "_audit_${tableName}_${op}"`);
-  }
+  // ALWAYS drop + recreate, so the trigger's captured column list tracks the current
+  // schema on an already-deployed hive. `CREATE TRIGGER IF NOT EXISTS` is a no-op against
+  // a pre-existing trigger, so a trigger built before a column was added (e.g. the
+  // created_by/updated_by attribution backfill, or a sensitive-column reclassification)
+  // would permanently omit that column from _mutation_log until an unrelated rebuild. The
+  // prior code only force-rebuilt for SENSITIVE tables, silently freezing every other
+  // pattern's audit trigger. Recreating a trigger is cheap metadata (no table rewrite).
+  for (const op of ["insert", "update", "delete"]) db.exec(`DROP TRIGGER IF EXISTS "_audit_${tableName}_${op}"`);
 
   db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_insert"
     AFTER INSERT ON "${tableName}" BEGIN
