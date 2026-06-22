@@ -182,8 +182,8 @@ const GATED_ROUTES: GatedRoute[] = [
     // commented out in wrangler.toml, so env.DOCUMENTS is unbound in CI and
     // serveDocument short-circuits to 404 before any visibility check — it can't
     // be driven live here. Skip (return null), mirroring served-inertness.test.ts.
-    unlisted: async () => ((env as any).DOCUMENTS ? null /* would need a live R2 upload */ : null),
-    public: async () => ((env as any).DOCUMENTS ? null : null),
+    unlisted: async () => null,
+    public: async () => null,
   },
 ];
 
