@@ -41,6 +41,10 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # `coherence log` materializes the base ref in a throwaway worktree to
+          # diff the invariant/boundary set — it needs history, not a depth-1 tip.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -49,6 +53,17 @@ jobs:
           cache-dependency-path: mnemion-js/package-lock.json
 
       - run: npm ci
+
+      # Structural ledger: a PR may not silently DROP an invariant or a boundary
+      # (a removed chokepoint/oracle anchor) — exactly the loss a prose review
+      # misses. `--strict` exits nonzero on a loss; a deliberate removal re-pins by
+      # being a normal, reviewed diff (the gate reports WHAT was dropped, not that
+      # nothing may change). PR-only: a push has no base ref to diff against.
+      - name: No dropped boundaries (structural ledger)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+          npm run coherence:log -- FETCH_HEAD HEAD --strict
 
       # The worker entry statically imports the render-fragment bundle from
       # dist/ (gitignored), so it must exist before vitest loads the worker.
@@ -102,6 +117,14 @@ jobs:
       # chokepoint + oracle claims).
       - name: Coherence
         run: npm run coherence:verify
+
+      # The committed generated artifacts (AGENTS.md + docs/coherence/*) must
+      # match the spec tree. coherence:verify checks claims-vs-code, NOT
+      # docs-vs-specs, so without this a spec edit that isn't followed by
+      # `npm run coherence:docs` lands a stale agent map (timestamps normalized
+      # out of the diff). Symmetric with the atlas:check drift gate above.
+      - name: Coherence docs freshness
+        run: npm run coherence:docs:check
 
   mcp-smoke:
     name: live /mcp surface
