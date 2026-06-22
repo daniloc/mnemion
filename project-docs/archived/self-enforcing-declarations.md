@@ -39,6 +39,35 @@ A declaration is self-enforcing when it has all five. Missing any one reintroduc
 
 Measure architectural quality by **blast radius**: *how many files must an agent read, and keep in sync, to safely add one pattern, one tool, one route, one invariant?* Drive that number toward one. A change whose correctness depends on remembering to touch six unguarded lists is a change that will eventually be made wrong. The totality check is what lets the number be one *in practice* — it turns "six files you must remember" into "one file; the test names the rest if you forget."
 
+## The `## why` discipline (the non-derivable residue)
+
+The same blast-radius logic governs the spec layer. A boundary's *mechanism* —
+its chokepoint symbol, its oracle, the fact that the oracle iterates a live
+domain and fails the build — is **derivable**: it is already carried by the
+`## invariants` list and the `boundary "<name>" at <chokepoint> via test/guard
+"<oracle>"` claims, and the harness renders it into `AGENTS.md` and the trust
+atlas from those claims. Restating it in `## why` prose is a second copy that
+can drift — and the only copy a totality check can't keep honest, because prose
+isn't derived.
+
+So `## why` carries **only the non-derivable residue**: the bug each boundary
+was built to kill, or the rejected alternative it rules out. That is the one
+thing no claim, oracle, or generated doc can reconstruct from the code. The rule:
+
+> If a sentence in `## why` could be regenerated from the boundary claims, it
+> doesn't belong in `## why`. Name a mechanism only as far as the *rationale*
+> needs it ("`_access_tokens` was `patch_only`, so an injected agent could mint
+> a `*` token" — the bug); never to *re-document* it ("the oracle iterates
+> `SENSITIVE_COLUMNS` and fails the build" — derivable, drop it).
+
+Commit `90aa607` ("trim the Hive spec `## why` to the non-derivable rationale")
+applied this by hand; the spec's own meta-note records the split. The durable
+form is a harness lint — *flag a `## why` sentence that names a chokepoint or
+oracle symbol already anchored in a claim alongside an oracle-verb ("iterates",
+"totality", "fails the build")* — which belongs upstream in `coherence`, not in
+another repo-local sidecar (see `project-docs/coherence-tooling-upstream.md`).
+Until then it is authored discipline, enforced in review.
+
 ## The per-pattern unification (the open work)
 
 Today, per-pattern truth is spread across four files: `schema.ts` (DDL/facets/description), `policy.ts` (write-class/consent/prime/audit), `kernel.ts` (immutable fields + `ON_CREATE` validation), `hive.ts` (lifecycle hooks). Each is individually clean, but the *organism* — "what is `_documents`, fully" — is not described in one place. That tax grows with every new facet of behavior.
