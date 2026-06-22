@@ -95,8 +95,35 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     return this.env.MNEMION_HIVE.get(id);
   }
 
+  // === Scratchpad push (HiveDO → this session → MCP client) ===
+  // The hive RPCs notifyScratch when a note lands on a pad. The actual
+  // sendResourceUpdated must run inside the agents-framework agent context, which a
+  // bare DO-to-DO RPC does NOT establish — so we schedule() it (schedule's callback
+  // runs alarm-driven, in context). Returns whether a client is attached, so the hive
+  // prunes dead sessions from its registry.
+  async notifyScratch(pad: string): Promise<boolean> {
+    let live = false;
+    try {
+      for (const c of (this as any).getConnections() as Array<{ state?: any }>)
+        if (c.state?._standaloneSse) { live = true; break; }
+    } catch {
+      live = true; // can't introspect connections → assume attached and emit anyway
+    }
+    if (!live) return false;
+    await this.schedule(1, "emitScratch" as keyof this, { pad });
+    return true;
+  }
+
+  async emitScratch(payload: { pad: string }): Promise<void> {
+    await this.server.server.sendResourceUpdated({ uri: uri(`scratchpad/${payload.pad}`) });
+  }
+
   async init() {
     const hive = this.getHive();
+
+    // Register for scratchpad push (best-effort; the hive prunes us on fanout if no
+    // client is attached, so no explicit deregister on close is needed).
+    try { await hive.registerSession((this.ctx as any).id.toString()); } catch { /* push is best-effort */ }
 
     // === Inject working memory into instructions ===
     const recentJson = await hive.getRecentActivity(10);
@@ -212,6 +239,20 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         if (parsed.error) {
           throw new Error(parsed.message);
         }
+        return {
+          contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
+        };
+      }
+    );
+
+    this.server.resource(
+      "scratchpad",
+      new ResourceTemplate(uri("scratchpad/{pad}"), {
+        list: undefined, // pads are open-ended; you read the one you're coordinating on
+      }),
+      { description: "A shared coordination pad — recent notes (newest first) posted by agents in neighboring sessions on this hive. Read to catch up; post with mutate create _scratchpad {pad, kind, body}.", mimeType: "application/json" },
+      async (u, { pad }) => {
+        const result = await hive.query("_scratchpad", JSON.stringify([`pad=${pad as string}`]), "", "-id", 50, false);
         return {
           contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
         };

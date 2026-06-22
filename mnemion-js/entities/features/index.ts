@@ -14,5 +14,7 @@ import type { Feature } from "./feature";
 import { documents } from "./documents/manifest";
 import { pages } from "./pages/manifest";
 import { systemTasks } from "./system-tasks/manifest";
+import { clipboards } from "./clipboards/manifest";
+import { scratchpad } from "./scratchpad/manifest";
 
-export const FEATURES: Feature[] = [documents, pages, systemTasks];
+export const FEATURES: Feature[] = [documents, pages, systemTasks, clipboards, scratchpad];

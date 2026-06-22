@@ -298,6 +298,10 @@ export class HiveDO extends DurableObject {
    *  (`ownerDataCtx` / `servedDataCtx`), so trust can never be dialed at a call
    *  site — there is no trust boolean to misremember. */
   private ctxFields(actor: string = OWNER_ACTOR): Omit<data.DataContext, "trusted"> {
+    // Per-context memo: clipboardFor runs on every create/update to ANY pattern, and a
+    // batch (≤BATCH_OPS) hits the same pattern repeatedly. A DataContext is request-
+    // scoped, so caching within it can't go stale (a clipboard edit lands in a later ctx).
+    const clipboardCache = new Map<string, data.ClipboardSpec | null>();
     return {
       db: this.db,
       actor,
@@ -315,6 +319,12 @@ export class HiveDO extends DurableObject {
         return meta;
       },
       patternClass: (name) => this.patternClass(name),
+      clipboardFor: (pattern) => {
+        if (clipboardCache.has(pattern)) return clipboardCache.get(pattern)!;
+        const spec = this.loadClipboard(pattern);
+        clipboardCache.set(pattern, spec);
+        return spec;
+      },
     };
   }
 
@@ -354,7 +364,46 @@ export class HiveDO extends DurableObject {
         } catch { return null; }
       },
       internalCreate: (pattern, d) => this.internalCreate(pattern, d, actor),
+      fanoutScratch: (pad) => this.ctx.waitUntil(this.fanoutScratch(pad)),
     };
+  }
+
+  // === Scratchpad push channel (HiveDO → SessionDO) ===
+  //
+  // The one reverse path in an otherwise SessionDO→HiveDO-only world. Sessions
+  // register their DO id here (on connect); a scratchpad post fans out by RPC-ing each
+  // live session's notifyScratch, which schedules the actual MCP push (the emit must
+  // run inside the agents-framework agent context — a bare RPC has none). A session
+  // that reports no attached client is pruned, so the registry self-heals.
+
+  private static readonly SESSIONS_KEY = "mcp_sessions";
+
+  async registerSession(id: string): Promise<void> {
+    const ids = new Set((await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? []);
+    if (ids.has(id)) return;
+    ids.add(id);
+    await this.ctx.storage.put(HiveDO.SESSIONS_KEY, [...ids]);
+  }
+
+  private async fanoutScratch(pad: string): Promise<void> {
+    const ids = (await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? [];
+    if (!ids.length) return;
+    const dead: string[] = [];
+    const mcp = (this.env as any).MCP_OBJECT as DurableObjectNamespace;
+    await Promise.all(ids.map(async (idStr) => {
+      try {
+        const did = mcp.idFromString(idStr);
+        const live = await (mcp.get(did) as any).notifyScratch(pad);
+        if (!live) dead.push(idStr);
+      } catch {
+        dead.push(idStr); // unreachable session — prune it
+      }
+    }));
+    if (dead.length) {
+      const ids2 = new Set((await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? []);
+      for (const d of dead) ids2.delete(d);
+      await this.ctx.storage.put(HiveDO.SESSIONS_KEY, [...ids2]);
+    }
   }
 
   /** The ONLY trusted write an effect may perform: a born-hashed create through the
@@ -378,6 +427,36 @@ export class HiveDO extends DurableObject {
   /** A pattern's class: "dataset" (structured records) or "knowledge" (default). */
   private patternClass(name: string): "knowledge" | "dataset" {
     return priming.getPatternClass(this.db, name);
+  }
+
+  /** The active clipboard bound to a target pattern (a validated job-dispatch form),
+   *  parsed from its _clipboards row, or null. Read at the mutate chokepoint via the
+   *  clipboardFor seam to gate submissions + derive progress. Defensive: a malformed
+   *  JSON column or a missing table (pre-boot) yields a safe partial/null spec. */
+  private loadClipboard(targetPattern: string): data.ClipboardSpec | null {
+    let rows: any[];
+    try {
+      rows = this.db.exec(
+        `SELECT name, target_pattern, fields, unique_on, cross_field, completion FROM _clipboards WHERE target_pattern = ? AND archived_at IS NULL LIMIT 1`,
+        targetPattern,
+      ).toArray();
+    } catch {
+      return null; // _clipboards not yet provisioned (pre-migration boot) — no binding
+    }
+    if (!rows.length) return null;
+    const r = rows[0];
+    const parse = <T,>(s: any, fallback: T): T => {
+      if (s == null) return fallback;
+      try { return JSON.parse(s) as T; } catch { return fallback; }
+    };
+    return {
+      name: r.name,
+      target_pattern: r.target_pattern,
+      fields: parse(r.fields, [] as Array<Record<string, unknown>>),
+      unique_on: parse(r.unique_on, [] as string[][]),
+      cross_field: parse(r.cross_field, [] as Array<Record<string, unknown>>),
+      completion: parse(r.completion, null),
+    };
   }
 
   async query(patternName: string, filterJson: string, facets: string, sortField: string, limit: number, countOnly: boolean, groupBy: string = "", aggregateJson: string = ""): Promise<string> {

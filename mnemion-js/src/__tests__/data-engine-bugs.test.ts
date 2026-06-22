@@ -359,6 +359,7 @@ describe("read-path errors return a generic message with no raw SQLite text", ()
       hasKernelVersion: () => true,
       facetMeta: () => ({ type: "text" }),
       patternClass: () => "knowledge",
+      clipboardFor: () => null,
       actor: "owner",
       trusted: true,
     };

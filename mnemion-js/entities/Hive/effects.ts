@@ -36,6 +36,11 @@ export interface EffectContext {
     pattern: string,
     data: Record<string, unknown>,
   ): Promise<{ entry?: any; error?: boolean; once?: Record<string, string> | null }>;
+  /** Fan a scratchpad post out to every live MCP session: nudges each subscriber's
+   *  client (notifications/resources/updated) so it re-reads the pad without polling.
+   *  Fire-and-forget (scheduled past the response); the scratchpad feature's only
+   *  reach into the core SessionDO↔HiveDO push channel. */
+  fanoutScratch(pad: string): void;
 }
 
 type Scratch = Record<string, unknown>;

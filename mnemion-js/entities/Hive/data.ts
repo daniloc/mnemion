@@ -19,11 +19,34 @@ import { getMemoryPolicy } from "./prime";
 import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { logError } from "../../shared/core/log";
+import { validateFieldValue, compareValues } from "./constraints";
+import { evaluateCompletion, type CompletionSpec } from "./completion";
 import {
   KERNEL_COLUMN_SET,
   CALLER_EXCLUDED_ON_CREATE,
   STRUCTURAL_KERNEL_COLUMNS,
 } from "./kernel-columns";
+
+/** A clipboard's validation + completion contract, parsed from a _clipboards row.
+ *  Bound to a target dataset pattern; fetched at the mutate chokepoint via
+ *  `DataContext.clipboardFor`. The clipboards feature owns the _clipboards pattern +
+ *  its definition hooks; the chokepoint here ENFORCES the contract per submission. */
+export interface ClipboardSpec {
+  name: string;
+  target_pattern: string;
+  /** Per-facet value rules: [{ facet, required?, pattern?, min?, max?, min_length?, max_length? }]. */
+  fields: Array<Record<string, unknown>>;
+  /** Composite uniqueness: array of facet-name arrays (dedupe-on-fill). */
+  unique_on: string[][];
+  /** Cross-field comparisons: [{ left_facet, op, right_facet | literal }]. */
+  cross_field: Array<Record<string, unknown>>;
+  /** Completion contract evaluated against the submission log (entities/Hive/completion.ts). */
+  completion: CompletionSpec | null;
+}
+
+/** One reported problem with a submission. The submission validator collects ALL of
+ *  these (never first-fail) so an agent fixes everything in one round-trip. */
+export interface SubmissionViolation { facet: string; message: string }
 
 // === Types ===
 
@@ -37,6 +60,10 @@ export interface DataContext {
   hasKernelVersion(patternName: string): boolean;
   facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
   patternClass(name: string): "knowledge" | "dataset";
+  /** The active clipboard bound to this pattern (a validated job-dispatch form), or
+   *  null. A clipboard-bound pattern's writes are SUBMISSIONS — validated collect-all
+   *  at the chokepoint, scored against the clipboard's completion contract. */
+  clipboardFor(pattern: string): ClipboardSpec | null;
   /** The member this write is attributed to (created_by/updated_by). */
   actor: string;
   /** Whether this context entered through a TRUSTED surface (the authenticated
@@ -156,6 +183,114 @@ function facetDefs(ctx: DataContext, pattern: string): FacetDef[] {
     required: !!r.required,
     hasDefault: r.default_value != null,
   }));
+}
+
+// === Clipboard submission validation (the deterministic form-fill gate) ===
+//
+// A clipboard-bound pattern's create/update IS a submission. This is the collect-all
+// gate: it runs EVERY check and gathers EVERY problem (never first-fail) so an agent —
+// or a fanout of agents all filling the same clipboard — fixes everything in one
+// round-trip. It REPLACES the dataset first-fail loop for clipboard-bound patterns
+// (so it owns type coercion too, reusing FACET_VALIDATORS). Identifiers reach SQL only
+// via quoteIdent; values are bound. Facets the clipboard references but the pattern no
+// longer has (schema drift) are reported as violations, never silently skipped.
+
+function validateSubmission(
+  ctx: DataContext,
+  patternName: string,
+  clip: ClipboardSpec,
+  data: any,
+  operation: string,
+): SubmissionViolation[] {
+  const violations: SubmissionViolation[] = [];
+  const add = (facet: string, message: string) => violations.push({ facet, message });
+
+  const fieldSpecByFacet = new Map<string, Record<string, unknown>>();
+  for (const f of clip.fields) if (typeof f.facet === "string") fieldSpecByFacet.set(f.facet, f);
+
+  // 1. Per supplied facet: existence, option membership, type coercion, value constraints.
+  for (const [key, val] of Object.entries(data)) {
+    if (STRUCTURAL_KERNEL_COLUMNS.includes(key)) continue;
+    const meta = ctx.facetMeta(patternName, key);
+    if (!meta) { add(key, `facet does not exist on "${patternName}"`); continue; }
+    if (val == null) continue;
+    if (meta.options && !meta.options.includes(String(val))) {
+      add(key, `must be one of: ${meta.options.join(", ")}`);
+      continue;
+    }
+    const coerce = FACET_VALIDATORS[meta.type];
+    if (coerce) {
+      const r = coerce(val);
+      if (!r.ok) { add(key, `(${meta.type}) ${r.error}`); continue; }
+      data[key] = r.value; // canonical form for storage + downstream comparison
+    }
+    const spec = fieldSpecByFacet.get(key);
+    if (spec) for (const msg of validateFieldValue(data[key], spec)) add(key, msg);
+  }
+
+  // 2. Required facets — the clipboard's `required:true` fields UNION the dataset's
+  //    own required-without-default facets. A referenced facet that no longer exists
+  //    is a loud violation (clipboard rot), not a skip.
+  const required = new Set<string>();
+  for (const f of clip.fields) if (f.required === true && typeof f.facet === "string") required.add(f.facet);
+  for (const def of facetDefs(ctx, patternName)) if (def.required && !def.hasDefault) required.add(def.name);
+  for (const facet of required) {
+    if (!ctx.facetMeta(patternName, facet)) { add(facet, `required by the clipboard but no longer exists on "${patternName}" — fix the clipboard`); continue; }
+    const present = Object.prototype.hasOwnProperty.call(data, facet);
+    const empty = data[facet] == null || data[facet] === "";
+    if (operation === "create" && (!present || empty)) add(facet, "is required");
+    else if (operation === "update" && present && empty) add(facet, "is required and cannot be cleared");
+  }
+
+  // 3. Cross-field comparisons — only when the operands are present (a partial update
+  //    that omits a side can't be judged; the row-complete create path catches it).
+  for (const rule of clip.cross_field) {
+    const left = String(rule.left_facet);
+    if (!ctx.facetMeta(patternName, left)) { add(left, `cross-field references a facet that no longer exists — fix the clipboard`); continue; }
+    if (!(left in data) || data[left] == null) continue;
+    let right: unknown;
+    if (rule.right_facet != null) {
+      const rf = String(rule.right_facet);
+      if (!ctx.facetMeta(patternName, rf)) { add(left, `cross-field references "${rf}" which no longer exists — fix the clipboard`); continue; }
+      if (!(rf in data) || data[rf] == null) continue;
+      right = data[rf];
+    } else {
+      right = rule.literal;
+    }
+    if (!compareValues(String(rule.op), data[left], right)) {
+      const rhs = rule.right_facet != null ? `${rule.right_facet}` : JSON.stringify(rule.literal);
+      add(left, `must be ${rule.op} ${rhs}`);
+    }
+  }
+
+  // 4. Composite uniqueness (dedupe-on-fill) — checks only when every facet in the
+  //    group is present. On update, exclude the row itself. A single DO serializes
+  //    writes, so the SELECT-then-INSERT is race-free across a concurrent fanout.
+  for (const group of clip.unique_on) {
+    if (!Array.isArray(group) || !group.length) continue;
+    if (!group.every((f) => f in data && data[f] != null)) continue;
+    if (!group.every((f) => ctx.facetMeta(patternName, f))) { add(group[0], `unique_on references a facet that no longer exists — fix the clipboard`); continue; }
+    try {
+      const params = group.map((f) => data[f]);
+      let sql = `SELECT 1 FROM ${quoteIdent(patternName)} WHERE ${group.map((f) => `${quoteIdent(f)} = ?`).join(" AND ")} AND archived_at IS NULL`;
+      if (operation === "update" && data.id != null) { sql += ` AND id != ?`; params.push(data.id); }
+      sql += ` LIMIT 1`;
+      if (ctx.db.exec(sql, ...params).toArray().length)
+        add(group.join("+"), `a non-archived entry with the same ${group.join(" + ")} already exists`);
+    } catch {
+      add(group.join("+"), `uniqueness check could not run`);
+    }
+  }
+
+  return violations;
+}
+
+/** Attach the derived completion progress to an accepted submission's result, so the
+ *  agent immediately knows the running tally and whether the job is done. Pure read —
+ *  every metric is recomputed from the live submission log (data-is-destiny). */
+function attachSubmissionProgress(ctx: DataContext, patternName: string, clip: ClipboardSpec, result: any): void {
+  result.submission = "accepted";
+  result.progress = evaluateCompletion({ db: ctx.db, table: patternName }, clip.completion);
 }
 
 // === Fuzzy pattern suggestion ===
@@ -485,6 +620,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   const kernelCtx: KernelContext = {
     patternExists: (name) => ctx.patternExists(name),
     facetMeta: (pattern, facet) => ctx.facetMeta(pattern, facet),
+    patternClass: (name) => ctx.patternClass(name),
     entryExists: (pattern, id) => ctx.entryExists(pattern, id),
     memberActive: (label) =>
       ctx.db.exec(
@@ -507,47 +643,68 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   if ('error' in ruled) return ruled;
   data = ruled;
 
-  // Size guard + facet validation
+  // Size guard + facet validation. A clipboard-bound pattern's write is a SUBMISSION:
+  // validateSubmission owns ALL of its validation (type coercion + value constraints +
+  // required + cross-field + uniqueness) and collects EVERY violation, so the existing
+  // dataset first-fail loop is replaced for these patterns — never double-run. `clip`
+  // is hoisted so the create/update cases below can attach derived progress on accept.
+  let clip: ClipboardSpec | null = null;
   if (operation === "create" || operation === "update") {
     const size = estimateRecordBytes(data);
     if (size > LIMITS.ENTRY_BYTES)
       return { error: true, message: `Entry too large: ~${Math.round(size / 1024)}KB exceeds the 1MB limit` };
 
-    const isDataset = ctx.patternClass(patternName) === "dataset";
+    clip = ctx.clipboardFor(patternName);
+    if (clip) {
+      const violations = validateSubmission(ctx, patternName, clip, data, operation);
+      if (violations.length)
+        // Fold every violation INTO the message: the MCP mutate tool surfaces only
+        // `message` on an error result, so the loud collect-all list has to ride in
+        // the text or the agent can't see WHICH fields failed. The structured
+        // `violations` array stays for the /api + web consumers that read the JSON.
+        return {
+          error: true,
+          submission: "rejected",
+          message: `Submission to "${patternName}" rejected — ${violations.length} problem(s): ${violations.map((v) => `${v.facet}: ${v.message}`).join("; ")}. Fix all and resubmit.`,
+          violations,
+        };
+    } else {
+      const isDataset = ctx.patternClass(patternName) === "dataset";
 
-    for (const [key, val] of Object.entries(data)) {
-      if (STRUCTURAL_KERNEL_COLUMNS.includes(key)) continue;
-      const meta = ctx.facetMeta(patternName, key);
-      if (!meta)
-        return { error: true, message: `Facet "${key}" does not exist on "${patternName}".${suggestFacet(key, patternName, ctx)}` };
-      if (val != null && meta.options && !meta.options.includes(String(val)))
-        return { error: true, message: `Invalid value "${val}" for "${key}". Options: ${meta.options.join(", ")}` };
+      for (const [key, val] of Object.entries(data)) {
+        if (STRUCTURAL_KERNEL_COLUMNS.includes(key)) continue;
+        const meta = ctx.facetMeta(patternName, key);
+        if (!meta)
+          return { error: true, message: `Facet "${key}" does not exist on "${patternName}".${suggestFacet(key, patternName, ctx)}` };
+        if (val != null && meta.options && !meta.options.includes(String(val)))
+          return { error: true, message: `Invalid value "${val}" for "${key}". Options: ${meta.options.join(", ")}` };
 
-      // Dataset patterns enforce types: coerce to canonical form or reject.
-      // Knowledge patterns leave the value untouched (types stay advisory).
-      if (isDataset && val != null) {
-        const validate = FACET_VALIDATORS[meta.type];
-        if (validate) {
-          const r = validate(val);
-          if (!r.ok)
-            return { error: true, message: `Invalid value for "${key}" on dataset "${patternName}" (${meta.type}): ${r.error}` };
-          data[key] = r.value;
+        // Dataset patterns enforce types: coerce to canonical form or reject.
+        // Knowledge patterns leave the value untouched (types stay advisory).
+        if (isDataset && val != null) {
+          const validate = FACET_VALIDATORS[meta.type];
+          if (validate) {
+            const r = validate(val);
+            if (!r.ok)
+              return { error: true, message: `Invalid value for "${key}" on dataset "${patternName}" (${meta.type}): ${r.error}` };
+            data[key] = r.value;
+          }
         }
       }
-    }
 
-    // Required-field enforcement for datasets: a clean message before SQL's
-    // NOT NULL would reject it. On create, every required facet without a
-    // default must be present; on update, a required facet can't be cleared.
-    if (isDataset) {
-      for (const def of facetDefs(ctx, patternName)) {
-        if (!def.required) continue;
-        const present = Object.prototype.hasOwnProperty.call(data, def.name);
-        const empty = data[def.name] == null || data[def.name] === "";
-        if (operation === "create" && !def.hasDefault && (!present || empty))
-          return { error: true, message: `Facet "${def.name}" is required on dataset "${patternName}".` };
-        if (operation === "update" && present && empty)
-          return { error: true, message: `Facet "${def.name}" is required on dataset "${patternName}" and cannot be cleared.` };
+      // Required-field enforcement for datasets: a clean message before SQL's
+      // NOT NULL would reject it. On create, every required facet without a
+      // default must be present; on update, a required facet can't be cleared.
+      if (isDataset) {
+        for (const def of facetDefs(ctx, patternName)) {
+          if (!def.required) continue;
+          const present = Object.prototype.hasOwnProperty.call(data, def.name);
+          const empty = data[def.name] == null || data[def.name] === "";
+          if (operation === "create" && !def.hasDefault && (!present || empty))
+            return { error: true, message: `Facet "${def.name}" is required on dataset "${patternName}".` };
+          if (operation === "update" && present && empty)
+            return { error: true, message: `Facet "${def.name}" is required on dataset "${patternName}" and cannot be cleared.` };
+        }
       }
     }
   }
@@ -591,6 +748,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           result.possible_overlap = overlap;
           result.overlap_guidance = `Advisory only — the entry was created. These facets are declared exclusive in this pattern's memory policy; if the new entry replaces one of them, link supersession: mutate(pattern: "link", data: {source: "${patternName}/${(row as any).id}", target: "${patternName}/{old_id}", label: "supersedes"}).`;
         }
+        if (clip) attachSubmissionProgress(ctx, patternName, clip, result);
         return result;
       }
 
@@ -643,12 +801,19 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         }
 
         const row = ctx.db.exec(`SELECT * FROM ${quoteIdent(patternName)} WHERE id = ?`, data.id).one();
-        return { operation: "update", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${data.id}`) };
+        const result: any = { operation: "update", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${data.id}`) };
+        if (clip) attachSubmissionProgress(ctx, patternName, clip, result);
+        return result;
       }
 
       case "patch": {
         if (!data.id) return { error: true, message: "id is required for patch" };
         if (!data.facet) return { error: true, message: "facet is required for patch" };
+        // A clipboard-bound pattern's row must satisfy the whole submission contract
+        // (required / cross-field / uniqueness over the full row). A single-facet patch
+        // can't re-validate that, so route edits through mutate update instead.
+        if (ctx.clipboardFor(patternName))
+          return { error: true, message: `"${patternName}" is clipboard-bound — edit via mutate "update" (which re-validates the whole row), not "patch".` };
         if (typeof data.match !== "string") return { error: true, message: "match (string to find) is required for patch" };
         if (typeof data.replacement !== "string") return { error: true, message: "replacement (string to insert) is required for patch" };
 

@@ -41,6 +41,8 @@ const EXPECTED: Record<string, WriteClass> = {
   _maintenance_passes: WriteClass.Open,
   _views: WriteClass.Open,
   _pages: WriteClass.Consent,
+  _clipboards: WriteClass.Open,
+  _scratchpad: WriteClass.Open,
   _long_term_fragments: WriteClass.Open,
   // System-only — never agent-writable
   _web_cache: WriteClass.System,
@@ -104,7 +106,7 @@ describe("derivations are consistent with write class, for every pattern", () =>
 // sets must match exactly, so a flag added/removed in the registry without
 // updating this expectation fails the suite (and vice versa).
 const EXPECTED_PRIME_INCLUDE = new Set(["_short_term_fragments", "_long_term_fragments", "_documents"]);
-const EXPECTED_AUDIT_EXEMPT = new Set(["_fragment_access_log", "_entry_access_log"]);
+const EXPECTED_AUDIT_EXEMPT = new Set(["_fragment_access_log", "_entry_access_log", "_scratchpad"]);
 
 describe("behavioral flags derive from the registry", () => {
   it("primeInclude set matches the declared recall surface", () => {

@@ -9,6 +9,7 @@
 //   MCP_TOKEN=$TOK node scripts/mcp-smoke.mjs
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const url = new URL(process.env.MCP_URL || "http://localhost:4281/mcp");
 const origin = url.origin;
@@ -76,6 +77,54 @@ if (changeId) {
 // 4) Bad format through MCP — Zod enum should now also bound `format`.
 const badFmt = await client.callTool({ name: "propose_change", arguments: { description: "bad", change: { type: "set_facet_format", pattern_name: "bookmarks", facet: "url", format: "hyperlink" } } });
 ok("invalid format rejected through MCP", badFmt.isError || /invalid|must be|enum/i.test(txt(badFmt)), txt(badFmt));
+
+// 5) Clipboards — a validated job-dispatch form. The whole agent loop runs through
+//    the real `mutate` tool: define a clipboard, fail a submission (loud collect-all),
+//    pass a submission (derived progress). Idempotent so it re-runs against a
+//    persisted dev hive. The bad-submission assertion guards the MCP-specific gap that
+//    the error result surfaces only `message` — so the violations must ride IN it.
+{
+  const prop2 = await client.callTool({ name: "propose_change", arguments: { description: "smoke leads", change: {
+    type: "create_pattern", pattern_name: "smoke_leads", pattern_description: "smoke", doctrine: "smoke",
+    pattern_class: "dataset", facets: [{ name: "email", type: "text" }, { name: "score", type: "integer" }],
+  } } });
+  try { const id = JSON.parse(txt(prop2)).change_id; if (id) await client.callTool({ name: "apply_change", arguments: { change_id: id } }); } catch { /* pattern already exists from a prior run */ }
+
+  const haveClip = await client.callTool({ name: "query", arguments: { pattern: "_clipboards", filter: ["target_pattern=smoke_leads"] } });
+  let bound = false; try { bound = (JSON.parse(txt(haveClip)).entries ?? []).length > 0; } catch { /* */ }
+  if (!bound) {
+    await client.callTool({ name: "mutate", arguments: { pattern: "_clipboards", operation: "create", data: {
+      name: "smoke_intake", target_pattern: "smoke_leads",
+      fields: JSON.stringify([{ facet: "email", required: true, pattern: "^[^@]+@[^@]+$" }, { facet: "score", min: 0, max: 100 }]),
+      completion: JSON.stringify({ require: "all", conditions: [{ metric: "count", op: ">=", value: 1 }] }),
+    } } });
+  }
+
+  const badSub = await client.callTool({ name: "mutate", arguments: { pattern: "smoke_leads", operation: "create", data: { email: "nope", score: 999 } } });
+  ok("clipboard submission rejected through MCP names every bad field", /rejected/.test(txt(badSub)) && /email/.test(txt(badSub)) && /score/.test(txt(badSub)), txt(badSub));
+
+  const goodSub = await client.callTool({ name: "mutate", arguments: { pattern: "smoke_leads", operation: "create", data: { email: `u${Date.now()}@x.co`, score: 50 } } });
+  ok("clipboard accepted submission returns derived progress through MCP", /"submission":\s*"accepted"/.test(txt(goodSub)) && /"metric":\s*"count"/.test(txt(goodSub)), txt(goodSub));
+}
+
+// 6) Scratchpad — cross-session PUSH. A watcher session watches a pad; the main
+//    client posts a note to it; the watcher must receive notifications/resources/updated
+//    for that pad (HiveDO fans out → watcher's SessionDO schedules sendResourceUpdated).
+{
+  const pad = `smoke${Date.now()}`;
+  const wTok = await mintToken();
+  const watcher = new Client({ name: "mcp-smoke-watcher", version: "1.0.0" });
+  await watcher.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: `Bearer ${wTok}` } } }));
+  let pushed = null;
+  watcher.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => { pushed = n.params?.uri ?? "(updated)"; });
+  // Reading the pad warms the watcher's standalone stream + ensures its session is registered.
+  await watcher.readResource({ uri: `mnemion://scratchpad/${pad}` });
+
+  await client.callTool({ name: "mutate", arguments: { pattern: "_scratchpad", operation: "create", data: { pad, kind: "note", body: "hi from smoke" } } });
+  for (let i = 0; i < 90 && !pushed; i++) await new Promise((r) => setTimeout(r, 100));
+  ok("scratchpad post pushes resources/updated to a watching session", pushed != null && String(pushed).includes(pad), `pushed=${pushed}`);
+  await watcher.close();
+}
 
 await client.close();
 console.log(failures ? `\n${failures} check(s) failed` : "\nall MCP checks passed");
