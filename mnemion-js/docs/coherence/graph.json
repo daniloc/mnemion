@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-06-22 17:28Z",
+  "generatedAt": "NORMALIZED-TIMESTAMP",
   "root": "mnemion-js",
-  "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
+  "absRoot": "NORMALIZED-ABSROOT",
   "nodes": [
     {
       "id": "c:.",
