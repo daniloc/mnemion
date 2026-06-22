@@ -106,6 +106,14 @@ jobs:
   mcp-smoke:
     name: live /mcp surface
     runs-on: ubuntu-latest
+    # `wrangler dev` eagerly opens the remote proxy session for the remote = true
+    # AI + Vectorize bindings AT BOOT — even under SKIP_EMBED (which only stops the
+    # worker from CALLING them), so it won't start without account auth. Give this
+    # job the same credentials; the proxy session is cheap and SKIP_EMBED keeps
+    # actual AI/Vectorize usage at zero.
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -123,8 +131,9 @@ jobs:
       - name: Build web SPA
         run: npm run build:web
 
-      # Start a local dev worker (DEV mode, seeded, embeddings skipped — no
-      # Cloudflare account or network needed), wait for it, then drive the real
+      # Start a local dev worker (DEV mode, seeded, embeddings skipped via
+      # SKIP_EMBED — the worker runs locally, but the remote = true bindings still
+      # need account auth to open their proxy at boot), wait for it, then drive the real
       # MCP protocol path: OAuth token -> SessionDO -> Zod -> consent gate ->
       # HiveDO. This is the surface that can pass /api+RPC tests yet break
       # through MCP, so it gets its own end-to-end check. Worker + smoke share
