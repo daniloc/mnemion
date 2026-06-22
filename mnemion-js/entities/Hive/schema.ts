@@ -678,8 +678,13 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
     try { db.exec(`DROP TABLE IF EXISTS "${old}"`); } catch {}
   }
-  db.exec(`DELETE FROM _objects WHERE name IN ('_auth_codes', '_upload_tokens', '_marketplace_tokens')`);
+  // Child rows BEFORE the parent: _fields.object_name REFERENCES _objects(name),
+  // so deleting the _objects row while _fields rows still point at it trips a
+  // FOREIGN KEY constraint and (running inside the ctor's blockConcurrencyWhile)
+  // bricks the DO on any hive that actually had these tables. See the v16 _canvases
+  // cleanup below for the same ordering, and the generic pattern-drop for the rule.
   db.exec(`DELETE FROM _fields WHERE object_name IN ('_auth_codes', '_upload_tokens', '_marketplace_tokens')`);
+  db.exec(`DELETE FROM _objects WHERE name IN ('_auth_codes', '_upload_tokens', '_marketplace_tokens')`);
 
   // --- v5b: add archived_at to _system_docs (was missing kernel column) ---
 
@@ -844,8 +849,13 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     try { db.exec(`DROP TRIGGER IF EXISTS "_audit__canvases_${op}"`); } catch {}
   }
   try { db.exec(`DROP TABLE IF EXISTS "_canvases"`); } catch {}
-  db.exec(`DELETE FROM _objects WHERE name = '_canvases'`);
+  // Child rows (_fields) BEFORE the parent (_objects): _fields.object_name
+  // REFERENCES _objects(name), so the reverse order trips a FOREIGN KEY constraint
+  // on any hive that had Canvas, and the throw escapes initializeSchema (run in the
+  // ctor's blockConcurrencyWhile) and bricks the DO. Fresh hives have neither row,
+  // so the order was silently harmless until a real upgrade. (Issue #10.)
   db.exec(`DELETE FROM _fields WHERE object_name = '_canvases'`);
+  db.exec(`DELETE FROM _objects WHERE name = '_canvases'`);
 
   // --- Feature-owned migrations ---
   //
