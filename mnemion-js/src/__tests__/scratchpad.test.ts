@@ -37,4 +37,21 @@ describe("scratchpad notes", () => {
     const beta = await read(store, "beta");
     expect(beta.entries.map((e: any) => e.body)).toEqual(["2"]);
   });
+
+  it("re-validates the pad slug on UPDATE, not just create", async () => {
+    const store = getStore();
+    const ok = await post(store, { pad: "proj", kind: "note", body: "hi" });
+    expect(ok.error).toBeUndefined();
+    // An Open pattern's update must re-run validation (onWrite) — repointing the pad to
+    // a non-slug must be rejected, not silently accepted.
+    const bad = await store.mutate("_scratchpad", "update", JSON.stringify({ id: ok.entry.id, pad: "bad slug!" })).then(JSON.parse);
+    expect(bad.error).toBe(true);
+  });
+
+  it("caps an over-large non-string body (not only string bodies)", async () => {
+    const store = getStore();
+    const big = await post(store, { pad: "proj", kind: "note", body: { blob: "x".repeat(70 * 1024) } });
+    expect(big.error).toBe(true);
+    expect(big.message).toMatch(/body exceeds/);
+  });
 });

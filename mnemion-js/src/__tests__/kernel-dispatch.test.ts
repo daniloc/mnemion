@@ -28,6 +28,7 @@ import {
 const ctx: KernelContext = {
   patternExists: () => true,
   facetMeta: () => ({ type: "text" }),
+  patternClass: () => "knowledge",
   entryExists: () => true,
   memberActive: () => true,
   entryField: () => null,

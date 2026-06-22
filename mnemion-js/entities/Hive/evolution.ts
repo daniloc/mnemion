@@ -197,6 +197,20 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         return `Pattern class applies to user patterns, not kernel pattern "${change.pattern_name}"`;
       if (!PATTERN_CLASSES.has(change.pattern_class))
         return `Invalid pattern_class "${change.pattern_class}". Use "knowledge" or "dataset".`;
+      // A clipboard requires a dataset-class target (so submitted values are coerced and
+      // the completion log aggregates soundly — clipboards/hooks.ts enforces it at bind
+      // time). Demoting a bound pattern to knowledge would break that invariant out from
+      // under the clipboard, so refuse it while a binding is active.
+      if (change.pattern_class === "knowledge") {
+        try {
+          const bound = ctx.db.exec(
+            `SELECT 1 FROM _clipboards WHERE target_pattern = ? AND archived_at IS NULL LIMIT 1`,
+            change.pattern_name,
+          ).toArray().length > 0;
+          if (bound)
+            return `Pattern "${change.pattern_name}" is bound by an active clipboard, which requires a dataset-class target. Archive the clipboard before demoting it to knowledge.`;
+        } catch { /* _clipboards absent (pre-migration) → no binding to protect */ }
+      }
       return null;
     },
     preview(change, preview) {

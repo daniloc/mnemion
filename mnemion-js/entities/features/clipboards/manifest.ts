@@ -9,7 +9,8 @@
 //                   partial unique index), folded into KERNEL_TABLES by composePatterns.
 //   hooks.onWrite → ./hooks.ts (the DEFINITION validator, fail-closed on unknown
 //                   constraint/metric/op keys), folded into kernel.ts's ON_WRITE.
-//   writePolicy   → ./security.ts (pure data: _clipboards write class = Open),
+//   writePolicy   → ./security.ts (pure data: _clipboards write class = Consent —
+//                   creation takes a human round-trip; see that file's rationale),
 //                   composed by entities/features/security.ts.
 //
 // The PER-SUBMISSION enforcement + DERIVED progress are NOT a manifest slot: they live

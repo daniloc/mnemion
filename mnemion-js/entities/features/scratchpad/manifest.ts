@@ -5,7 +5,8 @@
 //
 //   patterns      → ./schema.ts (pure data: _scratchpad DDL/facets + per-pad index),
 //                   folded into KERNEL_TABLES by composePatterns.
-//   hooks.onCreate→ ./hooks.ts (pad slug / kind / body-size validation), folded into
+//   hooks.onWrite → ./hooks.ts (pad slug / kind / body-size validation on create AND
+//                   update — an Open pattern's updates must re-validate too), folded into
 //                   kernel.ts's ON_CREATE.
 //   writePolicy   → ./security.ts (Open + auditExempt), composed by
 //                   entities/features/security.ts.
@@ -17,12 +18,12 @@
 
 import type { Feature } from "../feature";
 import { patterns as scratchpadPatterns } from "./schema";
-import { onCreate as scratchpadOnCreate } from "./hooks";
+import { onWrite as scratchpadOnWrite } from "./hooks";
 
 export const scratchpad: Feature = {
   name: "scratchpad",
   patterns: scratchpadPatterns,
-  hooks: { onCreate: scratchpadOnCreate },
+  hooks: { onWrite: scratchpadOnWrite },
   effects: {
     _scratchpad: {
       after(entry, _result, _parsed, operation, _scratch, ctx) {

@@ -138,7 +138,9 @@ becomes a SUBMISSION — validated collect-all (regex/range/length/cross-field/c
 uniqueness) and scored against a composable numeric completion contract. The feature
 DIR owns only the declaration (the `_clipboards` pattern/schema, the fail-closed
 DEFINITION hook in `hooks.ts` that rejects an unknown constraint/metric/op, and the
-`Open` write class). The ENFORCEMENT is core: two generic LEAF engines
+`Consent` write class — binding a contract to an existing shared dataset is an
+injection-reachable write-availability lever, so creation takes a human round-trip like
+`_members`/`_shared`). The ENFORCEMENT is core: two generic LEAF engines
 (`entities/Hive/{constraints,completion}.ts` — `CONSTRAINT_RULES`/`COMPARISON_OPS` and
 `COMPLETION_METRICS`) configured by the `_clipboards` DATA, invoked at the ONE mutate
 chokepoint (`executeMutate`) via the `clipboardFor` seam on `DataContext`. So the

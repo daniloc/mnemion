@@ -96,22 +96,17 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
   }
 
   // === Scratchpad push (HiveDO → this session → MCP client) ===
-  // The hive RPCs notifyScratch when a note lands on a pad. The actual
-  // sendResourceUpdated must run inside the agents-framework agent context, which a
-  // bare DO-to-DO RPC does NOT establish — so we schedule() it (schedule's callback
-  // runs alarm-driven, in context). Returns whether a client is attached, so the hive
-  // prunes dead sessions from its registry.
-  async notifyScratch(pad: string): Promise<boolean> {
-    let live = false;
-    try {
-      for (const c of (this as any).getConnections() as Array<{ state?: any }>)
-        if (c.state?._standaloneSse) { live = true; break; }
-    } catch {
-      live = true; // can't introspect connections → assume attached and emit anyway
-    }
-    if (!live) return false;
-    await this.schedule(1, "emitScratch" as keyof this, { pad });
-    return true;
+  // The hive RPCs notifyScratch when a note lands on a pad. sendResourceUpdated must run
+  // inside the agents-framework agent context (a bare DO-to-DO RPC has none), so we
+  // schedule() it — the callback runs alarm-driven, in context. `idempotent` coalesces a
+  // burst of posts to the SAME pad (same callback + payload) into a single nudge.
+  //
+  // We deliberately do NOT gate on "is a client attached right now": a live
+  // streamable-HTTP session whose standalone SSE has merely idled out would be wrongly
+  // judged dead. Instead this is best-effort — if no stream is attached, emitScratch's
+  // sendResourceUpdated is a harmless no-op and the client re-reads the pad on reconnect.
+  async notifyScratch(pad: string): Promise<void> {
+    await this.schedule(1, "emitScratch" as keyof this, { pad }, { idempotent: true });
   }
 
   async emitScratch(payload: { pad: string }): Promise<void> {

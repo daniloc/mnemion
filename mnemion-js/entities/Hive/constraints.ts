@@ -58,8 +58,18 @@ export function compareValues(op: string, a: unknown, b: unknown): boolean {
 // dataset FACET_VALIDATORS (clipboards bind dataset patterns), so `min`/`max` see a
 // number, not a numeric string.
 
+/** Max input length the `pattern` regex will run against. The pattern is agent-authored
+ *  and runs against fully caller-controlled input on every submission — reachable from
+ *  the UNAUTHENTICATED public ingress endpoint — so a catastrophic-backtracking pattern is
+ *  a latent ReDoS on the write hot path. Refusing to match an over-long value caps the
+ *  worst-case work (the definition hook also bounds the pattern source length). */
+export const PATTERN_MAX_INPUT = 4096;
+
 export const CONSTRAINT_RULES: Record<string, (value: unknown, param: unknown) => string | null> = {
   pattern: (value, param) => {
+    const s = String(value);
+    if (s.length > PATTERN_MAX_INPUT)
+      return `is too long to validate against a pattern (max ${PATTERN_MAX_INPUT} characters)`;
     let re: RegExp;
     try {
       re = new RegExp(String(param));
@@ -68,7 +78,7 @@ export const CONSTRAINT_RULES: Record<string, (value: unknown, param: unknown) =
       // path is unreachable in practice; treat a bad pattern as a violation, never a throw.
       return `pattern /${param}/ is not a valid regular expression`;
     }
-    return re.test(String(value)) ? null : `must match /${param}/`;
+    return re.test(s) ? null : `must match /${param}/`;
   },
   min: (value, param) => {
     const n = asNum(value);

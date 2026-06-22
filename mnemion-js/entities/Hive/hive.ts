@@ -298,10 +298,6 @@ export class HiveDO extends DurableObject {
    *  (`ownerDataCtx` / `servedDataCtx`), so trust can never be dialed at a call
    *  site — there is no trust boolean to misremember. */
   private ctxFields(actor: string = OWNER_ACTOR): Omit<data.DataContext, "trusted"> {
-    // Per-context memo: clipboardFor runs on every create/update to ANY pattern, and a
-    // batch (≤BATCH_OPS) hits the same pattern repeatedly. A DataContext is request-
-    // scoped, so caching within it can't go stale (a clipboard edit lands in a later ctx).
-    const clipboardCache = new Map<string, data.ClipboardSpec | null>();
     return {
       db: this.db,
       actor,
@@ -319,12 +315,12 @@ export class HiveDO extends DurableObject {
         return meta;
       },
       patternClass: (name) => this.patternClass(name),
-      clipboardFor: (pattern) => {
-        if (clipboardCache.has(pattern)) return clipboardCache.get(pattern)!;
-        const spec = this.loadClipboard(pattern);
-        clipboardCache.set(pattern, spec);
-        return spec;
-      },
+      // No memo: a batchMutate shares ONE DataContext across all ops, so a cache keyed
+      // by pattern would let an op that creates/archives a clipboard binding earlier in
+      // the SAME batch be invisible to a later submit op (validating against a stale or
+      // missing spec). loadClipboard is one indexed SELECT on a tiny table — cheap enough
+      // to run per write rather than risk intra-batch staleness.
+      clipboardFor: (pattern) => this.loadClipboard(pattern),
     };
   }
 
@@ -370,19 +366,30 @@ export class HiveDO extends DurableObject {
 
   // === Scratchpad push channel (HiveDO → SessionDO) ===
   //
-  // The one reverse path in an otherwise SessionDO→HiveDO-only world. Sessions
-  // register their DO id here (on connect); a scratchpad post fans out by RPC-ing each
-  // live session's notifyScratch, which schedules the actual MCP push (the emit must
-  // run inside the agents-framework agent context — a bare RPC has none). A session
-  // that reports no attached client is pruned, so the registry self-heals.
+  // The one reverse path in an otherwise SessionDO→HiveDO-only world. Sessions register
+  // their DO id here on connect; a post fans out by RPC-ing each registered session's
+  // notifyScratch, which SCHEDULES the actual MCP push (the emit must run inside the
+  // agents-framework agent context — a bare RPC has none).
+  //
+  // The push is a BEST-EFFORT nudge layered over the reliable, pollable
+  // mnemion://scratchpad/{pad} resource — a session with an open stream gets nudged; one
+  // without no-ops (and the client re-reads on reconnect). So we deliberately do NOT
+  // prune on "no stream right now" (that silently and permanently dropped live sessions
+  // whose SSE had merely idled out). The registry is instead BOUNDED to the most-recent
+  // MAX_SESSIONS ids — stale ids age out as new sessions arrive — and we only drop an id
+  // whose RPC actually throws. Per-pad subscription filtering (notify only subscribers of
+  // a pad) is the documented refinement; today every recent session is nudged and the
+  // client filters by pad URI.
 
   private static readonly SESSIONS_KEY = "mcp_sessions";
+  private static readonly MAX_SESSIONS = 256;
 
   async registerSession(id: string): Promise<void> {
-    const ids = new Set((await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? []);
-    if (ids.has(id)) return;
-    ids.add(id);
-    await this.ctx.storage.put(HiveDO.SESSIONS_KEY, [...ids]);
+    // Most-recent-last, deduped, capped — a bounded ring so the registry can't grow
+    // without bound on a long-lived hive (the prior leak: append-only, pruned only lazily).
+    const ids = ((await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? []).filter((x) => x !== id);
+    ids.push(id);
+    await this.ctx.storage.put(HiveDO.SESSIONS_KEY, ids.slice(-HiveDO.MAX_SESSIONS));
   }
 
   private async fanoutScratch(pad: string): Promise<void> {
@@ -393,16 +400,15 @@ export class HiveDO extends DurableObject {
     await Promise.all(ids.map(async (idStr) => {
       try {
         const did = mcp.idFromString(idStr);
-        const live = await (mcp.get(did) as any).notifyScratch(pad);
-        if (!live) dead.push(idStr);
+        await (mcp.get(did) as any).notifyScratch(pad);
       } catch {
-        dead.push(idStr); // unreachable session — prune it
+        dead.push(idStr); // a malformed/unroutable id — drop it (NOT "no stream attached")
       }
     }));
     if (dead.length) {
-      const ids2 = new Set((await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? []);
-      for (const d of dead) ids2.delete(d);
-      await this.ctx.storage.put(HiveDO.SESSIONS_KEY, [...ids2]);
+      const set = new Set((await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? []);
+      for (const d of dead) set.delete(d);
+      await this.ctx.storage.put(HiveDO.SESSIONS_KEY, [...set]);
     }
   }
 
@@ -445,17 +451,21 @@ export class HiveDO extends DurableObject {
     }
     if (!rows.length) return null;
     const r = rows[0];
-    const parse = <T,>(s: any, fallback: T): T => {
+    // A column that won't parse marks the spec CORRUPT (validateSubmission then rejects
+    // every submission — fail closed) instead of silently degrading to an empty rule.
+    let corrupt: string | undefined;
+    const parse = <T,>(col: string, s: any, fallback: T): T => {
       if (s == null) return fallback;
-      try { return JSON.parse(s) as T; } catch { return fallback; }
+      try { return JSON.parse(s) as T; } catch { corrupt = corrupt ?? col; return fallback; }
     };
     return {
       name: r.name,
       target_pattern: r.target_pattern,
-      fields: parse(r.fields, [] as Array<Record<string, unknown>>),
-      unique_on: parse(r.unique_on, [] as string[][]),
-      cross_field: parse(r.cross_field, [] as Array<Record<string, unknown>>),
-      completion: parse(r.completion, null),
+      fields: parse("fields", r.fields, [] as Array<Record<string, unknown>>),
+      unique_on: parse("unique_on", r.unique_on, [] as string[][]),
+      cross_field: parse("cross_field", r.cross_field, [] as Array<Record<string, unknown>>),
+      completion: parse("completion", r.completion, null),
+      corrupt,
     };
   }
 
