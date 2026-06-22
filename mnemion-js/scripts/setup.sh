@@ -54,6 +54,17 @@ echo ""
 echo "Setting master secret..."
 printf '%s' "$SECRET" | npx wrangler secret put MNEMION_SECRET 2>&1 | grep -v "^$"
 
+# === Build bundles ===
+# The worker imports the compiled MCP render fragment from dist/fragment (via the
+# [[rules]] .client.txt import) and serves the React SPA from dist/web (the [assets]
+# binding). Neither exists on a clean checkout, so a raw `wrangler deploy` fails on
+# the unresolved import / missing assets dir. `npm run deploy` builds both; setup
+# deploys directly, so build them here first.
+echo ""
+echo "Building bundles..."
+npm run build:pages
+npm run build:web
+
 # === Deploy ===
 echo ""
 echo "Deploying..."
