@@ -8,5 +8,59 @@
   "test": ["npx", "vitest", "run", "-t"],
   "testMatch": "[1-9][0-9]* passed",
   "language": "typescript",
-  "platform": "cloudflare"
+  "platform": "cloudflare",
+
+  "sources": ["entities", "shared", "src"],
+  "testDir": "__tests__",
+  "conventions": {
+    "seed": ["seal", "sealAll", "servedQuery", "currentHost", "inertHeaders", "scopeMatches", "applyKernelRules", "normalizeHost", "writeClass"],
+    "dismissed": {
+      "escapeXml": "chokepoint-shaped HTML-escape guard — covered by the lint-sinks ratchet (coarse; quoteIdent-style enshrinement is the structural upgrade)",
+      "isValidColumn": "chokepoint-shaped SQL-identifier guard — covered by the lint-sinks ratchet",
+      "escapeLike": "chokepoint-shaped LIKE-escape guard — covered by the lint-sinks ratchet",
+      "sealAll": "covered by the egress-sensitivity boundary (SENSITIVE_COLUMNS / verifyEgressTotality)",
+      "isDevAutoApprove": "covered by auth-fail-closed.test.ts (the name heuristic missed its describe)",
+      "isPrivateIPv4": "internal helper of isBlockedFederationHost — covered by the SSRF block-host totality",
+      "normalizeHost": "feeds isBlockedFederationHost + the federation fetch — covered transitively by SSRF + federation tests",
+      "isMemberActive": "enforced inside the applyKernelRules kernel-hook chokepoint, not at scattered sites",
+      "ensureAuditTriggers": "idempotent infra setup, not a fail-open guard",
+      "verifyFieldsIntegrity": "a boot integrity verifier (itself a check), not a remembered guard",
+      "hasPasskey": "a read ('does a passkey exist') used to choose UI, not a security gate",
+      "hasFacet": "a read ('does this facet exist on the pattern') used for validation messages — the write/read boundary is the trusted flag + writeClass + quoteIdent chokepoints, not this helper"
+    }
+  },
+  "atlas": {
+    "charts": {
+      "owner-trusted": "Full kernel access — the ownerDataCtx capability (the only trusted:true reader/writer).",
+      "served-untrusted": "Public reads + ingress/upload writes — the servedDataCtx capability (trusted:false).",
+      "agent-mcp": "The MCP tool surface — agent input, consent-gated, never trusted with the kernel.",
+      "public-egress": "Served HTTP responses (/o /p /f) and the /ws broadcast — leaves the DO in the clear.",
+      "federated": "Cross-hive resolve over the network — a sovereign foreign hive.",
+      "storage": "The SQLite / R2 substrate beneath every chart."
+    },
+    "transitions": {
+      "ownerDataCtx": { "from": "served-untrusted", "to": "owner-trusted", "security": true, "anchoredBy": "query", "translates": "raises trust to kernel-full — the sole trusted:true capability; structurally the only door up" },
+      "servedDataCtx": { "from": "owner-trusted", "to": "served-untrusted", "security": true, "anchoredBy": "query", "translates": "lowers to trusted:false — an untrusted ctx may neither read nor write a kernel pattern" },
+      "query": { "from": "served-untrusted", "to": "storage", "security": true, "translates": "refuses a kernel-pattern READ from an untrusted ctx (the symmetric read half of the trust flag)" },
+      "applyKernelRules": { "from": "agent-mcp", "to": "storage", "security": true, "translates": "applies ON_CREATE/ON_WRITE/IMMUTABLE kernel hooks before the row lands — forged/immutable fields refused" },
+      "writeClass": { "from": "agent-mcp", "to": "storage", "security": true, "translates": "resolves a pattern's write-class (User/System/Internal) — a System/Internal pattern is not agent-writable" },
+      "SENSITIVE_COLUMNS": { "from": "storage", "to": "public-egress", "security": true, "translates": "declares secret/redact columns — born-hashed at mint and stripped by seal on every outward emission" },
+      "sealAll": { "from": "storage", "to": "public-egress", "security": true, "anchoredBy": "SENSITIVE_COLUMNS", "translates": "strips SENSITIVE_COLUMNS from rows before they leave the DO (every served emission routes through it)" },
+      "inertHeaders": { "from": "served-untrusted", "to": "public-egress", "security": true, "translates": "stamps Content-Security-Policy: sandbox so agent-authored egress can't execute as first-party script" },
+      "denyUnlessBearerScope": { "from": "public-egress", "to": "served-untrusted", "security": true, "translates": "refuses an unlisted served read unless the request carries a bearer token whose scope matches" },
+      "isBroadTokenScope": { "from": "agent-mcp", "to": "owner-trusted", "security": true, "translates": "recognizes broad token scopes so minting one is consent-gated — an agent can't silently mint '*' standing access" },
+      "findUngatedCredentialMints": { "from": "agent-mcp", "to": "owner-trusted", "security": true, "translates": "proves every secret-minting pattern's create is consent-gated — a misclassified patch_only minter fails the build" },
+      "isBlockedFederationHost": { "from": "owner-trusted", "to": "federated", "security": true, "translates": "blocks loopback/private/link-local/metadata hosts outright — they can't be allow-listed or token-leaked-to" },
+      "mintSecrets": { "from": "agent-mcp", "to": "storage", "security": true, "anchoredBy": "SENSITIVE_COLUMNS", "translates": "generates secret columns as a digest BEFORE insert — a read yields a hash, never a usable bearer" },
+      "currentHost": { "from": "public-egress", "to": "owner-trusted", "security": true, "anchoredBy": "resolveHost", "translates": "returns WORKER_HOST and IGNORES the inbound Host — a spoofed Host can't poison an owner capability URL" },
+      "quoteIdent": { "from": "agent-mcp", "to": "storage", "security": true, "translates": "quotes a SQL identifier (pattern/column) before interpolation — beneath the kernel-column allow-lists" }
+    },
+    "nonTransition": {
+      "PATTERN_EFFECTS": "registry-completeness within storage (post-mutate effects), not a trust crossing",
+      "FACET_RESERVED_COLUMNS": "facet/kernel-column partition at propose_change — a naming-collision totality, not a trust crossing",
+      "findStoredDerivedAggregates": "data-is-destiny no-hybrid schema property — a doctrine ratchet over the schema, not a trust crossing",
+      "TOOLS": "tool-registry SSOT reconciliation (Session) — a declaration-totality, not a trust crossing"
+    },
+    "knownPending": []
+  }
 }
