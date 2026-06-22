@@ -264,7 +264,11 @@ export class HiveDO extends DurableObject {
       ).toArray();
       if (rows.length === 0) return this.errorJson(`Entry ${entryId} not found in "${patternName}"`);
 
-      const entry = rows[0] as Record<string, unknown>;
+      // seal: resolve/getEntry serializes this row straight to the MCP/api client (and
+      // into agent transcripts) — strip secret + redact columns (e.g. _documents.r2_key,
+      // which unlike a secret is NOT born-hashed and seal is its only protection) so a
+      // redact-classified column never egresses, per the egress-sensitivity boundary.
+      const entry = seal(patternName, rows[0] as Record<string, unknown>);
       const result: any = { pattern: patternName, entry };
 
       // Superseded entries are annotated, never hidden — the chain stays navigable
@@ -674,6 +678,13 @@ export class HiveDO extends DurableObject {
           content, constraints.target_id
         );
       }
+
+      // The target can be archived in the token's 15-min window (it existed at mint).
+      // A 0-row UPDATE means nothing was written — fail loudly and DON'T consume the
+      // single-use token, instead of reporting uploaded:true on a silent no-op write.
+      const changed = (this.db.exec("SELECT changes() as c").one() as { c: number }).c;
+      if (changed === 0)
+        return this.errorJson(`Upload target ${constraints.target_id} in "${constraints.target_pattern}" no longer exists or is archived — nothing was written; the upload token was not consumed.`);
 
       if (this.hasKernelVersion(constraints.target_pattern)) {
         try {
@@ -1163,25 +1174,39 @@ export class HiveDO extends DurableObject {
   }
 
   async seedVectors(): Promise<string> {
+    // Each embed is ~2 subrequests (Workers AI + Vectorize). A fully sequential loop over
+    // every entry blows the Workers subrequest/CPU/duration limits on a non-trivial hive
+    // and the RPC hangs then fails. So: cap the work PER RUN (well under the ~1000
+    // subrequest cap), run it with bounded concurrency, and report `remaining` so a large
+    // hive is seeded across repeated calls instead of one doomed call.
     const ctx = this.primeCtx();
+    const MAX_PER_RUN = 400;
+    const CONCURRENCY = 8;
+
     const patterns = this.db.exec(
       "SELECT name FROM _objects WHERE archived_at IS NULL ORDER BY name"
     ).toArray() as { name: string }[];
 
-    let total = 0;
+    const pending: { pattern: string; id: number }[] = [];
     for (const pat of patterns) {
       try {
         const ids = this.db.exec(
           `SELECT id FROM "${pat.name}" WHERE archived_at IS NULL`
         ).toArray() as { id: number }[];
-        for (const row of ids) {
-          await priming.embedEntry(ctx, pat.name, row.id);
-          total++;
-        }
+        for (const row of ids) pending.push({ pattern: pat.name, id: row.id });
       } catch { /* table may not exist yet */ }
     }
 
-    return JSON.stringify({ seeded: true, vectors: total });
+    const batch = pending.slice(0, MAX_PER_RUN);
+    let seeded = 0;
+    for (let i = 0; i < batch.length; i += CONCURRENCY) {
+      const slice = batch.slice(i, i + CONCURRENCY);
+      const results = await Promise.allSettled(slice.map((e) => priming.embedEntry(ctx, e.pattern, e.id)));
+      seeded += results.filter((r) => r.status === "fulfilled").length;
+    }
+
+    const remaining = Math.max(0, pending.length - batch.length);
+    return JSON.stringify({ seeded, total: pending.length, remaining, complete: remaining === 0 });
   }
 
   // === Helpers ===

@@ -105,6 +105,14 @@ const LIMITS = {
 
 export { LIMITS };
 
+/** Clamp a caller-supplied row limit into [1, QUERY_ROWS]. A non-positive value (0, a
+ *  negative, NaN) falls back to `dflt` — NOT passed through: SQLite treats `LIMIT -1` as
+ *  UNLIMITED, so a negative limit would defeat the response-size cap entirely. */
+function clampLimit(limit: number | undefined, dflt: number): number {
+  const n = typeof limit === "number" && limit > 0 ? limit : dflt;
+  return Math.min(n, LIMITS.QUERY_ROWS);
+}
+
 function estimateRecordBytes(data: Record<string, unknown>): number {
   let bytes = 0;
   for (const v of Object.values(data)) {
@@ -150,15 +158,27 @@ function parseFilterJson(filterJson: string): string[] | null {
 
 type Coerce = { ok: true; value: unknown } | { ok: false; error: string };
 
+// A finite number from a number, or from a NON-EMPTY numeric string — never via
+// Number("")/Number("  ")/Number([]) which all coerce to 0 and would silently write 0
+// for an empty/blank/array value (corrupting sums and defeating required-field checks).
+const toFiniteNumber = (v: unknown): number | null => {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+};
+
 const FACET_VALIDATORS: Record<string, (v: unknown) => Coerce> = {
   text: (v) => ({ ok: true, value: typeof v === "string" ? v : String(v) }),
   number: (v) => {
-    const n = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, error: `expected a number, got ${JSON.stringify(v)}` };
+    const n = toFiniteNumber(v);
+    return n !== null ? { ok: true, value: n } : { ok: false, error: `expected a number, got ${JSON.stringify(v)}` };
   },
   integer: (v) => {
-    const n = typeof v === "number" ? v : Number(v);
-    return Number.isInteger(n) ? { ok: true, value: n } : { ok: false, error: `expected an integer, got ${JSON.stringify(v)}` };
+    const n = toFiniteNumber(v);
+    return n !== null && Number.isInteger(n) ? { ok: true, value: n } : { ok: false, error: `expected an integer, got ${JSON.stringify(v)}` };
   },
   boolean: (v) => {
     if (typeof v === "boolean") return { ok: true, value: v ? 1 : 0 };
@@ -464,7 +484,7 @@ export function query(
     sql += ` ORDER BY ${quoteIdent(col)} ${desc ? "DESC" : "ASC"}`;
   }
 
-  const clampedLimit = Math.min(limit || 100, LIMITS.QUERY_ROWS);
+  const clampedLimit = clampLimit(limit, 100);
   sql += ` LIMIT ${clampedLimit}`;
 
   try {
@@ -494,7 +514,9 @@ function parseFilter(
   patternName: string,
   expr: string,
 ): { clause: string; bindings: string[] } | string | null {
-  const match = expr.match(/^(\w+)(\|=|=|!=|>=|<=|>|<|~)(.+)$/);
+  // Field grammar must match IDENTIFIER_RE (which permits hyphens) — `\w+` excluded a
+  // hyphen, so a legally-named hyphenated facet (e.g. `due-date`) was unfilterable.
+  const match = expr.match(/^([a-zA-Z_][\w-]*)(\|=|=|!=|>=|<=|>|<|~)(.+)$/);
   if (!match) return null;
   const [, field, op, value] = match;
   if (!isValidColumn(ctx, patternName, field))
@@ -603,7 +625,7 @@ function aggregate(
     sql += ` ORDER BY "${col}" ${desc ? "DESC" : "ASC"}`;
   }
 
-  sql += ` LIMIT ${Math.min(limit || 100, LIMITS.QUERY_ROWS)}`;
+  sql += ` LIMIT ${clampLimit(limit, 100)}`;
 
   try {
     const rows = ctx.db.exec(sql, ...bindings).toArray();
@@ -1011,7 +1033,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 // === Search ===
 
 export function search(ctx: DataContext, term: string, objectsJson: string, limit_: number): string {
-  const limit = Math.min(limit_ || 20, LIMITS.QUERY_ROWS);
+  const limit = clampLimit(limit_, 20);
   let targetObjects = objectsJson
     ? JSON.parse(objectsJson) as string[]
     : (ctx.db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[]).map((r: any) => r.name);

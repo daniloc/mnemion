@@ -21,8 +21,8 @@ import type { KernelContext, CreateHook, ImmutableRule } from "../../Hive/kernel
 
 export const immutable: Record<string, ImmutableRule> = {
   _documents: {
-    fields: ["r2_key", "size", "stored_at", "extracted_text", "extraction_status"],
-    message: "r2_key, size, stored_at, extracted_text, and extraction_status are managed by the system on upload/extraction — they cannot be set via mutate.",
+    fields: ["r2_key", "size", "content_type", "stored_at", "extracted_text", "extraction_status"],
+    message: "r2_key, size, content_type, stored_at, extracted_text, and extraction_status are managed by the system on upload/extraction — they cannot be set via mutate.",
   },
 };
 

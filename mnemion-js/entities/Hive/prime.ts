@@ -14,7 +14,7 @@
 
 import { uri } from "../../shared/core/constants";
 import { logWarn } from "../../shared/core/log";
-import { isKernelPattern, primeIncluded } from "./policy";
+import { isKernelPattern, primeIncluded, seal } from "./policy";
 
 // === Types ===
 
@@ -450,7 +450,10 @@ export function followLinks(
             linked.push({
               pattern: link.target_pattern,
               id: link.target_id,
-              entry: rows[0] as Record<string, unknown>,
+              // seal: linked rows ride into the prime / resolve response (and agent
+              // transcripts) — strip secret + redact columns so a link target never
+              // egresses a redact-classified column, same boundary as getEntry.
+              entry: seal(link.target_pattern, rows[0] as Record<string, unknown>),
               uri: uri(`entry/${link.target_pattern}/${link.target_id}`),
               label: link.label || undefined,
             });
