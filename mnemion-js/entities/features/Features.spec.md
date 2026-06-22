@@ -26,6 +26,26 @@ Per-feature manifests that FEED the scattered registries from one declaration; c
 - passes test "requires a title"
 - passes test "refuses agent-supplied blob bookkeeping"
 - passes test "refuses a page block that sources a kernel pattern"
+- clipboards/manifest.ts exists at this node
+- clipboards/schema.ts exists at this node
+- clipboards/hooks.ts exists at this node
+- clipboards/security.ts exists at this node
+- index.ts imports ./clipboards/manifest
+- clipboards/manifest.ts imports ./schema
+- clipboards/manifest.ts imports ./hooks
+- passes test "clipboard constraint and metric keysets are total"
+- passes test "a clipboard submission collects every field violation"
+- passes test "patch on a clipboard-bound pattern is rejected"
+- passes test "clipboard completion progress is derived from the submission log"
+- scratchpad/manifest.ts exists at this node
+- scratchpad/schema.ts exists at this node
+- scratchpad/hooks.ts exists at this node
+- scratchpad/security.ts exists at this node
+- index.ts imports ./scratchpad/manifest
+- scratchpad/manifest.ts imports ./schema
+- scratchpad/manifest.ts imports ./hooks
+- passes test "a scratchpad note requires a pad slug and a kind"
+- passes test "scratchpad notes are scoped and read newest-first by pad"
 
 ## why
 
@@ -109,3 +129,41 @@ spans egress/publications/documents/ingress, so it isn't split per-feature); the
 remaining registries (`tools`, `systemDocs`) keep ONE source of truth each until
 they adopt their composer (documented landing spots in `compose.ts`), so this
 migration adds the seam without duplicating definitions.
+
+`clipboards` is the feature that EXTENDS THE CORE CHOKEPOINT. Unlike `documents`/
+`pages` (which add only effects/routes/their own pattern + hooks), a clipboard is a
+validated job-dispatch form: a `_clipboards` row binds a reusable, deterministically-
+validated form to a target dataset pattern, and every create/update on that pattern
+becomes a SUBMISSION — validated collect-all (regex/range/length/cross-field/composite
+uniqueness) and scored against a composable numeric completion contract. The feature
+DIR owns only the declaration (the `_clipboards` pattern/schema, the fail-closed
+DEFINITION hook in `hooks.ts` that rejects an unknown constraint/metric/op, and the
+`Open` write class). The ENFORCEMENT is core: two generic LEAF engines
+(`entities/Hive/{constraints,completion}.ts` — `CONSTRAINT_RULES`/`COMPARISON_OPS` and
+`COMPLETION_METRICS`) configured by the `_clipboards` DATA, invoked at the ONE mutate
+chokepoint (`executeMutate`) via the `clipboardFor` seam on `DataContext`. So the
+chokepoint covers every write path — MCP mutate AND public ingress — and a fanout of
+agents all filling one clipboard is race-free (a single DO serializes the
+SELECT-then-INSERT, so composite-uniqueness dedupe holds and each submission's derived
+progress is a consistent snapshot). The fail-closed knot is a double-entry TOTALITY
+oracle: the constraint/metric/op keys the definition hook ACCEPTS must equal the keys
+the engines ENFORCE — a rule that could be stored but silently isn't checked (fail-OPEN)
+fails the suite. Progress is DERIVED from the submission log every read (data-is-destiny:
+`count`/`sources_covered`/`days_since_last` are SQL aggregates, never stored counters).
+`patternClass` joined `KernelContext` so the definition hook can require a dataset-class
+target (guaranteeing the chokepoint's type coercion runs before numeric comparison).
+
+`scratchpad` is the pub/sub coordination feature: a `_scratchpad` row is a NOTE posted to
+a named shared PAD, so agents in neighboring sessions on one hive can coordinate a fanout
+(claim/done/found) without polling. The DATA half is doctrine-standard — an `Open`,
+`auditExempt`, append-only kernel pattern (coordination chatter, not durable memory, so
+NOT `primeInclude` and GC'd at 30 days in the boot sweep, mirroring `_entry_access_log`)
+with an `onCreate` hook validating the pad slug + kind. Reads are free: the
+`mnemion://scratchpad/{pad}` resource is an ordinary `query` (newest-first by pad), and
+agents can poll `query _scratchpad pad=X id>cursor` to catch up. The PUSH half (Phase 2)
+extends CORE — there is no HiveDO→SessionDO channel today, so a post fans out via an
+effect that RPCs each live session's `notifyScratch`, which must emit `sendResourceUpdated`
+from WITHIN the agents-framework agent context (a bare DO-to-DO RPC has none — confirmed
+by spike). `schedule()` is the supported in-context entrypoint, so the emit is a
+near-immediate scheduled task. The session registry + the per-pad `resources/subscribe`
+handlers are the new SessionDO↔HiveDO seam this feature owns.

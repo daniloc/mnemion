@@ -901,6 +901,14 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     );
   } catch {}
 
+  // --- GC: scratchpad notes older than 30 days (coordination, not durable memory) ---
+
+  try {
+    db.exec(
+      `DELETE FROM "_scratchpad" WHERE created_at < datetime('now', '-30 days')`
+    );
+  } catch {}
+
   // --- GC: cap _mutation_log to last 1000 rows (single DELETE, no full read) ---
 
   try {

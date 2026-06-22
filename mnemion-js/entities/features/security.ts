@@ -29,6 +29,8 @@ import {
   sensitiveColumns as documentsSensitiveColumns,
 } from "./documents/security";
 import { writePolicy as pagesWritePolicy } from "./pages/security";
+import { writePolicy as clipboardsWritePolicy } from "./clipboards/security";
+import { writePolicy as scratchpadWritePolicy } from "./scratchpad/security";
 
 /** One feature's complete pure-data security contribution: its write-class rows
  *  and its egress-sensitive columns, in a SINGLE object. Both halves of a feature's
@@ -51,6 +53,8 @@ export interface FeatureSecurity {
 const FEATURE_SECURITY: FeatureSecurity[] = [
   { name: "documents", writePolicy: documentsWritePolicy, sensitiveColumns: documentsSensitiveColumns },
   { name: "pages", writePolicy: pagesWritePolicy }, // pages declares no sensitive column today
+  { name: "clipboards", writePolicy: clipboardsWritePolicy }, // form metadata; no sensitive column
+  { name: "scratchpad", writePolicy: scratchpadWritePolicy }, // coordination notes; no sensitive column
 ];
 
 /** Fold one slot (`writePolicy` | `sensitiveColumns`) of every FeatureSecurity into

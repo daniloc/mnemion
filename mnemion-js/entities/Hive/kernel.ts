@@ -31,6 +31,9 @@ import { composeOnCreate, composeOnWrite, composeImmutable } from "../features/c
 export interface KernelContext {
   patternExists(name: string): boolean;
   facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
+  /** A pattern's class — "dataset" (structured records) or "knowledge" (default).
+   *  Used by the clipboards definition hook to require a dataset-class target. */
+  patternClass(name: string): "knowledge" | "dataset";
   entryExists(pattern: string, id: number): boolean;
   /** An active, non-archived member with this label exists in the roster. */
   memberActive(label: string): boolean;
