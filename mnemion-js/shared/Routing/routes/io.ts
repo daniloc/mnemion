@@ -301,6 +301,16 @@ export const receiveInput: RouteHandler = async (ctx) => {
   );
   const parsed = JSON.parse(result);
 
+  // Unauthenticated public boundary: never echo raw DB error detail. A write
+  // throw (UNIQUE/CHECK/type constraint) carries `internal: true` and SQLite
+  // text that names the target pattern/facet — collapse it so this write-only
+  // endpoint can't be probed for its schema. Structured validation errors (no
+  // `internal` flag, e.g. "Facet X is required") still pass through to help
+  // legitimate posters.
+  if (parsed.error && parsed.internal) {
+    return Response.json({ error: true, message: "Could not process input." }, { status: 400 });
+  }
+
   return Response.json(parsed, { status: parsed.error ? 400 : 201 });
 };
 
