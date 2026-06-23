@@ -1025,8 +1025,13 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
     // A DB write throw (constraint, disk, etc.) becomes the same structured
     // error every read returns — symmetric with query/aggregate — and is logged
     // with the write's context so the failure isn't lost at the RPC boundary.
+    // `internal: true` marks this as raw, unexpected error detail (SQLite
+    // constraint text leaks pattern/facet names): the trusted agent plane keeps
+    // the detailed message, but the unauthenticated ingress boundary collapses
+    // any `internal` error to a generic one (routes/io.ts receiveInput) so a
+    // public write-only endpoint can't be probed for its target schema.
     logError("mutate.write_failed", err, { pattern: patternName, operation, id: data?.id });
-    return { error: true, message: `Mutate failed: ${err.message}` };
+    return { error: true, internal: true, message: `Mutate failed: ${err.message}` };
   }
 }
 

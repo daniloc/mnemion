@@ -1,4 +1,4 @@
-import { env, SELF } from "cloudflare:test";
+import { env, SELF, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 
 describe("HTTP Routes (unauthenticated)", () => {
@@ -124,5 +124,75 @@ describe("Shared Entry Routes", () => {
       headers: { "If-None-Match": etag },
     });
     expect(res2.status).toBe(304);
+  });
+});
+
+describe("Ingress error sanitization", () => {
+  // A public, unauthenticated POST /i/{path} that provokes an unexpected DB throw
+  // must NOT echo the raw SQLite message — that text names the target pattern's
+  // columns/constraints and would let an attacker probe a write-only endpoint's
+  // schema. The boundary collapses any `internal`-tagged error (routes/io.ts) to
+  // a flat message; structured validation errors still pass through.
+  it("collapses a raw DB error to a generic message (no schema leak)", async () => {
+    const id = env.MNEMION_HIVE.idFromName("user:owner");
+    const hive = env.MNEMION_HIVE.get(id);
+
+    // A KNOWLEDGE pattern with a required facet: required→NOT NULL lands on the
+    // column, but app-level required enforcement is dataset-only, so omitting it
+    // reaches the INSERT and throws a NOT NULL constraint — the raw-throw branch.
+    const p = JSON.parse(await hive.proposeChange("Create", JSON.stringify({
+      type: "create_pattern", pattern_name: "leads", pattern_description: "Test", doctrine: "test",
+      facets: [{ name: "email", type: "text" }, { name: "secret_code", type: "text", required: true }],
+    })));
+    await hive.applyChange(p.change_id);
+
+    // Public ingress endpoint mapping the body to `email`, leaving `secret_code` NULL.
+    await runInDurableObject(hive, async (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO "_inputs" (path, target_pattern, body_facet, visibility) VALUES ('lead-capture','leads','email','public')`,
+      );
+    });
+
+    const res = await SELF.fetch("https://test.local/i/lead-capture", {
+      method: "POST", body: "someone@example.com",
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.message).toBe("Could not process input.");
+    // The raw SQLite text — column name, constraint kind, "Mutate failed" — must not leak.
+    const blob = JSON.stringify(body);
+    expect(blob).not.toContain("secret_code");
+    expect(blob).not.toContain("NOT NULL");
+    expect(blob).not.toContain("constraint");
+    expect(blob).not.toContain("Mutate failed");
+    expect(blob).not.toContain("internal");
+  });
+
+  it("still passes a structured validation error through (helps legit posters)", async () => {
+    const id = env.MNEMION_HIVE.idFromName("user:owner");
+    const hive = env.MNEMION_HIVE.get(id);
+
+    const p = JSON.parse(await hive.proposeChange("Create", JSON.stringify({
+      type: "create_pattern", pattern_name: "signups", pattern_description: "Test", doctrine: "test",
+      facets: [{ name: "email", type: "text" }],
+    })));
+    await hive.applyChange(p.change_id);
+
+    // body_facet names a facet that doesn't exist → executeMutate returns a
+    // structured (non-internal) "Facet ... does not exist" error, which is safe
+    // to surface and helps a legitimate caller fix their payload.
+    await runInDurableObject(hive, async (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO "_inputs" (path, target_pattern, body_facet, visibility) VALUES ('signup','signups','nonexistent','public')`,
+      );
+    });
+
+    const res = await SELF.fetch("https://test.local/i/signup", {
+      method: "POST", body: "hello",
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.message).not.toBe("Could not process input.");
+    expect(body.message).toContain("nonexistent");
   });
 });
