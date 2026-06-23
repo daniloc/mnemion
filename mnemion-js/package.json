@@ -4,6 +4,7 @@
   "private": true,
   "license": "MIT",
   "scripts": {
+    "prepare": "git config core.hooksPath mnemion-js/scripts/git-hooks || true",
     "build:pages": "vite build --config vite.fragment.ts",
     "build:web": "vite build --config vite.web.ts",
     "preview:render": "vite dev --config vite.preview.ts --open /render-preview.html",
@@ -63,7 +64,7 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",
     "ai": "^6.0.206",
-    "coherence-harness": "github:daniloc/coherence#v0.5.0",
+    "coherence-harness": "github:daniloc/coherence#v0.5.1",
     "concurrently": "^9.0.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
