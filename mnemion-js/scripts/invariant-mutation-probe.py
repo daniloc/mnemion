@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""Invariant-oracle mutation harness (PROTOTYPE).
+"""Invariant-oracle mutation harness — the boundary-oracle ratchet.
 
 Pressure-tests whether each boundary's totality ORACLE is SEMANTIC: does breaking
 the boundary's own chokepoint actually trip its oracle? For each edge we apply one
 compile-safe mutation to the chokepoint, run the oracle, and classify:
+
+Usage:
+  python3 scripts/invariant-mutation-probe.py            # full sweep (CI backstop on main)
+  python3 scripts/invariant-mutation-probe.py --changed <ref>   # only edges touched vs <ref> (PR CI)
+
+Exit nonzero (ratchet FAIL) on any VACUOUS / SKIP / INVALID edge; pass only when
+every run edge is ANCHORED or declared-SHADOWED.
+
 
   ANCHORED — oracle ran and a test FAILED   -> catches a real break. Good.
   VACUOUS  — oracle ran and all tests PASSED -> missed the break. NEEDS HUMAN CONFIRM.
@@ -85,21 +93,39 @@ def sh(args, **kw): return subprocess.run(args, cwd=JS, capture_output=True, tex
 
 import re
 
-# dirty-tree guard
-for e in EDGES:
+# --- run-set selection -------------------------------------------------------
+# Full mode (default) runs every edge — the backstop on push to main. `--changed
+# <ref>` runs ONLY edges whose chokepoint OR oracle file changed vs <ref>; on PRs
+# this is the incremental-verification payoff (most PRs touch no boundary and pay
+# nothing) AND it keeps an oracle weakened without touching its chokepoint in scope
+# (the oracle file changed). git diff returns repo-root-relative paths.
+RUN = EDGES
+if "--changed" in sys.argv:
+    ref = sys.argv[sys.argv.index("--changed") + 1]
+    # two-dot (tip-vs-tip), not three-dot: robust when only the base TIP is fetched
+    # (CI shallow-fetches the base). Over-running a few edges if base advanced is
+    # harmless for a ratchet; missing one is not.
+    changed = set(sh(["git","diff","--name-only",ref,"HEAD"]).stdout.split())
+    RUN = [e for e in EDGES if f"mnemion-js/{e[0]}" in changed or f"mnemion-js/{e[3]}" in changed]
+    if not RUN:
+        print(f"no boundary chokepoint or oracle changed vs {ref} — nothing to mutate."); sys.exit(0)
+    print(f"--changed {ref}: {len(RUN)} of {len(EDGES)} edges in scope\n")
+
+# dirty-tree guard (only the files we will mutate)
+for e in RUN:
     f=e[0]
     if sh(["git","diff","--quiet","--",f]).returncode != 0:
         print(f"refusing to run: {f} has uncommitted changes (harness restores via git checkout)."); sys.exit(2)
 
 def restore():
-    for f in {e[0] for e in EDGES}:
+    for f in {e[0] for e in RUN}:
         sh(["git","checkout","--",f])
 
 results=[]; notes=[]
 try:
     print(f"{'BOUNDARY (oracle)':<48} VERDICT")
     print(f"{'-'*48} -------")
-    for f,match,repl,oracle,label,shadow in EDGES:
+    for f,match,repl,oracle,label,shadow in RUN:
         path=os.path.join(JS,f)
         src=open(path).read()
         if match not in src:
@@ -128,5 +154,18 @@ for label,note in notes:
 a=sum(1 for _,v in results if v=="ANCHORED"); vc=sum(1 for _,v in results if v=="VACUOUS")
 iv=sum(1 for _,v in results if v=="INVALID"); sh_=sum(1 for _,v in results if v=="SHADOWED")
 sk=sum(1 for _,v in results if v=="SKIP")
-print(f"\n=== {a} anchored · {vc} VACUOUS · {sh_} shadowed · {iv} invalid · {sk} skip  (of {len(EDGES)} edges) ===")
-sys.exit(1 if vc else 0)
+print(f"\n=== {a} anchored · {vc} VACUOUS · {sh_} shadowed · {iv} invalid · {sk} skip  (of {len(RUN)} edges) ===")
+
+# Ratchet exit policy: pass only when every run edge is ANCHORED or (declared)
+# SHADOWED. VACUOUS = an oracle went blind to a real break. SKIP = the mutation's
+# match string drifted (a chokepoint was edited) → coverage silently lost, update
+# the edge. INVALID = the mutation no longer compiles → the edge no longer verifies
+# anything. All three fail loudly so the edge table stays live with the code.
+fail = vc + sk + iv
+if fail:
+    bad = [f"{label} [{v}]" for label,v in results if v in ("VACUOUS","SKIP","INVALID")]
+    print("\nRATCHET FAILED — these boundary oracles are not provably semantic:")
+    for b in bad: print(f"  - {b}")
+    print("\nFix: harden the oracle (VACUOUS), or update the edge's match/mutation in\n"
+          "scripts/invariant-mutation-probe.py (SKIP/INVALID after a chokepoint refactor).")
+sys.exit(1 if fail else 0)
