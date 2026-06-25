@@ -9,6 +9,8 @@
 // are handed, not dialed at the call site. This guards that the split can't rot
 // back into a trust-parameterized factory.
 import { describe, it, expect } from "vitest";
+import { env, runInDurableObject } from "cloudflare:test";
+import type { HiveDO } from "../../entities/Hive/hive";
 import hiveSrc from "../../entities/Hive/hive.ts?raw";
 
 describe("context-capability totality", () => {
@@ -25,5 +27,33 @@ describe("context-capability totality", () => {
   it("provides exactly the two named capability constructors", () => {
     expect(hiveSrc).toMatch(/private ownerDataCtx\(/);
     expect(hiveSrc).toMatch(/private servedDataCtx\(/);
+  });
+
+  // SEMANTIC anchor (the source-grep tests above guard the SHAPE; this guards the
+  // runtime VALUE). The served/ingress write path is built on servedDataCtx, whose
+  // whole point is `trusted: false`. Drive the real ingress chokepoint
+  // (processInput → servedDataCtx → executeMutate) against a KERNEL target and
+  // require the refusal to come from the CAPABILITY gate itself — identified by its
+  // unique message. If servedDataCtx ever returns `trusted: true`, this write is no
+  // longer refused there (it proceeds into the kernel, succeeding or failing with a
+  // DIFFERENT message), and this assertion fails. The shape tests cannot catch that
+  // inversion; this one does.
+  it("an untrusted ingress write to a kernel pattern is refused AT the capability gate", async () => {
+    const store = env.MNEMION_HIVE.get(
+      env.MNEMION_HIVE.idFromName(`user:capsem:${crypto.randomUUID()}`),
+    ) as DurableObjectStub<HiveDO>;
+
+    // Ingress endpoint pointed at a kernel pattern (_members). A public, unauth POST
+    // here runs below the consent layer through servedDataCtx.
+    await runInDurableObject(store, async (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO "_inputs" (path, target_pattern, body_facet, visibility) VALUES ('kx','_members','label','public')`,
+      );
+    });
+
+    const result = JSON.parse(await store.processInput("kx", "intruder", "{}", "{}"));
+    expect(result.error).toBe(true);
+    // The refusal must be the capability gate's, not some downstream kernel hook.
+    expect(result.message).toMatch(/not a writable user pattern/);
   });
 });
