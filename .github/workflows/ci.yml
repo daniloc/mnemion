@@ -118,11 +118,11 @@ jobs:
       - name: Coherence
         run: npm run coherence:verify
 
-      # The committed generated artifacts (AGENTS.md + docs/coherence/*) must
-      # match the spec tree. coherence:verify checks claims-vs-code, NOT
-      # docs-vs-specs, so without this a spec edit that isn't followed by
-      # `npm run coherence:docs` lands a stale agent map (timestamps normalized
-      # out of the diff). Symmetric with the atlas:check drift gate above.
+      # The committed generated artifacts (docs/coherence/* + the fenced block in
+      # the repo-root CLAUDE.md) must match the spec tree. coherence:verify checks
+      # claims-vs-code, NOT docs-vs-specs, so without this a spec edit that isn't
+      # followed by `npm run coherence:docs` lands a stale derived map (timestamps
+      # normalized out of the diff). Symmetric with the atlas:check drift gate above.
       - name: Coherence docs freshness
         run: npm run coherence:docs:check
 

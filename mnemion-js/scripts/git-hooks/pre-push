@@ -1,10 +1,11 @@
 #!/bin/sh
 # Block a push that would land STALE coherence docs.
 #
-# The committed docs/coherence/{graph.json,_graph.html} + AGENTS.md are derived
-# from the spec tree + code; CI's `coherence:docs:check` fails if they drift. This
-# hook moves that check left — to before the push leaves your machine — so the
-# regenerate step is enforced by the tool, not remembered as a convention.
+# The committed docs/coherence/{graph.json,_graph.html} + the fenced block in the
+# repo-root CLAUDE.md are derived from the spec tree + code; CI's `coherence:docs:check`
+# fails if they drift. This hook moves that check left — to before the push leaves
+# your machine — so the regenerate step is enforced by the tool, not remembered as
+# a convention.
 #
 # With coherence >=0.5.1 the freshness gate ignores line numbers, so this fires
 # ONLY on real structural drift (a new/removed/renamed symbol, import, component,
@@ -15,6 +16,6 @@ cd "$(git rev-parse --show-toplevel)/mnemion-js" || exit 1
 if ! npm run --silent coherence:docs:check; then
   echo ""
   echo "✗ push blocked: coherence docs are stale (a structural change without a regenerate)."
-  echo "  Fix:  (cd mnemion-js && npm run coherence:docs)  then commit docs/coherence/ + AGENTS.md."
+  echo "  Fix:  (cd mnemion-js && npm run coherence:docs)  then commit docs/coherence/ + ../CLAUDE.md."
   exit 1
 fi

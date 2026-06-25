@@ -1,4 +1,5 @@
 {
+  "claudeMdPath": "../CLAUDE.md",
   "outputDir": "docs/coherence",
   "entryDir": ".",
   "tooling": [],
@@ -59,7 +60,7 @@
       "PATTERN_EFFECTS": "registry-completeness within storage (post-mutate effects), not a trust crossing",
       "FACET_RESERVED_COLUMNS": "facet/kernel-column partition at propose_change — a naming-collision totality, not a trust crossing",
       "findStoredDerivedAggregates": "data-is-destiny no-hybrid schema property — a doctrine ratchet over the schema, not a trust crossing",
-      "TOOLS": "tool-registry SSOT reconciliation (Session) — a declaration-totality, not a trust crossing"
+      "TOOLS": "tools SSOT reconciliation (Session) — a declaration-totality, not a trust crossing"
     },
     "knownPending": []
   }

@@ -6,83 +6,157 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Persistent, evolving shared memory between a human and their AI agents. MCP server on Cloudflare Workers.
 
-## Project structure
-
 Source is organized into **component directories**, each with a co-located
 `*.spec.md` (intent + `## works when` claims + protected `## why`). The
-coherence harness derives a graph/agent-map from the spec tree + code and
-verifies the specs haven't rotted (see "Coherence" below). `entities/` are the
-two Durable Objects + their domain logic; `shared/` are cross-cutting
-primitives; `src/` keeps the worker entry, the MCP render fragment, agent docs,
-and tests (the web app proper is React, under `web/`).
+coherence harness derives a multi-resolution graph from the spec tree + code,
+verifies the specs haven't rotted, and writes the component map + invariant
+table into the fenced block below (`coherence claude` regenerates it; the
+freshness gate fails CI if it drifts). `entities/` are the two Durable Objects
++ their domain logic; `shared/` are cross-cutting primitives; `src/` keeps the
+worker entry, the MCP render fragment, system docs, and tests. The web app
+proper is React (under `web/`); per-file roles live in each file's top-of-file
+docblock so the generated block stays the single source of truth.
 
-```
-project-docs/archived/   Design documents (the "why" and "what")
-mnemion-js/            Cloudflare Worker — MCP server (the "how")
-  Mnemion.spec.md      Root spec: OAuth-wrapped MCP server, one declarative route table
-  coherence.config.json  Coherence harness config (component dirs, adapters)
-
-  src/index.ts         Route table + OAuthProvider config (the worker entry; wrangler `main`)
-  src/pages/           The MCP `render` fragment (render-*.ts/html) + its fragment build entry point. Plain TS, no framework. The web app is React (under web/); the legacy Svelte pages (Canvas, SchemaViewer/HiveMap/LinkMap) are all retired
-  src/system-docs/     Markdown files with {{placeholder}} syntax, loaded at runtime
-  src/__tests__/       vitest (vitest-pool-workers)
-
-  entities/Hive/       (HiveDO — the per-user Durable Object; Hive.spec.md)
-    hive.ts            DO kernel — the capability split (ownerDataCtx/servedDataCtx), write chokepoints (mutate/batchMutate/processInput/consumeUpload), RPC wiring, WebSocket
-    data.ts            Query/mutate/search engine — the `trusted` read+write boundary (an untrusted ctx may neither read nor write a kernel pattern)
-    kernel.ts          Pre-mutation hooks (ON_CREATE/ON_WRITE/IMMUTABLE), enforced at applyKernelRules — composed CORE + per-feature
-    policy.ts          Write-class + egress-sensitivity SSOT (KERNEL_WRITE_POLICY/SENSITIVE_COLUMNS) + the consent model + derived totality oracles (verifyWritePolicyTotality/verifyEgressTotality/findUngatedCredentialMints); a dependency-free leaf, composed CORE + per-feature
-    kernel-columns.ts  Dependency-free SSOT for the 7 auto-provided columns; FACET_RESERVED_COLUMNS / CALLER_EXCLUDED_ON_CREATE / STRUCTURAL_KERNEL_COLUMNS / USER_OVERRIDABLE derived from it (referenced by data/evolution/schema/hive)
-    prime.ts           Auto-associative priming: Workers AI embeddings + Vectorize KNN
-    evolution.ts       Schema evolution: CHANGE_TYPES declaration table, propose/apply/revert
-    schema.ts          DDL, migrations, KERNEL_TABLES (composed CORE + per-feature), seeding, boot integrity/totality checks
-    effects.ts         PATTERN_EFFECTS registry — post-mutate side effects keyed by pattern (composed from features)
-    mutate-gate.ts     Pure consent-gate decisions (mutateGate/findGatedBatchOp) derived from policy.ts — shared by MCP, tested in isolation
-    served.ts          ALL served public reads — public-page/OG/chart rendering + getSharedEntry/resolvePublication/resolveOutput/getInputVisibility — behind ONE kernel-refusing chokepoint (servedQuery + narrow kernel-config lookups); the untrusted served reader
-    federation.ts      Federated resolve — allow-list check co-located with the token-bearing fetch (re-validated per redirect hop)
-    documents.ts       Document-store lifecycle (R2 blobs) — narrow capability context, never `this.db`
-    reports.ts         Owner-context read/format orchestration (index/recent/stale/maintenance/system docs)
-    labels.ts          Single source of truth for "what does this entry look like" (deriveLabel, truncate)
-    transform.ts       Transform DSL evaluator for ingress field mapping
-  entities/features/   Feature modules — a feature is ONE directory whose manifest FEEDS the registries above
-    index.ts           FEATURES barrel (one line per feature)
-    feature.ts         The Feature type — the fork contract (effects/routes/tools/patterns/hooks/migrations slots)
-    compose.ts         Composers deriving each registry from FEATURES (fail loud on collision)
-    security.ts        Dependency-free barrel folding each feature's pure-data security.ts into the policy leaf
-    <name>/            manifest.ts (required) + optional schema.ts / security.ts / hooks.ts as the feature needs (documents = the fullest reference; system-tasks is manifest-only). Feature specs live in the shared entities/features/Features.spec.md, not a per-feature file.
-                       → How to add one: project-docs/archived/authoring-a-feature.md
-  entities/Session/    (SessionDO — per-session McpAgent; Session.spec.md)
-    session.ts         McpAgent, MCP protocol handler (per-session DO)
-    tools.ts           Tool metadata SSOT — feeds session.ts MCP registration and /api/tools
-
-  shared/Routing/      (Routing.spec.md)
-    router.ts          Declarative router: types, enums, pattern matching, dispatch
-    routes/auth.ts     /authorize, /auth/verify, passkey setup & authentication, /invite/:token approval
-    routes/io.ts       /o/entry shared entries, /o/:path egress, /p/:path publications, /f documents, /i ingress, /upload
-    routes/marketplace.ts  Token management, git endpoints (composes query + git adapter)
-    routes/dev.ts      Dev-only seed routes (Auth.DEV gated, inert in production)
-    routes/pages.ts    /api/* JSON endpoints (incl. /api/resolve), WebSocket proxy
-  shared/Auth/         (Auth.spec.md)
-    credentials.ts     Passkey CRUD, access token validation
-    passkey.ts         WebAuthn passkey registration + authentication
-  shared/IO/           (IO.spec.md — adapters across the hive boundary)
-    publications.ts    Publication renderers: live pattern data → HTML/RSS/JSON/markdown, template seam
-    web.ts             Web URL resolution adapter dispatch (Bluesky, browser-rendering); _web_cache
-    git.ts             Git protocol adapter (file tree → git pack, used by marketplace)
-    extract.ts         Document text extraction (inline text, async PDF)
-    og-png.ts          SVG→PNG rasterizer for OG cards (used by routes/io.ts)
-  shared/core/
-    constants.ts       Product identity (PRODUCT_NAME, URI_SCHEME, uri() helper)
-    dev-seed.ts        DEV_SEED-gated realistic data population (raw SQL, runs in DO ctor)
-    text.d.ts          Ambient module decls for *.md / *.client.txt text imports
-
-  docs/coherence/      Generated: _graph.html, _overview.html, graph.json, why-proposals.md
-  AGENTS.md            Generated agent map (coherence overview)
-  vite.fragment.ts     Build for render-client.client.txt → dist/fragment/ (the MCP render fragment; the only non-React web build)
-  scripts/setup.sh     First-run setup: generates secret, deploys, opens passkey registration
-```
+Per-doc roots: `project-docs/archived/` (design docs), `mnemion-js/` (the
+worker), `Mnemion.spec.md` (root spec), `coherence.config.json` (harness
+config), `scripts/setup.sh` (first-run setup).
 
 Future peer: iOS app (Swift).
+
+<!-- coherence:begin -->
+<!-- GENERATED by `coherence claude` from the spec+code graph. Do not edit by hand —
+     edit the *.spec.md files and re-run. Everything OUTSIDE these markers is authored prose. -->
+
+_Derived from 8 components · 68 files · 484 symbols · 10 boundary claims._
+
+## Component map (derived)
+
+> Each component directory, its spec intent (one line), and its files. Per-file
+> roles are authored elsewhere — the graph only knows component-level intent.
+
+### Mnemion `/`
+Cloudflare Worker entry: an OAuth-wrapped MCP server whose one declarative route table is the whole HTTP surface.
+
+_files:_ `index.ts`, `vite.fragment.ts`, `vite.preview.ts`, `vite.web.ts`, `store.ts`
+
+### Hive `entities/Hive`
+The single per-user Durable Object that owns all SQLite data and funnels every agent write through one kernel-enforced chokepoint.
+
+_files:_
+- `completion.ts` — completion.ts — the CLIPBOARD COMPLETION engine: derive a job's progress from the
+- `constraints.ts` — constraints.ts — the per-field VALUE-VALIDATION engine, as a dependency-free leaf.
+- `data.ts` — Data engine: query, mutate, search
+- `documents.ts` — documents.ts — document-store lifecycle (R2-backed blobs), evicted from HiveDO.
+- `effects.ts` — effects.ts — declarative pattern effects, the SIDE-EFFECTING half of the kernel.
+- `evolution.ts` — Schema evolution engine
+- `federation.ts` — federation.ts — cross-hive (foreign-URI) resolution, evicted from HiveDO.
+- `hive.ts` — HiveDO — the single per-user Durable Object that owns all SQLite data.
+- `kernel-columns.ts` — Kernel columns — single canonical home for the auto-provided column set.
+- `kernel.ts` — Kernel pattern pre-mutation rules
+- `labels.ts` — Single source of truth for "what does this entry look like as a string."
+- `mutate-gate.ts` — Mutate-gate decisions — the pure, transport-agnostic predicates that decide
+- `policy.ts` — Write-class policy — the single source of truth for "which patterns can
+- `prime.ts` — Auto-associative priming layer
+- `reports.ts` — reports.ts — read-orchestration reporting, evicted from HiveDO.
+- `schema.ts` — Database initialization
+- `served.ts` — served.ts — the untrusted served reader. ALL served public reads live here.
+- `transform.ts` — Transform DSL for ingress field mapping.
+
+### Session `entities/Session`
+The per-session McpAgent Durable Object that speaks the MCP protocol and proxies tool calls to the hive over RPC.
+
+_files:_
+- `session.ts` — SessionDO — one McpAgent Durable Object per MCP session.
+- `tools.ts` — Tool metadata — single source of truth for MCP registration and frontend display.
+
+### Features `entities/features`
+Per-feature manifests that FEED the scattered registries from one declaration; composers derive each registry from the `FEATURES` array.
+
+_files:_
+- `hooks.ts` — clipboards/hooks.ts — the clipboards feature's PRE-MUTATION DEFINITION hook, as code.
+- `manifest.ts` — clipboards — validated job-dispatch forms.
+- `schema.ts` — clipboards/schema.ts — the clipboards feature's PATTERN STRUCTURE, as PURE DATA:
+- `security.ts` — clipboards/security.ts — the clipboards feature's WRITE-POLICY contribution, as
+- `compose.ts` — compose.ts — the COMPOSERS: derive each scattered registry from the FEATURES
+- `hooks.ts` — documents/hooks.ts — the documents feature's PRE-MUTATION HOOKS, as code.
+- `manifest.ts` — documents — R2-backed file store feature.
+- `schema.ts` — documents/schema.ts — the documents feature's PATTERN STRUCTURE, as PURE DATA:
+- `security.ts` — documents/security.ts — the documents feature's WRITE-POLICY + EGRESS-SENSITIVITY
+- `feature.ts` — feature.ts — the Feature TYPE: one per-feature declaration that FEEDS the
+- `index.ts` — index.ts — the FEATURE BARREL. The whole feature set, in one greppable place.
+- `hooks.ts` — scratchpad/hooks.ts — the scratchpad feature's PRE-MUTATION hook, as code.
+- `manifest.ts` — scratchpad — durable shared pads for agents in neighboring sessions.
+- `schema.ts` — scratchpad/schema.ts — the scratchpad feature's PATTERN STRUCTURE, as PURE DATA:
+- `security.ts` — scratchpad/security.ts — the scratchpad feature's WRITE-POLICY contribution, as
+- `security.ts` — security.ts — the FEATURE-SECURITY BARREL. The dependency-free merge of every
+- `manifest.ts` — system-tasks — dispatch-on-create maintenance jobs.
+
+### Auth `shared/Auth`
+Credential primitives — multi-member passkeys and scoped access/register tokens — isolated as pure db-accessor functions.
+
+_files:_
+- `credentials.ts` — Credential infrastructure: passkey storage + access token operations
+- `passkey.ts` — WebAuthn passkey registration + authentication (SimpleWebAuthn).
+
+### IO `shared/IO`
+Outbound and inbound adapters: derived publication renderers, web-URL resolution with caching, git pack assembly, and text extraction.
+
+_files:_
+- `extract.ts` — Document text extraction: bytes → searchable text.
+- `git.ts` — git.ts — Minimal git smart HTTP for read-only marketplace serving
+- `og-png.ts` — SVG → PNG on the worker, no browser. resvg is pure WASM (the rasterizer half of
+- `publications.ts` — Publication renderers: live pattern data → HTML / RSS / JSON / Markdown.
+- `web.ts` — Web URL resolution via resolve()
+
+### Routing `shared/Routing`
+Declarative HTTP dispatch and session machinery: pattern-matched route table plus constant-time, revocable session auth helpers.
+
+_files:_
+- `router.ts` — Declarative HTTP dispatch: a route table matched in declaration order.
+- `auth.ts`
+- `dev.ts`
+- `io.ts`
+- `marketplace.ts`
+- `pages.ts`
+
+### Core `shared/core`
+Cross-cutting primitives shared by both the worker and the SPA: product identity, the declarative UI palettes (view / format / block / chart) an agent authors against, and dev-only seed data.
+
+_files:_
+- `block-palette.ts` — The block palette — the declarative vocabulary for composing a page (a _pages
+- `chart-spec.ts` — The chart vocabulary shared by BOTH renderers — the in-hive Recharts renderer
+- `chart-svg.ts` — The SERVER renderer for a chart spec: pure SVG string, no DOM, no deps. Same
+- `constants.ts` — Product identity — single source of truth for the URI scheme and product name.
+- `dev-seed.ts` — Dev seed: realistic data for local development
+- `env.d.ts` — Optional-binding augmentation for the generated worker Env.
+- `escape.ts` — One XML/HTML text escaper, shared by every string-built markup surface — the
+- `format-palette.ts` — The format palette — the single declarative home for how a facet's VALUE is
+- `host.ts` — Instance identity is configuration, not request data.
+- `log.ts` — Structured logging over Cloudflare Workers Logs.
+- `sql.ts` — === SQL identifier chokepoint ===
+- `text.d.ts`
+- `view-palette.ts` — The view palette — the single declarative home for the UI shapes an agent can
+
+## Invariants → chokepoint → oracle (derived)
+
+> Each named invariant, the chokepoint symbol that enforces it, and the totality
+> oracle (test) that asserts it holds. Parsed from the `boundary` claims in the specs.
+
+| Invariant | Component | Chokepoint | Oracle |
+| --- | --- | --- | --- |
+| kernel write boundary | Hive | `writeClass` | `write-policy totality` |
+| egress-sensitivity totality | Hive | `SENSITIVE_COLUMNS` | `egress-sensitivity totality` |
+| pattern-effects totality | Hive | `PATTERN_EFFECTS` | `pattern-effects totality` |
+| facet/kernel-column collision | Hive | `FACET_RESERVED_COLUMNS` | `facet-kernel-collision totality` |
+| data-is-destiny no-hybrid | Hive | `findStoredDerivedAggregates` | `data-is-destiny no-hybrid totality` |
+| credential-mint gating | Hive | `findUngatedCredentialMints` | `credential-mint gating totality` |
+| born-hashed secrets | Hive | `SENSITIVE_COLUMNS` | `born-hashed-secret totality` |
+| immutable-field enforcement | Hive | `applyKernelRules` | `IMMUTABLE-registry totality` |
+| tools SSOT totality | Session | `TOOLS` | `tools SSOT totality` |
+| served-content inertness | Routing | `inertHeaders` | `served-content inertness totality` |
+
+<sub>Generated at 2026-06-25 03:23Z.</sub>
+<!-- coherence:end -->
 
 ## Current state
 
