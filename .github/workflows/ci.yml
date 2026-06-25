@@ -103,6 +103,25 @@ jobs:
       - name: Test
         run: npm test
 
+      # Boundary-oracle mutation ratchet: a totality oracle only protects the system
+      # if it actually CATCHES a break at its chokepoint. This breaks each boundary's
+      # chokepoint with a compile-safe mutation and requires its oracle to fail
+      # (ANCHORED); an oracle that stays green under a broken floor (VACUOUS) — the
+      # rot that let the trust-split oracle pass a literal inversion before #14
+      # hardened it — fails the gate. PR runs only edges whose chokepoint/oracle
+      # changed (incremental); push to main runs the full backstop. (Full-mode in CI
+      # verified on this branch's diagnostic run.) python3 is preinstalled on
+      # ubuntu-latest; the harness reverts every mutation via git.
+      - name: Boundary oracle mutation ratchet
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+            python3 scripts/invariant-mutation-probe.py --changed FETCH_HEAD
+          else
+            python3 scripts/invariant-mutation-probe.py
+          fi
+
       # Ratchets: no new conventions, no new raw SQL interpolation sites, and the
       # trust atlas stays in sync with the boundary claims (no managed chokepoint
       # left off the atlas, no dangling edge).

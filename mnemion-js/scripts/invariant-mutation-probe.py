@@ -121,7 +121,7 @@ def restore():
     for f in {e[0] for e in RUN}:
         sh(["git","checkout","--",f])
 
-results=[]; notes=[]
+results=[]; notes=[]; diaglogs=[]
 try:
     print(f"{'BOUNDARY (oracle)':<48} VERDICT")
     print(f"{'-'*48} -------")
@@ -131,25 +131,43 @@ try:
         if match not in src:
             print(f"{label:<48} SKIP (match drifted)"); results.append((label,"SKIP")); continue
         open(path,"w").write(src.replace(match,repl,1))
-        r=sh(["npx","vitest","run",oracle])
+        # NO_COLOR: keep vitest output plain. CI forces ANSI, which interleaves
+        # escape codes INTO the summary ("Tests \x1b[..m1 failed") and broke the
+        # ANCHORED match on the first CI run — the tests DID catch the mutation, the
+        # harness just couldn't read its own output. Belt: strip ANSI before matching.
+        r=sh(["npx","vitest","run",oracle], env={**os.environ,"NO_COLOR":"1","FORCE_COLOR":"0"})
         sh(["git","checkout","--",f])           # revert immediately
-        log=r.stdout+r.stderr
+        log=re.sub(r"\x1b\[[0-9;]*m","",r.stdout+r.stderr)
+        # ANCHORED = the oracle RAN and an assertion FAILED (any of vitest's failure
+        # markers), as opposed to erroring before running (INVALID).
+        ran_and_failed = (re.search(r"Tests\s+\d+\s+failed", log)
+                          or re.search(r"Failed Tests\s+\d+", log)
+                          or re.search(r"\bFAIL\b.*\.test\.", log))
         if r.returncode==0:
             if shadow:
                 v="SHADOWED"; mark="o SHADOWED (expected — chokepoint not operative in test runtime)"
             else:
                 v="VACUOUS"; mark="x VACUOUS  (oracle missed the break — CONFIRM not shadowed)"
-        elif re.search(r"Tests\s+\d+\s+failed", log):
+        elif ran_and_failed:
             v="ANCHORED"; mark="+ ANCHORED"
         else:
             v="INVALID"; mark="~ INVALID  (no compile / inconclusive)"
         print(f"{label:<48} {mark}"); results.append((label,v))
         if v=="SHADOWED" and shadow: notes.append((label,shadow))
+        # Diagnosability: dump the captured oracle output for any verdict that means
+        # "the harness could not confirm this oracle is semantic" — without it an
+        # INVALID/VACUOUS in CI is a black box (the lesson from the first re-land).
+        if v in ("VACUOUS","INVALID"):
+            tail="\n".join((log or "<no output captured>").splitlines()[-40:])
+            diaglogs.append((label,v,tail))
 finally:
     restore()
 
 for label,note in notes:
     print(f"\n  note [{label}]:\n    {note}")
+
+for label,v,tail in diaglogs:
+    print(f"\n----- captured oracle output [{label}] ({v}) — last 40 lines -----\n{tail}")
 
 a=sum(1 for _,v in results if v=="ANCHORED"); vc=sum(1 for _,v in results if v=="VACUOUS")
 iv=sum(1 for _,v in results if v=="INVALID"); sh_=sum(1 for _,v in results if v=="SHADOWED")
