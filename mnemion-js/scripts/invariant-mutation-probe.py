@@ -131,15 +131,24 @@ try:
         if match not in src:
             print(f"{label:<48} SKIP (match drifted)"); results.append((label,"SKIP")); continue
         open(path,"w").write(src.replace(match,repl,1))
-        r=sh(["npx","vitest","run",oracle])
+        # NO_COLOR: keep vitest output plain. CI forces ANSI, which interleaves
+        # escape codes INTO the summary ("Tests \x1b[..m1 failed") and broke the
+        # ANCHORED match on the first CI run — the tests DID catch the mutation, the
+        # harness just couldn't read its own output. Belt: strip ANSI before matching.
+        r=sh(["npx","vitest","run",oracle], env={**os.environ,"NO_COLOR":"1","FORCE_COLOR":"0"})
         sh(["git","checkout","--",f])           # revert immediately
-        log=r.stdout+r.stderr
+        log=re.sub(r"\x1b\[[0-9;]*m","",r.stdout+r.stderr)
+        # ANCHORED = the oracle RAN and an assertion FAILED (any of vitest's failure
+        # markers), as opposed to erroring before running (INVALID).
+        ran_and_failed = (re.search(r"Tests\s+\d+\s+failed", log)
+                          or re.search(r"Failed Tests\s+\d+", log)
+                          or re.search(r"\bFAIL\b.*\.test\.", log))
         if r.returncode==0:
             if shadow:
                 v="SHADOWED"; mark="o SHADOWED (expected — chokepoint not operative in test runtime)"
             else:
                 v="VACUOUS"; mark="x VACUOUS  (oracle missed the break — CONFIRM not shadowed)"
-        elif re.search(r"Tests\s+\d+\s+failed", log):
+        elif ran_and_failed:
             v="ANCHORED"; mark="+ ANCHORED"
         else:
             v="INVALID"; mark="~ INVALID  (no compile / inconclusive)"
