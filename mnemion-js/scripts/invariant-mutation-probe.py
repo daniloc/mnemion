@@ -121,7 +121,7 @@ def restore():
     for f in {e[0] for e in RUN}:
         sh(["git","checkout","--",f])
 
-results=[]; notes=[]
+results=[]; notes=[]; diaglogs=[]
 try:
     print(f"{'BOUNDARY (oracle)':<48} VERDICT")
     print(f"{'-'*48} -------")
@@ -145,11 +145,20 @@ try:
             v="INVALID"; mark="~ INVALID  (no compile / inconclusive)"
         print(f"{label:<48} {mark}"); results.append((label,v))
         if v=="SHADOWED" and shadow: notes.append((label,shadow))
+        # Diagnosability: dump the captured oracle output for any verdict that means
+        # "the harness could not confirm this oracle is semantic" — without it an
+        # INVALID/VACUOUS in CI is a black box (the lesson from the first re-land).
+        if v in ("VACUOUS","INVALID"):
+            tail="\n".join((log or "<no output captured>").splitlines()[-40:])
+            diaglogs.append((label,v,tail))
 finally:
     restore()
 
 for label,note in notes:
     print(f"\n  note [{label}]:\n    {note}")
+
+for label,v,tail in diaglogs:
+    print(f"\n----- captured oracle output [{label}] ({v}) — last 40 lines -----\n{tail}")
 
 a=sum(1 for _,v in results if v=="ANCHORED"); vc=sum(1 for _,v in results if v=="VACUOUS")
 iv=sum(1 for _,v in results if v=="INVALID"); sh_=sum(1 for _,v in results if v=="SHADOWED")

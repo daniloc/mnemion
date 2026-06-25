@@ -103,6 +103,13 @@ jobs:
       - name: Test
         run: npm test
 
+      # DIAGNOSTIC (temporary): full-mode mutation ratchet on every event so the PR
+      # reproduces the push-to-main failure with the harness's new captured-output
+      # dump. Once the 7x-pool-boot incompatibility is understood + fixed, this
+      # reverts to the gated form (PR=--changed, main=full).
+      - name: Boundary oracle mutation ratchet (DIAGNOSTIC full-mode)
+        run: python3 scripts/invariant-mutation-probe.py
+
       # Ratchets: no new conventions, no new raw SQL interpolation sites, and the
       # trust atlas stays in sync with the boundary claims (no managed chokepoint
       # left off the atlas, no dangling edge).
