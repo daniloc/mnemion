@@ -74,6 +74,34 @@ export function mutateGate(
   return { kind: "pass" };
 }
 
+// === Round-trip key ===
+
+/** Stable JSON serializer: keys sorted at every nesting level so the SAME logical
+ *  value yields the SAME string regardless of property insertion order. The
+ *  consent key depends on this — without it, an agent re-issuing the identical
+ *  call with `{path, visibility}` vs `{visibility, path}` would arm a fresh
+ *  round-trip instead of confirming the prior. */
+function stableStringify(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  const o = v as Record<string, unknown>;
+  const keys = Object.keys(o).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(o[k])).join(",") + "}";
+}
+
+/** The key used to arm/confirm a consent round-trip in `_pending_consent`. The
+ *  request data is folded in so consent is bound to the SPECIFIC call shape, not
+ *  to `(pattern, operation)` alone — re-issuing with different data must start
+ *  a fresh round-trip rather than confirm the prior. (Without the data fold an
+ *  agent could arm with benign data and re-issue with harmful data on the same
+ *  pattern/op to satisfy the gate.) Data is serialized with sorted keys so
+ *  semantically-identical re-issues confirm regardless of property order. Lives
+ *  here because the data-binding is the correctness property of the gate; the
+ *  round-trip MECHANICS stay in session.ts. */
+export function consentKey(pattern: string, operation: string, data: Record<string, unknown>): string {
+  return `consent:${pattern}:${operation}:${stableStringify(data)}`;
+}
+
 // === Batch eligibility ===
 
 export interface BatchOp { pattern?: string; operation?: string; data?: { visibility?: unknown } }

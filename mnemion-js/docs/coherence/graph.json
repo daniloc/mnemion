@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-25 03:39Z",
+  "generatedAt": "2026-07-04 15:45Z",
   "root": "mnemion-js",
   "absRoot": "/Users/daniloc/Documents/Development/project-cambium/mnemion-js",
   "nodes": [
@@ -1995,13 +1995,23 @@
       "prose": "Decide which gate a single mutate op must clear, purely from policy.ts. The\n MCP handler drives the round-trip mechanics off this; the engine independently\n enforces write-class, so this is the consent layer's single decision point."
     },
     {
+      "id": "s:entities/Hive/mutate-gate.ts#consentKey",
+      "parent": "f:entities/Hive/mutate-gate.ts",
+      "label": "consentKey",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/mutate-gate.ts",
+      "line": 101,
+      "prose": "The key used to arm/confirm a consent round-trip in `_pending_consent`. The\n request data is folded in so consent is bound to the SPECIFIC call shape, not\n to `(pattern, operation)` alone — re-issuing with different data must start\n a fresh round-trip rather than confirm the prior. (Without the data fold an\n agent could arm with benign data and re-issue with harmful data on the same\n pattern/op to satisfy the gate.) Data is serialized with sorted keys so\n semantically-identical re-issues confirm regardless of property order. Lives\n here because the data-binding is the correctness property of the gate; the\n round-trip MECHANICS stay in session.ts."
+    },
+    {
       "id": "s:entities/Hive/mutate-gate.ts#BatchOp",
       "parent": "f:entities/Hive/mutate-gate.ts",
       "label": "BatchOp",
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/mutate-gate.ts",
-      "line": 79
+      "line": 107
     },
     {
       "id": "s:entities/Hive/mutate-gate.ts#findGatedBatchOp",
@@ -2010,7 +2020,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/mutate-gate.ts",
-      "line": 86,
+      "line": 114,
       "prose": "The first op in a batch that may NOT ride inside it, or null if all are\n eligible. Consent-gated escalations and patches on gated patterns must go\n through a single mutate (a batch would skip the round-trip / kernel hooks);\n archive (de-escalation) is allowed. Pure derivation of policy.ts — the batch\n rule has one home, not an inline `.find` in the handler."
     },
     {

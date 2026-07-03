@@ -14,7 +14,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { z } from "zod";
 import type { HiveDO } from "../Hive/hive";
 import { PRODUCT_NAME, URI_SCHEME, uri, HIVE_ID, OWNER_ACTOR } from "../../shared/core/constants";
-import { mutateGate, findGatedBatchOp, normalizeMutateData, isSingleOpData } from "../Hive/mutate-gate";
+import { mutateGate, findGatedBatchOp, normalizeMutateData, isSingleOpData, consentKey } from "../Hive/mutate-gate";
 import { CHANGE_TYPE_NAMES } from "../Hive/evolution";
 import { FORMAT_IDS } from "../../shared/core/format-palette";
 import { TOOLS } from "./tools";
@@ -732,7 +732,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           // first call returns confirmation_required and the agent must re-issue
           // the identical call to commit. archive (removal) is de-escalation and
           // is allowed without one.
-          const confirmKey = `consent:${pattern}:${resolvedOp}:${JSON.stringify(singleData)}`;
+          const confirmKey = consentKey(pattern, resolvedOp, singleData);
           if (!(await hive.checkAndArmConsent(confirmKey))) {
             return {
               content: [{
