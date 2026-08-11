@@ -6,6 +6,9 @@ IFS= read -r coherence_rel < "$claude_root/.claude/coherence-root"
 coherence_root=$(CDPATH= cd -- "$claude_root/$coherence_rel" && pwd -P)
 cd "$coherence_root"
 export COHERENCE_PROJECT_ROOT="$coherence_root"
+export COHERENCE_HOOK_HOST="claude"
+export COHERENCE_HOOK_TRANSPORT="launcher"
+export COHERENCE_HOOK_BUNDLE_FINGERPRINT="cf1983f14fb83f48fcef28c320cc73044d8ab6c5631bbf24c1a22f20daad9472"
 
 if [ -x "$coherence_root/node_modules/.bin/coherence-hook" ]; then
   exec "$coherence_root/node_modules/.bin/coherence-hook" "$@"

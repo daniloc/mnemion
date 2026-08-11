@@ -161,7 +161,7 @@ _files:_
 | served-content inertness | Routing | `inertHeaders` | `served-content inertness totality` |
 | served-read gating | Routing | `denyUnlessBearerScope` | `served bearer-gating totality` |
 
-<sub>Generated at 2026-08-03 15:26Z.</sub>
+<sub>Generated at 2026-08-11 16:25Z.</sub>
 <!-- coherence:end -->
 
 ## Current state
