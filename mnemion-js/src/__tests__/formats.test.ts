@@ -9,6 +9,7 @@ import {
   FORMAT_PALETTE,
   isFormat,
 } from "../../shared/core/format-palette";
+import { buildEmbedText } from "../../entities/Hive/prime";
 
 function getStore(): DurableObjectStub<HiveDO> {
   const id = env.MNEMION_HIVE.idFromName(`user:test:${crypto.randomUUID()}`);
@@ -86,6 +87,51 @@ describe("format palette totality", () => {
       expect(isFormat(id)).toBe(true);
     }
     expect(isFormat("definitely-not-a-format")).toBe(false);
+  });
+
+  it("every format declares whether its value feeds the recall vector", () => {
+    for (const id of FORMAT_IDS) expect(typeof FORMAT_PALETTE[id].embed).toBe("boolean");
+  });
+});
+
+// === What feeds the recall vector (format-derived, not type-derived) ===
+//
+// buildEmbedText resolves each facet's INTRINSIC format (_fields.format ?? the
+// type default) and consults the palette. A view override is deliberately not
+// consulted — what a desk displays is presentation; what an entry means is data.
+
+describe("buildEmbedText", () => {
+  // The rows _fields would yield; buildEmbedText's only dependency is this shape.
+  const fieldsDb = (rows: { name: string; type: string; format?: string | null }[]) =>
+    ({ exec: () => ({ toArray: () => rows }) }) as any;
+
+  it("omits a link-formatted facet — a URL is an address, not prose", () => {
+    const db = fieldsDb([
+      { name: "summary", type: "text", format: null },
+      { name: "source_link", type: "text", format: "link" },
+    ]);
+    const text = buildEmbedText(db, "topics", {
+      summary: "the licensing question that keeps resurfacing",
+      source_link: "https://mail.google.com/mail/u/0/#inbox/FMfcgzabc123",
+    });
+    expect(text).toContain("the licensing question that keeps resurfacing");
+    expect(text).not.toContain("mail.google.com");
+  });
+
+  it("still embeds text and select facets, and still skips dates", () => {
+    const db = fieldsDb([
+      { name: "title", type: "text", format: null },
+      { name: "status", type: "select", format: null },
+      { name: "reviewed_at", type: "datetime", format: null },
+    ]);
+    const text = buildEmbedText(db, "topics", {
+      title: "patent pledges",
+      status: "dormant",
+      reviewed_at: "2026-08-11T00:00:00Z",
+    });
+    expect(text).toContain("patent pledges");
+    expect(text).toContain("dormant");
+    expect(text).not.toContain("2026-08-11");
   });
 });
 

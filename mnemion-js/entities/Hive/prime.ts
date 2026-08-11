@@ -13,6 +13,7 @@
 // the decay clock), never from a stored counter, per data-is-destiny.
 
 import { uri } from "../../shared/core/constants";
+import { FORMAT_PALETTE, resolveFormat } from "../../shared/core/format-palette";
 import { logWarn } from "../../shared/core/log";
 import { isKernelPattern, primeIncluded, seal } from "./policy";
 
@@ -102,16 +103,25 @@ export function decayMultiplier(ageDays: number, halfLifeDays: number | null): n
 
 // === Embedding ===
 
-/** Build embeddable text from an entry's text/select facets. */
+/** Build embeddable text from the facets whose FORMAT says they carry prose.
+ *
+ *  What an entry MEANS is decided by each facet's format, not its storage type:
+ *  a URL and a paragraph are both TEXT, but only one is language. So this reads
+ *  every facet and derives inclusion from FORMAT_PALETTE[…].embed — the same
+ *  declaration the renderers key off — rather than re-listing types here.
+ *  The INTRINSIC format only (`_fields.format` ?? the type default); a view's
+ *  per-facet override is presentation, and must not change what an entry means.
+ *  Facets are read in declaration order, so put prose first: the MAX_EMBED_CHARS
+ *  budget is spent in that order. */
 export function buildEmbedText(db: any, pattern: string, entry: Record<string, unknown>): string {
-  // Get text and select facets for this pattern
   const facets = db.exec(
-    "SELECT name FROM _fields WHERE object_name = ? AND type IN ('text', 'select') ORDER BY id",
+    "SELECT name, type, format FROM _fields WHERE object_name = ? ORDER BY id",
     pattern
-  ).toArray() as { name: string }[];
+  ).toArray() as { name: string; type: string; format: string | null }[];
 
   const parts: string[] = [pattern];
   for (const f of facets) {
+    if (!FORMAT_PALETTE[resolveFormat(undefined, f.format, f.type)].embed) continue;
     const val = entry[f.name];
     if (val != null && typeof val === "string" && val.length > 0) {
       parts.push(val);

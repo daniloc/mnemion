@@ -15,19 +15,26 @@ export interface FormatType {
   label: string;
   /** Agent-facing: what this format does / when to use it. */
   help: string;
+  /** Does this value contribute PROSE to the recall vector? A format is the
+   *  data's nature, so it — not the storage type — decides what an entry MEANS
+   *  for `prime`. Required, so a new format cannot be added without deciding:
+   *  the `satisfies` below stops compiling until it is classified. False for
+   *  values that are addresses or scalars rather than language (a URL dilutes
+   *  the vector and crowds the embed budget without adding meaning). */
+  embed: boolean;
 }
 
 // Add a format here and the enum, the agent contract, and validation pick it up;
 // the SPA won't compile until it has a matching renderer (Record<FormatId,…>).
 export const FORMAT_PALETTE = {
-  text: { label: "Text", help: "Plain text (the default for text facets)." },
-  link: { label: "Link", help: "Render the value as a clickable link (href = the value)." },
-  tags: { label: "Tags", help: "Split a comma-separated value into chips." },
-  date: { label: "Date", help: "Render a timestamp as a friendly relative date." },
-  boolean: { label: "Boolean", help: "Render a truthy/falsy value as ✓ / ✗." },
-  select: { label: "Select", help: "An interactive dropdown that changes the value inline (options: the facet's declared options, else the values already in use)." },
-  number: { label: "Number", help: "Format with thousands separators; right-aligned and sorted numerically (not lexically) in tables. The default for integer/number facets." },
-  reference: { label: "Reference", help: "A navigable link to another entry — shows that entry's label, click to open it. Auto-applied to facets that declare a foreign key (links)." },
+  text: { label: "Text", help: "Plain text (the default for text facets).", embed: true },
+  link: { label: "Link", help: "Render the value as a clickable link (href = the value). Also excludes the value from recall: a URL is an address, not prose, so it never feeds prime's embedding.", embed: false },
+  tags: { label: "Tags", help: "Split a comma-separated value into chips.", embed: true },
+  date: { label: "Date", help: "Render a timestamp as a friendly relative date.", embed: false },
+  boolean: { label: "Boolean", help: "Render a truthy/falsy value as ✓ / ✗.", embed: false },
+  select: { label: "Select", help: "An interactive dropdown that changes the value inline (options: the facet's declared options, else the values already in use).", embed: true },
+  number: { label: "Number", help: "Format with thousands separators; right-aligned and sorted numerically (not lexically) in tables. The default for integer/number facets.", embed: false },
+  reference: { label: "Reference", help: "A navigable link to another entry — shows that entry's label, click to open it. Auto-applied to facets that declare a foreign key (links).", embed: true },
 } satisfies Record<string, FormatType>;
 
 export type FormatId = keyof typeof FORMAT_PALETTE;

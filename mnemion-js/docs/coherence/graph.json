@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-08-03 15:26Z",
+  "generatedAt": "2026-08-11 16:20Z",
   "root": "mnemion-js",
-  "absRoot": "/Users/daniloc/Documents/Development/mnemion/mnemion-js",
+  "absRoot": "/tmp/claude-1000/-var-home-louie-Projects-Self-mnemion/67f571c5-a9bd-427e-b564-8c9bd44e2072/scratchpad/pr-embed/mnemion-js",
   "nodes": [
     {
       "id": "c:.",
@@ -2291,7 +2291,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/prime.ts",
-      "line": 21
+      "line": 22
     },
     {
       "id": "s:entities/Hive/prime.ts#patternExists()",
@@ -2300,7 +2300,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/prime.ts",
-      "line": 24
+      "line": 25
     },
     {
       "id": "s:entities/Hive/prime.ts#PrimeResult",
@@ -2309,7 +2309,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/prime.ts",
-      "line": 27
+      "line": 28
     },
     {
       "id": "s:entities/Hive/prime.ts#MemoryPolicy",
@@ -2318,7 +2318,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/prime.ts",
-      "line": 38
+      "line": 39
     },
     {
       "id": "s:entities/Hive/prime.ts#CONFLICT_SIMILARITY",
@@ -2327,7 +2327,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/prime.ts",
-      "line": 50
+      "line": 51
     },
     {
       "id": "s:entities/Hive/prime.ts#getPatternClass",
@@ -2336,7 +2336,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 56,
+      "line": 57,
       "prose": "A pattern's class: \"knowledge\" (default — recalled by meaning) or \"dataset\"\n (structured records aggregated by computation, exempt from the memory machinery)."
     },
     {
@@ -2346,7 +2346,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 78,
+      "line": 79,
       "prose": "Read a pattern's memory policy from _objects, applying opinionated defaults."
     },
     {
@@ -2356,7 +2356,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 97,
+      "line": 98,
       "prose": "Recall-weight multiplier: halves per half-life elapsed, floored so old-but-relevant survives."
     },
     {
@@ -2366,8 +2366,8 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 106,
-      "prose": "Build embeddable text from an entry's text/select facets."
+      "line": 116,
+      "prose": "Build embeddable text from the facets whose FORMAT says they carry prose.\n\n What an entry MEANS is decided by each facet's format, not its storage type:\n a URL and a paragraph are both TEXT, but only one is language. So this reads\n every facet and derives inclusion from FORMAT_PALETTE[…].embed — the same\n declaration the renderers key off — rather than re-listing types here.\n The INTRINSIC format only (`_fields.format` ?? the type default); a view's\n per-facet override is presentation, and must not change what an entry means.\n Facets are read in declaration order, so put prose first: the MAX_EMBED_CHARS\n budget is spent in that order."
     },
     {
       "id": "s:entities/Hive/prime.ts#embedEntry",
@@ -2376,7 +2376,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 144,
+      "line": 154,
       "prose": "Embed an entry and upsert its vector. Fire-and-forget safe.\n A precomputed vector (e.g. from the write-time conflict check) skips the AI call."
     },
     {
@@ -2386,7 +2386,7 @@
       "kind": "symbol",
       "sub": "interface",
       "path": "entities/Hive/prime.ts",
-      "line": 179
+      "line": 189
     },
     {
       "id": "s:entities/Hive/prime.ts#findNeighbors",
@@ -2395,7 +2395,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 190,
+      "line": 200,
       "prose": "Find same-pattern semantic neighbors of not-yet-written entry data.\n Returns matches ≥ CONFLICT_SIMILARITY plus the computed vector (reusable for\n the post-write upsert, avoiding a second AI call). Best-effort: any failure\n returns empty with no vector."
     },
     {
@@ -2405,7 +2405,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 228,
+      "line": 238,
       "prose": "Remove a vector when an entry is archived."
     },
     {
@@ -2415,7 +2415,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 242,
+      "line": 252,
       "prose": "Prime: partial cue activates a full constellation."
     },
     {
@@ -2425,7 +2425,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 380,
+      "line": 390,
       "prose": "SQLite datetime('now') emits \"YYYY-MM-DD HH:MM:SS\" in UTC with no zone marker — parse as UTC."
     },
     {
@@ -2435,7 +2435,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/prime.ts",
-      "line": 388,
+      "line": 398,
       "prose": "Follow foreign key links one hop from an entry."
     },
     {
@@ -5055,7 +5055,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/core/format-palette.ts",
-      "line": 22,
+      "line": 29,
       "prose": "Add a format here and the enum, the agent contract, and validation pick it up;\nthe SPA won't compile until it has a matching renderer (Record<FormatId,…>)."
     },
     {
@@ -5065,7 +5065,7 @@
       "kind": "symbol",
       "sub": "type",
       "path": "shared/core/format-palette.ts",
-      "line": 33
+      "line": 40
     },
     {
       "id": "s:shared/core/format-palette.ts#FORMAT_IDS",
@@ -5074,7 +5074,7 @@
       "kind": "symbol",
       "sub": "const",
       "path": "shared/core/format-palette.ts",
-      "line": 35
+      "line": 42
     },
     {
       "id": "s:shared/core/format-palette.ts#isFormat",
@@ -5083,7 +5083,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/core/format-palette.ts",
-      "line": 37
+      "line": 44
     },
     {
       "id": "s:shared/core/format-palette.ts#defaultFormatForType",
@@ -5092,7 +5092,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/core/format-palette.ts",
-      "line": 44,
+      "line": 51,
       "prose": "The default rendering for a facet that carries no explicit format — derived\nfrom its declared type, so a datetime is friendly and a boolean is a check\nwithout anyone having to say so. Truth (the type) drives presentation."
     },
     {
@@ -5102,7 +5102,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/core/format-palette.ts",
-      "line": 59,
+      "line": 66,
       "prose": "The resolve chain: view override ?? facet intrinsic ?? foreign-key reference ??\ntype default. A declared foreign key (hasLink) wins over the type default — an\nFK facet is a reference by nature — but an explicit format still overrides it.\nUnknown ids fall through (a stale format never crashes a render — it degrades\nto the next source), so the resolver always returns a real FormatId."
     },
     {
@@ -5112,7 +5112,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/core/format-palette.ts",
-      "line": 74,
+      "line": 81,
       "prose": "Validate a view's per-facet `formats` override map: an object of\nfacet-name → format-id. `hasFacet` null = pattern unknown → skip the\nfacet-existence check (format-id checks still run). Returns [] when valid."
     },
     {
@@ -5122,7 +5122,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "shared/core/format-palette.ts",
-      "line": 93,
+      "line": 100,
       "prose": "Agent-facing prose, generated from the palette so the contract can't drift\nfrom what's enforced. Embedded in the _views + set_facet_format docs."
     },
     {
@@ -5824,6 +5824,12 @@
       "id": "f:entities/Hive/prime.ts->f:shared/core/constants.ts:imports",
       "source": "f:entities/Hive/prime.ts",
       "target": "f:shared/core/constants.ts",
+      "kind": "imports"
+    },
+    {
+      "id": "f:entities/Hive/prime.ts->f:shared/core/format-palette.ts:imports",
+      "source": "f:entities/Hive/prime.ts",
+      "target": "f:shared/core/format-palette.ts",
       "kind": "imports"
     },
     {
