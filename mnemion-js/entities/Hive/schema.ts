@@ -19,7 +19,7 @@ import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/con
 import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
-import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints, PLATFORM_RESERVED_TABLES } from "./policy";
+import { KERNEL_WRITE_POLICY, SENSITIVE_COLUMNS, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints, PLATFORM_RESERVED_TABLES } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
 import { ensureAuditTriggers, dropColumn } from "./audit-triggers";
@@ -668,6 +668,67 @@ function bootFingerprint(db: any): string {
   return JSON.stringify({ v: 1, declared, live });
 }
 
+/** Run a one-time migration at most once per hive, ever.
+ *
+ *  For a migration whose idempotence guard is itself expensive: the audit-log
+ *  token scrub re-answered "is there anything left to scrub?" with six full
+ *  scans of `_mutation_log` — 6,000 rows read on EVERY wake, returning zero rows
+ *  to fix forever after the first. That is the read-side twin of the boot-write
+ *  pathology (see the `## why` in Hive.spec.md): a cost paid per cold start,
+ *  i.e. per client reconnect, for work that was finished long ago.
+ *
+ *  Stamps only on SUCCESS, so a migration that throws part-way is retried on the
+ *  next boot rather than being silently marked done — fail closed, same as the
+ *  boot fingerprint. Use this ONLY for genuinely historical, converged work; a
+ *  migration that must keep reconciling against the code belongs in the
+ *  fingerprint-gated block instead. */
+export async function runOnce(db: any, id: string, fn: () => Promise<void> | void): Promise<void> {
+  try {
+    const done = db.exec("SELECT 1 FROM _completed_migrations WHERE id = ?", id).toArray().length > 0;
+    if (done) return;
+  } catch {
+    return; // table missing → schema not initialized yet; a later boot will run it
+  }
+  await fn();
+  try { db.exec("INSERT OR IGNORE INTO _completed_migrations (id) VALUES (?)", id); } catch {}
+}
+
+/** The one-time cleanup of secrets that leaked BEFORE born-hashing: hash any
+ *  legacy plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64),
+ *  and NULL out any raw token/passkey material the pre-recreate audit triggers
+ *  captured in `_mutation_log`. Derived from SENSITIVE_COLUMNS, so it covers
+ *  every classified column.
+ *
+ *  Lives here (not in the DO) so the WHOLE boot sequence is `initializeSchema` +
+ *  this — testable end-to-end by the boot-idempotence oracle, which is what
+ *  makes "a quiescent boot's cost is independent of data volume" a checkable
+ *  property rather than a claim about one of the two halves. */
+export async function applyTokenHashScrub(db: any, hashToken: (raw: string) => Promise<string>): Promise<void> {
+  await runOnce(db, "token-hash-scrub-v1", async () => {
+    try {
+      const rows = db.exec(`SELECT id, token FROM "_access_tokens" WHERE length(token) != 64`).toArray() as any[];
+      for (const r of rows) {
+        if (typeof r.token !== "string") continue;
+        try { db.exec(`UPDATE "_access_tokens" SET token = ? WHERE id = ?`, await hashToken(r.token), r.id); }
+        catch { /* a bad row must not brick construction — skip it */ }
+      }
+    } catch { /* table may not exist yet on a brand-new hive */ }
+    try {
+      for (const [table, cols] of Object.entries(SENSITIVE_COLUMNS)) {
+        for (const c of cols) {
+          for (const field of ["new_data", "old_data"]) {
+            db.exec(
+              `UPDATE _mutation_log SET ${field} = json_set(${field}, '$.${c.column}', null)
+               WHERE table_name = ? AND json_extract(${field}, '$.${c.column}') IS NOT NULL`,
+              table,
+            );
+          }
+        }
+      }
+    } catch { /* best effort */ }
+  });
+}
+
 function storedFingerprint(db: any): string | null {
   try {
     const row = db.exec("SELECT boot_fingerprint FROM _meta WHERE id = 1").toArray()[0] as any;
@@ -825,6 +886,16 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
   db.exec(`CREATE TABLE IF NOT EXISTS _pending_consent (
     key TEXT PRIMARY KEY,
     expires_at TEXT NOT NULL
+  )`);
+
+  // Completed ONE-TIME migrations, by id. The self-guarded migrations in this
+  // file re-check cheap schema metadata (a PRAGMA) to decide they're done, but a
+  // migration whose "am I done?" question is a TABLE SCAN cannot pay that on every
+  // wake — see runOnce. Internal (never registered in _objects), append-only, and
+  // a history record by nature, so it's outside the derive-don't-store doctrine.
+  db.exec(`CREATE TABLE IF NOT EXISTS _completed_migrations (
+    id TEXT PRIMARY KEY,
+    completed_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
 
   // One passkey per member (member = NULL for the bootstrap owner credential).

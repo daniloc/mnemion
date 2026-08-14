@@ -15,7 +15,7 @@
 import { describe, it, expect } from "vitest";
 import { env, runInDurableObject } from "cloudflare:test";
 import { getStore, createPattern } from "./helpers";
-import { initializeSchema } from "../../entities/Hive/schema";
+import { initializeSchema, runOnce, applyTokenHashScrub } from "../../entities/Hive/schema";
 
 /** Wrap a SqlStorage so every exec() accumulates its rowsWritten. */
 function countingSql(sql: any): { db: any; written: () => number; culprits: () => string[] } {
@@ -45,9 +45,13 @@ function countingSql(sql: any): { db: any; written: () => number; culprits: () =
 // is quiescence: after one settling boot, the next writes nothing.
 async function writesOnSecondBoot(store: any): Promise<string[]> {
   return await runInDurableObject(store, async (_i: any, state: any) => {
-    initializeSchema(state.storage.sql, {}); // settle
+    const boot = async (d: any) => {
+      initializeSchema(d, {});
+      await applyTokenHashScrub(d, async (raw: string) => raw.padEnd(64, "0"));
+    };
+    await boot(state.storage.sql); // settle
     const { db, culprits } = countingSql(state.storage.sql);
-    initializeSchema(db, {});
+    await boot(db);
     return culprits();
   });
 }
@@ -63,6 +67,76 @@ describe("boot idempotence", () => {
     const store = getStore();
     await createPattern(store, "notes", [{ name: "body", type: "text" }]);
     expect(await writesOnSecondBoot(store), "quiescent boot wrote rows").toEqual([]);
+  });
+
+  // The read-side twin. Writes were the billed symptom; the same reconciliation
+  // was ALSO reading ~9.7k rows per wake, and a write-only oracle would have let
+  // that stand. The property is stronger than a threshold and needs no magic
+  // constant: a quiescent boot's read cost must not depend on how much DATA the
+  // hive holds. Any newly added boot-time table scan breaks it.
+  it("a quiescent boot's reads do not scale with data volume", async () => {
+    const readsAtVolume = async (rows: number) => {
+      const store = getStore();
+      await store.getIndex();
+      return await runInDurableObject(store, async (_i, state: any) => {
+        const sql = state.storage.sql;
+        for (let i = 0; i < rows; i++) {
+          sql.exec(
+            `INSERT INTO _mutation_log (table_name, record_id, operation, new_data)
+             VALUES ('_access_tokens', ?, 'INSERT', json_object('id', ?, 'token', 'x'))`,
+            i, i,
+          );
+        }
+        // The full boot sequence, both halves — exactly what the DO constructor
+        // runs. Measuring only initializeSchema would have missed the audit-log
+        // scrub, which read 6,000 rows per wake to find nothing to do.
+        const boot = async (d: any) => {
+          initializeSchema(d, {});
+          await applyTokenHashScrub(d, async (raw: string) => raw.padEnd(64, "0"));
+        };
+
+        await boot(sql); // settle
+        let read = 0;
+        const db = new Proxy(sql, {
+          get(t: any, p, r) {
+            if (p === "exec") return (...a: any[]) => {
+              const c = t.exec(...a);
+              read += c.rowsRead ?? 0;
+              return c;
+            };
+            const v = Reflect.get(t, p, r);
+            return typeof v === "function" ? v.bind(t) : v;
+          },
+        });
+        await boot(db);
+        return read;
+      });
+    };
+
+    const small = await readsAtVolume(50);
+    const large = await readsAtVolume(1500);
+    expect(large, `boot reads grew with data volume (${small} → ${large})`).toBe(small);
+  });
+
+  it("runOnce runs its migration exactly once per hive, and retries on failure", async () => {
+    const store = getStore();
+    await store.getIndex();
+
+    await runInDurableObject(store, async (_i, state: any) => {
+      const db = state.storage.sql;
+      let ran = 0;
+      await runOnce(db, "probe", () => { ran++; });
+      await runOnce(db, "probe", () => { ran++; });
+      await runOnce(db, "probe", () => { ran++; });
+      expect(ran, "converged migration re-ran").toBe(1);
+
+      // A migration that throws must NOT be stamped — fail closed.
+      let attempts = 0;
+      const boom = () => { attempts++; throw new Error("nope"); };
+      await expect(runOnce(db, "flaky", boom)).rejects.toThrow();
+      await expect(runOnce(db, "flaky", boom)).rejects.toThrow();
+      expect(attempts, "failed migration was marked done").toBe(2);
+    });
   });
 
   it("the counter is real: a first boot on a virgin db does write", async () => {
