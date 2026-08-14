@@ -19,7 +19,7 @@ import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/con
 import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
-import { KERNEL_WRITE_POLICY, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints, PLATFORM_RESERVED_TABLES } from "./policy";
+import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints, PLATFORM_RESERVED_TABLES } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
 import { ensureAuditTriggers, dropColumn } from "./audit-triggers";
@@ -619,6 +619,64 @@ export const KERNEL_TABLES: KernelTable[] = [
   ...composePatterns(FEATURES),
 ];
 
+// === Boot reconciliation fingerprint ===
+//
+// initializeSchema runs in the HiveDO CONSTRUCTOR — on every cold start / wake
+// from hibernation, not once per deploy. Two of its steps (registering the
+// kernel patterns in _objects, and rebuilding every audit trigger) are
+// reconciliation: they exist to make an ALREADY-DEPLOYED hive track a change in
+// the code. Run unconditionally they wrote ~185 rows per wake for a hive nobody
+// touched, and the wake rate is set by client reconnects, not by the owner.
+//
+// So: derive a fingerprint of everything those steps read, and reconcile only
+// when it differs from the one stamped at the last reconciliation. This is the
+// SAME move as the rest of the codebase — one declarative home (the fingerprint
+// is computed FROM the declarations, never hand-maintained), derive rather than
+// duplicate, and fail closed: any read that throws, any missing stamp, and any
+// difference at all resolves to "reconcile", so the safe state is the default
+// and a forgotten input can only cost a redundant rebuild, never a stale one.
+//
+// It deliberately covers the LIVE column signature too, not just the code, so a
+// pattern created through evolution.ts (which stamps nothing) is picked up by
+// the next boot and settles after one reconciliation.
+//
+// Stored whole rather than hashed: the whole point of the always-rebuild
+// behavior this gates was that a trigger built before a column existed silently
+// omits it forever. A hash collision would resurrect exactly that bug, and an
+// exact compare costs one row write per schema change — a few per deploy.
+function bootFingerprint(db: any): string {
+  const declared = KERNEL_TABLES.map((t) => [
+    t.name, t.description, t.doctrine,
+    t.facets.map((f) => [f.name, f.type, f.required ? 1 : 0, f.options ?? null]),
+  ]);
+
+  const live: any[] = [];
+  const objects = db.exec("SELECT name FROM _objects ORDER BY name").toArray() as any[];
+  for (const o of objects) {
+    let columns: string[] = [];
+    try {
+      columns = (db.exec(`PRAGMA table_info(${quoteIdent(o.name)})`).toArray() as any[]).map((c) => c.name);
+    } catch { /* archived-then-dropped pattern — no table to trigger */ }
+    live.push([
+      o.name,
+      columns,
+      isAuditExempt(o.name) ? 1 : 0,
+      sensitiveColumns(o.name).map((s) => s.column).sort(),
+    ]);
+  }
+
+  return JSON.stringify({ v: 1, declared, live });
+}
+
+function storedFingerprint(db: any): string | null {
+  try {
+    const row = db.exec("SELECT boot_fingerprint FROM _meta WHERE id = 1").toArray()[0] as any;
+    return row?.boot_fingerprint ?? null;
+  } catch {
+    return null; // column or row not there yet → reconcile
+  }
+}
+
 // === Initialization ===
 
 /** Boot migrations that rewrite data in a way the previous worker can't read
@@ -721,8 +779,18 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL DEFAULT 0,
     guidance TEXT NOT NULL,
+    boot_fingerprint TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
+
+  // Boot-reconciliation stamp (see bootFingerprint above). Added by migration on
+  // an existing hive; NULL until the first gated reconciliation stamps it.
+  try {
+    const metaCols = db.exec(`PRAGMA table_info("_meta")`).toArray() as any[];
+    if (!metaCols.some((c: any) => c.name === "boot_fingerprint")) {
+      db.exec(`ALTER TABLE _meta ADD COLUMN "boot_fingerprint" TEXT`);
+    }
+  } catch { /* fresh db — the CREATE above already has it */ }
 
   const metaRows = db.exec("SELECT id FROM _meta WHERE id = 1").toArray();
   if (metaRows.length === 0) {
@@ -1134,14 +1202,34 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   }
 
+  // --- Reconciliation gate ---
+  //
+  // Everything below that exists to make an already-deployed hive track the CODE
+  // (kernel registration, audit-trigger rebuild) runs only when the fingerprint
+  // moved. Fail closed: a throw here means reconcile.
+  let fingerprintBefore: string | null = null;
+  let reconcile = true;
+  try {
+    fingerprintBefore = bootFingerprint(db);
+    reconcile = storedFingerprint(db) !== fingerprintBefore;
+  } catch {
+    reconcile = true;
+  }
+
   // --- Register kernel objects in normalized schema ---
 
-  for (const table of KERNEL_TABLES) {
+  if (reconcile) for (const table of KERNEL_TABLES) {
     // Refresh description too (not just doctrine) so an existing install's
     // kernel docs track the code on deploy — otherwise new scopes/facets stay
     // undiscoverable in the live schema.
+    //
+    // The WHERE on DO UPDATE matters independently of the gate: SQLite rewrites
+    // the row on a no-op upsert, so without it this loop billed a row write per
+    // kernel pattern per wake. (`IS NOT` is SQLite's null-safe inequality.)
     db.exec(
-      "INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET doctrine = excluded.doctrine, description = excluded.description",
+      `INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET doctrine = excluded.doctrine, description = excluded.description
+       WHERE _objects.doctrine IS NOT excluded.doctrine OR _objects.description IS NOT excluded.description`,
       table.name, table.description, table.doctrine
     );
     for (const f of table.facets) {
@@ -1216,10 +1304,41 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
   } catch {}
 
   // --- Audit triggers for all registered objects ---
+  //
+  // ensureAuditTriggers always DROPs and re-CREATEs, so the trigger's captured
+  // column list tracks the current schema (see its comment). That rebuild is
+  // reconciliation and mutates sqlite_schema — six DDL writes per pattern —
+  // so it runs only behind the gate. Pattern creation/alteration calls
+  // ensureAuditTriggers directly (evolution.ts), so a live schema change is
+  // never waiting on a boot.
 
-  const allObjects = db.exec("SELECT name FROM _objects").toArray() as any[];
-  for (const obj of allObjects) {
-    ensureAuditTriggers(db, obj.name);
+  // A boot that skipped reconciliation re-checks once here: a migration between
+  // the gate and this point (v19's table rebuilds, a future ALTER) can move the
+  // live column signature after the gate was decided. Constant cost (one PRAGMA
+  // per pattern), so it keeps a quiescent boot independent of data volume.
+  let fingerprintAfter: string | null = null;
+  try { fingerprintAfter = bootFingerprint(db); } catch { reconcile = true; }
+  if (!reconcile && fingerprintAfter !== fingerprintBefore) reconcile = true;
+
+  if (reconcile) {
+    const allObjects = db.exec("SELECT name FROM _objects").toArray() as any[];
+    for (const obj of allObjects) {
+      ensureAuditTriggers(db, obj.name);
+    }
+  }
+
+  // Stamp the post-reconciliation fingerprint. Taken after the steps above
+  // (attribution backfill, format column, owner seed, relations migrations), not
+  // reused from the gate, because those steps can move it; stamping the stale one
+  // would reconcile again on every boot forever. Guarded by an equality check so
+  // a boot that changed nothing writes nothing at all.
+  if (reconcile) {
+    try {
+      const after = fingerprintAfter ?? bootFingerprint(db);
+      if (after !== storedFingerprint(db)) {
+        db.exec("UPDATE _meta SET boot_fingerprint = ? WHERE id = 1", after);
+      }
+    } catch { /* leave unstamped → reconcile again next boot (fail closed) */ }
   }
 
   // --- Integrity: detect drift between _fields metadata and actual table DDL ---
