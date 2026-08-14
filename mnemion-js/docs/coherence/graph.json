@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-08-03 15:26Z",
+  "generatedAt": "2026-08-14 15:04Z",
   "root": "mnemion-js",
-  "absRoot": "/Users/daniloc/Documents/Development/mnemion/mnemion-js",
+  "absRoot": "/tmp/claude-1000/-var-home-louie-Projects-Self-mnemion/a4662873-71bc-467f-93c6-f7645e66f2b7/scratchpad/wt-boot/mnemion-js",
   "nodes": [
     {
       "id": "c:.",
@@ -35,6 +35,7 @@
         "data.ts imports ./kernel-columns",
         "evolution.ts imports ./kernel-columns",
         "schema.ts imports ./kernel-columns",
+        "schema.ts imports ../../shared/core/sql",
         "hive.ts imports ./kernel-columns",
         "data.ts exists at this node",
         "mutate-gate.ts exists at this node",
@@ -65,7 +66,7 @@
         "reports.ts exists at this node",
         "hive.ts imports ./reports"
       ],
-      "why": "HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf SSOT for \"which patterns agents can write, through which path, what gate fires\" — unclassified kernel patterns fail CLOSED (System → denied), so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary can't drift between layers.\n\n(The per-boundary paragraphs below record the non-derivable rationale — the bug or rejected alternative each boundary exists to kill. The mechanism — chokepoint, oracle, \"iterates the live domain → fails the build\" — is carried by the `## invariants` list and the `boundary \"…\" at <chokepoint> via test \"<oracle>\"` claims above, and isn't restated here.)\n\n**facet/kernel-column collision.** Kernel COLUMNS get the same single-source treatment as kernel patterns: `kernel-columns.ts` is the SSOT for the seven auto-provided columns, and every named slice (the data engine's create-exclude/facet-skip sets, schema display, history-diff ignore set) is DERIVED from it. A user-proposed facet may not collide with a kernel column, so `validateFacets` reserves `FACET_RESERVED_COLUMNS` — the kernel columns MINUS the user-overridable ones. The one overridable column is `version` (a pattern may declare its own semver semantics; create_pattern's apply skips the kernel default). The historical bug was a hand-narrowed reserved subset that wrongly omitted `created_by`/`updated_by` (a same-named facet is a duplicate-column DDL error — they MUST be reserved); over-correcting to reserve `version` then broke the user-version feature. Splitting \"overridable\" into its own declaration fixes both directions at once: `reserved ∪ overridable = KERNEL_COLUMNS`, so neither under- nor over-reserving can recur.\n\n**data-is-destiny no-hybrid.** Makes the \"store truth once, derive its consequences\" doctrine emergent from the schema rather than prose an agent can interpret away. The doctrine is semantic in general, but it has a DECIDABLE core: a pattern must not STORE an aggregate of rows it also RETAINS. `findStoredDerivedAggregates` checks exactly that, firing only when BOTH halves are present (an aggregate-named facet AND a child pattern referencing this one). It stays silent on the legitimate fork a convergence experiment surfaced — a bare counter with no retained instances IS the stored truth, not a denormalization, because there's no retained source to derive from. Boot warns rather than throws: a deliberate materialized aggregate is a valid reviewed override.\n\n**credential-mint gating.** The consent dual of egress totality. A pattern with a `secret` column mints a born-hashed BEARER on every create, so that create MUST be consent-gated. `patch_only` is provably wrong for such a pattern — it declares create benign while create is the dangerous op — and that was a real shipped bug: `_access_tokens` was `patch_only`, so an injected agent could mint a broad `*` token (a full owner login credential, redeemable at `/auth/verify`) in one un-round-tripped `mutate` and exfiltrate it. Fixed by `on_broad_token`: minting a broad/portable scope (`*`, or a whole-class `read`/`write` key — `isBroadTokenScope`) round-trips like every other standing grant, while narrow target-bound (`upload`/`document`) and inert (`register`, gated by `/invite` passkey approval) scopes stay benign so the frequent legit flows aren't taxed. The rule DERIVES from `SENSITIVE_COLUMNS × KERNEL_WRITE_POLICY` (no new declaration), so re-classifying a credential-minter as `patch_only`/`Open` is unexpressible.\n\n**born-hashed secrets.** The storage dual: credential-mint gating governs WHEN a bearer is minted; this governs HOW it's stored. `mintSecrets` is generic over `SENSITIVE_COLUMNS` and runs on every engine write path, so a `secret`-classed column is born-hashed by construction — the preimage is system-generated, returned ONCE in the create response, and only its SHA-256 digest lands in the column, the audit log, and the `/ws` delta. A read (owner or otherwise) yields a digest, never a usable bearer. The structural enforcement (generic `mintSecrets` keyed on the registry) makes this automatic for any declared secret column.\n\n**immutable-field enforcement.** The registry dual of the create-time hooks: where `ON_CREATE` decides what a kernel row may be BORN as, `IMMUTABLE` / `IMMUTABLE_AFTER_CREATE` decide what it may never BECOME — the defense-in-depth behind the consent model. `approved_at`/`consumed_at` are `IMMUTABLE` so an agent can't self-approve its own invite or replay a single-use token; a token's `scope`/`member`/`constraints`/`token` and an ingress endpoint's `target_pattern` are `IMMUTABLE_AFTER_CREATE` so a row that passed create-time validation can't be silently repointed to a stronger capability; `_members.label` is frozen-after-create (NOT `IMMUTABLE`, which would reject it at birth) because it's the stable handle passkeys/tokens/attribution reference. Enforcement has two faces because the patch path edits one facet by name and sidesteps the top-level key scan: `applyKernelRules` covers create/update/unarchive, `immutableFieldError` covers patch. (`scopeMatches`, the `:`-boundary prefix grammar these freezes protect, is pinned by its own matrix test — a fixed-grammar correctness property, not a live-domain totality, so it's verified but not a boundary.)\n\n**instance-identity host.** Closes the last unmanaged crossing the trust atlas surfaced (public-egress → owner-trusted): the host every generated capability URL is built from. A configured `WORKER_HOST` is AUTHORITATIVE and the inbound `Host` is IGNORED, so an attacker who plants a spoofed `Host` on an unauthenticated request (e.g. a `/ws` upgrade) can't poison an `upload_url`/`page_url`/`og_image` handed to the owner. This was enforced by `currentHost` but proven only by convention (the detector and atlas both flagged it tier-3). The decision is now the pure `resolveHost` (configured-wins-else-observed-else-localhost, placeholder treated as unconfigured), which `currentHost` delegates to — so the test IS the boundary. With this the manifold has zero tier-3 security crossings.\n\n**sql-identifier quoting.** The structural enshrinement of an injection boundary that was a convention. The SQL-identifier crossing (a raw string becoming a table/column token) was guarded by \"validate, then interpolate `\"${x}\"`\" at scattered sites — two SEPARATE steps a new site can forget. `quoteIdent` fuses them: it validates against `IDENTIFIER_RE` and returns the double-quoted identifier, throwing on any injection-bearing name — so an identifier that skipped the upstream semantic check still can't carry injection. The query engine (~20 sites in `data.ts`) routes every identifier through it; the semantic checks (`facetMeta`/`isValidColumn`/`patternExists`) stay as the primary gate with `quoteIdent` as fail-closed defense beneath. This moved the boundary from tier-3 to tier-1. (DDL interpolation in `schema.ts`/`evolution.ts` is the tracked follow-up; the coarse `injection-lint` ratchet still covers those + the HTML egress sinks until they're enshrined too.)\n\n**token-scope-grammar.** The classifier dual of credential-mint gating: that boundary decides a credential-minting create must be consent-gated; this decides WHICH scopes are \"broad\" enough to require the round-trip — so the partition `isBroadTokenScope` draws over the scope grammar IS the boundary. It drifted: a bare `parts.length >= 3` cutoff classified `read:entry:<pattern>` (3 parts) as narrow, but `scopeMatches` prefix-grants it every `read:entry:<pattern>:<id>` — a pattern-WIDE standing read key minted with NO round-trip, an exfil credential. The fix classifies by RESOURCE GRAMMAR, not length: a scope is narrow only when it reaches its kind's LEAF depth (`entry` at depth 4 — `pattern:id`; `output`/`publication`/`document`/`input` at depth 3), so `read:entry:<pattern>` falls short and is broad. The oracle reconciles the partition against both `scopeMatches` and the kinds `io.ts` actually mints, so a new served resource kind can't leave it incomplete.\n\n**kernel write boundary — two transports.** The kernel write boundary reaches the engine over TWO transports: the interactive MCP `mutate` tool and the browser-authenticated `/api/mutate`. The rejected design had gating decisions inlined in the MCP handler; the drift vector was real — an `/api`+RPC test passing while the MCP Zod/consent layer silently broke, so the boundary's enforcement disagreed across the two paths a write can take. Pure decisions in one tested leaf (shared by both transports) is the fix. (Interactive consent round-trip mechanics stay in the session handler because only MCP can satisfy them; `/api` is owner-implicit — a logged-in human IS the consent.)\n\n**kernel read+write capability.** Reads share the SAME boundary on the SAME flag: `DataContext.trusted` is required and gates kernel access symmetrically — an untrusted context may neither write nor read a kernel pattern. Trust is a CAPABILITY, not a per-call-site convention: `HiveDO` exposes two named constructors over a trust-agnostic `ctxFields` — `ownerDataCtx` (the ONLY `trusted: true`) and `servedDataCtx` (`trusted: false`) — with no trust parameter to dial at a call site, so served reads (public page, OG card, publication, `/o/entry`) AND untrusted writes (ingress, upload) physically cannot reach kernel data. All served public reads live in one module (`served.ts`), handed a narrow `ServedContext` exposing only `servedQuery` for user-pattern data plus single-answer kernel-CONFIG lookups (a `_shared` visibility, an endpoint config row, supersession ids, facet metadata) — never `db`, never a trusted context, no way to construct one. This made the old per-block / per-entry `isKernelPattern` guards provably redundant (a kernel-named read returns empty through `servedQuery`, which also binds the id against injection); they were deleted, leaving one chokepoint instead of a guard to forget per sink — replacing a block-list that failed open.\n\n**egress-sensitivity totality.** The bug it kills was a FALSE oracle. Write policy and sensitive columns were composed from two parallel hand-lists, and the second silently omitted a feature (`pages`); the egress side had no totality check at all, so a forked feature that declared a `redact`/`secret` column but forgot the second barrel line got no `seal`/audit/export redaction with no boot warning. Two parallel hand-lists was the rejected design. `findUnclassifiedSensitiveColumns` is honestly demoted to a complementary NAME heuristic — it can't see a sensitive column with an innocuous name, so it isn't full totality.\n\n**pattern-effects totality.** Post-mutate side effects (re-embed, cache invalidate, broadcast, …) were a hand-coded if-pile in `mutate()`: a feature adding a pattern that needed an effect had to remember to extend the if-tree, and a forgotten extension silently no-op'd at runtime. \"Remember to add another branch\" was the rejected design. Composing the effect set CORE + per-feature from the live `FEATURES` array, with the oracle asserting every effect-bearing pattern is represented, turns a missing entry into a build failure instead of a silent missing side effect — same shape as the write-policy and egress-sensitivity totalities (the three together are the feature-composition trio).\n\n(Federation is not yet a declared invariant on its own — the SSRF block-host coverage above is what's formalized as a boundary; the rest is design rationale living co-located in `federation.ts` until a totality oracle is written for it. The shape: token-send and allow-list consent share a single function (`federatedResolve`) so the approved host and the contacted host can never drift apart, re-validated on every redirect hop; splitting gate from fetch across modules or call sites would let a future edit move one without the other. The narrow `FederationContext` capability the DO hands the module ensures federation can read nothing else. This is the security analysis's \"condition #2\" — a candidate invariant if a co-location oracle is added.)\n\n**SSRF block-host coverage.** The totality dual of that SSRF guard. `isBlockedFederationHost` must refuse every class of non-public target — loopback/private/CGNAT/link-local IPv4 in every inet_aton encoding (dotted-decimal, octal, hex, integer), the IPv6 loopback/ULA/link-local/mapped/NAT64/6to4 forms, and the `.localhost`/`.local`/`.internal`/`.lan` suffixes — and a dropped category is a silent SSRF reopening (the canonical target is the cloud-metadata IP `169.254.169.254`). Its correctness was a convention (\"remember every encoding\") with no completeness check; the oracle's category→example table makes a new bypass class fail the build by name.",
+      "why": "HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf SSOT for \"which patterns agents can write, through which path, what gate fires\" — unclassified kernel patterns fail CLOSED (System → denied), so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary can't drift between layers.\n\n(The per-boundary paragraphs below record the non-derivable rationale — the bug or rejected alternative each boundary exists to kill. The mechanism — chokepoint, oracle, \"iterates the live domain → fails the build\" — is carried by the `## invariants` list and the `boundary \"…\" at <chokepoint> via test \"<oracle>\"` claims above, and isn't restated here.)\n\n**facet/kernel-column collision.** Kernel COLUMNS get the same single-source treatment as kernel patterns: `kernel-columns.ts` is the SSOT for the seven auto-provided columns, and every named slice (the data engine's create-exclude/facet-skip sets, schema display, history-diff ignore set) is DERIVED from it. A user-proposed facet may not collide with a kernel column, so `validateFacets` reserves `FACET_RESERVED_COLUMNS` — the kernel columns MINUS the user-overridable ones. The one overridable column is `version` (a pattern may declare its own semver semantics; create_pattern's apply skips the kernel default). The historical bug was a hand-narrowed reserved subset that wrongly omitted `created_by`/`updated_by` (a same-named facet is a duplicate-column DDL error — they MUST be reserved); over-correcting to reserve `version` then broke the user-version feature. Splitting \"overridable\" into its own declaration fixes both directions at once: `reserved ∪ overridable = KERNEL_COLUMNS`, so neither under- nor over-reserving can recur.\n\n**data-is-destiny no-hybrid.** Makes the \"store truth once, derive its consequences\" doctrine emergent from the schema rather than prose an agent can interpret away. The doctrine is semantic in general, but it has a DECIDABLE core: a pattern must not STORE an aggregate of rows it also RETAINS. `findStoredDerivedAggregates` checks exactly that, firing only when BOTH halves are present (an aggregate-named facet AND a child pattern referencing this one). It stays silent on the legitimate fork a convergence experiment surfaced — a bare counter with no retained instances IS the stored truth, not a denormalization, because there's no retained source to derive from. Boot warns rather than throws: a deliberate materialized aggregate is a valid reviewed override.\n\n**credential-mint gating.** The consent dual of egress totality. A pattern with a `secret` column mints a born-hashed BEARER on every create, so that create MUST be consent-gated. `patch_only` is provably wrong for such a pattern — it declares create benign while create is the dangerous op — and that was a real shipped bug: `_access_tokens` was `patch_only`, so an injected agent could mint a broad `*` token (a full owner login credential, redeemable at `/auth/verify`) in one un-round-tripped `mutate` and exfiltrate it. Fixed by `on_broad_token`: minting a broad/portable scope (`*`, or a whole-class `read`/`write` key — `isBroadTokenScope`) round-trips like every other standing grant, while narrow target-bound (`upload`/`document`) and inert (`register`, gated by `/invite` passkey approval) scopes stay benign so the frequent legit flows aren't taxed. The rule DERIVES from `SENSITIVE_COLUMNS × KERNEL_WRITE_POLICY` (no new declaration), so re-classifying a credential-minter as `patch_only`/`Open` is unexpressible.\n\n**born-hashed secrets.** The storage dual: credential-mint gating governs WHEN a bearer is minted; this governs HOW it's stored. `mintSecrets` is generic over `SENSITIVE_COLUMNS` and runs on every engine write path, so a `secret`-classed column is born-hashed by construction — the preimage is system-generated, returned ONCE in the create response, and only its SHA-256 digest lands in the column, the audit log, and the `/ws` delta. A read (owner or otherwise) yields a digest, never a usable bearer. The structural enforcement (generic `mintSecrets` keyed on the registry) makes this automatic for any declared secret column.\n\n**immutable-field enforcement.** The registry dual of the create-time hooks: where `ON_CREATE` decides what a kernel row may be BORN as, `IMMUTABLE` / `IMMUTABLE_AFTER_CREATE` decide what it may never BECOME — the defense-in-depth behind the consent model. `approved_at`/`consumed_at` are `IMMUTABLE` so an agent can't self-approve its own invite or replay a single-use token; a token's `scope`/`member`/`constraints`/`token` and an ingress endpoint's `target_pattern` are `IMMUTABLE_AFTER_CREATE` so a row that passed create-time validation can't be silently repointed to a stronger capability; `_members.label` is frozen-after-create (NOT `IMMUTABLE`, which would reject it at birth) because it's the stable handle passkeys/tokens/attribution reference. Enforcement has two faces because the patch path edits one facet by name and sidesteps the top-level key scan: `applyKernelRules` covers create/update/unarchive, `immutableFieldError` covers patch. (`scopeMatches`, the `:`-boundary prefix grammar these freezes protect, is pinned by its own matrix test — a fixed-grammar correctness property, not a live-domain totality, so it's verified but not a boundary.)\n\n**instance-identity host.** Closes the last unmanaged crossing the trust atlas surfaced (public-egress → owner-trusted): the host every generated capability URL is built from. A configured `WORKER_HOST` is AUTHORITATIVE and the inbound `Host` is IGNORED, so an attacker who plants a spoofed `Host` on an unauthenticated request (e.g. a `/ws` upgrade) can't poison an `upload_url`/`page_url`/`og_image` handed to the owner. This was enforced by `currentHost` but proven only by convention (the detector and atlas both flagged it tier-3). The decision is now the pure `resolveHost` (configured-wins-else-observed-else-localhost, placeholder treated as unconfigured), which `currentHost` delegates to — so the test IS the boundary. With this the manifold has zero tier-3 security crossings.\n\n**sql-identifier quoting.** The structural enshrinement of an injection boundary that was a convention. The SQL-identifier crossing (a raw string becoming a table/column token) was guarded by \"validate, then interpolate `\"${x}\"`\" at scattered sites — two SEPARATE steps a new site can forget. `quoteIdent` fuses them: it validates against `IDENTIFIER_RE` and returns the double-quoted identifier, throwing on any injection-bearing name — so an identifier that skipped the upstream semantic check still can't carry injection. The query engine (~20 sites in `data.ts`) routes every identifier through it; the semantic checks (`facetMeta`/`isValidColumn`/`patternExists`) stay as the primary gate with `quoteIdent` as fail-closed defense beneath. This moved the boundary from tier-3 to tier-1. (DDL interpolation in `schema.ts`/`evolution.ts` is the tracked follow-up; the coarse `injection-lint` ratchet still covers those + the HTML egress sinks until they're enshrined too.)\n\n**token-scope-grammar.** The classifier dual of credential-mint gating: that boundary decides a credential-minting create must be consent-gated; this decides WHICH scopes are \"broad\" enough to require the round-trip — so the partition `isBroadTokenScope` draws over the scope grammar IS the boundary. It drifted: a bare `parts.length >= 3` cutoff classified `read:entry:<pattern>` (3 parts) as narrow, but `scopeMatches` prefix-grants it every `read:entry:<pattern>:<id>` — a pattern-WIDE standing read key minted with NO round-trip, an exfil credential. The fix classifies by RESOURCE GRAMMAR, not length: a scope is narrow only when it reaches its kind's LEAF depth (`entry` at depth 4 — `pattern:id`; `output`/`publication`/`document`/`input` at depth 3), so `read:entry:<pattern>` falls short and is broad. The oracle reconciles the partition against both `scopeMatches` and the kinds `io.ts` actually mints, so a new served resource kind can't leave it incomplete.\n\n**boot quiescence.** `initializeSchema` runs in the HiveDO CONSTRUCTOR, so it executes on every cold start / wake from hibernation — a rate set by client reconnects, not by the owner. Two of its steps are reconciliation (register the kernel patterns in `_objects`; drop-and-recreate every audit trigger so the captured column list tracks the schema) and both ran unconditionally, writing ~185 rows per wake on a hive nobody had touched. That consumed 90% of the 100k/day Durable Objects `rows_written` free-tier allowance on a day with six agent writes — a cost with no relationship to use. The rejected fix was making the trigger rebuild conditional again per-site (`CREATE TRIGGER IF NOT EXISTS`), which is what the always-rebuild behavior deliberately replaced: a trigger built before a column existed silently omits it from `_mutation_log` forever. Instead the reconciliation is gated on a `bootFingerprint` stamped in `_meta` — derived FROM the declarations plus the live column signature, never hand-maintained, so a forgotten input can only cost a redundant rebuild, never a stale one; any read that throws, a missing stamp, and any difference all resolve to \"reconcile\" (fail closed). It is stored whole rather than hashed precisely because a collision would resurrect the stale-trigger bug, and exact comparison costs one row write per actual schema change. Live schema changes never wait on a boot — `evolution.ts` calls `ensureAuditTriggers` directly. The oracle is behavioural rather than structural: `boot-idempotence.test.ts` counts ACTUAL `rowsWritten` through a proxied `SqlStorage` and asserts a second consecutive boot writes zero, so it fails on any newly added unconditional write regardless of which line introduces it. One settling boot is allowed — reconciliation and the GC sweeps exist to do work; the pathology was paying that cost every time, forever. Not modelled as a trust-crossing `boundary`: nothing here is a security property, and over-enshrining is its own pathology.\n\n**boot quiescence — the read side.** Writes were only the billed symptom. The same per-wake reconciliation also READ ~9.7k rows per boot (`DROP TRIGGER` scans `sqlite_schema` — 116 rows a statement, six per pattern), and Cloudflare's hourly figures show reads tracking writes at a constant ~52.5:1 across a 50× range of activity, which is what identified both as the same cold-start population rather than request traffic. Gating the rebuild fixes both. The separate offender was `applyTokenHashScrub` (the pre-born-hashing cleanup): \"idempotent, a near-no-op after the first cold start\" was true of its WRITES and false of its READS — six full scans of `_mutation_log`, 6,000 rows, on every wake forever, to re-discover there was nothing to do. That is the general trap: a migration whose *am-I-done?* question is a table scan cannot answer it per boot. `runOnce` gives such work a completion stamp (`_completed_migrations`), stamping only on success so a part-way failure retries. It is deliberately NOT the home for migrations that must keep reconciling against the code — those belong behind the fingerprint. The scrub moved from `hive.ts` into this module so the whole boot sequence is `initializeSchema` + `applyTokenHashScrub` and the oracle can measure BOTH halves; a test covering only the first would have passed while the scrub burned the read budget. The read oracle asserts a property rather than a threshold — a quiescent boot's read count must be IDENTICAL at two data volumes — so it needs no magic constant and catches any future boot-time scan. Verified by negative control rather than assumed: removing the `runOnce` gate made it fail by name — \"boot reads grew with data volume (619 → 8219)\" — then restored to green. (Recorded here rather than under `## refutations`, which keys entries to a declared invariant; boot quiescence deliberately is not one.)\n\n**kernel write boundary — two transports.** The kernel write boundary reaches the engine over TWO transports: the interactive MCP `mutate` tool and the browser-authenticated `/api/mutate`. The rejected design had gating decisions inlined in the MCP handler; the drift vector was real — an `/api`+RPC test passing while the MCP Zod/consent layer silently broke, so the boundary's enforcement disagreed across the two paths a write can take. Pure decisions in one tested leaf (shared by both transports) is the fix. (Interactive consent round-trip mechanics stay in the session handler because only MCP can satisfy them; `/api` is owner-implicit — a logged-in human IS the consent.)\n\n**kernel read+write capability.** Reads share the SAME boundary on the SAME flag: `DataContext.trusted` is required and gates kernel access symmetrically — an untrusted context may neither write nor read a kernel pattern. Trust is a CAPABILITY, not a per-call-site convention: `HiveDO` exposes two named constructors over a trust-agnostic `ctxFields` — `ownerDataCtx` (the ONLY `trusted: true`) and `servedDataCtx` (`trusted: false`) — with no trust parameter to dial at a call site, so served reads (public page, OG card, publication, `/o/entry`) AND untrusted writes (ingress, upload) physically cannot reach kernel data. All served public reads live in one module (`served.ts`), handed a narrow `ServedContext` exposing only `servedQuery` for user-pattern data plus single-answer kernel-CONFIG lookups (a `_shared` visibility, an endpoint config row, supersession ids, facet metadata) — never `db`, never a trusted context, no way to construct one. This made the old per-block / per-entry `isKernelPattern` guards provably redundant (a kernel-named read returns empty through `servedQuery`, which also binds the id against injection); they were deleted, leaving one chokepoint instead of a guard to forget per sink — replacing a block-list that failed open.\n\n**egress-sensitivity totality.** The bug it kills was a FALSE oracle. Write policy and sensitive columns were composed from two parallel hand-lists, and the second silently omitted a feature (`pages`); the egress side had no totality check at all, so a forked feature that declared a `redact`/`secret` column but forgot the second barrel line got no `seal`/audit/export redaction with no boot warning. Two parallel hand-lists was the rejected design. `findUnclassifiedSensitiveColumns` is honestly demoted to a complementary NAME heuristic — it can't see a sensitive column with an innocuous name, so it isn't full totality.\n\n**pattern-effects totality.** Post-mutate side effects (re-embed, cache invalidate, broadcast, …) were a hand-coded if-pile in `mutate()`: a feature adding a pattern that needed an effect had to remember to extend the if-tree, and a forgotten extension silently no-op'd at runtime. \"Remember to add another branch\" was the rejected design. Composing the effect set CORE + per-feature from the live `FEATURES` array, with the oracle asserting every effect-bearing pattern is represented, turns a missing entry into a build failure instead of a silent missing side effect — same shape as the write-policy and egress-sensitivity totalities (the three together are the feature-composition trio).\n\n(Federation is not yet a declared invariant on its own — the SSRF block-host coverage above is what's formalized as a boundary; the rest is design rationale living co-located in `federation.ts` until a totality oracle is written for it. The shape: token-send and allow-list consent share a single function (`federatedResolve`) so the approved host and the contacted host can never drift apart, re-validated on every redirect hop; splitting gate from fetch across modules or call sites would let a future edit move one without the other. The narrow `FederationContext` capability the DO hands the module ensures federation can read nothing else. This is the security analysis's \"condition #2\" — a candidate invariant if a co-location oracle is added.)\n\n**SSRF block-host coverage.** The totality dual of that SSRF guard. `isBlockedFederationHost` must refuse every class of non-public target — loopback/private/CGNAT/link-local IPv4 in every inet_aton encoding (dotted-decimal, octal, hex, integer), the IPv6 loopback/ULA/link-local/mapped/NAT64/6to4 forms, and the `.localhost`/`.local`/`.internal`/`.lan` suffixes — and a dropped category is a silent SSRF reopening (the canonical target is the cloud-metadata IP `169.254.169.254`). Its correctness was a convention (\"remember every encoding\") with no completeness check; the oracle's category→example table makes a new bypass class fail the build by name.",
       "invariants": [
         "kernel write boundary",
         "kernel read+write capability",
@@ -715,8 +716,8 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 62,
-      "prose": "One-time cleanup of secrets that leaked BEFORE born-hashing: hash any legacy\n plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64), and\n scrub any raw token the old post-insert path left in the `_mutation_log`\n audit trail. Idempotent; a near-no-op after the first cold start."
+      "line": 69,
+      "prose": "One-time cleanup of secrets that leaked BEFORE born-hashing: hash any legacy\n plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64), and\n scrub any raw token the old post-insert path left in the `_mutation_log`\n audit trail.\n\n Runs at most once per hive (`runOnce`). It was \"idempotent, a near-no-op\n after the first cold start\" — but the no-op still COST six full scans of\n `_mutation_log` (6,000 rows read) on every wake to re-discover there was\n nothing to do. Purely historical work: no new sensitive value can enter the\n audit log, because the triggers record `SENSITIVE_COLUMNS` as NULL and\n secrets are born hashed, so once converged it can never un-converge."
     },
     {
       "id": "s:entities/Hive/hive.ts#mintSecrets()",
@@ -725,7 +726,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 95,
+      "line": 79,
       "prose": "Born-hashed secrets: for a CREATE of a pattern with a `secret` column\n (SENSITIVE_COLUMNS), generate the preimage in app code and set the column to\n its DIGEST *before* the row is inserted — so the audit trigger, the broadcast,\n and any read only ever see the hash. Returns the raw preimage for the one-time\n response (the only place it exists). Mutates `data` in place; returns null for\n non-secret patterns / non-create ops."
     },
     {
@@ -735,7 +736,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 104
+      "line": 88
     },
     {
       "id": "s:entities/Hive/hive.ts#instanceUrl()",
@@ -744,7 +745,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 116,
+      "line": 100,
       "prose": "A public URL on this instance — the one place upload_url / page_url /\n og_image hand-build `https://{host}/{path}` from the live host."
     },
     {
@@ -754,7 +755,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 122
+      "line": 106
     },
     {
       "id": "s:entities/Hive/hive.ts#getCharter()",
@@ -763,7 +764,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 126
+      "line": 110
     },
     {
       "id": "s:entities/Hive/hive.ts#reportsCtx()",
@@ -772,7 +773,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 142,
+      "line": 126,
       "prose": "=== Read-orchestration reports (delegated to reports.ts) ===\n\nRecent activity, the maintenance nag, the stale-review surface, and the\nsystem-doc / instance-doc readers live in reports.ts: pure owner-context\nread+format builders, no writes and no security boundary. The DO injects a\nnarrow ReportsContext (db + bound currentHost/patternClass/errorJson) and\nkeeps thin RPC wrappers with identical signatures."
     },
     {
@@ -782,7 +783,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 152
+      "line": 136
     },
     {
       "id": "s:entities/Hive/hive.ts#getMaintenanceStatus()",
@@ -791,7 +792,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 158
+      "line": 142
     },
     {
       "id": "s:entities/Hive/hive.ts#getStaleEntries()",
@@ -800,7 +801,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 162
+      "line": 146
     },
     {
       "id": "s:entities/Hive/hive.ts#evoCtx()",
@@ -809,7 +810,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 168
+      "line": 152
     },
     {
       "id": "s:entities/Hive/hive.ts#proposeChange()",
@@ -818,7 +819,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 176
+      "line": 160
     },
     {
       "id": "s:entities/Hive/hive.ts#getPendingChange()",
@@ -827,7 +828,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 183,
+      "line": 167,
       "prose": "Peek at a pending change's spec without applying it — lets the SessionDO\ndecide whether the change needs a consent round-trip (e.g. set_sharing to a\nnon-private visibility, which publishes an entry over HTTP)."
     },
     {
@@ -837,7 +838,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 194
+      "line": 178
     },
     {
       "id": "s:entities/Hive/hive.ts#revertChange()",
@@ -846,7 +847,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 202
+      "line": 186
     },
     {
       "id": "s:entities/Hive/hive.ts#getSchema()",
@@ -855,7 +856,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 212
+      "line": 196
     },
     {
       "id": "s:entities/Hive/hive.ts#getHistory()",
@@ -864,7 +865,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 248
+      "line": 232
     },
     {
       "id": "s:entities/Hive/hive.ts#getEntry()",
@@ -873,7 +874,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 256
+      "line": 240
     },
     {
       "id": "s:entities/Hive/hive.ts#listPatterns()",
@@ -882,7 +883,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 293
+      "line": 277
     },
     {
       "id": "s:entities/Hive/hive.ts#ctxFields()",
@@ -891,7 +892,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 304,
+      "line": 288,
       "prose": "Shared DataContext fields, trust-AGNOSTIC. The trust flag is deliberately NOT\n a parameter here — it is fixed by the named constructor a caller chooses\n (`ownerDataCtx` / `servedDataCtx`), so trust can never be dialed at a call\n site — there is no trust boolean to misremember."
     },
     {
@@ -901,7 +902,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 335,
+      "line": 319,
       "prose": "TRUSTED context — full kernel read + write. The owner/agent path (MCP session,\n browser session, internal writes). The ONLY constructor that sets `trusted: true`;\n if you are handed this you can reach kernel data, so it is never given to\n orchestration that serves untrusted surfaces."
     },
     {
@@ -911,7 +912,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 345,
+      "line": 329,
       "prose": "UNTRUSTED context for SERVED surfaces (public page, /o, /p, OG, federation)\n AND untrusted WRITES (ingress, upload). `trusted: false` is the SAME flag the\n engine uses to refuse any kernel pattern, symmetric across read and write — so\n a serve/ingress path physically cannot reach `_access_tokens`/`_members`/etc.\n Orchestration handed only this constructor cannot forge a trusted write: the\n boundary is a capability, not a per-call-site convention."
     },
     {
@@ -921,7 +922,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 352,
+      "line": 336,
       "prose": "The DO's narrowed hands handed to a pattern effect (effects.ts) — capabilities,\n never `this` and never a raw trusted `executeMutate`. The one sanctioned trusted\n write is `internalCreate`."
     },
     {
@@ -931,7 +932,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 391
+      "line": 375
     },
     {
       "id": "s:entities/Hive/hive.ts#fanoutScratch()",
@@ -940,7 +941,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 399
+      "line": 383
     },
     {
       "id": "s:entities/Hive/hive.ts#servedQuery()",
@@ -949,7 +950,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 433,
+      "line": 417,
       "prose": "query() for a served/untrusted surface — refuses kernel patterns at the\n engine. Every public/OG/publication read goes through this, so the kernel\n read-boundary lives at one chokepoint instead of a check per serve sink."
     },
     {
@@ -959,7 +960,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 438,
+      "line": 422,
       "prose": "A pattern's class: \"dataset\" (structured records) or \"knowledge\" (default)."
     },
     {
@@ -969,7 +970,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 446,
+      "line": 430,
       "prose": "The active clipboard bound to a target pattern (a validated job-dispatch form),\n parsed from its _clipboards row, or null. Read at the mutate chokepoint via the\n clipboardFor seam to gate submissions + derive progress. Defensive: a malformed\n JSON column or a missing table (pre-boot) yields a safe partial/null spec."
     },
     {
@@ -979,7 +980,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 476
+      "line": 460
     },
     {
       "id": "s:entities/Hive/hive.ts#mutate()",
@@ -988,7 +989,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 480
+      "line": 464
     },
     {
       "id": "s:entities/Hive/hive.ts#docsCtx()",
@@ -997,7 +998,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 547,
+      "line": 531,
       "prose": "Narrow capabilities handed to the documents module (documents.ts) — db +\n R2 env + broadcast/embed/schedule, never `this`."
     },
     {
@@ -1007,7 +1008,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 558
+      "line": 542
     },
     {
       "id": "s:entities/Hive/hive.ts#recordExtraction()",
@@ -1016,7 +1017,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 561
+      "line": 545
     },
     {
       "id": "s:entities/Hive/hive.ts#extractDocument()",
@@ -1025,7 +1026,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 564
+      "line": 548
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveDocument()",
@@ -1034,7 +1035,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 567
+      "line": 551
     },
     {
       "id": "s:entities/Hive/hive.ts#batchMutate()",
@@ -1043,7 +1044,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 571
+      "line": 555
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeUpload()",
@@ -1052,7 +1053,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 635
+      "line": 619
     },
     {
       "id": "s:entities/Hive/hive.ts#webCtx()",
@@ -1061,7 +1062,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 718
+      "line": 702
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveWeb()",
@@ -1070,7 +1071,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 722
+      "line": 706
     },
     {
       "id": "s:entities/Hive/hive.ts#resolve()",
@@ -1079,7 +1080,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 746
+      "line": 730
     },
     {
       "id": "s:entities/Hive/hive.ts#fedCtx()",
@@ -1088,7 +1089,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 825,
+      "line": 809,
       "prose": "The federation module's narrowed hands: the consent allow-list (bound over\n the `_federation_hosts` lookup, never `db`) + errorJson."
     },
     {
@@ -1098,7 +1099,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 832
+      "line": 816
     },
     {
       "id": "s:entities/Hive/hive.ts#search()",
@@ -1107,7 +1108,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 836
+      "line": 820
     },
     {
       "id": "s:entities/Hive/hive.ts#getMutationLog()",
@@ -1116,7 +1117,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 842
+      "line": 826
     },
     {
       "id": "s:entities/Hive/hive.ts#getEntryHistory()",
@@ -1125,7 +1126,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 859,
+      "line": 843,
       "prose": "Revision history for one entry, oldest→newest: the audit log scoped to\n (pattern, id), with each UPDATE diffed (changed facet: from → to) and\n version/timestamp churn filtered out. The create is the first revision."
     },
     {
@@ -1135,7 +1136,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 886,
+      "line": 870,
       "prose": "The display label for one entry — what a reference to it should show\n (deriveLabel: title-ish facet, else #id). Used by reference-format chips."
     },
     {
@@ -1145,7 +1146,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 909,
+      "line": 893,
       "prose": "The served module's narrowed hands: `servedQuery` (the untrusted reader that\n refuses kernel patterns at the engine) + bound kernel-config lookups, each\n scoped to one answer. Never `db`, never a trusted ctx."
     },
     {
@@ -1155,7 +1156,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 970
+      "line": 954
     },
     {
       "id": "s:entities/Hive/hive.ts#renderPublicPage()",
@@ -1164,7 +1165,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 976
+      "line": 960
     },
     {
       "id": "s:entities/Hive/hive.ts#renderPageOgSvg()",
@@ -1173,7 +1174,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 982
+      "line": 966
     },
     {
       "id": "s:entities/Hive/hive.ts#runTask()",
@@ -1182,7 +1183,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 996
+      "line": 980
     },
     {
       "id": "s:entities/Hive/hive.ts#primeCtx()",
@@ -1191,7 +1192,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1026
+      "line": 1010
     },
     {
       "id": "s:entities/Hive/hive.ts#embedAfterMutate()",
@@ -1200,7 +1201,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1034
+      "line": 1018
     },
     {
       "id": "s:entities/Hive/hive.ts#prime()",
@@ -1209,7 +1210,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1056
+      "line": 1040
     },
     {
       "id": "s:entities/Hive/hive.ts#seedVectors()",
@@ -1218,7 +1219,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1176
+      "line": 1160
     },
     {
       "id": "s:entities/Hive/hive.ts#isFederationHostAllowed()",
@@ -1227,7 +1228,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1215,
+      "line": 1199,
       "prose": "True if `host` has been explicitly approved for federation (active _federation_hosts row)."
     },
     {
@@ -1237,7 +1238,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1226
+      "line": 1210
     },
     {
       "id": "s:entities/Hive/hive.ts#entryExists()",
@@ -1246,7 +1247,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1232
+      "line": 1216
     },
     {
       "id": "s:entities/Hive/hive.ts#hasKernelVersion()",
@@ -1255,7 +1256,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1241,
+      "line": 1225,
       "prose": "True if the table's `version` column is the kernel auto-increment, not a user field."
     },
     {
@@ -1265,7 +1266,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1260,
+      "line": 1244,
       "prose": "Two-phase consent that survives session churn. First call with a key arms\n it (10-minute TTL) and returns false — the caller should surface the\n confirmation message. Re-issuing the same key while armed consumes it and\n returns true — the caller proceeds. Durable in DO storage because\n sessionless MCP clients land every call on a fresh SessionDO, where an\n in-memory set can never complete the handshake. The consent signal is the\n deliberate re-issue of identical arguments; the TTL bounds how long an\n armed confirmation can wait. Fails closed: storage errors never confirm."
     },
     {
@@ -1275,7 +1276,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1281
+      "line": 1265
     },
     {
       "id": "s:entities/Hive/hive.ts#getPasskeys()",
@@ -1284,7 +1285,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1282
+      "line": 1266
     },
     {
       "id": "s:entities/Hive/hive.ts#storePasskey()",
@@ -1293,7 +1294,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1283
+      "line": 1267
     },
     {
       "id": "s:entities/Hive/hive.ts#updatePasskeyCounter()",
@@ -1302,7 +1303,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1286
+      "line": 1270
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAccessToken()",
@@ -1311,7 +1312,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1287
+      "line": 1271
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveTokenConstraints()",
@@ -1320,7 +1321,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1294,
+      "line": 1278,
       "prose": "Validate a token's scope AND return its parsed constraints in one hashed\n lookup. The token column is a digest at rest, so a raw `WHERE token = ?`\n query (as marketplace did) matches nothing — callers needing constraints\n must go through this."
     },
     {
@@ -1330,7 +1331,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1304
+      "line": 1288
     },
     {
       "id": "s:entities/Hive/hive.ts#isMemberActive()",
@@ -1339,7 +1340,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1307
+      "line": 1291
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveRegisterToken()",
@@ -1348,7 +1349,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1308
+      "line": 1292
     },
     {
       "id": "s:entities/Hive/hive.ts#getRegisterToken()",
@@ -1357,7 +1358,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1309
+      "line": 1293
     },
     {
       "id": "s:entities/Hive/hive.ts#approveRegisterToken()",
@@ -1366,7 +1367,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1310
+      "line": 1294
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAccessToken()",
@@ -1375,7 +1376,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1311
+      "line": 1295
     },
     {
       "id": "s:entities/Hive/hive.ts#validateAuthCode()",
@@ -1384,7 +1385,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1312
+      "line": 1296
     },
     {
       "id": "s:entities/Hive/hive.ts#consumeAuthCode()",
@@ -1393,7 +1394,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1313
+      "line": 1297
     },
     {
       "id": "s:entities/Hive/hive.ts#exportPattern()",
@@ -1402,7 +1403,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1317
+      "line": 1301
     },
     {
       "id": "s:entities/Hive/hive.ts#getSharedEntry()",
@@ -1411,7 +1412,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1369
+      "line": 1353
     },
     {
       "id": "s:entities/Hive/hive.ts#resolvePublication()",
@@ -1420,7 +1421,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1373
+      "line": 1357
     },
     {
       "id": "s:entities/Hive/hive.ts#resolveOutput()",
@@ -1429,7 +1430,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1377
+      "line": 1361
     },
     {
       "id": "s:entities/Hive/hive.ts#getInputVisibility()",
@@ -1438,7 +1439,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1381
+      "line": 1365
     },
     {
       "id": "s:entities/Hive/hive.ts#processInput()",
@@ -1447,7 +1448,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1385
+      "line": 1369
     },
     {
       "id": "s:entities/Hive/hive.ts#fetch()",
@@ -1456,7 +1457,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1434
+      "line": 1418
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketMessage()",
@@ -1465,7 +1466,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1450
+      "line": 1434
     },
     {
       "id": "s:entities/Hive/hive.ts#webSocketClose()",
@@ -1474,7 +1475,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1454
+      "line": 1438
     },
     {
       "id": "s:entities/Hive/hive.ts#broadcastChange()",
@@ -1483,7 +1484,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1458
+      "line": 1442
     },
     {
       "id": "s:entities/Hive/hive.ts#errorJson()",
@@ -1492,7 +1493,7 @@
       "kind": "symbol",
       "sub": "method",
       "path": "entities/Hive/hive.ts",
-      "line": 1472
+      "line": 1456
     },
     {
       "id": "x:cloudflare:workers",
@@ -2593,8 +2594,28 @@
       "kind": "symbol",
       "sub": "const",
       "path": "entities/Hive/schema.ts",
-      "line": 564,
+      "line": 565,
       "prose": "The EXPORTED kernel surface: CORE infra patterns + each feature's own pattern\nstructure (DDL/facets/index), composed from the pure-data feature schema modules\nvia the FEATURES barrel. composePatterns asserts no two features declare the same\npattern name (a feature↔core name clash is caught by policy.ts's mergeDisjoint at\nmodule load). Everything downstream — the boot DDL loop, _fields seeding,\nverifyFieldsIntegrity, verifyWritePolicyTotality, and the security tests that\niterate KERNEL_TABLES — reads THIS composed array, so a feature pattern is\nindistinguishable from a core one and the DDL↔_fields drift oracle stays green."
+    },
+    {
+      "id": "s:entities/Hive/schema.ts#runOnce",
+      "parent": "f:entities/Hive/schema.ts",
+      "label": "runOnce",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/schema.ts",
+      "line": 633,
+      "prose": "Run a one-time migration at most once per hive, ever.\n\n For a migration whose idempotence guard is itself expensive: the audit-log\n token scrub re-answered \"is there anything left to scrub?\" with six full\n scans of `_mutation_log` — 6,000 rows read on EVERY wake, returning zero rows\n to fix forever after the first. That is the read-side twin of the boot-write\n pathology (see the `## why` in Hive.spec.md): a cost paid per cold start,\n i.e. per client reconnect, for work that was finished long ago.\n\n Stamps only on SUCCESS, so a migration that throws part-way is retried on the\n next boot rather than being silently marked done — fail closed, same as the\n boot fingerprint. Use this ONLY for genuinely historical, converged work; a\n migration that must keep reconciling against the code belongs in the\n fingerprint-gated block instead."
+    },
+    {
+      "id": "s:entities/Hive/schema.ts#applyTokenHashScrub",
+      "parent": "f:entities/Hive/schema.ts",
+      "label": "applyTokenHashScrub",
+      "kind": "symbol",
+      "sub": "function",
+      "path": "entities/Hive/schema.ts",
+      "line": 654,
+      "prose": "The one-time cleanup of secrets that leaked BEFORE born-hashing: hash any\n legacy plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64),\n and NULL out any raw token/passkey material the pre-recreate audit triggers\n captured in `_mutation_log`. Derived from SENSITIVE_COLUMNS, so it covers\n every classified column.\n\n Lives here (not in the DO) so the WHOLE boot sequence is `initializeSchema` +\n this — testable end-to-end by the boot-idempotence oracle, which is what\n makes \"a quiescent boot's cost is independent of data volume\" a checkable\n property rather than a claim about one of the two halves."
     },
     {
       "id": "s:entities/Hive/schema.ts#initializeSchema",
@@ -2603,7 +2624,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 571
+      "line": 691
     },
     {
       "id": "s:entities/Hive/schema.ts#findStoredDerivedAggregates",
@@ -2612,7 +2633,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 1236
+      "line": 1419
     },
     {
       "id": "s:entities/Hive/schema.ts#verifyWritePolicyTotality",
@@ -2621,7 +2642,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 1267,
+      "line": 1450,
       "prose": "=== Integrity check: write-class policy totality ===\n\nEvery agent-facing kernel pattern must declare a write class in policy.ts.\nwriteClass() fails CLOSED (System — denied) for any unclassified `_` pattern,\nso a newly added kernel table is safe by default — but silently un-writable is\na bug, not a feature. This warns loudly at boot so a missing classification is\ncaught the moment the table ships, not when a reviewer finds the next hole.\nCode-vs-code (KERNEL_TABLES vs KERNEL_WRITE_POLICY) — no DB needed; exported so\nthe admission-matrix test asserts it statically too."
     },
     {
@@ -2631,7 +2652,7 @@
       "kind": "symbol",
       "sub": "function",
       "path": "entities/Hive/schema.ts",
-      "line": 1285,
+      "line": 1468,
       "prose": "Audit exemption (high-frequency append-only logs whose change history is the\ndata itself — auditing them would just churn the bounded _mutation_log) is a\nper-pattern behavior declared in the policy registry (policy.ts), alongside\nwrite class, so it's covered by the same boot-time totality check."
     },
     {
@@ -5902,6 +5923,12 @@
       "id": "f:entities/Hive/schema.ts->f:entities/Hive/kernel-columns.ts:imports",
       "source": "f:entities/Hive/schema.ts",
       "target": "f:entities/Hive/kernel-columns.ts",
+      "kind": "imports"
+    },
+    {
+      "id": "f:entities/Hive/schema.ts->f:shared/core/sql.ts:imports",
+      "source": "f:entities/Hive/schema.ts",
+      "target": "f:shared/core/sql.ts",
       "kind": "imports"
     },
     {

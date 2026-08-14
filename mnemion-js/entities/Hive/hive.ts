@@ -14,7 +14,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR, IDENTIFIER_RE } from "../../shared/core/constants";
 import { evaluateMapping } from "./transform";
-import { initializeSchema } from "./schema";
+import { initializeSchema, applyTokenHashScrub } from "./schema";
 import { KERNEL_COLUMN_SET, STRUCTURAL_KERNEL_COLUMNS } from "./kernel-columns";
 import { expandShortcut, normalizeHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
@@ -58,32 +58,16 @@ export class HiveDO extends DurableObject {
   /** One-time cleanup of secrets that leaked BEFORE born-hashing: hash any legacy
    *  plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64), and
    *  scrub any raw token the old post-insert path left in the `_mutation_log`
-   *  audit trail. Idempotent; a near-no-op after the first cold start. */
+   *  audit trail.
+   *
+   *  Runs at most once per hive (`runOnce`). It was "idempotent, a near-no-op
+   *  after the first cold start" — but the no-op still COST six full scans of
+   *  `_mutation_log` (6,000 rows read) on every wake to re-discover there was
+   *  nothing to do. Purely historical work: no new sensitive value can enter the
+   *  audit log, because the triggers record `SENSITIVE_COLUMNS` as NULL and
+   *  secrets are born hashed, so once converged it can never un-converge. */
   private async migrateTokenHashes(): Promise<void> {
-    try {
-      const rows = this.db.exec(`SELECT id, token FROM "_access_tokens" WHERE length(token) != 64`).toArray() as any[];
-      for (const r of rows) {
-        if (typeof r.token !== "string") continue;
-        try { this.db.exec(`UPDATE "_access_tokens" SET token = ? WHERE id = ?`, await cred.hashToken(r.token), r.id); }
-        catch { /* a bad row must not brick construction — skip it */ }
-      }
-    } catch { /* table may not exist yet on a brand-new hive */ }
-    // Audit-log scrub: NULL out every sensitive value the pre-recreate audit
-    // triggers captured (raw tokens, passkey material). Derived from SENSITIVE_COLUMNS
-    // so it covers every classified column; idempotent (once null, the guard skips it).
-    try {
-      for (const [table, cols] of Object.entries(SENSITIVE_COLUMNS)) {
-        for (const c of cols) {
-          for (const field of ["new_data", "old_data"]) {
-            this.db.exec(
-              `UPDATE _mutation_log SET ${field} = json_set(${field}, '$.${c.column}', null)
-               WHERE table_name = ? AND json_extract(${field}, '$.${c.column}') IS NOT NULL`,
-              table,
-            );
-          }
-        }
-      }
-    } catch { /* best effort */ }
+    await applyTokenHashScrub(this.db, cred.hashToken);
   }
 
   /** Born-hashed secrets: for a CREATE of a pattern with a `secret` column
