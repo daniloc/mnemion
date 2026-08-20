@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-08-03 15:26Z",
+  "generatedAt": "2026-08-20 15:06Z",
   "root": "mnemion-js",
-  "absRoot": "/Users/daniloc/Documents/Development/mnemion/mnemion-js",
+  "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
   "nodes": [
     {
       "id": "c:.",
@@ -80,6 +80,10 @@
         "SSRF block-host coverage",
         "sql-identifier quoting",
         "instance-identity host"
+      ],
+      "refutations": [
+        "kernel write boundary: renamed the `_members` row key in CORE_KERNEL_WRITE_POLICY (policy.ts), leaving the `_members` kernel table unclassified -> full verify went red by name — boundary \"kernel write boundary\" via test \"write-policy totality\" failed with `kernel pattern \"_members\" has no write-class policy (defaults to System/denied)`; the fail-closed default held while the oracle failed the build. Restore returned it green. Note: `verify --fast` skips boundary oracles by design, so the red appears only in the full run. (2026-08-20)",
+        "kernel read+write capability: the same break (unclassified `_members`) -> its oracle \"context-capability totality\" also went red (\"an untrusted ingress write to a kernel pattern is refused AT the capability gate\"), showing the capability boundary derives from the same policy territory and fails loudly when it drifts. Green on restore. (2026-08-20)"
       ]
     },
     {
@@ -141,7 +145,7 @@
         "clipboards/manifest.ts imports ./hooks",
         "passes test \"clipboard constraint and metric keysets are total\"",
         "passes test \"a clipboard submission collects every field violation\"",
-        "passes test \"patch on a clipboard-bound pattern is rejected\"",
+        "passes test \"rejects patch on a clipboard-bound pattern\"",
         "passes test \"clipboard completion progress is derived from the submission log\"",
         "scratchpad/manifest.ts exists at this node",
         "scratchpad/schema.ts exists at this node",
@@ -236,6 +240,12 @@
       "label": "VECTORIZE",
       "kind": "infra",
       "sub": "Vectorize"
+    },
+    {
+      "id": "i:DOCUMENTS",
+      "label": "DOCUMENTS",
+      "kind": "infra",
+      "sub": "R2"
     },
     {
       "id": "i:AI",
@@ -598,24 +608,6 @@
       "line": 26
     },
     {
-      "id": "s:entities/Hive/evolution.ts#patternExists()",
-      "parent": "f:entities/Hive/evolution.ts",
-      "label": "patternExists()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/evolution.ts",
-      "line": 28
-    },
-    {
-      "id": "s:entities/Hive/evolution.ts#entryExists()",
-      "parent": "f:entities/Hive/evolution.ts",
-      "label": "entryExists()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/evolution.ts",
-      "line": 29
-    },
-    {
       "id": "s:entities/Hive/evolution.ts#CHANGE_TYPE_NAMES",
       "parent": "f:entities/Hive/evolution.ts",
       "label": "CHANGE_TYPE_NAMES",
@@ -941,6 +933,16 @@
       "sub": "method",
       "path": "entities/Hive/hive.ts",
       "line": 399
+    },
+    {
+      "id": "s:entities/Hive/hive.ts#internalCreate()",
+      "parent": "f:entities/Hive/hive.ts",
+      "label": "internalCreate()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "entities/Hive/hive.ts",
+      "line": 422,
+      "prose": "The ONLY trusted write an effect may perform: a born-hashed create through the\n owner context (mint the secret digest, then write). Effects never hold a raw\n `executeMutate`, so this stays the single audited internal write path."
     },
     {
       "id": "s:entities/Hive/hive.ts#servedQuery()",
@@ -1589,63 +1591,6 @@
       "line": 31
     },
     {
-      "id": "s:entities/Hive/kernel.ts#patternExists()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "patternExists()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 32
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#facetMeta()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "facetMeta()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 33
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#patternClass()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "patternClass()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 36,
-      "prose": "A pattern's class — \"dataset\" (structured records) or \"knowledge\" (default).\n Used by the clipboards definition hook to require a dataset-class target."
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#entryExists()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "entryExists()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 37
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#memberActive()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "memberActive()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 39,
-      "prose": "An active, non-archived member with this label exists in the roster."
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#entryField()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "entryField()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 43,
-      "prose": "Read one column of one entry — used to resolve a row's existing values when\n a partial update doesn't carry them (e.g. a _views config edit that omits\n the target pattern). Returns null if the row/column is absent."
-    },
-    {
       "id": "s:entities/Hive/kernel.ts#HookResult",
       "parent": "f:entities/Hive/kernel.ts",
       "label": "HookResult",
@@ -1684,114 +1629,6 @@
       "prose": "=== Immutable-after-create fields — set once at create, frozen thereafter ===\n\nDistinct from IMMUTABLE (rejected on every op): these define a token's\ncapability and are validated by the create hook, but must never be repointed\nby a later update/unarchive. Freezing scope/member/constraints/token closes the\ndefense-in-depth gap where an update could repoint an existing token (e.g. to\na different member) without re-passing the create-time validation."
     },
     {
-      "id": "s:entities/Hive/kernel.ts#_access_tokens()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_access_tokens()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 103
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_members()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_members()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 241
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_outputs()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_outputs()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 259
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_inputs()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_inputs()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 269
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_links()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_links()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 290
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_short_term_fragments()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_short_term_fragments()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 332
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_web_cache()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_web_cache()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 337
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_system_tasks()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_system_tasks()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 345
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_federation_hosts()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_federation_hosts()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 352
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_publications()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_publications()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 367
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_maintenance_passes()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_maintenance_passes()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 397
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_shared()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_shared()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 403
-    },
-    {
       "id": "s:entities/Hive/kernel.ts#WriteHook",
       "parent": "f:entities/Hive/kernel.ts",
       "label": "WriteHook",
@@ -1800,15 +1637,6 @@
       "path": "entities/Hive/kernel.ts",
       "line": 425,
       "prose": "=== Write hooks — validate on create AND update (not just create) ===\n\nFor kernel tables whose payload must stay valid through edits, not only at\nbirth. _views is the case: an agent authors a view, then refines its config —\nboth must validate against the view palette (the SSOT in view-palette.ts), so\na malformed or facet-missing spec is refused at the mutate chokepoint rather\nthan silently degrading in the renderer."
-    },
-    {
-      "id": "s:entities/Hive/kernel.ts#_views()",
-      "parent": "f:entities/Hive/kernel.ts",
-      "label": "_views()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/kernel.ts",
-      "line": 443
     },
     {
       "id": "s:entities/Hive/kernel.ts#ON_CREATE",
@@ -2292,15 +2120,6 @@
       "sub": "interface",
       "path": "entities/Hive/prime.ts",
       "line": 21
-    },
-    {
-      "id": "s:entities/Hive/prime.ts#patternExists()",
-      "parent": "f:entities/Hive/prime.ts",
-      "label": "patternExists()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/Hive/prime.ts",
-      "line": 24
     },
     {
       "id": "s:entities/Hive/prime.ts#PrimeResult",
@@ -2878,15 +2697,6 @@
       "sub": "const",
       "path": "entities/features/clipboards/hooks.ts",
       "line": 190
-    },
-    {
-      "id": "s:entities/features/clipboards/hooks.ts#_clipboards()",
-      "parent": "f:entities/features/clipboards/hooks.ts",
-      "label": "_clipboards()",
-      "kind": "symbol",
-      "sub": "method",
-      "path": "entities/features/clipboards/hooks.ts",
-      "line": 191
     },
     {
       "id": "f:entities/features/clipboards/manifest.ts",
@@ -3629,12 +3439,6 @@
     {
       "id": "x:@simplewebauthn/server",
       "label": "@simplewebauthn/server",
-      "kind": "external",
-      "sub": "module"
-    },
-    {
-      "id": "x:https://esm.sh/@simplewebauthn/browser@13",
-      "label": "https://esm.sh/@simplewebauthn/browser@13",
       "kind": "external",
       "sub": "module"
     },
@@ -5466,6 +5270,16 @@
       "prose": "Apply a single granular change from the live socket."
     },
     {
+      "id": "s:web/src/store.ts#subscribeList()",
+      "parent": "f:web/src/store.ts",
+      "label": "subscribeList()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 87,
+      "prose": "--- subscription surface for useSyncExternalStore ---"
+    },
+    {
       "id": "s:web/src/store.ts#getOrdered()",
       "parent": "f:web/src/store.ts",
       "label": "getOrdered()",
@@ -5473,6 +5287,15 @@
       "sub": "method",
       "path": "web/src/store.ts",
       "line": 92
+    },
+    {
+      "id": "s:web/src/store.ts#subscribeEntry()",
+      "parent": "f:web/src/store.ts",
+      "label": "subscribeEntry()",
+      "kind": "symbol",
+      "sub": "method",
+      "path": "web/src/store.ts",
+      "line": 95
     },
     {
       "id": "s:web/src/store.ts#getEntry()",
@@ -5517,6 +5340,434 @@
       "label": "react",
       "kind": "external",
       "sub": "module"
+    },
+    {
+      "id": "f:worker-configuration.d.ts",
+      "parent": "c:.",
+      "label": "worker-configuration.d.ts",
+      "kind": "file",
+      "sub": "worker-configuration.d.ts",
+      "path": "worker-configuration.d.ts",
+      "prose": "eslint-disable"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#onRequest",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "onRequest",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12684
+    },
+    {
+      "id": "s:worker-configuration.d.ts#PipelineTransformationEntrypoint",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "PipelineTransformationEntrypoint",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "worker-configuration.d.ts",
+      "line": 12690
+    },
+    {
+      "id": "s:worker-configuration.d.ts#PipelineRecord",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "PipelineRecord",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12703
+    },
+    {
+      "id": "s:worker-configuration.d.ts#PipelineBatchMetadata",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "PipelineBatchMetadata",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12704
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Pipeline",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Pipeline",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12708
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__RPC_STUB_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__RPC_STUB_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12773,
+      "prose": "Branded types for identifying `WorkerEntrypoint`/`DurableObject`/`Target`s.\nTypeScript uses *structural* typing meaning anything with the same shape as type `T` is a `T`.\nFor the classes exported by `cloudflare:workers` we want *nominal* typing (i.e. we only want to\naccept `WorkerEntrypoint` from `cloudflare:workers`, not any other class with the same shape)"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__RPC_TARGET_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__RPC_TARGET_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12774
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__WORKER_ENTRYPOINT_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__WORKER_ENTRYPOINT_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12775
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__DURABLE_OBJECT_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__DURABLE_OBJECT_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12776
+    },
+    {
+      "id": "s:worker-configuration.d.ts#__WORKFLOW_ENTRYPOINT_BRAND",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "__WORKFLOW_ENTRYPOINT_BRAND",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 12777
+    },
+    {
+      "id": "s:worker-configuration.d.ts#RpcTargetBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "RpcTargetBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12778
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkerEntrypointBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkerEntrypointBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12781
+    },
+    {
+      "id": "s:worker-configuration.d.ts#DurableObjectBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "DurableObjectBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12784
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowEntrypointBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowEntrypointBranded",
+      "kind": "symbol",
+      "sub": "interface",
+      "path": "worker-configuration.d.ts",
+      "line": 12787
+    },
+    {
+      "id": "s:worker-configuration.d.ts#EntrypointBranded",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "EntrypointBranded",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12790
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Stubable",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Stubable",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12792,
+      "prose": "Types that can be used through `Stub`s"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Stub",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Stub",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12814
+    },
+    {
+      "id": "s:worker-configuration.d.ts#Provider",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "Provider",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12861,
+      "prose": "Base type for all other types providing RPC-like interfaces.\nRewrites all methods/properties to be `MethodOrProperty`s, while preserving callable types.\n`Reserved` names (e.g. stub method names like `dup()`) and symbols can't be accessed over RPC."
+    },
+    {
+      "id": "s:worker-configuration.d.ts#RpcStub",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "RpcStub",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12909
+    },
+    {
+      "id": "s:worker-configuration.d.ts#RpcTarget",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "RpcTarget",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "worker-configuration.d.ts",
+      "line": 12913
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkerEntrypoint",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkerEntrypoint",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "worker-configuration.d.ts",
+      "line": 12917,
+      "prose": "`protected` fields don't appear in `keyof`s, so can't be accessed over RPC"
+    },
+    {
+      "id": "s:worker-configuration.d.ts#DurableObject",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "DurableObject",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "worker-configuration.d.ts",
+      "line": 12932
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowDurationLabel",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowDurationLabel",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12944
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowSleepDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowSleepDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12945
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowDelayDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowDelayDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12946
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowTimeoutDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowTimeoutDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12947
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowRetentionDuration",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowRetentionDuration",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12948
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowBackoff",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowBackoff",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12949
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepSensitivity",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepSensitivity",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12950
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepConfig",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepConfig",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12951
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepRollbackConfig",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepRollbackConfig",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12960
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowCronSchedule",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowCronSchedule",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12961
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowEvent",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowEvent",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12967
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepEvent",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepEvent",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12974
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepContext",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepContext",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12980
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowRollbackContext",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowRollbackContext",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12988
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowRollbackHandler",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowRollbackHandler",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12995
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStepRollbackOptions",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStepRollbackOptions",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 12996
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowStep",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowStep",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "worker-configuration.d.ts",
+      "line": 13000
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowInstanceStatus",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowInstanceStatus",
+      "kind": "symbol",
+      "sub": "type",
+      "path": "worker-configuration.d.ts",
+      "line": 13010
+    },
+    {
+      "id": "s:worker-configuration.d.ts#WorkflowEntrypoint",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "WorkflowEntrypoint",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "worker-configuration.d.ts",
+      "line": 13011
+    },
+    {
+      "id": "s:worker-configuration.d.ts#env",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "env",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 13022
+    },
+    {
+      "id": "s:worker-configuration.d.ts#exports",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "exports",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 13023
+    },
+    {
+      "id": "s:worker-configuration.d.ts#cache",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "cache",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 13024
+    },
+    {
+      "id": "s:worker-configuration.d.ts#tracing",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "tracing",
+      "kind": "symbol",
+      "sub": "const",
+      "path": "worker-configuration.d.ts",
+      "line": 13025
+    },
+    {
+      "id": "s:worker-configuration.d.ts#NonRetryableError",
+      "parent": "f:worker-configuration.d.ts",
+      "label": "NonRetryableError",
+      "kind": "symbol",
+      "sub": "class",
+      "path": "worker-configuration.d.ts",
+      "line": 14404,
+      "prose": "NonRetryableError allows for a user to throw a fatal error\nthat makes a Workflow instance fail immediately without triggering a retry"
     }
   ],
   "edges": [
@@ -5603,6 +5854,12 @@
       "source": "f:entities/Hive/documents.ts",
       "target": "f:shared/core/log.ts",
       "kind": "imports"
+    },
+    {
+      "id": "f:entities/Hive/documents.ts->i:DOCUMENTS:binds",
+      "source": "f:entities/Hive/documents.ts",
+      "target": "i:DOCUMENTS",
+      "kind": "binds"
     },
     {
       "id": "f:entities/Hive/effects.ts->f:entities/features/index.ts:imports",
@@ -5785,6 +6042,12 @@
       "kind": "imports"
     },
     {
+      "id": "f:entities/Hive/hive.ts->i:DOCUMENTS:binds",
+      "source": "f:entities/Hive/hive.ts",
+      "target": "i:DOCUMENTS",
+      "kind": "binds"
+    },
+    {
       "id": "f:entities/Hive/kernel.ts->f:entities/Hive/policy.ts:imports",
       "source": "f:entities/Hive/kernel.ts",
       "target": "f:entities/Hive/policy.ts",
@@ -5867,6 +6130,12 @@
       "source": "f:entities/Hive/reports.ts",
       "target": "f:entities/Hive/kernel.ts",
       "kind": "imports"
+    },
+    {
+      "id": "f:entities/Hive/reports.ts->i:DOCUMENTS:binds",
+      "source": "f:entities/Hive/reports.ts",
+      "target": "i:DOCUMENTS",
+      "kind": "binds"
     },
     {
       "id": "f:entities/Hive/schema.ts->f:shared/core/constants.ts:imports",
@@ -6001,6 +6270,12 @@
       "kind": "imports"
     },
     {
+      "id": "f:entities/Session/session.ts->i:DOCUMENTS:binds",
+      "source": "f:entities/Session/session.ts",
+      "target": "i:DOCUMENTS",
+      "kind": "binds"
+    },
+    {
       "id": "f:entities/Session/tools.ts->f:shared/core/constants.ts:imports",
       "source": "f:entities/Session/tools.ts",
       "target": "f:shared/core/constants.ts",
@@ -6119,6 +6394,12 @@
       "source": "f:entities/features/documents/manifest.ts",
       "target": "f:entities/features/documents/hooks.ts",
       "kind": "imports"
+    },
+    {
+      "id": "f:entities/features/documents/manifest.ts->i:DOCUMENTS:binds",
+      "source": "f:entities/features/documents/manifest.ts",
+      "target": "i:DOCUMENTS",
+      "kind": "binds"
     },
     {
       "id": "f:entities/features/documents/schema.ts->f:entities/features/feature.ts:imports",
@@ -6265,12 +6546,6 @@
       "kind": "imports"
     },
     {
-      "id": "f:shared/Auth/passkey.ts->x:https://esm.sh/@simplewebauthn/browser@13:imports",
-      "source": "f:shared/Auth/passkey.ts",
-      "target": "x:https://esm.sh/@simplewebauthn/browser@13",
-      "kind": "imports"
-    },
-    {
       "id": "f:shared/IO/git.ts->x:node:crypto:imports",
       "source": "f:shared/IO/git.ts",
       "target": "x:node:crypto",
@@ -6373,12 +6648,6 @@
       "kind": "imports"
     },
     {
-      "id": "f:shared/Routing/routes/auth.ts->x:https://esm.sh/@simplewebauthn/browser@13:imports",
-      "source": "f:shared/Routing/routes/auth.ts",
-      "target": "x:https://esm.sh/@simplewebauthn/browser@13",
-      "kind": "imports"
-    },
-    {
       "id": "f:shared/Routing/routes/auth.ts->i:OAUTH_KV:binds",
       "source": "f:shared/Routing/routes/auth.ts",
       "target": "i:OAUTH_KV",
@@ -6413,6 +6682,12 @@
       "source": "f:shared/Routing/routes/io.ts",
       "target": "f:shared/core/log.ts",
       "kind": "imports"
+    },
+    {
+      "id": "f:shared/Routing/routes/io.ts->i:DOCUMENTS:binds",
+      "source": "f:shared/Routing/routes/io.ts",
+      "target": "i:DOCUMENTS",
+      "kind": "binds"
     },
     {
       "id": "f:shared/Routing/routes/marketplace.ts->f:shared/Routing/router.ts:imports",
@@ -6473,6 +6748,12 @@
       "source": "f:shared/core/dev-seed.ts",
       "target": "f:entities/Hive/schema.ts",
       "kind": "imports"
+    },
+    {
+      "id": "f:shared/core/env.d.ts->i:DOCUMENTS:binds",
+      "source": "f:shared/core/env.d.ts",
+      "target": "i:DOCUMENTS",
+      "kind": "binds"
     },
     {
       "id": "f:shared/core/sql.ts->f:shared/core/constants.ts:imports",
@@ -6630,13 +6911,18 @@
         "sub": "Vectorize"
       },
       {
+        "binding": "DOCUMENTS",
+        "label": "DOCUMENTS",
+        "sub": "R2"
+      },
+      {
         "binding": "AI",
         "label": "AI",
         "sub": "Workers AI"
       }
     ],
     "vars": {
-      "WORKER_HOST": "your-worker.workers.dev"
+      "WORKER_HOST": "mnemion.daniloc.workers.dev"
     },
     "meta": {
       "entry": "src/index.ts",

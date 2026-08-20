@@ -99,9 +99,11 @@ jobs:
 
       # Unit suite — runs in the real workerd runtime (vitest-pool-workers),
       # including the totality oracles (policy / egress / context-capability /
-      # tools-ssot / served-bearer-gating).
+      # tools-ssot / served-bearer-gating). Also emits the vitest JSON report
+      # (.coherence/test-report.json) so the Coherence step below can resolve
+      # oracle claims from THIS run instead of re-running or skipping them.
       - name: Test
-        run: npm test
+        run: npm run test:report
 
       # Boundary-oracle mutation ratchet: a totality oracle only protects the system
       # if it actually CATCHES a break at its chokepoint. This breaks each boundary's
@@ -133,9 +135,15 @@ jobs:
         run: npm run atlas:check
 
       # Specs must still match the code (boundary ratchet anchors invariants to
-      # chokepoint + oracle claims).
+      # chokepoint + oracle claims). FULL claim resolution, fed by the report the
+      # Test step already produced (--from-report; no second suite run): oracle
+      # claims resolve against real outcomes, so a renamed/deleted oracle test
+      # (VANISHED ORACLE), a self-skipping oracle (no positive evidence), or a
+      # failing boundary oracle goes red on every PR — `--fast` skips oracle
+      # claims entirely and let exactly that rot through (the clipboard-patch
+      # claim drifted from its renamed test undetected).
       - name: Coherence
-        run: npm run coherence:verify
+        run: npm run coherence:verify:report
 
       # The committed generated artifacts (docs/coherence/* + the fenced block in
       # the repo-root CLAUDE.md) must match the spec tree. coherence:verify checks

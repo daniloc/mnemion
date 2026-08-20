@@ -1,17 +1,19 @@
-// Preflight: catch a stale node_modules after a coherence-harness version bump.
+// Preflight: catch a stale node_modules after a coherence version bump.
 //
-// The dev tool is pinned as a git dep in package.json
-// (e.g. "coherence-harness": "github:daniloc/coherence#v0.5.3"). A developer who
-// pulls a version bump but forgets `npm install` ends up with an OLD coherence
-// binary installed, which silently emits misleading "stale docs" / "no CLAUDE.md"
-// errors from the coherence:docs / coherence:docs:check scripts. This guard
-// compares the PINNED version against the INSTALLED version and fails loudly with
-// the remedy. It degrades gracefully (exit 0) whenever it can't make a confident
-// comparison — a fresh checkout before install, or an unexpected pin format —
-// so it only ever blocks on a real mismatch.
+// The dev tool is pinned in package.json as "@danilocampos/coherence" (an exact
+// npm version; historically a git tag pin like "github:daniloc/coherence#v0.5.3").
+// A developer who pulls a version bump but forgets `npm install` ends up with an
+// OLD coherence binary installed, which silently emits misleading "stale docs" /
+// "no CLAUDE.md" errors from the coherence:docs / coherence:docs:check scripts.
+// This guard compares the PINNED version against the INSTALLED version and fails
+// loudly with the remedy. It degrades gracefully (exit 0) whenever it can't make
+// a confident comparison — a fresh checkout before install, or an unexpected pin
+// format — so it only ever blocks on a real mismatch.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const PKG_NAME = "@danilocampos/coherence";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgJsonPath = join(here, "..", "package.json");
@@ -19,7 +21,7 @@ const installedPkgJsonPath = join(
   here,
   "..",
   "node_modules",
-  "coherence-harness",
+  PKG_NAME,
   "package.json",
 );
 
@@ -38,23 +40,23 @@ if (!pkg) {
 }
 
 const depString =
-  pkg.devDependencies?.["coherence-harness"] ??
-  pkg.dependencies?.["coherence-harness"];
+  pkg.devDependencies?.[PKG_NAME] ?? pkg.dependencies?.[PKG_NAME];
 if (!depString) {
   console.error(
-    "[coherence-preflight] no coherence-harness dependency found; skipping.",
+    `[coherence-preflight] no ${PKG_NAME} dependency found; skipping.`,
   );
   process.exit(0);
 }
 
-// Extract the pinned version from a git ref, e.g.
-// "github:daniloc/coherence#v0.5.3" -> "0.5.3". Strip a leading "v".
+// Extract the pinned version. Handles an exact npm pin ("0.35.0") and the old
+// git ref form ("github:daniloc/coherence#v0.5.3"). Range pins (^/~) are not
+// exact, so they skip rather than block.
 const hashIndex = depString.indexOf("#");
-const ref = hashIndex >= 0 ? depString.slice(hashIndex + 1) : "";
-const pinMatch = ref.match(/v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
+const ref = hashIndex >= 0 ? depString.slice(hashIndex + 1) : depString;
+const pinMatch = ref.match(/^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/);
 if (!pinMatch) {
   console.error(
-    `[coherence-preflight] could not parse a pinned version from "${depString}"; skipping.`,
+    `[coherence-preflight] could not parse an exact pinned version from "${depString}"; skipping.`,
   );
   process.exit(0);
 }
@@ -63,7 +65,7 @@ const pinned = pinMatch[1];
 const installedPkg = readJson(installedPkgJsonPath);
 if (!installedPkg?.version) {
   console.error(
-    "[coherence-preflight] coherence-harness is not installed; skipping (run `cd mnemion-js && npm install`).",
+    `[coherence-preflight] ${PKG_NAME} is not installed; skipping (run \`cd mnemion-js && npm install\`).`,
   );
   process.exit(0);
 }
@@ -72,7 +74,7 @@ const installed = String(installedPkg.version);
 if (installed !== pinned) {
   console.error("");
   console.error(
-    "  ✗ coherence-harness version mismatch — your node_modules is STALE.",
+    `  ✗ ${PKG_NAME} version mismatch — your node_modules is STALE.`,
   );
   console.error("");
   console.error(`      pinned in package.json : ${pinned}`);
@@ -90,5 +92,5 @@ if (installed !== pinned) {
   process.exit(1);
 }
 
-console.log(`[coherence-preflight] ok — coherence-harness ${installed}`);
+console.log(`[coherence-preflight] ok — ${PKG_NAME} ${installed}`);
 process.exit(0);

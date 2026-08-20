@@ -1,11 +1,11 @@
 // Document store: R2-backed file blobs with _documents metadata entries.
 //
-// These tests cover the server logic, which is R2-free: the route handler does
-// the R2 put/get/delete (verified live), while consumeDocumentUpload / resolve /
-// archive only touch the DB. Real R2 writes can't run here — vitest-pool-workers'
-// isolatedStorage rollback is incompatible with R2's backing store — so the
-// actual byte round-trip, size cap, and archive-blob-delete are verified against
-// the deployed worker, the same split used for publications' final HTTP hop.
+// These tests cover the server logic, which is R2-free: consumeDocumentUpload /
+// resolve / archive only touch the DB. The R2 byte path itself is drivable in
+// the pool ONLY when the DOCUMENTS binding is enabled in wrangler.toml (local
+// miniflare simulation; served-inertness.test.ts drives the full upload+serve
+// round-trip then). With the binding absent (CI default), the byte round-trip,
+// size cap, and archive-blob-delete are verified against the deployed worker.
 
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
@@ -13,9 +13,9 @@ import type { HiveDO } from "../../entities/Hive/hive";
 
 // Whether the test runtime has an R2 binding (depends on whether [[r2_buckets]]
 // is active in wrangler.toml — commented out by default/CI, uncommented locally
-// once documents are enabled). The no-R2 degradation suite only makes sense when
-// the binding is absent; the with-R2 byte round-trip is verified live (it can't
-// run here — vitest's isolatedStorage is incompatible with R2 writes).
+// once documents are enabled). The store-level no-R2 degradation test only makes
+// sense when the binding is absent (the handler-level 503/404 gate below runs
+// either way, against an explicit empty env).
 const R2_PRESENT = !!(env as any).DOCUMENTS;
 
 function getStore(): DurableObjectStub<HiveDO> {
@@ -140,14 +140,20 @@ describe.skipIf(R2_PRESENT)("without R2 enabled", () => {
     expect(r.entry.id).toBeTypeOf("number");
     expect(r.documents_note).toMatch(/not enabled/i);
   });
+});
 
+// The /f handlers' absent-binding gate, exercised directly so it runs in EVERY
+// test environment — the worker-level env has DOCUMENTS bound whenever the local
+// wrangler.toml enables R2, so a SELF.fetch can't reach this branch then. Both
+// handlers check ctx.env.DOCUMENTS before touching anything else, so a ctx with
+// an empty env drives exactly the degradation chokepoint.
+describe("/f handlers when R2 is absent", () => {
   it("returns 503 from POST /f and 404 from GET /f when R2 is absent", async () => {
-    const { SELF } = await import("cloudflare:test");
-    const up = await SELF.fetch("https://test.local/f/deadbeefdeadbeefdeadbeefdeadbeef", {
-      method: "POST", body: new Uint8Array([1, 2, 3]),
-    });
+    const { uploadDocument, serveDocument } = await import("../../shared/Routing/routes/io");
+    const noR2 = { env: {} } as any;
+    const up = await uploadDocument(noR2);
     expect(up.status).toBe(503);
-    const get = await SELF.fetch("https://test.local/f/1");
+    const get = await serveDocument(noR2);
     expect(get.status).toBe(404);
   });
 });

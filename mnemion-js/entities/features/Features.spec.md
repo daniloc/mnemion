@@ -36,7 +36,7 @@ Per-feature manifests that FEED the scattered registries from one declaration; c
 - clipboards/manifest.ts imports ./hooks
 - passes test "clipboard constraint and metric keysets are total"
 - passes test "a clipboard submission collects every field violation"
-- passes test "patch on a clipboard-bound pattern is rejected"
+- passes test "rejects patch on a clipboard-bound pattern"
 - passes test "clipboard completion progress is derived from the submission log"
 - scratchpad/manifest.ts exists at this node
 - scratchpad/schema.ts exists at this node

