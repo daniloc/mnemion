@@ -61,7 +61,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.16.15",
     "@cloudflare/workers-types": "^4.20260615.1",
-    "@danilocampos/coherence": "0.35.0",
+    "@danilocampos/coherence": "0.36.4",
     "@types/node": "^25.9.3",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-20 15:06Z",
+  "generatedAt": "2026-08-20 20:21Z",
   "root": "mnemion-js",
   "absRoot": "/Users/daniloc/Documents/Dev/mnemion/mnemion-js",
   "nodes": [
@@ -230,6 +230,18 @@
       "why": "Core is the layer both runtimes depend on but neither owns, so it carries zero env-specific imports and stays pure data — that purity is what lets the same module validate a write in the worker and render it in the SPA without forking.\n\nIts center of gravity is the agent-authorable UI: `view-palette` (how a pattern renders), `format-palette` (how a value renders), `block-palette` (how a page composes), and the chart pair (`chart-spec` + `chart-svg`). These are the canonical instances of the \"self-enforcing declarations\" doctrine — one declarative table that is simultaneously the spec an agent reads, the validator the kernel derives (`validateViewSpec`/`validateBlocks`/`validateFormatsMap`, fail-closed at the mutate chokepoint), and the totality oracle the SPA's `Record<…Id, Component>` enforces at compile time. The agent composes UI from these tables as data, never as code, which is what makes live agent-authored rework safe.\n\nThe chart layer is deliberately split so one spec drives two renderers: `chart-spec` is the single home for the mark set, the categorical color palette, and the long→wide series pivot, and both the in-hive Recharts renderer and the server SVG renderer (`chart-svg`, for published pages and OG cards) derive from it — so a dataset reads identically in-hive and on a public page. `constants` keeps product identity (`PRODUCT_NAME`, `URI_SCHEME`, `uri()`) in one place so the scheme is never hardcoded. `dev-seed` is gated and runs only in the DO constructor under `DEV_SEED`; it writes via raw SQL (trusted, bypassing the kernel hook), so its contents must stay valid against these same palettes by hand — it is inert in production."
     },
     {
+      "id": "i:AI",
+      "label": "AI",
+      "kind": "infra",
+      "sub": "Workers AI"
+    },
+    {
+      "id": "i:DOCUMENTS",
+      "label": "DOCUMENTS",
+      "kind": "infra",
+      "sub": "R2"
+    },
+    {
       "id": "i:OAUTH_KV",
       "label": "OAUTH_KV",
       "kind": "infra",
@@ -240,18 +252,6 @@
       "label": "VECTORIZE",
       "kind": "infra",
       "sub": "Vectorize"
-    },
-    {
-      "id": "i:DOCUMENTS",
-      "label": "DOCUMENTS",
-      "kind": "infra",
-      "sub": "R2"
-    },
-    {
-      "id": "i:AI",
-      "label": "AI",
-      "kind": "infra",
-      "sub": "Workers AI"
     },
     {
       "id": "f:entities/Hive/completion.ts",
@@ -5340,434 +5340,6 @@
       "label": "react",
       "kind": "external",
       "sub": "module"
-    },
-    {
-      "id": "f:worker-configuration.d.ts",
-      "parent": "c:.",
-      "label": "worker-configuration.d.ts",
-      "kind": "file",
-      "sub": "worker-configuration.d.ts",
-      "path": "worker-configuration.d.ts",
-      "prose": "eslint-disable"
-    },
-    {
-      "id": "s:worker-configuration.d.ts#onRequest",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "onRequest",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12684
-    },
-    {
-      "id": "s:worker-configuration.d.ts#PipelineTransformationEntrypoint",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "PipelineTransformationEntrypoint",
-      "kind": "symbol",
-      "sub": "class",
-      "path": "worker-configuration.d.ts",
-      "line": 12690
-    },
-    {
-      "id": "s:worker-configuration.d.ts#PipelineRecord",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "PipelineRecord",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12703
-    },
-    {
-      "id": "s:worker-configuration.d.ts#PipelineBatchMetadata",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "PipelineBatchMetadata",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12704
-    },
-    {
-      "id": "s:worker-configuration.d.ts#Pipeline",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "Pipeline",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12708
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__RPC_STUB_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__RPC_STUB_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12773,
-      "prose": "Branded types for identifying `WorkerEntrypoint`/`DurableObject`/`Target`s.\nTypeScript uses *structural* typing meaning anything with the same shape as type `T` is a `T`.\nFor the classes exported by `cloudflare:workers` we want *nominal* typing (i.e. we only want to\naccept `WorkerEntrypoint` from `cloudflare:workers`, not any other class with the same shape)"
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__RPC_TARGET_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__RPC_TARGET_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12774
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__WORKER_ENTRYPOINT_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__WORKER_ENTRYPOINT_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12775
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__DURABLE_OBJECT_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__DURABLE_OBJECT_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12776
-    },
-    {
-      "id": "s:worker-configuration.d.ts#__WORKFLOW_ENTRYPOINT_BRAND",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "__WORKFLOW_ENTRYPOINT_BRAND",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 12777
-    },
-    {
-      "id": "s:worker-configuration.d.ts#RpcTargetBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "RpcTargetBranded",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12778
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkerEntrypointBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkerEntrypointBranded",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12781
-    },
-    {
-      "id": "s:worker-configuration.d.ts#DurableObjectBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "DurableObjectBranded",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12784
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowEntrypointBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowEntrypointBranded",
-      "kind": "symbol",
-      "sub": "interface",
-      "path": "worker-configuration.d.ts",
-      "line": 12787
-    },
-    {
-      "id": "s:worker-configuration.d.ts#EntrypointBranded",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "EntrypointBranded",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12790
-    },
-    {
-      "id": "s:worker-configuration.d.ts#Stubable",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "Stubable",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12792,
-      "prose": "Types that can be used through `Stub`s"
-    },
-    {
-      "id": "s:worker-configuration.d.ts#Stub",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "Stub",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12814
-    },
-    {
-      "id": "s:worker-configuration.d.ts#Provider",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "Provider",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12861,
-      "prose": "Base type for all other types providing RPC-like interfaces.\nRewrites all methods/properties to be `MethodOrProperty`s, while preserving callable types.\n`Reserved` names (e.g. stub method names like `dup()`) and symbols can't be accessed over RPC."
-    },
-    {
-      "id": "s:worker-configuration.d.ts#RpcStub",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "RpcStub",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12909
-    },
-    {
-      "id": "s:worker-configuration.d.ts#RpcTarget",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "RpcTarget",
-      "kind": "symbol",
-      "sub": "class",
-      "path": "worker-configuration.d.ts",
-      "line": 12913
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkerEntrypoint",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkerEntrypoint",
-      "kind": "symbol",
-      "sub": "class",
-      "path": "worker-configuration.d.ts",
-      "line": 12917,
-      "prose": "`protected` fields don't appear in `keyof`s, so can't be accessed over RPC"
-    },
-    {
-      "id": "s:worker-configuration.d.ts#DurableObject",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "DurableObject",
-      "kind": "symbol",
-      "sub": "class",
-      "path": "worker-configuration.d.ts",
-      "line": 12932
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowDurationLabel",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowDurationLabel",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12944
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowSleepDuration",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowSleepDuration",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12945
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowDelayDuration",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowDelayDuration",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12946
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowTimeoutDuration",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowTimeoutDuration",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12947
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowRetentionDuration",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowRetentionDuration",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12948
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowBackoff",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowBackoff",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12949
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepSensitivity",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepSensitivity",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12950
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepConfig",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepConfig",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12951
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepRollbackConfig",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepRollbackConfig",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12960
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowCronSchedule",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowCronSchedule",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12961
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowEvent",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowEvent",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12967
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepEvent",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepEvent",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12974
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepContext",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepContext",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12980
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowRollbackContext",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowRollbackContext",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12988
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowRollbackHandler",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowRollbackHandler",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12995
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStepRollbackOptions",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStepRollbackOptions",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 12996
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowStep",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowStep",
-      "kind": "symbol",
-      "sub": "class",
-      "path": "worker-configuration.d.ts",
-      "line": 13000
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowInstanceStatus",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowInstanceStatus",
-      "kind": "symbol",
-      "sub": "type",
-      "path": "worker-configuration.d.ts",
-      "line": 13010
-    },
-    {
-      "id": "s:worker-configuration.d.ts#WorkflowEntrypoint",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "WorkflowEntrypoint",
-      "kind": "symbol",
-      "sub": "class",
-      "path": "worker-configuration.d.ts",
-      "line": 13011
-    },
-    {
-      "id": "s:worker-configuration.d.ts#env",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "env",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 13022
-    },
-    {
-      "id": "s:worker-configuration.d.ts#exports",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "exports",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 13023
-    },
-    {
-      "id": "s:worker-configuration.d.ts#cache",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "cache",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 13024
-    },
-    {
-      "id": "s:worker-configuration.d.ts#tracing",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "tracing",
-      "kind": "symbol",
-      "sub": "const",
-      "path": "worker-configuration.d.ts",
-      "line": 13025
-    },
-    {
-      "id": "s:worker-configuration.d.ts#NonRetryableError",
-      "parent": "f:worker-configuration.d.ts",
-      "label": "NonRetryableError",
-      "kind": "symbol",
-      "sub": "class",
-      "path": "worker-configuration.d.ts",
-      "line": 14404,
-      "prose": "NonRetryableError allows for a user to throw a fatal error\nthat makes a Workflow instance fail immediately without triggering a retry"
     }
   ],
   "edges": [
@@ -6102,15 +5674,15 @@
       "kind": "imports"
     },
     {
-      "id": "f:entities/Hive/prime.ts->i:VECTORIZE:binds",
-      "source": "f:entities/Hive/prime.ts",
-      "target": "i:VECTORIZE",
-      "kind": "binds"
-    },
-    {
       "id": "f:entities/Hive/prime.ts->i:AI:binds",
       "source": "f:entities/Hive/prime.ts",
       "target": "i:AI",
+      "kind": "binds"
+    },
+    {
+      "id": "f:entities/Hive/prime.ts->i:VECTORIZE:binds",
+      "source": "f:entities/Hive/prime.ts",
+      "target": "i:VECTORIZE",
       "kind": "binds"
     },
     {
@@ -6901,6 +6473,16 @@
     ],
     "stores": [
       {
+        "binding": "AI",
+        "label": "AI",
+        "sub": "Workers AI"
+      },
+      {
+        "binding": "DOCUMENTS",
+        "label": "DOCUMENTS",
+        "sub": "R2"
+      },
+      {
         "binding": "OAUTH_KV",
         "label": "OAUTH_KV",
         "sub": "KV"
@@ -6909,20 +6491,10 @@
         "binding": "VECTORIZE",
         "label": "VECTORIZE",
         "sub": "Vectorize"
-      },
-      {
-        "binding": "DOCUMENTS",
-        "label": "DOCUMENTS",
-        "sub": "R2"
-      },
-      {
-        "binding": "AI",
-        "label": "AI",
-        "sub": "Workers AI"
       }
     ],
     "vars": {
-      "WORKER_HOST": "mnemion.daniloc.workers.dev"
+      "WORKER_HOST": "declared"
     },
     "meta": {
       "entry": "src/index.ts",
