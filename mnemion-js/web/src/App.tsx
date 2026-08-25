@@ -81,6 +81,12 @@ export default function App() {
     let ws: WebSocket | null = null;
     let reconnect: ReturnType<typeof setTimeout>;
     let closed = false;
+    // Reconnect backoff: 3s doubling to 60s (+ jitter), reset on a successful
+    // open. A flat 3s retry means a parked tab hammers a down worker 1,200×/hr
+    // — and every /ws attempt wakes the hive Durable Object, which is billed
+    // work. Backoff caps a dead tab at ~60/hr while a live one still recovers
+    // in seconds.
+    let retryMs = 3000;
 
     async function loadIndex(): Promise<Pattern[]> {
       const res = await fetch('/api/index');
@@ -98,6 +104,7 @@ export default function App() {
       if (closed) return;
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${proto}//${location.host}/ws`);
+      ws.onopen = () => { retryMs = 3000; };
       ws.onmessage = async (e) => {
         try {
           const msg = JSON.parse(e.data);
@@ -128,7 +135,12 @@ export default function App() {
           }
         } catch { /* ignore */ }
       };
-      ws.onclose = () => { ws = null; if (!closed) reconnect = setTimeout(connect, 3000); };
+      ws.onclose = () => {
+        ws = null;
+        if (closed) return;
+        reconnect = setTimeout(connect, retryMs + Math.random() * 1000);
+        retryMs = Math.min(retryMs * 2, 60000);
+      };
       ws.onerror = () => ws?.close();
     }
 

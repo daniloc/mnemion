@@ -116,29 +116,34 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
   async init() {
     const hive = this.getHive();
 
-    // Register for scratchpad push (best-effort; the hive prunes us on fanout if no
-    // client is attached, so no explicit deregister on close is needed).
-    try { await hive.registerSession((this.ctx as any).id.toString()); } catch { /* push is best-effort */ }
+    // ONE hive RPC for everything init needs: session registration (for
+    // scratchpad push — best-effort; the hive prunes us on fanout if no client
+    // is attached) + the working-memory and maintenance briefing. MCP clients
+    // re-handshake on their own schedule (the claude.ai connector and each open
+    // Claude Code session, ~1/min apiece observed), and every handshake runs
+    // init on a fresh SessionDO — so the number of hive calls here is a
+    // per-reconnect multiplier the server pays forever. Keep it 1.
+    const briefing = JSON.parse(await hive.getSessionBriefing((this.ctx as any).id.toString())) as {
+      recent: { pattern: string; id: number; summary: string; updated_at: string }[];
+      maintenance: { days_since_last_pass: number | null; interval_days: number; overdue: boolean };
+    };
 
     // === Inject working memory into instructions ===
-    const recentJson = await hive.getRecentActivity(10);
-    const recent = JSON.parse(recentJson) as { pattern: string; id: number; summary: string; updated_at: string }[];
+    const recent = briefing.recent;
 
     if (recent.length > 0) {
       const lines = recent.map(r =>
         `- ${r.pattern}/${r.id}: ${r.summary || "(no preview)"}`,
       ).join("\n");
-      const briefing = `=== Working Memory ===\n${lines}\n\n`;
+      const briefingText = `=== Working Memory ===\n${lines}\n\n`;
       const base = (this.server as any)._instructions ?? "";
-      (this.server as any)._instructions = briefing + base;
+      (this.server as any)._instructions = briefingText + base;
     }
 
     // === Inject maintenance status into instructions ===
     // (Also rides the prime response — web clients often never read instructions.)
     try {
-      const status = JSON.parse(await hive.getMaintenanceStatus()) as {
-        days_since_last_pass: number | null; interval_days: number; overdue: boolean;
-      };
+      const status = briefing.maintenance;
       if (status.overdue) {
         const age = status.days_since_last_pass != null ? `${status.days_since_last_pass} days ago` : "never";
         const section = `=== Maintenance ===\nLast memory maintenance pass: ${age} (interval: ${status.interval_days} days). Consider offering the owner a cleanup pass: review ${uri("stale")}, propose supersessions, archives, and memory policies, apply what they ratify, then record the pass in _maintenance_passes. See ${uri("_system/memory-maintenance")}.\n\n`;

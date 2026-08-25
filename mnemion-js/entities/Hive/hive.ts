@@ -391,9 +391,29 @@ export class HiveDO extends DurableObject {
   async registerSession(id: string): Promise<void> {
     // Most-recent-last, deduped, capped — a bounded ring so the registry can't grow
     // without bound on a long-lived hive (the prior leak: append-only, pruned only lazily).
-    const ids = ((await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? []).filter((x) => x !== id);
+    const current = (await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? [];
+    // Re-registration of the already-current session is a no-op READ, not a
+    // rewrite: MCP clients re-handshake on their own schedule (~1/min each was
+    // observed), and every handshake lands here. The put fires only when the
+    // membership or ordering actually changes.
+    if (current[current.length - 1] === id) return;
+    const ids = current.filter((x) => x !== id);
     ids.push(id);
     await this.ctx.storage.put(HiveDO.SESSIONS_KEY, ids.slice(-HiveDO.MAX_SESSIONS));
+  }
+
+  /** Everything SessionDO.init() needs from the hive, in ONE wake: register the
+   *  session for scratchpad fanout and return the working-memory + maintenance
+   *  briefing. init() previously made three separate RPCs for this, so every
+   *  client re-handshake billed three hive requests and one registry write;
+   *  the reconnect cadence belongs to the clients, so the per-handshake cost
+   *  is the server's only lever (see session-briefing.test.ts). */
+  async getSessionBriefing(sessionId: string): Promise<string> {
+    await this.registerSession(sessionId);
+    return JSON.stringify({
+      recent: JSON.parse(await reports.getRecentActivity(this.reportsCtx(), 10)),
+      maintenance: JSON.parse(await reports.getMaintenanceStatus(this.reportsCtx())),
+    });
   }
 
   private async fanoutScratch(pad: string): Promise<void> {
