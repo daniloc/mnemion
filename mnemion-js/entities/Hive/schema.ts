@@ -21,6 +21,7 @@ import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
 import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
+import { quoteIdent } from "../../shared/core/sql";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
 
@@ -945,9 +946,9 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     ).toArray() as any[];
     for (const obj of expired) {
       for (const op of ["insert", "update", "delete"]) {
-        try { db.exec(`DROP TRIGGER IF EXISTS "_audit_${obj.name}_${op}"`); } catch {}
+      try { db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${obj.name}_${op}`)}`); } catch {}
       }
-      try { db.exec(`DROP TABLE IF EXISTS "${obj.name}"`); } catch {}
+      try { db.exec(`DROP TABLE IF EXISTS ${quoteIdent(obj.name)}`); } catch {}
       db.exec(`DELETE FROM _fields WHERE object_name = ?`, obj.name);
       db.exec(`DELETE FROM _objects WHERE name = ?`, obj.name);
     }
@@ -1036,10 +1037,10 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     const patterns = db.exec("SELECT name FROM _objects").toArray() as any[];
     for (const p of patterns) {
       try {
-        const cols = db.exec(`PRAGMA table_info("${p.name}")`).toArray() as any[];
+        const cols = db.exec(`PRAGMA table_info(${quoteIdent(p.name)})`).toArray() as any[];
         if (!cols.length) continue;
-        if (!cols.some((c: any) => c.name === "created_by")) db.exec(`ALTER TABLE "${p.name}" ADD COLUMN "created_by" TEXT`);
-        if (!cols.some((c: any) => c.name === "updated_by")) db.exec(`ALTER TABLE "${p.name}" ADD COLUMN "updated_by" TEXT`);
+        if (!cols.some((c: any) => c.name === "created_by")) db.exec(`ALTER TABLE ${quoteIdent(p.name)} ADD COLUMN "created_by" TEXT`);
+        if (!cols.some((c: any) => c.name === "updated_by")) db.exec(`ALTER TABLE ${quoteIdent(p.name)} ADD COLUMN "updated_by" TEXT`);
       } catch { /* table may be an archived-then-dropped pattern */ }
     }
   }
@@ -1103,7 +1104,7 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     // tables like _passkeys are covered — matching the security.test oracle exactly.
     const tables = (db.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'`).toArray() as any[]).map((t: any) => t.name as string);
     for (const name of tables) {
-      kernelCols[name] = (db.exec(`PRAGMA table_info("${name}")`).toArray() as any[]).map((c: any) => c.name as string);
+      kernelCols[name] = (db.exec(`PRAGMA table_info(${quoteIdent(name)})`).toArray() as any[]).map((c: any) => c.name as string);
     }
     const gaps = findUnclassifiedSensitiveColumns(kernelCols);
     if (gaps.length) console.warn(`[schema] unclassified sensitive columns (add to SENSITIVE_COLUMNS): ${gaps.join(", ")}`);
@@ -1146,7 +1147,7 @@ function verifyFieldsIntegrity(db: any): void {
   for (const obj of objects) {
     let cols: any[];
     try {
-      cols = db.exec(`PRAGMA table_info("${obj.name}")`).toArray();
+      cols = db.exec(`PRAGMA table_info(${quoteIdent(obj.name)})`).toArray();
     } catch {
       drifts.push(`pattern "${obj.name}" has _objects row but no table`);
       continue;
@@ -1286,7 +1287,7 @@ export function ensureAuditTriggers(db: any, tableName: string): void {
   if (isAuditExempt(tableName)) return;
   let columns: string[];
   try {
-    const info = db.exec(`PRAGMA table_info("${tableName}")`).toArray() as any[];
+    const info = db.exec(`PRAGMA table_info(${quoteIdent(tableName)})`).toArray() as any[];
     columns = info.map((c: any) => c.name as string);
   } catch {
     return;
@@ -1298,7 +1299,7 @@ export function ensureAuditTriggers(db: any, tableName: string): void {
   // already keeps the raw out of the row, this keeps even the digest/value out of
   // _mutation_log). Derived from the one SENSITIVE_COLUMNS registry.
   const sensitive = new Set(sensitiveColumns(tableName).map((s) => s.column));
-  const col = (side: "NEW" | "OLD", c: string) => sensitive.has(c) ? `'${c}', NULL` : `'${c}', ${side}."${c}"`;
+  const col = (side: "NEW" | "OLD", c: string) => sensitive.has(c) ? `'${c}', NULL` : `'${c}', ${side}.${quoteIdent(c)}`;
   const newJson = columns.map((c) => col("NEW", c)).join(", ");
   const oldJson = columns.map((c) => col("OLD", c)).join(", ");
 
@@ -1309,22 +1310,22 @@ export function ensureAuditTriggers(db: any, tableName: string): void {
   // would permanently omit that column from _mutation_log until an unrelated rebuild. The
   // prior code only force-rebuilt for SENSITIVE tables, silently freezing every other
   // pattern's audit trigger. Recreating a trigger is cheap metadata (no table rewrite).
-  for (const op of ["insert", "update", "delete"]) db.exec(`DROP TRIGGER IF EXISTS "_audit_${tableName}_${op}"`);
+  for (const op of ["insert", "update", "delete"]) db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${tableName}_${op}`)}`);
 
-  db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_insert"
-    AFTER INSERT ON "${tableName}" BEGIN
+  db.exec(`CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_audit_${tableName}_insert`)}
+    AFTER INSERT ON ${quoteIdent(tableName)} BEGIN
       INSERT INTO _mutation_log (table_name, record_id, operation, new_data)
       VALUES ('${tableName}', NEW.id, 'INSERT', json_object(${newJson}));
     END`);
 
-  db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_update"
-    AFTER UPDATE ON "${tableName}" BEGIN
+  db.exec(`CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_audit_${tableName}_update`)}
+    AFTER UPDATE ON ${quoteIdent(tableName)} BEGIN
       INSERT INTO _mutation_log (table_name, record_id, operation, old_data, new_data)
       VALUES ('${tableName}', NEW.id, 'UPDATE', json_object(${oldJson}), json_object(${newJson}));
     END`);
 
-  db.exec(`CREATE TRIGGER IF NOT EXISTS "_audit_${tableName}_delete"
-    AFTER DELETE ON "${tableName}" BEGIN
+  db.exec(`CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_audit_${tableName}_delete`)}
+    AFTER DELETE ON ${quoteIdent(tableName)} BEGIN
       INSERT INTO _mutation_log (table_name, record_id, operation, old_data)
       VALUES ('${tableName}', OLD.id, 'DELETE', json_object(${oldJson}));
     END`);

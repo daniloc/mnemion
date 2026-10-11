@@ -3,95 +3,208 @@
 The single per-user Durable Object that owns all SQLite data and funnels every agent write through one kernel-enforced chokepoint.
 
 ## invariants
-- kernel write boundary
-- kernel read+write capability
-- egress-sensitivity totality
-- pattern-effects totality
-- facet/kernel-column collision
-- data-is-destiny no-hybrid
-- credential-mint gating
-- born-hashed secrets
-- immutable-field enforcement
-- token-scope-grammar
-- SSRF block-host coverage
-- sql-identifier quoting
-- instance-identity host
-
-## works when
-- lives in storage
-- hive.ts exists at this node
-- hive.ts imports cloudflare:workers
-- hive.ts imports ./data
-- policy.ts exists at this node
-- kernel-columns.ts exists at this node
-- data.ts imports ./kernel-columns
-- evolution.ts imports ./kernel-columns
-- schema.ts imports ./kernel-columns
-- hive.ts imports ./kernel-columns
-- data.ts exists at this node
-- mutate-gate.ts exists at this node
-- mutate-gate.ts imports ./policy
-- prime.ts imports ./policy
-- boundary "kernel write boundary" at writeClass crossing agent-mcp -> storage via test "write-policy totality"
-- boundary "kernel read+write capability" at query crossing served-untrusted -> storage via guard "context-capability totality"
-- boundary "egress-sensitivity totality" at SENSITIVE_COLUMNS crossing storage -> public-egress via test "egress-sensitivity totality"
-- boundary "pattern-effects totality" at PATTERN_EFFECTS via test "pattern-effects totality"
-- boundary "facet/kernel-column collision" at FACET_RESERVED_COLUMNS via test "facet-kernel-collision totality"
-- boundary "data-is-destiny no-hybrid" at findStoredDerivedAggregates via test "data-is-destiny no-hybrid totality"
-- boundary "credential-mint gating" at findUngatedCredentialMints crossing agent-mcp -> owner-trusted via test "credential-mint gating totality"
-- boundary "born-hashed secrets" at SENSITIVE_COLUMNS crossing storage -> public-egress via test "born-hashed-secret totality"
-- boundary "immutable-field enforcement" at applyKernelRules crossing agent-mcp -> storage via test "IMMUTABLE-registry totality"
-- boundary "token-scope-grammar" at isBroadTokenScope crossing agent-mcp -> owner-trusted via guard "broad-token scope-grammar totality"
-- boundary "SSRF block-host coverage" at isBlockedFederationHost crossing owner-trusted -> federated via guard "SSRF block-host totality"
-- boundary "sql-identifier quoting" at quoteIdent crossing agent-mcp -> storage via guard "quoteIdent — grammar"
-- boundary "instance-identity host" at resolveHost crossing public-egress -> owner-trusted via guard "instance-identity host resolution"
-- effects.ts exists at this node
-- effects.ts imports ../features
-- effects.ts imports ../features/compose
-- documents.ts exists at this node
-- hive.ts imports ./documents
-- served.ts exists at this node
-- hive.ts imports ./served
-- federation.ts exists at this node
-- hive.ts imports ./federation
-- reports.ts exists at this node
-- hive.ts imports ./reports
-
-## why
-
-HiveDO is the single Durable Object that owns the SQLite store; every write funnels through its `mutate`/`batchMutate`/`processInput`/`consumeUpload` chokepoints so the kernel-write boundary is enforced in one place instead of re-derived per call site. `policy.ts` is the dependency-free leaf SSOT for "which patterns agents can write, through which path, what gate fires" — unclassified kernel patterns fail CLOSED (System → denied), so a new pattern can never silently become agent-writable, and kernel/prime/ingress gates all derive from it so the boundary can't drift between layers.
-
-(The per-boundary paragraphs below record the non-derivable rationale — the bug or rejected alternative each boundary exists to kill. The mechanism — chokepoint, oracle, "iterates the live domain → fails the build" — is carried by the `## invariants` list and the `boundary "…" at <chokepoint> via test "<oracle>"` claims above, and isn't restated here.)
-
-**facet/kernel-column collision.** Kernel COLUMNS get the same single-source treatment as kernel patterns: `kernel-columns.ts` is the SSOT for the seven auto-provided columns, and every named slice (the data engine's create-exclude/facet-skip sets, schema display, history-diff ignore set) is DERIVED from it. A user-proposed facet may not collide with a kernel column, so `validateFacets` reserves `FACET_RESERVED_COLUMNS` — the kernel columns MINUS the user-overridable ones. The one overridable column is `version` (a pattern may declare its own semver semantics; create_pattern's apply skips the kernel default). The historical bug was a hand-narrowed reserved subset that wrongly omitted `created_by`/`updated_by` (a same-named facet is a duplicate-column DDL error — they MUST be reserved); over-correcting to reserve `version` then broke the user-version feature. Splitting "overridable" into its own declaration fixes both directions at once: `reserved ∪ overridable = KERNEL_COLUMNS`, so neither under- nor over-reserving can recur.
-
-**data-is-destiny no-hybrid.** Makes the "store truth once, derive its consequences" doctrine emergent from the schema rather than prose an agent can interpret away. The doctrine is semantic in general, but it has a DECIDABLE core: a pattern must not STORE an aggregate of rows it also RETAINS. `findStoredDerivedAggregates` checks exactly that, firing only when BOTH halves are present (an aggregate-named facet AND a child pattern referencing this one). It stays silent on the legitimate fork a convergence experiment surfaced — a bare counter with no retained instances IS the stored truth, not a denormalization, because there's no retained source to derive from. Boot warns rather than throws: a deliberate materialized aggregate is a valid reviewed override.
-
-**credential-mint gating.** The consent dual of egress totality. A pattern with a `secret` column mints a born-hashed BEARER on every create, so that create MUST be consent-gated. `patch_only` is provably wrong for such a pattern — it declares create benign while create is the dangerous op — and that was a real shipped bug: `_access_tokens` was `patch_only`, so an injected agent could mint a broad `*` token (a full owner login credential, redeemable at `/auth/verify`) in one un-round-tripped `mutate` and exfiltrate it. Fixed by `on_broad_token`: minting a broad/portable scope (`*`, or a whole-class `read`/`write` key — `isBroadTokenScope`) round-trips like every other standing grant, while narrow target-bound (`upload`/`document`) and inert (`register`, gated by `/invite` passkey approval) scopes stay benign so the frequent legit flows aren't taxed. The rule DERIVES from `SENSITIVE_COLUMNS × KERNEL_WRITE_POLICY` (no new declaration), so re-classifying a credential-minter as `patch_only`/`Open` is unexpressible.
-
-**born-hashed secrets.** The storage dual: credential-mint gating governs WHEN a bearer is minted; this governs HOW it's stored. `mintSecrets` is generic over `SENSITIVE_COLUMNS` and runs on every engine write path, so a `secret`-classed column is born-hashed by construction — the preimage is system-generated, returned ONCE in the create response, and only its SHA-256 digest lands in the column, the audit log, and the `/ws` delta. A read (owner or otherwise) yields a digest, never a usable bearer. The structural enforcement (generic `mintSecrets` keyed on the registry) makes this automatic for any declared secret column.
-
-**immutable-field enforcement.** The registry dual of the create-time hooks: where `ON_CREATE` decides what a kernel row may be BORN as, `IMMUTABLE` / `IMMUTABLE_AFTER_CREATE` decide what it may never BECOME — the defense-in-depth behind the consent model. `approved_at`/`consumed_at` are `IMMUTABLE` so an agent can't self-approve its own invite or replay a single-use token; a token's `scope`/`member`/`constraints`/`token` and an ingress endpoint's `target_pattern` are `IMMUTABLE_AFTER_CREATE` so a row that passed create-time validation can't be silently repointed to a stronger capability; `_members.label` is frozen-after-create (NOT `IMMUTABLE`, which would reject it at birth) because it's the stable handle passkeys/tokens/attribution reference. Enforcement has two faces because the patch path edits one facet by name and sidesteps the top-level key scan: `applyKernelRules` covers create/update/unarchive, `immutableFieldError` covers patch. (`scopeMatches`, the `:`-boundary prefix grammar these freezes protect, is pinned by its own matrix test — a fixed-grammar correctness property, not a live-domain totality, so it's verified but not a boundary.)
-
-**instance-identity host.** Closes the last unmanaged crossing the trust atlas surfaced (public-egress → owner-trusted): the host every generated capability URL is built from. A configured `WORKER_HOST` is AUTHORITATIVE and the inbound `Host` is IGNORED, so an attacker who plants a spoofed `Host` on an unauthenticated request (e.g. a `/ws` upgrade) can't poison an `upload_url`/`page_url`/`og_image` handed to the owner. This was enforced by `currentHost` but proven only by convention (the detector and atlas both flagged it tier-3). The decision is now the pure `resolveHost` (configured-wins-else-observed-else-localhost, placeholder treated as unconfigured), which `currentHost` delegates to — so the test IS the boundary. With this the manifold has zero tier-3 security crossings.
-
-**sql-identifier quoting.** The structural enshrinement of an injection boundary that was a convention. The SQL-identifier crossing (a raw string becoming a table/column token) was guarded by "validate, then interpolate `"${x}"`" at scattered sites — two SEPARATE steps a new site can forget. `quoteIdent` fuses them: it validates against `IDENTIFIER_RE` and returns the double-quoted identifier, throwing on any injection-bearing name — so an identifier that skipped the upstream semantic check still can't carry injection. The query engine (~20 sites in `data.ts`) routes every identifier through it; the semantic checks (`facetMeta`/`isValidColumn`/`patternExists`) stay as the primary gate with `quoteIdent` as fail-closed defense beneath. This moved the boundary from tier-3 to tier-1. (DDL interpolation in `schema.ts`/`evolution.ts` is the tracked follow-up; the coarse `injection-lint` ratchet still covers those + the HTML egress sinks until they're enshrined too.)
-
-**token-scope-grammar.** The classifier dual of credential-mint gating: that boundary decides a credential-minting create must be consent-gated; this decides WHICH scopes are "broad" enough to require the round-trip — so the partition `isBroadTokenScope` draws over the scope grammar IS the boundary. It drifted: a bare `parts.length >= 3` cutoff classified `read:entry:<pattern>` (3 parts) as narrow, but `scopeMatches` prefix-grants it every `read:entry:<pattern>:<id>` — a pattern-WIDE standing read key minted with NO round-trip, an exfil credential. The fix classifies by RESOURCE GRAMMAR, not length: a scope is narrow only when it reaches its kind's LEAF depth (`entry` at depth 4 — `pattern:id`; `output`/`publication`/`document`/`input` at depth 3), so `read:entry:<pattern>` falls short and is broad. The oracle reconciles the partition against both `scopeMatches` and the kinds `io.ts` actually mints, so a new served resource kind can't leave it incomplete.
-
-**kernel write boundary — two transports.** The kernel write boundary reaches the engine over TWO transports: the interactive MCP `mutate` tool and the browser-authenticated `/api/mutate`. The rejected design had gating decisions inlined in the MCP handler; the drift vector was real — an `/api`+RPC test passing while the MCP Zod/consent layer silently broke, so the boundary's enforcement disagreed across the two paths a write can take. Pure decisions in one tested leaf (shared by both transports) is the fix. (Interactive consent round-trip mechanics stay in the session handler because only MCP can satisfy them; `/api` is owner-implicit — a logged-in human IS the consent.)
-
-**kernel read+write capability.** Reads share the SAME boundary on the SAME flag: `DataContext.trusted` is required and gates kernel access symmetrically — an untrusted context may neither write nor read a kernel pattern. Trust is a CAPABILITY, not a per-call-site convention: `HiveDO` exposes two named constructors over a trust-agnostic `ctxFields` — `ownerDataCtx` (the ONLY `trusted: true`) and `servedDataCtx` (`trusted: false`) — with no trust parameter to dial at a call site, so served reads (public page, OG card, publication, `/o/entry`) AND untrusted writes (ingress, upload) physically cannot reach kernel data. All served public reads live in one module (`served.ts`), handed a narrow `ServedContext` exposing only `servedQuery` for user-pattern data plus single-answer kernel-CONFIG lookups (a `_shared` visibility, an endpoint config row, supersession ids, facet metadata) — never `db`, never a trusted context, no way to construct one. This made the old per-block / per-entry `isKernelPattern` guards provably redundant (a kernel-named read returns empty through `servedQuery`, which also binds the id against injection); they were deleted, leaving one chokepoint instead of a guard to forget per sink — replacing a block-list that failed open.
-
-**egress-sensitivity totality.** The bug it kills was a FALSE oracle. Write policy and sensitive columns were composed from two parallel hand-lists, and the second silently omitted a feature (`pages`); the egress side had no totality check at all, so a forked feature that declared a `redact`/`secret` column but forgot the second barrel line got no `seal`/audit/export redaction with no boot warning. Two parallel hand-lists was the rejected design. `findUnclassifiedSensitiveColumns` is honestly demoted to a complementary NAME heuristic — it can't see a sensitive column with an innocuous name, so it isn't full totality.
-
-**pattern-effects totality.** Post-mutate side effects (re-embed, cache invalidate, broadcast, …) were a hand-coded if-pile in `mutate()`: a feature adding a pattern that needed an effect had to remember to extend the if-tree, and a forgotten extension silently no-op'd at runtime. "Remember to add another branch" was the rejected design. Composing the effect set CORE + per-feature from the live `FEATURES` array, with the oracle asserting every effect-bearing pattern is represented, turns a missing entry into a build failure instead of a silent missing side effect — same shape as the write-policy and egress-sensitivity totalities (the three together are the feature-composition trio).
-
-(Federation is not yet a declared invariant on its own — the SSRF block-host coverage above is what's formalized as a boundary; the rest is design rationale living co-located in `federation.ts` until a totality oracle is written for it. The shape: token-send and allow-list consent share a single function (`federatedResolve`) so the approved host and the contacted host can never drift apart, re-validated on every redirect hop; splitting gate from fetch across modules or call sites would let a future edit move one without the other. The narrow `FederationContext` capability the DO hands the module ensures federation can read nothing else. This is the security analysis's "condition #2" — a candidate invariant if a co-location oracle is added.)
-
-**SSRF block-host coverage.** The totality dual of that SSRF guard. `isBlockedFederationHost` must refuse every class of non-public target — loopback/private/CGNAT/link-local IPv4 in every inet_aton encoding (dotted-decimal, octal, hex, integer), the IPv6 loopback/ULA/link-local/mapped/NAT64/6to4 forms, and the `.localhost`/`.local`/`.internal`/`.lan` suffixes — and a dropped category is a silent SSRF reopening (the canonical target is the cloud-metadata IP `169.254.169.254`). Its correctness was a convention ("remember every encoding") with no completeness check; the oracle's category→example table makes a new bypass class fail the build by name.
-
-## refutations
-
-- kernel write boundary: renamed the `_members` row key in CORE_KERNEL_WRITE_POLICY (policy.ts), leaving the `_members` kernel table unclassified -> full verify went red by name — boundary "kernel write boundary" via test "write-policy totality" failed with `kernel pattern "_members" has no write-class policy (defaults to System/denied)`; the fail-closed default held while the oracle failed the build. Restore returned it green. Note: `verify --fast` skips boundary oracles by design, so the red appears only in the full run. (2026-08-20)
-- kernel read+write capability: the same break (unclassified `_members`) -> its oracle "context-capability totality" also went red ("an untrusted ingress write to a kernel pattern is refused AT the capability gate"), showing the capability boundary derives from the same policy territory and fails loudly when it drifts. Green on restore. (2026-08-20)
+- kernel write boundary: Every agent write to a kernel pattern follows its declared write policy.
+  protects: applyKernelRules in entities/Hive/kernel.ts
+  chokepoint: executeMutate in entities/Hive/data.ts
+  over: every kernel pattern in KERNEL_TABLES
+  via: write-policy totality
+  because: An unclassified pattern must fail closed instead of becoming agent writable.
+  crossing: agent-mcp -> storage
+  kinds: storage
+  checklist: scoped-reads dismissed: this policy governs writes; kernel read access is a separate capability boundary
+  checklist: encrypted-storage dismissed: write classification does not encrypt the row
+  checklist: key-rotation-compatibility dismissed: write classes do not manage keys
+  checklist: input-validation dismissed: field validation follows write admission in the kernel
+  checklist: revision-preservation dismissed: the write class does not define revision history
+  checklist: commit-ordered-effects dismissed: this policy admits writes before commit; effects have their own registry
+  checklist: durable-dispatch-intent dismissed: write admission does not queue work
+  checklist: declared-target-coverage declared as kernel write boundary
+  checklist: completion-evidence dismissed: the policy is checked synchronously before mutation
+- kernel read+write capability: An untrusted data context cannot read or write a kernel pattern.
+  protects: entities/Hive/data.ts
+  chokepoint: entities/Hive/hive.ts
+  over: every kernel read and write through a DataContext
+  via: context-capability totality
+  because: Served reads and ingress writes must not gain owner capabilities by choosing a flag at the call site.
+  crossing: served-untrusted -> storage
+  kinds: read, storage
+  checklist: scoped-reads dismissed: this requirement separates kernel and served access; row-level scope belongs to servedQuery
+  checklist: encrypted-storage dismissed: the trust flag authorizes access; it does not encrypt stored values
+  checklist: key-rotation-compatibility dismissed: this boundary has no encryption key or rotation stage
+  checklist: redaction dismissed: egress-sensitivity totality governs outward representations
+  checklist: input-validation dismissed: DataContext trust controls kernel access, not field schemas
+  checklist: revision-preservation dismissed: this boundary does not publish version-addressed revisions
+  checklist: commit-ordered-effects dismissed: this boundary controls access before a write, not effect ordering after commit
+  checklist: durable-dispatch-intent dismissed: this boundary does not enqueue deferred work
+  checklist: declared-target-coverage dismissed: this rule is over kernel-pattern access, not a dispatch target set
+  checklist: completion-evidence dismissed: the operation is synchronous access control, with no background completion claim
+- egress-sensitivity totality: Every sensitive column is classified for outward sealing.
+  protects: FEATURE_SENSITIVE_COLUMNS in entities/features/security.ts
+  chokepoint: entities/Hive/policy.ts
+  over: every sensitive column in every kernel and feature pattern
+  via: egress-sensitivity totality
+  because: A new feature must not silently omit its secret or redacted columns from egress protection.
+  crossing: storage -> public-egress
+  entrances: none
+  kinds: credential, output
+  checklist: capability-authorization dismissed: this rule classifies columns; route and data capabilities authorize callers
+  checklist: revalidated-permission dismissed: sealing is applied to each egress result, independently of the caller's permission
+  checklist: destination-confinement dismissed: this rule controls fields in output, not the destination
+  checklist: message-authenticity dismissed: the classified output is a local response, not a signed peer message
+  checklist: encrypted-storage dismissed: sensitive fields are sealed on egress; this rule does not encrypt storage
+  checklist: key-rotation-compatibility dismissed: the classification contains no rotating key
+  checklist: redaction declared as egress-sensitivity totality
+  checklist: separation-of-duties dismissed: classification does not grant or divide actor privileges
+  checklist: commit-ordered-effects dismissed: egress sealing does not schedule a post-commit effect
+  checklist: circuit-breaker-policy dismissed: sealing makes no remote call
+  checklist: declared-target-coverage declared as egress-sensitivity totality
+- pattern-effects totality: Every effect-bearing pattern has a composed post-mutate effect.
+  over: every effect-bearing pattern in the composed feature set
+  via: pattern-effects totality
+  because: Adding a pattern must not silently skip re-embedding or cache invalidation.
+  kinds: state
+  checklist: revalidated-permission dismissed: the registry names effects after an admitted mutation; authorization is upstream
+  checklist: separation-of-duties dismissed: the effect map does not grant actor roles
+  checklist: legal-state-succession dismissed: pattern effects are callbacks, not a state-machine transition rule
+  checklist: supersession-safety dismissed: this rule does not replace an in-flight job with a newer one
+  checklist: worker-fencing dismissed: the effect registry runs inside one Hive instance, without a leased worker
+  checklist: commit-ordered-effects dismissed: this rule checks effect coverage; mutation ordering must be checked separately
+  checklist: resumption-coverage dismissed: the registry does not persist a resumable job
+- facet kernel-column collision: A user facet cannot collide with a reserved kernel column.
+  over: every kernel column and user-overridable exception
+  via: facet-kernel-collision totality
+  because: A collision breaks DDL, while over-reserving version rejects a valid user facet.
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule validates schema names, not read permissions
+  checklist: encrypted-storage dismissed: column-name validation does not encrypt row values
+  checklist: key-rotation-compatibility dismissed: no key participates in schema naming
+  checklist: input-validation declared as facet kernel-column collision
+  checklist: revision-preservation dismissed: the rule does not alter existing revisions
+  checklist: commit-ordered-effects dismissed: facet names are checked before a schema change is applied
+  checklist: durable-dispatch-intent dismissed: schema validation does not enqueue work
+  checklist: declared-target-coverage declared as facet kernel-column collision
+  checklist: completion-evidence dismissed: validation returns synchronously
+- data-is-destiny no-hybrid: A pattern retaining child rows does not store an aggregate of those rows.
+  over: all pattern facets and child references
+  via: data-is-destiny no-hybrid totality
+  because: A stored aggregate alongside its source rows drifts when either write path changes.
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule detects redundant stored aggregates, not read scope
+  checklist: encrypted-storage dismissed: it concerns data modeling, not encryption
+  checklist: key-rotation-compatibility dismissed: the schema check uses no key
+  checklist: input-validation dismissed: the detector checks the composed schema, not a request payload
+  checklist: revision-preservation dismissed: it prohibits a redundant column; it does not preserve versions
+  checklist: commit-ordered-effects dismissed: the check runs against schema shape, not mutation effects
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage declared as data-is-destiny no-hybrid
+  checklist: completion-evidence dismissed: the check reads the live schema synchronously
+- credential-mint gating: Creating a credential with broad scope requires consent.
+  protects: consentRoundTripRequired in entities/Hive/policy.ts
+  chokepoint: entities/Hive/mutate-gate.ts
+  over: all patterns with secret columns and their create policies
+  via: credential-mint gating totality
+  because: A patch-only policy once let an agent mint a broad owner bearer without a round trip.
+  crossing: agent-mcp -> owner-trusted
+  entrances: none
+  kinds: credential
+  checklist: capability-authorization declared as credential-mint gating
+  checklist: revalidated-permission dismissed: this rule decides whether a create needs a consent round trip; consent execution is a separate gate
+  checklist: message-authenticity dismissed: the credential is created locally, without an authenticated peer message
+  checklist: encrypted-storage dismissed: mint admission does not store the bearer; born-hashed secrets governs storage
+  checklist: key-rotation-compatibility dismissed: the rule classifies new grants, not rotation of existing grants
+  checklist: separation-of-duties dismissed: this rule requires owner consent but does not define actor roles
+- born-hashed secrets: A secret column stores only a digest of its minted bearer.
+  protects: secretColumn in entities/Hive/policy.ts
+  chokepoint: entities/Hive/hive.ts
+  over: all secret columns and create paths
+  via: born-hashed-secret totality
+  because: A stored bearer would remain usable after any owner read or export.
+  crossing: storage -> public-egress
+  entrances: none
+  kinds: credential, storage
+  checklist: scoped-reads dismissed: digest-only storage is independent of which owner read retrieves it
+  checklist: capability-authorization dismissed: mint admission is covered by credential-mint gating
+  checklist: revalidated-permission dismissed: the digest is made at creation, not at a later permission check
+  checklist: message-authenticity dismissed: bearer creation does not exchange a signed peer message
+  checklist: encrypted-storage dismissed: one-way hashing is the stored form; there is no decryption step
+  checklist: key-rotation-compatibility dismissed: this rule covers newly minted bearers, not rotation of an existing digest
+  checklist: input-validation declared as born-hashed secrets
+  checklist: revision-preservation dismissed: credential rows do not publish version-addressed revisions
+  checklist: separation-of-duties dismissed: the minted bearer has its own scope; this rule governs persistence only
+  checklist: commit-ordered-effects dismissed: hashing happens before the secret row commits
+  checklist: durable-dispatch-intent dismissed: minting and hashing are synchronous
+  checklist: declared-target-coverage declared as born-hashed secrets
+  checklist: completion-evidence dismissed: the mutation returns after the digest is stored
+- immutable-field enforcement: Kernel immutable fields cannot be changed after creation.
+  over: all fields declared immutable by the composed kernel hooks
+  via: IMMUTABLE-registry totality
+  because: An agent must not self-approve an invite, replay a token, or repoint a credential after validation.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage, credential
+  checklist: scoped-reads dismissed: this rule blocks writes to protected fields, not reads
+  checklist: capability-authorization dismissed: the caller is authorized before immutable field validation
+  checklist: revalidated-permission dismissed: immutability is unconditional after creation, regardless of later grants
+  checklist: message-authenticity dismissed: these are local row mutations, not signed peer messages
+  checklist: encrypted-storage dismissed: immutable field checks do not encrypt stored values
+  checklist: key-rotation-compatibility dismissed: the protected fields are frozen; key rotation is outside this rule
+  checklist: input-validation declared as immutable-field enforcement
+  checklist: revision-preservation dismissed: this rule rejects field changes rather than preserving revisions
+  checklist: separation-of-duties dismissed: it rejects every actor's change to a frozen field
+  checklist: commit-ordered-effects dismissed: rejection occurs before a mutation commits
+  checklist: durable-dispatch-intent dismissed: no deferred job is created by the check
+  checklist: declared-target-coverage declared as immutable-field enforcement
+  checklist: completion-evidence dismissed: rejection is synchronous
+- token-scope-grammar: A pattern-wide token scope is classified as broad.
+  over: all token resource kinds and scope prefix depths
+  via: broad-token scope-grammar totality
+  because: A read:entry:<pattern> prefix grants standing access and must require consent.
+  crossing: agent-mcp -> owner-trusted
+  entrances: none
+  kinds: credential
+  checklist: capability-authorization declared as token-scope-grammar
+  checklist: revalidated-permission dismissed: this classifier runs when a token is minted; scopeMatches checks use separately
+  checklist: message-authenticity dismissed: the scope string is local authorization data, not a peer message
+  checklist: encrypted-storage dismissed: token scope classification does not persist a secret
+  checklist: key-rotation-compatibility dismissed: the grammar does not rotate existing credentials
+  checklist: separation-of-duties dismissed: the grammar decides broad versus narrow grants, not actor roles
+- SSRF block-host coverage: Federation refuses non-public target hosts in every supported address encoding.
+  over: all blocked IPv4, IPv6, metadata, and local hostname classes
+  via: SSRF block-host totality
+  because: A missed encoding can reopen a path to cloud metadata or another private host.
+  crossing: owner-trusted -> federated
+  entrances: none
+  kinds: identity
+  checklist: capability-authorization dismissed: this rule validates a network destination, not a caller's grant
+  checklist: canonical-encoding declared as SSRF block-host coverage
+  checklist: identity-continuity dismissed: host classification is repeated for each target; no long-lived identity is assumed
+- sql-identifier quoting: Untrusted SQL identifiers are validated and quoted before interpolation.
+  protects: IDENTIFIER_RE in shared/core/constants.ts
+  chokepoint: quoteIdent in shared/core/sql.ts
+  over: all identifier grammar cases and data-engine identifier interpolation
+  via: quoteIdent — grammar
+  because: A raw identifier can inject SQL when validation and quoting are separate steps.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: encoding, storage
+  checklist: scoped-reads dismissed: quoting determines SQL syntax, not row visibility
+  checklist: encrypted-storage dismissed: identifier quoting does not encrypt stored values
+  checklist: key-rotation-compatibility dismissed: this boundary uses no key
+  checklist: input-validation declared as sql-identifier quoting
+  checklist: semantic-preservation declared as sql-identifier quoting
+  checklist: canonical-encoding declared as sql-identifier quoting
+  checklist: revision-preservation dismissed: this boundary does not manage revisions
+  checklist: commit-ordered-effects dismissed: identifier validation runs before SQL execution
+  checklist: durable-dispatch-intent dismissed: quoting does not enqueue work
+  checklist: declared-target-coverage declared as sql-identifier quoting
+  checklist: completion-evidence dismissed: validation is synchronous
+- instance-identity host: Generated capability URLs use the configured worker host over an inbound Host header.
+  over: all configured and observed host combinations
+  via: instance-identity host resolution
+  because: A spoofed inbound Host must not poison a URL returned to the owner.
+  crossing: public-egress -> owner-trusted
+  entrances: none
+  kinds: identity
+  checklist: capability-authorization dismissed: this rule selects a URL host after the capability has been granted
+  checklist: canonical-encoding dismissed: it selects a configured host; URL encoding is applied by the URL builder
+  checklist: identity-continuity declared as instance-identity host

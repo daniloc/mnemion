@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "concepts": [
+    {
+      "name": "hive",
+      "definition": "The one shared Mnemion store whose patterns and entries are available to its authenticated members; its identity is separate from the member acting in it."
+    },
+    {
+      "name": "pattern",
+      "definition": "An evolvable schema and organizing structure for one kind of Mnemion entry, with named facets, links, doctrine, and optional memory policy."
+    },
+    {
+      "name": "entry",
+      "definition": "One stored instance of a pattern, addressable by its pattern and id and retained through updates or archival."
+    },
+    {
+      "name": "facet",
+      "definition": "A typed, named dimension of a pattern whose value appears on each entry; user facets are separate from automatic kernel columns."
+    },
+    {
+      "name": "link",
+      "definition": "A stored relationship from one entry to another, with a label such as supersedes."
+    },
+    {
+      "name": "kernel pattern",
+      "definition": "A system-reserved pattern, usually named with a leading underscore, whose writes are governed by the kernel policy."
+    },
+    {
+      "name": "prime",
+      "definition": "Mnemion's context-based recall operation, which finds semantically relevant entries and expands their one-hop links."
+    },
+    {
+      "name": "memory policy",
+      "definition": "Per-pattern settings for recall decay, conflict advisories, and facets whose active values should be exclusive."
+    },
+    {
+      "name": "supersession",
+      "definition": "A labeled link by which a newer entry replaces an older one while preserving the older entry and its history."
+    },
+    {
+      "name": "publication",
+      "definition": "A declared public projection that queries a source pattern and renders current entries on each request."
+    },
+    {
+      "name": "ingress",
+      "definition": "A declared HTTP input endpoint that transforms incoming data into entries in an allowed target pattern."
+    },
+    {
+      "name": "federation",
+      "definition": "Cross-hive resolution of a Mnemion URI through an approved peer host, with host checks on redirects."
+    },
+    {
+      "name": "member",
+      "definition": "A person on the hive roster whose authenticated identity is carried separately from the hive identity and used for write attribution."
+    },
+    {
+      "name": "access token",
+      "definition": "A scoped bearer minted by Mnemion for remote access or narrow workflows; only its hash is stored and the raw value is shown once."
+    },
+    {
+      "name": "doctrine",
+      "definition": "A pattern's required prose guidance for when and how agents should create entries and preserve its meaning."
+    },
+    {
+      "name": "consent round-trip",
+      "definition": "The MCP confirmation exchange that binds a proposed sensitive write to explicit owner approval before the write proceeds."
+    },
+    {
+      "name": "view spec",
+      "definition": "An agent-authored _views entry that chooses a fixed UI layout and maps pattern facets to display roles."
+    }
+  ]
+}

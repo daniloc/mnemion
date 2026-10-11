@@ -12,7 +12,8 @@
 // create_pattern reserves the `_` namespace here so a user pattern can never
 // collide with the kernel namespace that isKernelPattern keys on.
 
-import { PRODUCT_NAME, uri, IDENTIFIER_RE } from "../../shared/core/constants";
+import { PRODUCT_NAME, uri } from "../../shared/core/constants";
+import { quoteIdent } from "../../shared/core/sql";
 import { ensureAuditTriggers } from "./schema";
 import { isKernelPattern } from "./policy";
 import { FACET_RESERVED_COLUMNS, USER_OVERRIDABLE_KERNEL_COLUMNS } from "./kernel-columns";
@@ -45,8 +46,9 @@ const PATTERN_CLASSES = new Set(["knowledge", "dataset"]);
 function validateName(kind: string, name: string): string | null {
   if (!name || name.length > LIMITS.NAME_MAX_LEN)
     return `${kind} name must be 1–${LIMITS.NAME_MAX_LEN} characters, got ${name?.length ?? 0}`;
-  if (!IDENTIFIER_RE.test(name))
+  try { quoteIdent(name); } catch {
     return `${kind} name must be lowercase, start with a letter, and contain only a-z, 0-9, hyphens, underscores. Got: "${name}"`;
+  }
   return null;
 }
 
@@ -92,7 +94,7 @@ function facetToIndexEntry(a: any): IndexFacetEntry {
 }
 
 function facetToDDL(a: any): string {
-  let col = `"${a.name}" ${SQLITE_TYPE_MAP[a.type]}`;
+  let col = `${quoteIdent(a.name)} ${SQLITE_TYPE_MAP[a.type]}`;
   if (a.required) col += " NOT NULL";
   if (a.default_value != null) {
     col += typeof a.default_value === "string"
@@ -101,7 +103,7 @@ function facetToDDL(a: any): string {
       ? ` DEFAULT '${a.default_value.replace(/'/g, "''")}'`
       : ` DEFAULT ${Number(a.default_value)}`;
   }
-  if (a.links) col += ` REFERENCES "${a.links.pattern}"("${a.links.facet || 'id'}")`;
+  if (a.links) col += ` REFERENCES ${quoteIdent(a.links.pattern)}(${quoteIdent(a.links.facet || 'id')})`;
   return col;
 }
 
@@ -175,7 +177,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         "updated_by TEXT",
         "archived_at TEXT",
       ];
-      db.exec(`CREATE TABLE "${change.pattern_name}" (
+      db.exec(`CREATE TABLE ${quoteIdent(change.pattern_name)} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ${colDefs.join(",\n        ")},
         ${kernelCols.join(",\n        ")}
@@ -258,13 +260,13 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     },
     apply(change, { db }) {
       for (const a of change.facets) {
-        let ddl = `ALTER TABLE "${change.pattern_name}" ADD COLUMN ${facetToDDL(a)}`;
+        let ddl = `ALTER TABLE ${quoteIdent(change.pattern_name)} ADD COLUMN ${facetToDDL(a)}`;
         db.exec(ddl);
       }
       registerFacets(db, change.pattern_name, change.facets);
-      db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_insert"`);
-      db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_update"`);
-      db.exec(`DROP TRIGGER IF EXISTS "_audit_${change.pattern_name}_delete"`);
+      db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${change.pattern_name}_insert`)}`);
+      db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${change.pattern_name}_update`)}`);
+      db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${change.pattern_name}_delete`)}`);
       ensureAuditTriggers(db, change.pattern_name);
     },
   },

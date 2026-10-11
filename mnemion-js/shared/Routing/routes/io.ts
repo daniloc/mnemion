@@ -5,18 +5,33 @@ import { logWarn } from "../../core/log";
 
 const DOCUMENT_BYTES = 26_214_400; // 25 MB — mirrors data.LIMITS.DOCUMENT_BYTES
 
-// Early cap on buffered TEXT bodies (/i ingress, /upload). The downstream entry/
-// facet limit is 1 MB; this just bounds Worker memory before we buffer the body and
-// run the transform DSL, mirroring the 25 MB up-front cap on /f document uploads.
-// Rejects on Content-Length when present (the realistic large POST); a chunked body
-// with no Content-Length is still bounded by Cloudflare's 100 MB request ceiling.
+// Cap request bodies before buffering, including chunked requests that omit
+// Content-Length. The downstream entry/facet limit is 1 MB.
 const MAX_TEXT_BODY = 4_194_304; // 4 MB
-function bodyTooLarge(ctx: RouteContext): Response | null {
-  const cl = Number(ctx.request.headers.get("content-length"));
-  if (Number.isFinite(cl) && cl > MAX_TEXT_BODY) {
-    return Response.json({ error: true, message: `Body too large: exceeds the ${MAX_TEXT_BODY / 1024 / 1024}MB limit for this endpoint.` }, { status: 413 });
+export async function readLimitedBody(request: Request, maxBytes: number): Promise<ArrayBuffer | null> {
+  const length = request.headers.get("content-length");
+  if (length !== null && Number(length) > maxBytes) return null;
+  if (!request.body) return new ArrayBuffer(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
   }
-  return null;
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes.buffer;
 }
 
 // === Shared entries: GET /o/entry/:pattern/:id ===
@@ -270,7 +285,6 @@ export const servePublication: RouteHandler = async (ctx) => {
 // === Ingress: POST /i/:path — create entries via _inputs ===
 
 export const receiveInput: RouteHandler = async (ctx) => {
-  const big = bodyTooLarge(ctx); if (big) return big;
   const limited = await rateLimit(ctx.env.RL_INGRESS, `i:${ctx.params.path}`); if (limited) return limited;
   const visRaw = await ctx.hive.getInputVisibility(ctx.params.path);
   const vis = JSON.parse(visRaw);
@@ -290,7 +304,9 @@ export const receiveInput: RouteHandler = async (ctx) => {
     if (denied) return denied;
   }
 
-  const body = await ctx.request.text();
+  const bytes = await readLimitedBody(ctx.request, MAX_TEXT_BODY);
+  if (!bytes) return Response.json({ error: true, message: "Body too large: exceeds the 4MB limit for this endpoint." }, { status: 413 });
+  const body = new TextDecoder().decode(bytes);
   const headersObj: Record<string, string> = {};
   ctx.request.headers.forEach((v, k) => { headersObj[k] = v; });
   const queryObj: Record<string, string> = {};
@@ -317,11 +333,13 @@ export const receiveInput: RouteHandler = async (ctx) => {
 // === Upload: POST /upload/:token — capability URL ===
 
 export const upload: RouteHandler = async (ctx) => {
-  const big = bodyTooLarge(ctx); if (big) return big;
-  const content = await ctx.request.text();
+  const bytes = await readLimitedBody(ctx.request, MAX_TEXT_BODY);
+  if (!bytes) return Response.json({ error: true, message: "Body too large: exceeds the 4MB limit for this endpoint." }, { status: 413 });
+  const content = new TextDecoder().decode(bytes);
   const result = await ctx.hive.consumeUpload(ctx.params.token, content);
   const parsed = JSON.parse(result);
-  return Response.json(parsed, { status: parsed.error ? 400 : 200 });
+  if (parsed.error) return Response.json(parsed, { status: 400 });
+  return Response.json({ uploaded: true, bytes: parsed.bytes, target: parsed.target, mode: parsed.mode });
 };
 
 // === Document upload: POST /f/:token — stream a file to R2 ===
@@ -333,10 +351,10 @@ export const uploadDocument: RouteHandler = async (ctx) => {
       { status: 503 }
     );
   }
-  const body = await ctx.request.arrayBuffer();
-  if (body.byteLength > DOCUMENT_BYTES) {
+  const body = await readLimitedBody(ctx.request, DOCUMENT_BYTES);
+  if (!body) {
     return Response.json(
-      { error: true, message: `File too large: ${Math.round(body.byteLength / 1024 / 1024)}MB exceeds the 25MB limit` },
+      { error: true, message: "File too large: exceeds the 25MB limit" },
       { status: 413 }
     );
   }
@@ -374,7 +392,7 @@ export const uploadDocument: RouteHandler = async (ctx) => {
     await ctx.hive.recordExtraction(id, "", "unsupported");
   }
 
-  return Response.json(parsed, { status: 201 });
+  return Response.json({ uploaded: true, id, bytes: parsed.bytes, content_type: parsed.content_type }, { status: 201 });
 };
 
 // === Document serve: GET /f/:id — stream a file from R2, gated by visibility ===

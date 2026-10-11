@@ -86,7 +86,7 @@ export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
 /** Dev auto-approve is OPT-IN, never the default. A missing MNEMION_SECRET alone
  *  used to mean "auto-approve every request as the owner" — fail-OPEN: a secretless
  *  PRODUCTION deploy served every owner-only API unauthenticated. It now applies
- *  ONLY when DEV is also explicitly set (the dev script + [env.test] set it), so an
+ *  ONLY when DEV is also explicitly set by a local dev command, so an
  *  unconfigured instance fails CLOSED. "Unconfigured" means no access, not all access. */
 export function isDevAutoApprove(env: { MNEMION_SECRET?: unknown; DEV?: unknown }): boolean {
   return !env.MNEMION_SECRET && env.DEV === "true";
@@ -261,6 +261,72 @@ async function validateSession(request: Request, secret: string, kv: KVNamespace
   }
 }
 
+// === OAuth bearer (native clients) ===
+
+/** The slice of the workers-oauth-provider helpers the gate needs. The provider
+ *  injects `env.OAUTH_PROVIDER` into every non-/mcp request it hands to `handle()`. */
+interface OAuthHelpers {
+  unwrapToken(token: string): Promise<{
+    audience?: string | string[];
+    grant: { props?: { hiveId?: string; actor?: string } };
+  } | null>;
+}
+
+// Mirrors the provider's own /mcp audience rule (RFC 8707): a token bound to a
+// resource is only good at that resource's origin + path prefix. A token minted
+// for `https://host/mcp` is refused at `/api`; an unbound token is good anywhere
+// on the instance.
+function audienceMatches(requestUrl: URL, audience: string): boolean {
+  try {
+    const aud = new URL(audience);
+    if (aud.origin !== requestUrl.origin) return false;
+    if (aud.search && aud.search !== requestUrl.search) return false;
+    if (aud.pathname === "/" || aud.pathname === "") return true;
+    return requestUrl.pathname === aud.pathname || requestUrl.pathname.startsWith(aud.pathname + "/");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * OAuth bearer auth for Auth.SESSION routes — the native-client twin of the
+ * session cookie. Returns `undefined` when the request carries no Bearer header
+ * (fall through to the cookie), `null` when it carries one that must be refused,
+ * or the authenticated member.
+ *
+ * Fails closed at every step: an unparseable/expired/unknown token, a grant for
+ * another hive, an audience bound elsewhere, or a member suspended/archived since
+ * the grant was issued (re-checked per request, so roster revocation reaches
+ * native sessions immediately rather than at access-token expiry).
+ */
+async function validateBearer(
+  request: Request,
+  url: URL,
+  env: Env,
+  hive: DurableObjectStub<HiveDO>,
+): Promise<string | null | undefined> {
+  const header = request.headers.get("Authorization");
+  if (!header?.startsWith("Bearer ")) return undefined;
+  const provider = (env as Env & { OAUTH_PROVIDER?: OAuthHelpers }).OAUTH_PROVIDER;
+  if (!provider) return null;
+  let token;
+  try {
+    token = await provider.unwrapToken(header.slice(7));
+  } catch {
+    return null;
+  }
+  if (!token) return null;
+  const props = token.grant.props ?? {};
+  if (props.hiveId !== HIVE_ID) return null;
+  if (token.audience) {
+    const auds = Array.isArray(token.audience) ? token.audience : [token.audience];
+    if (!auds.some((a) => audienceMatches(url, a))) return null;
+  }
+  const actor = props.actor || OWNER_ACTOR;
+  if (!(await hive.isMemberActive(actor))) return null;
+  return actor;
+}
+
 // === Router ===
 
 interface CompiledRoute {
@@ -315,10 +381,27 @@ export function createRouter(routes: Route[]) {
           });
         }
       }
+      const hiveId = env.MNEMION_HIVE.idFromName(HIVE_ID);
+      const hive = env.MNEMION_HIVE.get(hiveId) as DurableObjectStub<HiveDO>;
+
       // Default actor (dev mode, or non-session routes) is the owner sentinel;
-      // a validated browser session resolves the actual member.
+      // a validated browser session or OAuth bearer resolves the actual member.
       let actor = OWNER_ACTOR;
-      if (auth === Auth.SESSION) {
+      // A presented Bearer is decisive: valid → that member, invalid → 401 (never
+      // a silent fallback to the cookie or to dev auto-approve). Checked only on a
+      // configured or explicit-dev instance; an unconfigured one stays closed below.
+      const bearer = auth === Auth.SESSION && (env.MNEMION_SECRET || isDevAutoApprove(env))
+        ? await validateBearer(request, url, env, hive)
+        : undefined;
+      if (bearer === null) {
+        return Response.json(
+          { error: "invalid_token" },
+          { status: 401, headers: { "WWW-Authenticate": `Bearer realm="${PRODUCT_NAME}", error="invalid_token"` } },
+        );
+      }
+      if (bearer) {
+        actor = bearer;
+      } else if (auth === Auth.SESSION) {
         if (env.MNEMION_SECRET) {
           const sessionActor = await validateSession(request, env.MNEMION_SECRET, env.OAUTH_KV);
           if (!sessionActor) {
@@ -352,10 +435,6 @@ export function createRouter(routes: Route[]) {
         const failed = Object.entries(route.where).some(([k, re]) => !re.test(params[k] ?? ""));
         if (failed) continue;
       }
-
-      // Build context
-      const hiveId = env.MNEMION_HIVE.idFromName(HIVE_ID);
-      const hive = env.MNEMION_HIVE.get(hiveId) as DurableObjectStub<HiveDO>;
 
       // Per-route error boundary (defense-in-depth beneath handle()'s catch):
       // a throw from any matched handler is logged with route attribution and

@@ -100,6 +100,10 @@ export interface Feature {
    *  uses it in collision diagnostics. */
   name: string;
 
+  /** Patterns whose mutations require a post-mutate effect. This declaration is
+   *  independent of `effects` so the totality oracle catches an omitted handler. */
+  effectPatterns?: readonly string[];
+
   /** Post-mutate side effects, keyed by pattern name. WIRED: folded into
    *  PATTERN_EFFECTS by composeEffects(). */
   effects?: Record<string, PatternEffect>;

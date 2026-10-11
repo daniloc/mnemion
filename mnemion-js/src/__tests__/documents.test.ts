@@ -98,8 +98,7 @@ describe("consumeDocumentUpload", () => {
     const key = "documents/abc123";
 
     const rec = JSON.parse(await store.consumeDocumentUpload(doc.upload_token, key, "application/pdf", 4096));
-    expect(rec.uploaded).toBe(true);
-    expect(rec.bytes).toBe(4096);
+    expect(rec).toEqual({ uploaded: true, id: doc.entry.id, bytes: 4096, content_type: "application/pdf" });
 
     const resolved = JSON.parse(await store.resolveDocument(doc.entry.id));
     expect(resolved.found).toBe(true);

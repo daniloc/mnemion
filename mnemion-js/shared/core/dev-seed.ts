@@ -4,6 +4,7 @@
 // Uses raw SQL (runs inside blockConcurrencyWhile during DO construction).
 
 import { PRODUCT_NAME, uri } from "./constants";
+import { quoteIdent } from "./sql";
 import { ensureAuditTriggers } from "../../entities/Hive/schema";
 
 type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one: () => any } };
@@ -13,12 +14,12 @@ type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one
 function pat(db: DB, name: string, desc: string, doctrine: string, facets: { name: string; type: string; required?: boolean; ref?: string; format?: string }[]) {
   const sqlTypes: Record<string, string> = { text: "TEXT", integer: "INTEGER", number: "REAL", boolean: "INTEGER", datetime: "TEXT", select: "TEXT" };
   const colDefs = facets.map(f => {
-    let col = `"${f.name}" ${sqlTypes[f.type] || "TEXT"}`;
+    let col = `${quoteIdent(f.name)} ${sqlTypes[f.type] || "TEXT"}`;
     if (f.required) col += " NOT NULL";
-    if (f.ref) col += ` REFERENCES "${f.ref}"("id")`;
+    if (f.ref) col += ` REFERENCES ${quoteIdent(f.ref)}("id")`;
     return col;
   });
-  db.exec(`CREATE TABLE "${name}" (
+  db.exec(`CREATE TABLE ${quoteIdent(name)} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ${colDefs.join(",\n    ")},
     version INTEGER NOT NULL DEFAULT 0,
@@ -38,9 +39,9 @@ function pat(db: DB, name: string, desc: string, doctrine: string, facets: { nam
 
 function ins(db: DB, table: string, data: Record<string, unknown>): number {
   const keys = Object.keys(data);
-  const cols = keys.map(k => `"${k}"`).join(", ");
+  const cols = keys.map(k => quoteIdent(k)).join(", ");
   const placeholders = keys.map(() => "?").join(", ");
-  db.exec(`INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`, ...keys.map(k => data[k]));
+  db.exec(`INSERT INTO ${quoteIdent(table)} (${cols}) VALUES (${placeholders})`, ...keys.map(k => data[k]));
   return (db.exec(`SELECT last_insert_rowid() as id`).one() as { id: number }).id;
 }
 

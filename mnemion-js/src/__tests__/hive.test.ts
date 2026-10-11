@@ -1258,8 +1258,13 @@ describe("Access Tokens", () => {
     });
 
     const result = JSON.parse(await store.consumeUpload(token.entry.token, "new content"));
-    expect(result.uploaded).toBe(true);
-    expect(result.entry.body).toBe("new content");
+    expect(result).toEqual({
+      uploaded: true, bytes: 11,
+      target: { pattern: "upload-replace", id: entry.entry.id, facet: "body" },
+      mode: "replace",
+    });
+    const rows = JSON.parse(await store.query("upload-replace", JSON.stringify([`id=${entry.entry.id}`]), "", "", 1, false, "", ""));
+    expect(rows.entries[0].body).toBe("new content");
   });
 
   it("consumes upload and appends content (append mode)", async () => {
@@ -1275,8 +1280,13 @@ describe("Access Tokens", () => {
     });
 
     const result = JSON.parse(await store.consumeUpload(token.entry.token, "line2\n"));
-    expect(result.uploaded).toBe(true);
-    expect(result.entry.log).toBe("line1\nline2\n");
+    expect(result).toEqual({
+      uploaded: true, bytes: 6,
+      target: { pattern: "upload-append", id: entry.entry.id, facet: "log" },
+      mode: "append",
+    });
+    const rows = JSON.parse(await store.query("upload-append", JSON.stringify([`id=${entry.entry.id}`]), "", "", 1, false, "", ""));
+    expect(rows.entries[0].log).toBe("line1\nline2\n");
   });
 
   it("rejects already-consumed tokens", async () => {

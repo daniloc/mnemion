@@ -11,7 +11,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.claude/coherence-hook\" SubagentStart"
+            "command": "repo=$(git -C \"${CLAUDE_PROJECT_DIR:-$PWD}\" rev-parse --show-toplevel 2>/dev/null); coherence() { if [ -z \"$repo\" ]; then exit 0; fi; cli=\"$repo/mnemion-js/node_modules/@posthog/coherence/dist/cli.js\"; if [ ! -f \"$cli\" ]; then if [ \"$2\" = SessionStart ]; then printf '%s\\n' '{\"systemMessage\":\"Coherence is configured but dependencies are not installed in mnemion-js.\"}'; fi; exit 0; fi; cd \"$repo/mnemion-js\" || exit 78; /bin/sh \"$repo/scripts/coherence-root-hook.sh\" \"$cli\" \"$@\"; }; coherence hook SubagentStart",
+            "timeout": 60
           }
         ]
       }
@@ -21,7 +22,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.claude/coherence-hook\" SessionStart"
+            "command": "repo=$(git -C \"${CLAUDE_PROJECT_DIR:-$PWD}\" rev-parse --show-toplevel 2>/dev/null); coherence() { if [ -z \"$repo\" ]; then exit 0; fi; cli=\"$repo/mnemion-js/node_modules/@posthog/coherence/dist/cli.js\"; if [ ! -f \"$cli\" ]; then if [ \"$2\" = SessionStart ]; then printf '%s\\n' '{\"systemMessage\":\"Coherence is configured but dependencies are not installed in mnemion-js.\"}'; fi; exit 0; fi; cd \"$repo/mnemion-js\" || exit 78; /bin/sh \"$repo/scripts/coherence-root-hook.sh\" \"$cli\" \"$@\"; }; coherence hook SessionStart",
+            "timeout": 60
           }
         ]
       }
@@ -31,7 +33,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.claude/coherence-hook\" SubagentStop"
+            "command": "repo=$(git -C \"${CLAUDE_PROJECT_DIR:-$PWD}\" rev-parse --show-toplevel 2>/dev/null); coherence() { if [ -z \"$repo\" ]; then exit 0; fi; cli=\"$repo/mnemion-js/node_modules/@posthog/coherence/dist/cli.js\"; if [ ! -f \"$cli\" ]; then if [ \"$2\" = SessionStart ]; then printf '%s\\n' '{\"systemMessage\":\"Coherence is configured but dependencies are not installed in mnemion-js.\"}'; fi; exit 0; fi; cd \"$repo/mnemion-js\" || exit 78; /bin/sh \"$repo/scripts/coherence-root-hook.sh\" \"$cli\" \"$@\"; }; coherence hook SubagentStop",
+            "timeout": 60
           }
         ]
       }
@@ -41,18 +44,42 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.claude/coherence-hook\" Stop"
+            "command": "repo=$(git -C \"${CLAUDE_PROJECT_DIR:-$PWD}\" rev-parse --show-toplevel 2>/dev/null); coherence() { if [ -z \"$repo\" ]; then exit 0; fi; cli=\"$repo/mnemion-js/node_modules/@posthog/coherence/dist/cli.js\"; if [ ! -f \"$cli\" ]; then if [ \"$2\" = SessionStart ]; then printf '%s\\n' '{\"systemMessage\":\"Coherence is configured but dependencies are not installed in mnemion-js.\"}'; fi; exit 0; fi; cd \"$repo/mnemion-js\" || exit 78; /bin/sh \"$repo/scripts/coherence-root-hook.sh\" \"$cli\" \"$@\"; }; coherence hook Stop",
+            "timeout": 60
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.claude/coherence-hook\" PostToolUse"
+            "command": "repo=$(git -C \"${CLAUDE_PROJECT_DIR:-$PWD}\" rev-parse --show-toplevel 2>/dev/null); coherence() { if [ -z \"$repo\" ]; then exit 0; fi; cli=\"$repo/mnemion-js/node_modules/@posthog/coherence/dist/cli.js\"; if [ ! -f \"$cli\" ]; then if [ \"$2\" = SessionStart ]; then printf '%s\\n' '{\"systemMessage\":\"Coherence is configured but dependencies are not installed in mnemion-js.\"}'; fi; exit 0; fi; cd \"$repo/mnemion-js\" || exit 78; /bin/sh \"$repo/scripts/coherence-root-hook.sh\" \"$cli\" \"$@\"; }; coherence hook PostToolUse",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "repo=$(git -C \"${CLAUDE_PROJECT_DIR:-$PWD}\" rev-parse --show-toplevel 2>/dev/null); coherence() { if [ -z \"$repo\" ]; then exit 0; fi; cli=\"$repo/mnemion-js/node_modules/@posthog/coherence/dist/cli.js\"; if [ ! -f \"$cli\" ]; then if [ \"$2\" = SessionStart ]; then printf '%s\\n' '{\"systemMessage\":\"Coherence is configured but dependencies are not installed in mnemion-js.\"}'; fi; exit 0; fi; cd \"$repo/mnemion-js\" || exit 78; /bin/sh \"$repo/scripts/coherence-root-hook.sh\" \"$cli\" \"$@\"; }; coherence hook UserPromptSubmit",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "repo=$(git -C \"${CLAUDE_PROJECT_DIR:-$PWD}\" rev-parse --show-toplevel 2>/dev/null); coherence() { if [ -z \"$repo\" ]; then exit 0; fi; cli=\"$repo/mnemion-js/node_modules/@posthog/coherence/dist/cli.js\"; if [ ! -f \"$cli\" ]; then if [ \"$2\" = SessionStart ]; then printf '%s\\n' '{\"systemMessage\":\"Coherence is configured but dependencies are not installed in mnemion-js.\"}'; fi; exit 0; fi; cd \"$repo/mnemion-js\" || exit 78; /bin/sh \"$repo/scripts/coherence-root-hook.sh\" \"$cli\" \"$@\"; }; coherence hook PreToolUse",
+            "timeout": 60
           }
         ]
       }
