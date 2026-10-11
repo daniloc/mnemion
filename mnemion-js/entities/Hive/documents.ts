@@ -45,8 +45,7 @@ export async function consumeDocumentUpload(
   cred.consumeToken(ctx.db, accessToken.id);
   ctx.broadcast(["_documents"]);
 
-  const entry = ctx.db.exec(`SELECT * FROM "_documents" WHERE id = ?`, documentId).one();
-  return JSON.stringify({ uploaded: true, id: documentId, bytes: size, content_type: contentType, entry });
+  return JSON.stringify({ uploaded: true, id: documentId, bytes: size, content_type: contentType });
 }
 
 /** Record extracted text + status, then re-embed so the text joins prime recall. */

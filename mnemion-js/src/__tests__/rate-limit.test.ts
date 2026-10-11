@@ -5,6 +5,7 @@
 // boundary, and must never take down a deploy/test env that doesn't provide it.
 import { describe, it, expect } from "vitest";
 import { rateLimit } from "../../shared/Routing/router";
+import wranglerToml from "../../wrangler.toml?raw";
 
 const stub = (outcome: { success: boolean } | Error) =>
   ({ limit: async () => { if (outcome instanceof Error) throw outcome; return outcome; } } as unknown as RateLimit);
@@ -27,5 +28,16 @@ describe("rateLimit guard", () => {
 
   it("fails OPEN (null) when the limiter throws", async () => {
     expect(await rateLimit(stub(new Error("limiter unavailable")), "k")).toBeNull();
+  });
+});
+
+describe("deployed public rate-limit bindings", () => {
+  it("declares ingress and public limiters in every deployed environment", () => {
+    const [production, test] = wranglerToml.split("[env.test]");
+    expect(test).toBeDefined();
+    for (const config of [production, test]) {
+      expect(config).toMatch(/name\s*=\s*"RL_INGRESS"/);
+      expect(config).toMatch(/name\s*=\s*"RL_PUBLIC"/);
+    }
   });
 });

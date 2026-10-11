@@ -12,7 +12,8 @@
 // and they fail loudly in tests on rename.
 
 import { DurableObject } from "cloudflare:workers";
-import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR, IDENTIFIER_RE } from "../../shared/core/constants";
+import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/constants";
+import { quoteIdent } from "../../shared/core/sql";
 import { evaluateMapping } from "./transform";
 import { initializeSchema } from "./schema";
 import { KERNEL_COLUMN_SET, STRUCTURAL_KERNEL_COLUMNS } from "./kernel-columns";
@@ -259,7 +260,7 @@ export class HiveDO extends DurableObject {
 
     try {
       const rows = this.db.exec(
-        `SELECT * FROM "${patternName}" WHERE id = ?`,
+        `SELECT * FROM ${quoteIdent(patternName)} WHERE id = ?`,
         entryId
       ).toArray();
       if (rows.length === 0) return this.errorJson(`Entry ${entryId} not found in "${patternName}"`);
@@ -359,7 +360,7 @@ export class HiveDO extends DurableObject {
         // literal pattern/field only — effects pass constants; guard against any drift.
         if (!/^[a-z_]+$/i.test(pattern) || !/^[a-z_]+$/i.test(field)) return null;
         try {
-          const r = this.db.exec(`SELECT ${field} FROM "${pattern}" WHERE id = ?`, id).toArray() as any[];
+          const r = this.db.exec(`SELECT ${quoteIdent(field)} FROM ${quoteIdent(pattern)} WHERE id = ?`, id).toArray() as any[];
           return r[0]?.[field] ?? null;
         } catch { return null; }
       },
@@ -651,7 +652,10 @@ export class HiveDO extends DurableObject {
     // target_pattern / target_facet are interpolated as SQL identifiers below.
     // They were validated when the token was created, but re-check here so a
     // malformed/legacy constraint can never break out of the identifier quoting.
-    if (typeof constraints.target_pattern !== "string" || !IDENTIFIER_RE.test(constraints.target_pattern) || !this.patternExists(constraints.target_pattern))
+    let targetTable: string;
+    try { targetTable = quoteIdent(constraints.target_pattern); }
+    catch { return this.errorJson("Upload token has an invalid target pattern"); }
+    if (!this.patternExists(constraints.target_pattern))
       return this.errorJson("Upload token has an invalid target pattern");
     // Uploads write user patterns only. consumeUpload uses raw UPDATE (not
     // executeMutate), so it must enforce the kernel/internal-write boundary
@@ -659,8 +663,9 @@ export class HiveDO extends DurableObject {
     // closes the _web_cache / _system_docs poisoning path directly.
     if (!isValidWriteTarget(constraints.target_pattern))
       return this.errorJson("Upload token has an invalid target pattern");
-    if (typeof constraints.target_facet !== "string" || !IDENTIFIER_RE.test(constraints.target_facet))
-      return this.errorJson("Upload token has an invalid target facet");
+    let targetFacet: string;
+    try { targetFacet = quoteIdent(constraints.target_facet); }
+    catch { return this.errorJson("Upload token has an invalid target facet"); }
 
     const contentBytes = new TextEncoder().encode(content).length;
     if (contentBytes > data.LIMITS.ENTRY_BYTES)
@@ -669,12 +674,12 @@ export class HiveDO extends DurableObject {
     try {
       if (constraints.mode === "append") {
         this.db.exec(
-          `UPDATE "${constraints.target_pattern}" SET "${constraints.target_facet}" = COALESCE("${constraints.target_facet}", '') || ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+          `UPDATE ${targetTable} SET ${targetFacet} = COALESCE(${targetFacet}, '') || ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
           content, constraints.target_id
         );
       } else {
         this.db.exec(
-          `UPDATE "${constraints.target_pattern}" SET "${constraints.target_facet}" = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
+          `UPDATE ${targetTable} SET ${targetFacet} = ?, updated_at = datetime('now') WHERE id = ? AND archived_at IS NULL`,
           content, constraints.target_id
         );
       }
@@ -688,7 +693,7 @@ export class HiveDO extends DurableObject {
 
       if (this.hasKernelVersion(constraints.target_pattern)) {
         try {
-          this.db.exec(`UPDATE "${constraints.target_pattern}" SET version = version + 1 WHERE id = ?`, constraints.target_id);
+          this.db.exec(`UPDATE ${targetTable} SET version = version + 1 WHERE id = ?`, constraints.target_id);
         } catch { /* No version column — fine */ }
       }
     } catch (err: any) {
@@ -700,16 +705,12 @@ export class HiveDO extends DurableObject {
 
     cred.consumeToken(this.db, accessToken.id);
 
-    const record = this.db.exec(
-      `SELECT * FROM "${constraints.target_pattern}" WHERE id = ?`, constraints.target_id
-    ).one();
-
     this.broadcastChange([constraints.target_pattern]);
 
     return JSON.stringify({
       uploaded: true, bytes: contentBytes,
       target: { pattern: constraints.target_pattern, id: constraints.target_id, facet: constraints.target_facet },
-      mode: constraints.mode, entry: record,
+      mode: constraints.mode,
     }, null, 2);
   }
 
@@ -886,7 +887,7 @@ export class HiveDO extends DurableObject {
   async getEntryLabel(pattern: string, id: number): Promise<string> {
     if (!this.patternExists(pattern)) return JSON.stringify({ label: `#${id}` });
     try {
-      const row = this.db.exec(`SELECT * FROM "${pattern}" WHERE id = ? AND archived_at IS NULL`, id).toArray()[0];
+      const row = this.db.exec(`SELECT * FROM ${quoteIdent(pattern)} WHERE id = ? AND archived_at IS NULL`, id).toArray()[0];
       if (!row) return JSON.stringify({ label: `#${id}`, missing: true });
       const facets = this.db.exec(`SELECT name, type FROM _fields WHERE object_name = ? ORDER BY id`, pattern).toArray() as any[];
       return JSON.stringify({ label: deriveLabel(row as any, facets) });
@@ -1078,7 +1079,7 @@ export class HiveDO extends DurableObject {
       for (const obj of objs) {
         try {
           const r = this.db.exec(
-            `SELECT COUNT(*) as c FROM "${obj.name}" WHERE archived_at IS NULL`
+            `SELECT COUNT(*) as c FROM ${quoteIdent(obj.name)} WHERE archived_at IS NULL`
           ).one() as { c: number };
           patternDir.push({ name: obj.name, description: obj.description, entries: r.c });
         } catch {
@@ -1191,7 +1192,7 @@ export class HiveDO extends DurableObject {
     for (const pat of patterns) {
       try {
         const ids = this.db.exec(
-          `SELECT id FROM "${pat.name}" WHERE archived_at IS NULL`
+          `SELECT id FROM ${quoteIdent(pat.name)} WHERE archived_at IS NULL`
         ).toArray() as { id: number }[];
         for (const row of ids) pending.push({ pattern: pat.name, id: row.id });
       } catch { /* table may not exist yet */ }
@@ -1232,7 +1233,7 @@ export class HiveDO extends DurableObject {
   private entryExists(pattern: string, id: number): boolean {
     try {
       return this.db.exec(
-        `SELECT 1 FROM "${pattern}" WHERE id = ? AND archived_at IS NULL`, id
+        `SELECT 1 FROM ${quoteIdent(pattern)} WHERE id = ? AND archived_at IS NULL`, id
       ).toArray().length > 0;
     } catch { return false; }
   }
@@ -1343,7 +1344,7 @@ export class HiveDO extends DurableObject {
     // All entries (including archived, for completeness). seal: export is a raw
     // SELECT that bypasses the engine read-guard, so route rows through the sieve —
     // a sensitive column (token digest, r2_key, passkey material) never leaves via export.
-    const entries = sealAll(patternName, this.db.exec(`SELECT * FROM "${patternName}" ORDER BY id`).toArray() as any[]);
+    const entries = sealAll(patternName, this.db.exec(`SELECT * FROM ${quoteIdent(patternName)} ORDER BY id`).toArray() as any[]);
 
     // Links involving this pattern
     try {

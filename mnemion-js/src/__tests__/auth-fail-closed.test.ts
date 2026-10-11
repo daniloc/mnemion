@@ -3,13 +3,20 @@
 //
 // The old default — `!MNEMION_SECRET` ⇒ dev mode ⇒ auto-approve — was fail-OPEN: a
 // secretless PRODUCTION deploy served `/api/*`, `/export`, `/ws` to anyone,
-// unauthenticated. Now auto-approve is opt-IN (DEV=true, set by the dev scripts +
-// [env.test]); absence of configuration means NO access, not ALL access. The vitest
+// unauthenticated. Now auto-approve is opt-IN (DEV=true, set by local dev scripts);
+// absence of configuration means NO access, not ALL access. The vitest
 // worker env runs with neither MNEMION_SECRET nor DEV — i.e. the unconfigured case —
 // so these Auth.SESSION routes must lock down here.
 import { SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import { isDevAutoApprove } from "../../shared/Routing/router";
+import wranglerConfig from "../../wrangler.toml?raw";
+
+describe("deployable environment auth fails closed", () => {
+  it("never publishes DEV=true in wrangler configuration", () => {
+    expect(wranglerConfig).not.toMatch(/^\s*DEV\s*=\s*(?:"true"|true)\s*$/m);
+  });
+});
 
 describe("unconfigured auth fails closed", () => {
   it("isDevAutoApprove requires BOTH no-secret AND an explicit DEV=true", () => {
@@ -41,12 +48,19 @@ describe("unconfigured auth fails closed", () => {
     expect(reg.status, "DCR should succeed").toBeLessThan(300);
     const { client_id } = (await reg.json()) as { client_id: string };
 
+    const verifier = "mnemion-test-pkce-verifier-with-sufficient-entropy-0123456789";
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+    const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
     const q = new URLSearchParams({
       response_type: "code",
       client_id,
       redirect_uri: "https://client.example/cb",
       scope: "*",
       state: "xyz",
+      code_challenge: challenge,
+      code_challenge_method: "S256",
     });
     const res = await SELF.fetch(`https://test.local/authorize?${q}`, { redirect: "manual" });
 

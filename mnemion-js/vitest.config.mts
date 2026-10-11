@@ -1,10 +1,8 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
-// Migrated to @cloudflare/vitest-pool-workers v0.16 (vitest 4): the pool is now a
-// Vite plugin (`cloudflareTest`) rather than `poolOptions`, and per-test isolated
-// storage (DO SQLite rollback between tests) is built in — the old
-// `isolatedStorage: true` flag was removed.
+// Cloudflare's Vitest plugin runs tests in workerd with per-test isolated
+// storage (DO SQLite rollback between tests).
 export default defineConfig({
   test: {
     globals: true,

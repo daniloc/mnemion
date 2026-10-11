@@ -21,6 +21,7 @@ import { onWrite as pagesOnWrite } from "./hooks";
 
 export const pages: Feature = {
   name: "pages",
+  effectPatterns: ["_pages"],
   // Pattern structure (DDL/facets/index), owned by the feature dir (./schema.ts,
   // pure data) and composed into schema.ts's KERNEL_TABLES at boot.
   patterns: pagesPatterns,

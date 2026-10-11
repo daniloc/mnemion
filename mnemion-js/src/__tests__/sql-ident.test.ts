@@ -82,6 +82,27 @@ const create = (store: DurableObjectStub<HiveDO>, pattern: string, data: Record<
   store.mutate(pattern, "create", JSON.stringify(data)).then(JSON.parse);
 
 describe("data engine end-to-end through quoteIdent", () => {
+  it("preserves hyphenated identifiers through schema changes and Hive reads", async () => {
+    const store = getStore();
+    await createPattern(store, "hyphen-pattern", [
+      { name: "title", type: "text" },
+      { name: "note-text", type: "text" },
+    ]);
+    const created = await create(store, "hyphen-pattern", { title: "Hello", "note-text": "first" });
+    expect(created.error).toBeFalsy();
+
+    const added = JSON.parse(await store.proposeChange("add hyphenated facet", JSON.stringify({
+      type: "add_facet", pattern_name: "hyphen-pattern", facets: [{ name: "more-notes", type: "text" }],
+    })));
+    expect(added.error).toBeFalsy();
+    expect(JSON.parse(await store.applyChange(added.change_id)).error).toBeFalsy();
+
+    expect(JSON.parse(await store.getEntryLabel("hyphen-pattern", created.entry.id)).label).toBe("Hello");
+    const exported = await store.exportPattern("hyphen-pattern");
+    expect(exported.error).toBeUndefined();
+    expect(exported.entries?.[0]["note-text"]).toBe("first");
+  });
+
   it("create → filtered, sorted query returns rows", async () => {
     const store = getStore();
     await createPattern(store, "facts", [

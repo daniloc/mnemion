@@ -32,6 +32,7 @@ import { onCreate as documentsOnCreate, immutable as documentsImmutable } from "
 
 export const documents: Feature = {
   name: "documents",
+  effectPatterns: ["_documents"],
   // Pattern structure (DDL/facets) + the feature's schema migration, owned by the
   // feature dir (./schema.ts, pure data) and composed into schema.ts at boot.
   patterns: documentsPatterns,

@@ -14,6 +14,7 @@
 // as functions so this module never reaches back into `this`. The DO keeps thin
 // RPC wrappers with identical signatures; this holds the logic.
 import { uri } from "../../shared/core/constants";
+import { quoteIdent } from "../../shared/core/sql";
 import { parseDbDate, getMemoryPolicy } from "./prime";
 import { IMMUTABLE } from "./kernel";
 
@@ -136,14 +137,14 @@ export function getIndex(ctx: ReportsContext): string {
   for (const pat of index.patterns) {
     try {
       const r = ctx.db.exec(
-        `SELECT COUNT(*) as count, MAX(updated_at) as latest FROM "${pat.name}" WHERE archived_at IS NULL`
+        `SELECT COUNT(*) as count, MAX(updated_at) as latest FROM ${quoteIdent(pat.name)} WHERE archived_at IS NULL`
       ).one() as { count: number; latest: string | null };
       pat.entry_count = r.count;
       pat.latest_activity = r.latest;
     } catch {
       try {
         const r = ctx.db.exec(
-          `SELECT COUNT(*) as count, MAX(updated_at) as latest FROM "${pat.name}"`
+          `SELECT COUNT(*) as count, MAX(updated_at) as latest FROM ${quoteIdent(pat.name)}`
         ).one() as { count: number; latest: string | null };
         pat.entry_count = r.count;
         pat.latest_activity = r.latest;
@@ -206,10 +207,10 @@ export async function getRecentActivity(ctx: ReportsContext, limit: number = 10)
       ).toArray() as { name: string }[];
 
       const firstFacet = facets[0]?.name;
-      const selectCols = firstFacet ? `, "${firstFacet}"` : "";
+      const selectCols = firstFacet ? `, ${quoteIdent(firstFacet)}` : "";
 
       const rows = ctx.db.exec(
-        `SELECT id, updated_at${selectCols} FROM "${pat.name}" WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT ?`,
+        `SELECT id, updated_at${selectCols} FROM ${quoteIdent(pat.name)} WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT ?`,
         limit
       ).toArray() as any[];
 
@@ -307,12 +308,12 @@ export async function getStaleEntries(ctx: ReportsContext, days?: number): Promi
         pat.name
       ).toArray() as { name: string }[];
       const firstFacet = facets[0]?.name;
-      const selectCols = firstFacet ? `, e."${firstFacet}"` : "";
+      const selectCols = firstFacet ? `, e.${quoteIdent(firstFacet)}` : "";
 
       // Stale = neither updated nor recalled inside the horizon
       const rows = ctx.db.exec(
         `SELECT e.id, e.updated_at, MAX(l.accessed_at) as last_primed${selectCols}
-         FROM "${pat.name}" e
+         FROM ${quoteIdent(pat.name)} e
          LEFT JOIN "_entry_access_log" l ON l.pattern = ? AND l.entry_id = e.id
          WHERE e.archived_at IS NULL
          GROUP BY e.id
@@ -420,13 +421,13 @@ export function computeStorageStats(ctx: ReportsContext): string {
     let totalBytes = 0;
     for (const t of tables) {
       try {
-        const cols = ctx.db.exec(`PRAGMA table_info("${t.name}")`).toArray() as any[];
+        const cols = ctx.db.exec(`PRAGMA table_info(${quoteIdent(t.name)})`).toArray() as any[];
         const textCols = cols.filter((c: any) => c.type === "TEXT" || c.type === "").map((c: any) => c.name);
         const sumExpr = textCols.length
-          ? textCols.map((c: string) => `COALESCE(LENGTH("${c}"), 0)`).join(" + ")
+          ? textCols.map((c: string) => `COALESCE(LENGTH(${quoteIdent(c)}), 0)`).join(" + ")
           : "0";
         const r = ctx.db.exec(
-          `SELECT COUNT(*) as c, SUM(${sumExpr}) as bytes FROM "${t.name}" WHERE archived_at IS NULL`
+          `SELECT COUNT(*) as c, SUM(${sumExpr}) as bytes FROM ${quoteIdent(t.name)} WHERE archived_at IS NULL`
         ).one() as any;
         totalEntries += r.c;
         totalBytes += r.bytes || 0;

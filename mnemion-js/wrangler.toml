@@ -71,7 +71,7 @@ remote = true
 
 # Rate Limiting (GA) — operational cost/DoS guards on the public surfaces. Built-in,
 # no provisioning. Enforced in code via router.ts `rateLimit`, which FAILS OPEN if a
-# binding is absent, so these are safe to remove and harmless where unsimulated.
+# binding is absent; every deployed environment must declare both bindings.
 # RL_INGRESS: the public WRITE surface (POST /i/:path) — every accepted write creates
 # an entry + a billable Workers AI embedding + Vectorize upsert, so it's keyed per
 # endpoint path to cap attacker-driven cost amplification regardless of source IP.
@@ -117,7 +117,7 @@ renamed_classes = [{from = "CambiumSession", to = "SessionDO"}, {from = "Cambium
 tag = "v4"
 renamed_classes = [{from = "StoreDO", to = "HiveDO"}]
 
-# === Test environment (federation peer, Auth.DEV mode) ===
+# === Test environment (federation peer) ===
 # Optional. Used as a second hive for testing federation against the main env.
 # Provision with: wrangler deploy --env test (and create its own OAUTH_KV namespace).
 [env.test]
@@ -133,14 +133,35 @@ enabled = true
 
 [env.test.vars]
 WORKER_HOST = "your-test-worker.workers.dev"
-# Explicit dev opt-in: this env runs without MNEMION_SECRET, so DEV=true enables the
-# auto-approve-as-owner posture. The default/prod env never sets DEV, so a secretless
-# production deploy fails CLOSED instead of serving owner APIs unauthenticated.
-DEV = "true"
+# The deployed federation peer must also fail closed without MNEMION_SECRET.
+# Use the local dev command for DEV=true; never publish owner auto-approval.
 
 [env.test.assets]
 directory = "./dist/web"
 binding = "ASSETS"
+
+# Named environments do not inherit AI or Vectorize. Keep the federation peer's
+# embeddings isolated from production and from the CI test index.
+[env.test.ai]
+binding = "AI"
+remote = true
+
+[[env.test.vectorize]]
+binding = "VECTORIZE"
+index_name = "mnemion-test-vectors"
+remote = true
+
+# Named environments do not inherit rate-limit bindings. Keep separate
+# namespaces so the federation peer has independent public request budgets.
+[[env.test.ratelimits]]
+name = "RL_INGRESS"
+namespace_id = "2001"
+simple = { limit = 60, period = 60 }
+
+[[env.test.ratelimits]]
+name = "RL_PUBLIC"
+namespace_id = "2002"
+simple = { limit = 200, period = 60 }
 
 [[env.test.kv_namespaces]]
 binding = "OAUTH_KV"

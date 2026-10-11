@@ -1,6 +1,6 @@
 // Minimal undici-MockAgent-compatible shim over globalThis.fetch.
 //
-// @cloudflare/vitest-pool-workers v0.16 (vitest 4) removed the `fetchMock`
+// Cloudflare's Vitest 4 integration removed the `fetchMock`
 // export from `cloudflare:test`; the sanctioned replacement is mocking
 // `globalThis.fetch`. Rather than rewrite every call site, this reimplements the
 // exact subset of the MockAgent API the tests use, so the existing

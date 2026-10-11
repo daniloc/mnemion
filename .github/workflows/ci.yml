@@ -40,30 +40,21 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # `coherence log` materializes the base ref in a throwaway worktree to
-          # diff the invariant/boundary set — it needs history, not a depth-1 tip.
+          persist-credentials: false
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22 # wrangler + coherence require Node >= 22
+          node-version: 22.18 # Coherence requires Node >= 22.18
           cache: npm
           cache-dependency-path: mnemion-js/package-lock.json
 
       - run: npm ci
 
-      # Structural ledger: a PR may not silently DROP an invariant or a boundary
-      # (a removed chokepoint/oracle anchor) — exactly the loss a prose review
-      # misses. `--strict` exits nonzero on a loss; a deliberate removal re-pins by
-      # being a normal, reviewed diff (the gate reports WHAT was dropped, not that
-      # nothing may change). PR-only: a push has no base ref to diff against.
-      - name: No dropped boundaries (structural ledger)
-        if: github.event_name == 'pull_request'
-        run: |
-          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}"
-          npm run coherence:log -- FETCH_HEAD HEAD --strict
+      - name: Dependency audit
+        run: npm audit --audit-level=moderate
 
       # The worker entry statically imports the render-fragment bundle from
       # dist/ (gitignored), so it must exist before vitest loads the worker.
@@ -99,11 +90,9 @@ jobs:
 
       # Unit suite — runs in the real workerd runtime (vitest-pool-workers),
       # including the totality oracles (policy / egress / context-capability /
-      # tools-ssot / served-bearer-gating). Also emits the vitest JSON report
-      # (.coherence/test-report.json) so the Coherence step below can resolve
-      # oracle claims from THIS run instead of re-running or skipping them.
+      # tools-ssot / served-bearer-gating).
       - name: Test
-        run: npm run test:report
+        run: npm test
 
       # Boundary-oracle mutation ratchet: a totality oracle only protects the system
       # if it actually CATCHES a break at its chokepoint. This breaks each boundary's
@@ -124,34 +113,11 @@ jobs:
             node scripts/invariant-mutation-probe.mjs
           fi
 
-      # Ratchets: no new conventions, no new raw SQL interpolation sites, and the
-      # trust atlas stays in sync with the boundary claims (no managed chokepoint
-      # left off the atlas, no dangling edge).
-      - name: Convention ratchet
-        run: npm run conventions:check
-      - name: Injection-lint ratchet
-        run: npm run injection-lint:check
-      - name: Atlas drift
-        run: npm run atlas:check
+      - name: Coherence spec grammar
+        run: npm run coherence:spec
 
-      # Specs must still match the code (boundary ratchet anchors invariants to
-      # chokepoint + oracle claims). FULL claim resolution, fed by the report the
-      # Test step already produced (--from-report; no second suite run): oracle
-      # claims resolve against real outcomes, so a renamed/deleted oracle test
-      # (VANISHED ORACLE), a self-skipping oracle (no positive evidence), or a
-      # failing boundary oracle goes red on every PR — `--fast` skips oracle
-      # claims entirely and let exactly that rot through (the clipboard-patch
-      # claim drifted from its renamed test undetected).
-      - name: Coherence
-        run: npm run coherence:verify:report
-
-      # The committed generated artifacts (docs/coherence/* + the fenced block in
-      # the repo-root CLAUDE.md) must match the spec tree. coherence:verify checks
-      # claims-vs-code, NOT docs-vs-specs, so without this a spec edit that isn't
-      # followed by `npm run coherence:docs` lands a stale derived map (timestamps
-      # normalized out of the diff). Symmetric with the atlas:check drift gate above.
-      - name: Coherence docs freshness
-        run: npm run coherence:docs:check
+      - name: Coherence test oracles
+        run: npm run coherence:run
 
   mcp-smoke:
     name: live /mcp surface
@@ -165,9 +131,11 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm

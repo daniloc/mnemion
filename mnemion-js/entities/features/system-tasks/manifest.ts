@@ -8,6 +8,7 @@ import type { Feature } from "../feature";
 
 export const systemTasks: Feature = {
   name: "system-tasks",
+  effectPatterns: ["_system_tasks"],
   effects: {
     _system_tasks: {
       async after(entry, result, parsed, operation, scratch, ctx) {

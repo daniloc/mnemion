@@ -1,6 +1,6 @@
 # Upstreaming the coherence meta-tooling
 
-Status: proposal. Target: `github:daniloc/coherence` (the harness this repo pins).
+Status: historical proposal for the retired `coherence-harness` v0 integration. Mnemion now uses `@posthog/coherence`; the commands and config below describe the prior tool and are not an onboarding guide.
 
 ## The problem
 

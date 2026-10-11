@@ -1,0 +1,50 @@
+# Coherence on every pull request, written by coherence ci install.
+# Mode fail: the check fails on a spec problem (spec --check) or a structural defect (the chokepoint run).
+name: Coherence
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request replaces a run still going.
+concurrency:
+  group: coherence-${{ github.ref }}
+  cancel-in-progress: true
+
+# CI never sends telemetry or asks the registry for a newer release, whatever a config on the runner says.
+env:
+  COHERENCE_TELEMETRY: "0"
+  DO_NOT_TRACK: "1"
+  COHERENCE_NO_UPDATE_CHECK: "1"
+
+jobs:
+  coherence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Full history: a practice's pitfalls may cite commits, and the spec check confirms each exists.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # The lockfile install brings Coherence and, as its optional dependencies, the language servers it asks.
+      - name: Install
+        working-directory: mnemion-js
+        run: npm ci
+
+      - name: Spec check
+        working-directory: mnemion-js
+        run: npx --no -- coherence spec --check
+
+      # Every chokepoint graded in process; a bypass, a missing chokepoint or an instrument that never answered fails the run.
+      - name: Chokepoints
+        if: ${{ !cancelled() }}
+        working-directory: mnemion-js
+        run: npx --no -- coherence run --form chokepoint --no-server --session "ci-${{ github.run_id }}" --agent ci

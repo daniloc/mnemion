@@ -13,6 +13,7 @@
 // the decay clock), never from a stored counter, per data-is-destiny.
 
 import { uri } from "../../shared/core/constants";
+import { quoteIdent } from "../../shared/core/sql";
 import { logWarn } from "../../shared/core/log";
 import { isKernelPattern, primeIncluded, seal } from "./policy";
 
@@ -151,7 +152,7 @@ export async function embedEntry(ctx: PrimeContext, pattern: string, id: number,
     // Read the entry
     let entry: Record<string, unknown>;
     try {
-      const rows = ctx.db.exec(`SELECT * FROM "${pattern}" WHERE id = ?`, id).toArray();
+      const rows = ctx.db.exec(`SELECT * FROM ${quoteIdent(pattern)} WHERE id = ?`, id).toArray();
       if (rows.length === 0) return;
       entry = rows[0] as Record<string, unknown>;
     } catch { return; }
@@ -208,7 +209,7 @@ export async function findNeighbors(
       if (id == null) continue;
       // Only surface live entries
       const rows = ctx.db.exec(
-        `SELECT id FROM "${pattern}" WHERE id = ? AND archived_at IS NULL`, id
+        `SELECT id FROM ${quoteIdent(pattern)} WHERE id = ? AND archived_at IS NULL`, id
       ).toArray();
       if (rows.length === 0) continue;
       neighbors.push({
@@ -306,7 +307,7 @@ export async function prime(
     let entry: Record<string, unknown>;
     try {
       const rows = ctx.db.exec(
-        `SELECT * FROM "${pattern}" WHERE id = ? AND archived_at IS NULL`, entryId
+        `SELECT * FROM ${quoteIdent(pattern)} WHERE id = ? AND archived_at IS NULL`, entryId
       ).toArray();
       if (rows.length === 0) continue;
       entry = rows[0] as Record<string, unknown>;
@@ -409,7 +410,7 @@ export function followLinks(
 
     try {
       const rows = ctx.db.exec(
-        `SELECT * FROM "${targetPattern}" WHERE id = ? AND archived_at IS NULL`,
+        `SELECT * FROM ${quoteIdent(targetPattern)} WHERE id = ? AND archived_at IS NULL`,
         Number(targetId)
       ).toArray();
       if (rows.length > 0) {
@@ -442,7 +443,7 @@ export function followLinks(
 
         try {
           const rows = ctx.db.exec(
-            `SELECT * FROM "${link.target_pattern}" WHERE id = ? AND archived_at IS NULL`,
+            `SELECT * FROM ${quoteIdent(link.target_pattern)} WHERE id = ? AND archived_at IS NULL`,
             link.target_id
           ).toArray();
           if (rows.length > 0) {

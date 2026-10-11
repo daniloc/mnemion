@@ -22,6 +22,7 @@ import { onWrite as scratchpadOnWrite } from "./hooks";
 
 export const scratchpad: Feature = {
   name: "scratchpad",
+  effectPatterns: ["_scratchpad"],
   patterns: scratchpadPatterns,
   hooks: { onWrite: scratchpadOnWrite },
   effects: {
