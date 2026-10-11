@@ -11,9 +11,6 @@ Cloudflare Worker entry: an OAuth-wrapped MCP server whose one declarative route
 - federated: Cross-hive resolve over the network — a sovereign foreign hive.
 
 ## entrances
-- patch coherence scope: A maintainer's package installation applies the Scope browser-bundle fix for Coherence 1.7.1.
-  handler: scripts/patch-coherence-scope.mjs
-  trust: owner-trusted
 - coherence hooks: A maintainer installs or checks the Claude and Codex Coherence hooks.
   handler: scripts/coherence-hooks.mjs
   trust: owner-trusted
