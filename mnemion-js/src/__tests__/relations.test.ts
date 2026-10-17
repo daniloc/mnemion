@@ -19,6 +19,10 @@ import { describe, it, expect, vi } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
 import { initializeSchema } from "../../entities/Hive/schema";
 import { prime, type PrimeContext } from "../../entities/Hive/prime";
+// This file reads its own source to prove each palette behavior names a describe that
+// exists. A ?raw default import, not import.meta.glob: Vite drops the importing file
+// from its own glob results, so a self-glob is always empty.
+import THIS_FILE_SRC from "./relations.test.ts?raw";
 
 type Store = DurableObjectStub<HiveDO>;
 
@@ -1448,7 +1452,7 @@ describe("linked targets survive GC", () => {
 // =====================================================================
 
 const RELATIONS_MODULE = import.meta.glob("../../entities/Hive/relations.ts", { eager: true }) as Record<string, any>;
-const THIS_FILE = import.meta.glob("./relations.test.ts", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+
 
 /** Each palette behavior → the describe in this file that proves the engine enforces it. */
 const ENFORCED_BY: Record<string, string> = {
@@ -1467,10 +1471,14 @@ describe("palette totality", () => {
   it("every palette behavior maps to an enforcement describe in this file, and nothing else does", () => {
     const palette = Object.keys(RELATIONS_MODULE[RELATIONS_MODULE_PATH]?.BEHAVIOR_PALETTE ?? {});
     expect(new Set(palette)).toEqual(new Set(Object.keys(ENFORCED_BY)));
-    const src = Object.values(THIS_FILE)[0];
+    const src = THIS_FILE_SRC;
     expect(src, "this test file reads itself").toBeTypeOf("string");
+    // Anchored at line start: only a real top-level describe counts, not a mention in a string.
+    const topLevelDescribe = (name: string) =>
+      new RegExp(`^describe\\(${JSON.stringify(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m");
+    expect(src, "the raw source is this file").toMatch(topLevelDescribe("palette totality"));
     for (const [behavior, describeName] of Object.entries(ENFORCED_BY))
-      expect(src, `${behavior} → describe("${describeName}")`).toContain(`describe("${describeName}"`);
+      expect(src, `${behavior} → describe("${describeName}")`).toMatch(topLevelDescribe(describeName));
   });
 
   it("the Phase 1 palette declares no behavior the engine does not yet perform", () => {
