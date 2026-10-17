@@ -314,10 +314,10 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: each change type acts on one relation and its own links
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
-- link endpoint integrity: After boot, no active link keeps an endpoint whose pattern or entry is missing or archived, except an archived _web_cache snapshot the link protects.
-  over: active _links rows whose source or target pattern is gone, whose entry is gone, or whose entry is archived
+- link endpoint integrity: The boot sweep archives a link only when an endpoint is gone (its pattern or entry row no longer exists) or is a kernel pattern no relation admits, never because an endpoint is archived.
+  over: active _links rows whose pattern was dropped, whose entry row is gone, or whose kernel endpoint is inadmissible, against dormant links to archived entries and archived patterns across repeated boots and unarchive
   via: integrity sweep
-  because: A dangling link, like link 55 into the removed pub-test pattern, surfaces in recall as a connection to nothing.
+  because: Every cold start is a boot, and archive is reversible; sweeping links to archived endpoints made an entry's links survive or vanish depending on eviction timing, so the sweep removes only what is gone and stays deterministic.
   kinds: storage
   checklist: scoped-reads dismissed: the sweep is a boot-time repair, not a read path
   checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest

@@ -381,7 +381,10 @@ of a connection is the content. Each is limited to the patterns that use it.
 - The relations module, the link ON_CREATE and ON_WRITE checks, link
   immutability, the rebuilt unique index, and replacing the five supersession
   literals.
-- The integrity sweep archives active links with a missing endpoint (link 55).
+- The integrity sweep archives active links with a missing endpoint: one whose
+  pattern or entry row no longer exists. Link 55 is archived only if `pub-test`
+  was dropped; if it was archived, the link stays dormant. An archived endpoint
+  never triggers the sweep, so the sweep is deterministic under cold starts.
 - `resolve` gains direction and the inverse names. The index gains
   `relations`, and `mnemion://relations` lists the vocabulary.
 - The `declare_relation`, `amend_relation` and `retire_relation` change types.
@@ -729,15 +732,39 @@ relation with `legacy = 1`. It does not name a relation whose description has
 been amended. The warning is built from a pure findings function in
 `relations.ts`, in the style of `findUnclassifiedSensitiveColumns`.
 
-### G. Integrity sweep and GC
+### G. Integrity sweep, dormant links and GC
 
-At boot, an active link is archived when its source or target pattern does not
-exist, its entry row does not exist, or its entry is archived. One exception: a
-link whose target is an archived `_web_cache` row stays, because that row is a
-superseded snapshot the link protects (§4a).
+The sweep runs on every boot, and every Durable Object cold start is a boot. It
+must therefore give the same result whether or not a cold start happened. It
+archives an active link only when:
 
-The `_web_cache` GC skips any row that is the target of an active link. This is
-derived in the GC query; there is no stored flag.
+- its source or target pattern no longer exists at all, meaning there is no
+  `_objects` row or no table (an archived pattern still exists);
+- its source or target entry row no longer exists at all (an archived entry
+  still exists);
+- an endpoint is a kernel pattern no relation may admit: any kernel source, or
+  a kernel target other than `_documents` and `_web_cache`.
+
+**Dormant links.** A link whose endpoint entry or pattern is archived stays
+active and unchanged. It is a dormant link:
+
+- **Hidden from reads.** The other endpoint's `linked` list in
+  resolve/getEntry never shows the archived endpoint, and prime's one-hop
+  expansion never expands into it.
+- **Back on unarchive.** Unarchiving the entry or pattern brings it back as it
+  was, with no re-link.
+- **Still counted.** Because it is an active row, it counts for uniqueness and
+  cardinality. A cardinality-`one` refusal names the held link's endpoints as
+  `pattern/id`, dormant or not, so the writer knows what to unlink.
+
+Link creation and link unarchive still require active endpoints (section C).
+An archived `_web_cache` snapshot is simply a dormant link's target.
+
+The relation-declaration-totality oracle requires each active link's endpoint
+rows to exist, not to be active.
+
+The `_web_cache` GC skips any row that is the target of an active link,
+dormant or not. This is derived in the GC query; there is no stored flag.
 
 ### H. `entities/Hive/relations.ts`
 
@@ -783,10 +810,12 @@ All refusals are clean, as defined in section C.
 
 ### Choices made by the test author
 
-1. **Archived `_web_cache` targets survive the integrity sweep** (G). The brief
-   says the sweep archives links to archived endpoints. The GC deletes only
-   archived cache rows, so without this exception the §4a protection would
-   last a single boot.
+1. **The sweep removes only links to endpoints that are gone; links to
+   archived ones stay dormant** (G). This revises the review-approved
+   version, which also archived links to archived endpoints, with an
+   exception for archived `_web_cache` snapshots. Archive is reversible and
+   every cold start is a boot, so that version lost links depending on
+   eviction timing. The `_web_cache` exception folds into the dormant rule.
 2. **Unlabeled legacy links become `references`** (F). Relation declaration
    totality requires every active link to name a relation, and `references`
    is the link that asserts nothing structural.

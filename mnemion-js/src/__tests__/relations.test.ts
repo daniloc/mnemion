@@ -190,11 +190,24 @@ async function insertDocument(store: Store, title: string): Promise<number> {
 
 const isKernel = (p: string) => p.startsWith("_");
 
+/** True when `pattern` has an _objects row (archived or not), its table exists, and
+ *  row `id` is present in it (archived or not). */
+async function rowExists(store: Store, pattern: string, id: number): Promise<boolean> {
+  return runInDurableObject(store, (_i, state) => {
+    const db = state.storage.sql;
+    if (db.exec(`SELECT 1 FROM _objects WHERE name = ?`, pattern).toArray().length === 0) return false;
+    if (db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, pattern).toArray().length === 0) return false;
+    return db.exec(`SELECT 1 FROM "${pattern.replace(/"/g, '""')}" WHERE id = ?`, id).toArray().length > 0;
+  });
+}
+
 /**
  * The relation-declaration-totality oracle, evaluated over the live tables:
  * every ACTIVE link's label names an ACTIVE relation, its endpoints satisfy that
- * relation's source/target, and a cardinality-`one` relation holds at most one
- * active link per source entry. Returns human-readable violations (empty = holds).
+ * relation's source/target, both endpoint rows EXIST (present in their pattern's
+ * table; an archived entry or pattern still exists, which makes the link dormant,
+ * not dangling), and a cardinality-`one` relation holds at most one active link per
+ * source entry. Returns human-readable violations (empty = holds).
  */
 async function totalityViolations(store: Store): Promise<string[]> {
   const rels = await sql(store, `SELECT * FROM "_relations" WHERE archived_at IS NULL`);
@@ -210,6 +223,8 @@ async function totalityViolations(store: Store): Promise<string[]> {
     const tgtOk = isKernel(l.target_pattern)
       ? KERNEL_TARGETS.has(l.target_pattern) && (tgt.includes("*") || tgt.includes(l.target_pattern))
       : (tgt.includes("*") || tgt.includes(l.target_pattern));
+    for (const [end, p, id] of [["source", l.source_pattern, l.source_id], ["target", l.target_pattern, l.target_id]] as const)
+      if (!(await rowExists(store, p, id))) out.push(`${tag}: ${end} ${p}/${id} does not exist`);
     if (!srcOk) out.push(`${tag}: source pattern not admitted by ${rel.name}`);
     if (!tgtOk) out.push(`${tag}: target pattern not admitted by ${rel.name}`);
     if (rel.cardinality === "one") {
@@ -666,6 +681,7 @@ describe("cardinality", () => {
     const first = await mustLink(store, `notes/${n1}`, `papers/${p1}`, "filed-under");
     const second = await link(store, `notes/${n1}`, `papers/${p2}`, "filed-under");
     expectCleanRefusal(second);
+    expect(second.message, "names the link the writer must unlink").toContain(`papers/${p1}`);
     // Written from the target side, it is still a second link from notes/n1.
     expectCleanRefusal(await link(store, `papers/${p2}`, `notes/${n1}`, "files"));
     // Another source is unaffected; the target may be shared (cardinality bounds the source).
@@ -1018,29 +1034,153 @@ describe("behavior by declaration", () => {
 // =====================================================================
 
 describe("integrity sweep", () => {
-  it("archives active links whose endpoint pattern or entry is gone or archived; keeps sound links", async () => {
+  it("archives only links whose endpoint is gone or a kernel pattern no relation admits; keeps sound and dormant links", async () => {
     const store = getStore();
     const { n1, n2, n3, p1 } = await world(store);
+    await createPattern(store, "drafts");
+    const d1 = await entry(store, "drafts", "draft");
     const sound = await mustLink(store, `notes/${n1}`, `papers/${p1}`, "references");
-    const archivedEndpoint = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "references");
+    const toArchivedEntry = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "references");
+    const toArchivedPattern = await mustLink(store, `notes/${n3}`, `drafts/${d1}`, "references");
     await mut(store, "notes", "archive", { id: n2 });
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: "drafts" });
+    expect((await apply(store, ap.change_id)).error).toBeUndefined();
+    const doc = await insertDocument(store, "kept target");
+    const toDocument = await mustLink(store, `notes/${n3}`, `_documents/${doc}`, "references");
+
     // Rows the chokepoint would never admit, planted the way a pre-registry hive holds them.
-    await runInDurableObject(store, (_i, state) => {
-      const ins = (sp: string, si: number, tp: string, ti: number) => state.storage.sql.exec(
-        `INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES (?, ?, ?, ?, 'references')`, sp, si, tp, ti,
-      );
-      ins("pub-test", 3, "notes", n1);  // source pattern no longer exists (link 55)
-      ins("notes", n3, "notes", 99999); // target entry no longer exists
+    const planted = await runInDurableObject(store, (_i, state) => {
+      const db = state.storage.sql;
+      const ins = (sp: string, si: number, tp: string, ti: number) => {
+        db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES (?, ?, ?, ?, 'references')`, sp, si, tp, ti);
+        return (db.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+      };
+      return {
+        gonePattern: ins("pub-test", 3, "notes", n1),     // pattern dropped entirely (link 55)
+        goneEntry: ins("notes", n3, "notes", 99999),       // entry row gone
+        kernelTarget: ins("notes", n3, "_members", 1),     // _members admits no link (the owner row exists)
+        kernelSource: ins("_documents", doc, "notes", n1), // no kernel pattern may be a source
+      };
     });
-    const planted = (await sql(store, `SELECT id FROM "_links" WHERE source_pattern = 'pub-test' OR target_id = 99999`)).map((r) => r.id);
-    expect(planted.length).toBe(2);
 
     await boot(store);
 
-    expect((await linkRow(store, sound)).archived_at).toBeNull();
-    expect((await linkRow(store, archivedEndpoint)).archived_at).not.toBeNull();
-    for (const id of planted) expect((await linkRow(store, id)).archived_at, `link ${id}`).not.toBeNull();
+    for (const [name, id] of Object.entries({ sound, toArchivedEntry, toArchivedPattern, toDocument }))
+      expect((await linkRow(store, id)).archived_at, `${name} stays active`).toBeNull();
+    for (const [name, id] of Object.entries(planted))
+      expect((await linkRow(store, id)).archived_at, `${name} is swept`).not.toBeNull();
     expect(await totalityViolations(store)).toEqual([]);
+  });
+
+  it("is deterministic under cold starts: archive an entry, boot, unarchive — its links come back", async () => {
+    const store = getStore();
+    const { n1, n2, p1 } = await world(store);
+    const out = await mustLink(store, `notes/${n2}`, `papers/${p1}`, "references");
+    const inn = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "depends-on");
+    await mut(store, "notes", "archive", { id: n2 });
+
+    await boot(store); // a Durable Object cold start
+    await boot(store);
+
+    expect((await mut(store, "notes", "unarchive", { id: n2 })).error).toBeUndefined();
+    expect((await linkRow(store, out)).archived_at).toBeNull();
+    expect((await linkRow(store, inn)).archived_at).toBeNull();
+    const r = JSON.parse(await store.resolve(`mnemion://entry/notes/${n2}`));
+    expect(r.linked.find((l: any) => l.pattern === "papers" && l.id === p1)).toMatchObject({ direction: "out", relation: "references" });
+    expect(r.linked.find((l: any) => l.pattern === "notes" && l.id === n1)).toMatchObject({ direction: "in", relation: "required-by" });
+  });
+
+  it("is deterministic under cold starts: archive_pattern, boot, unarchive_pattern — its links come back", async () => {
+    const store = getStore();
+    const { n1, p1 } = await world(store);
+    const id = await mustLink(store, `notes/${n1}`, `papers/${p1}`, "references");
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: "notes" });
+    expect((await apply(store, ap.change_id)).error).toBeUndefined();
+
+    await boot(store);
+    await boot(store);
+
+    const up = await propose(store, { type: "unarchive_pattern", pattern_name: "notes" });
+    expect((await apply(store, up.change_id)).error).toBeUndefined();
+    expect((await linkRow(store, id)).archived_at).toBeNull();
+    const r = JSON.parse(await store.resolve(`mnemion://entry/papers/${p1}`));
+    expect(r.linked.find((l: any) => l.pattern === "notes" && l.id === n1)).toMatchObject({ direction: "in", relation: "referenced-by" });
+  });
+});
+
+// =====================================================================
+// Dormant links: an archived endpoint hides a link, never removes it
+// =====================================================================
+
+describe("dormant links", () => {
+  it("while an endpoint is archived, the other endpoint's resolve does not list the link; unarchive restores it", async () => {
+    const store = getStore();
+    const { n1, n2, p1 } = await world(store);
+    const id = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "depends-on");
+    await mustLink(store, `notes/${n1}`, `papers/${p1}`, "references");
+
+    await mut(store, "notes", "archive", { id: n2 });
+    expect((await linkRow(store, id)).archived_at, "the link itself is untouched").toBeNull();
+    const hidden = JSON.parse(await store.resolve(`mnemion://entry/notes/${n1}`));
+    expect((hidden.linked ?? []).some((l: any) => l.pattern === "notes" && l.id === n2)).toBe(false);
+    expect((hidden.linked ?? []).some((l: any) => l.pattern === "papers" && l.id === p1)).toBe(true);
+
+    await mut(store, "notes", "unarchive", { id: n2 });
+    const shown = JSON.parse(await store.resolve(`mnemion://entry/notes/${n1}`));
+    expect(shown.linked.find((l: any) => l.pattern === "notes" && l.id === n2)).toMatchObject({ direction: "out", relation: "depends-on" });
+  });
+
+  it("an archived pattern's entries are hidden from the other endpoint's resolve until unarchived", async () => {
+    const store = getStore();
+    const { n1, p1 } = await world(store);
+    await mustLink(store, `notes/${n1}`, `papers/${p1}`, "references");
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: "notes" });
+    await apply(store, ap.change_id);
+    const r = JSON.parse(await store.resolve(`mnemion://entry/papers/${p1}`));
+    expect((r.linked ?? []).some((l: any) => l.pattern === "notes")).toBe(false);
+  });
+
+  it("prime's one-hop expansion never shows an archived endpoint", async () => {
+    const store = getStore();
+    await createPattern(store, "notes", "knowledge");
+    const a = await entry(store, "notes", "alpha");
+    const b = await entry(store, "notes", "beta");
+    const c = await entry(store, "notes", "gamma");
+    await mustLink(store, `notes/${a}`, `notes/${b}`, "references");
+    await mustLink(store, `notes/${c}`, `notes/${a}`, "references");
+    await mut(store, "notes", "archive", { id: b });
+    await mut(store, "notes", "archive", { id: c });
+    const result = await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      const ctx: PrimeContext = {
+        db,
+        patternExists: (n) => db.exec(`SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NULL`, n).toArray().length > 0,
+        env: {
+          AI: { run: async () => ({ data: [[0.1, 0.2, 0.3]] }) },
+          VECTORIZE: { query: async () => ({ matches: [{ id: `notes:${a}`, score: 0.9, metadata: { pattern: "notes", entry_id: a } }] }) },
+        },
+      };
+      return prime(ctx, "alpha", undefined, 5);
+    });
+    const hit = result.results.find((r) => r.id === a)!;
+    expect(hit).toBeDefined();
+    expect((hit.linked ?? []).map((l) => l.id)).not.toContain(b);
+    expect((hit.linked ?? []).map((l) => l.id)).not.toContain(c);
+  });
+
+  it("a dormant link still counts for cardinality one, and the refusal names its endpoints", async () => {
+    const store = getStore();
+    const { n1, p1, p2 } = await world(store);
+    await declare(store, { name: "filed-under", inverse: "files", source: ["notes"], target: ["papers"], cardinality: "one" });
+    const id = await mustLink(store, `notes/${n1}`, `papers/${p1}`, "filed-under");
+    await mut(store, "papers", "archive", { id: p1 });
+    await boot(store);
+    expect((await linkRow(store, id)).archived_at).toBeNull();
+
+    const r = await link(store, `notes/${n1}`, `papers/${p2}`, "filed-under");
+    expectCleanRefusal(r);
+    expect(r.message).toContain(`notes/${n1}`);
+    expect(r.message).toContain(`papers/${p1}`);
   });
 });
 
@@ -1436,7 +1576,7 @@ describe("linked targets survive GC", () => {
     const ids = async () => (await sql(store, `SELECT id FROM "_web_cache"`)).map((r) => r.id);
     expect(await ids(), "GC really collects an unlinked row like this").not.toContain(control);
     expect(await ids(), "the linked row survives").toContain(linked);
-    expect((await linkRow(store, linkId)).archived_at, "the protecting link is not swept").toBeNull();
+    expect((await linkRow(store, linkId)).archived_at, "the protecting link is dormant, not swept").toBeNull();
 
     await boot(store);
     expect(await ids(), "protection holds on every pass").toContain(linked);
