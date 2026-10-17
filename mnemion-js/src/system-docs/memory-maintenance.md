@@ -43,12 +43,14 @@ Decay affects recall ranking only. Prime's relevance is `similarity × decay(las
 
 `resolve("{{uri:stale}}")` (optionally `{{uri:stale}}?days=N`) lists entries that haven't been touched or recalled past their pattern's staleness horizon (3× half-life, or 90 days for patterns without one). Superseded entries are flagged. This is a read-only review surface — archiving is always a deliberate act.
 
+The stale view also carries `held_patterns`: archived patterns past their 30-day drop that are still kept because links from entries outside them point in. Each lists `days_archived` and the holding links (`held_by`). Nothing drops them automatically while a link holds them — they wait on the owner.
+
 ## The maintenance pass
 
 When connecting, you may see how long it's been since the last maintenance pass (default interval: 14 days; the human can set charter key `maintenance_interval_days`). When it's overdue, offer the human a cleanup pass — as a focused conversation or a subagent:
 
 1. Review `{{uri:stale}}` and recent `possible_overlap` advisories.
-2. Propose supersession links for replaced facts, archival for dead entries, and memory policies for patterns that have revealed their nature.
+2. Propose supersession links for replaced facts, archival for dead entries, and memory policies for patterns that have revealed their nature. For each held pattern, ask the owner: archive or re-point the holding links (the pattern then drops on a later boot), or unarchive the pattern.
 3. Apply only what the human ratifies.
 4. Record the pass: `mutate(pattern: "_maintenance_passes", operation: "create", data: {summary: "what was reviewed and changed"})`.
 

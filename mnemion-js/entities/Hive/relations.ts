@@ -485,6 +485,41 @@ export function notLinkTargetPatternSql(nameExpr: string): string {
   return `NOT EXISTS (SELECT 1 FROM "_links" WHERE archived_at IS NULL AND target_pattern = ${nameExpr} AND source_pattern != ${nameExpr})`;
 }
 
+/** An archived USER pattern past the 30-day drop horizon (over `_objects`). The
+ *  drop (schema.ts GC) and the stale view's held_patterns read this one fragment,
+ *  each paired with notLinkTargetPatternSql — dropped when it holds, held when its
+ *  negation holds — so "held" and "not dropped" can never disagree. */
+export const PAST_DROP_HORIZON_SQL = `archived_at IS NOT NULL AND archived_at < datetime('now', '-30 days') AND name NOT LIKE '\\_%' ESCAPE '\\'`;
+
+/** An archived pattern the drop is keeping only because links from outside it
+ *  point in, with every such link — for the owner to resolve (archive or re-point
+ *  the links, or unarchive the pattern). Never auto-dropped. */
+export interface HeldPattern {
+  pattern: string;
+  archived_at: string;
+  days_archived: number;
+  held_by: { source: string; target: string; label: string }[];
+}
+
+/** Every archived pattern past the drop horizon that an active inbound link from
+ *  outside it holds. Derived on read from the drop's own predicate; nothing stored. */
+export function heldPatterns(db: DB): HeldPattern[] {
+  const held = db.exec(
+    `SELECT name, archived_at, CAST(julianday('now') - julianday(archived_at) AS INTEGER) AS days
+     FROM _objects WHERE ${PAST_DROP_HORIZON_SQL} AND NOT ${notLinkTargetPatternSql("_objects.name")} ORDER BY name`,
+  ).toArray() as { name: string; archived_at: string; days: number }[];
+  return held.map((p) => ({
+    pattern: p.name,
+    archived_at: p.archived_at,
+    days_archived: p.days,
+    held_by: (db.exec(
+      `SELECT source_pattern, source_id, target_pattern, target_id, label FROM "_links"
+       WHERE archived_at IS NULL AND target_pattern = ? AND source_pattern != ? ORDER BY id`,
+      p.name, p.name,
+    ).toArray() as any[]).map((l) => ({ source: ref(l.source_pattern, l.source_id), target: ref(l.target_pattern, l.target_id), label: l.label })),
+  }));
+}
+
 /** The relations a pattern may stand in — canonical names whose source (or
  *  target) admits it, `*` relations included. Read by mnemion://schema/<pattern>. */
 export function relationsFor(db: DB, pattern: string): { as_source: string[]; as_target: string[] } {

@@ -22,7 +22,7 @@ import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared
 import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
-import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql } from "./relations";
+import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL } from "./relations";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
 
@@ -994,12 +994,13 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 
   // --- GC: drop archived patterns older than 30 days — except one an active link
   //     from outside it still targets (a link protects its target; its links stay
-  //     dormant until removed, then the normal rule resumes). Derived, no flag. ---
+  //     dormant until removed, then the normal rule resumes). Derived, no flag.
+  //     The stale view reports what this skips (relations.ts heldPatterns, the
+  //     same two fragments negated), so a held pattern is never silent. ---
 
   try {
     const expired = db.exec(
-      `SELECT name FROM _objects WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-30 days') AND name NOT LIKE '\\_%' ESCAPE '\\'
-       AND ${notLinkTargetPatternSql("_objects.name")}`
+      `SELECT name FROM _objects WHERE ${PAST_DROP_HORIZON_SQL} AND ${notLinkTargetPatternSql("_objects.name")}`
     ).toArray() as any[];
     for (const obj of expired) {
       for (const op of ["insert", "update", "delete"]) {
