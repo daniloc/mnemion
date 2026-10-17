@@ -19,6 +19,7 @@ import { isKernelPattern } from "./policy";
 import { FACET_RESERVED_COLUMNS, USER_OVERRIDABLE_KERNEL_COLUMNS } from "./kernel-columns";
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
 import type { StoreIndex, IndexFacetEntry } from "./reports";
+import * as rel from "./relations";
 
 // === Types ===
 
@@ -125,7 +126,16 @@ interface ChangeType {
   validate: (change: any, ctx: EvolutionContext, preview: StoreIndex) => string | null;
   preview:  (change: any, preview: StoreIndex) => void;
   apply:    (change: any, ctx: EvolutionContext) => void;
+  /** What the propose/apply response shows (default: the touched pattern). */
+  focus?:   (change: any, preview: StoreIndex) => Record<string, unknown>;
+  /** Existing data the change would strand. Listed in the propose preview; at
+   *  apply it is recomputed against current data and any violation refuses. */
+  violations?: (change: any, ctx: EvolutionContext) => rel.RelationViolation[];
 }
+
+/** The relation-vocabulary focus: the relation as the change leaves it. */
+const relationFocus = (change: any, preview: StoreIndex) =>
+  ({ relation: preview.relations.find((r) => r.name === change.name) ?? { name: change.name ?? null } });
 
 const CHANGE_TYPES: Record<string, ChangeType> = {
 
@@ -462,6 +472,34 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       );
     },
   },
+
+  // --- Relation vocabulary (relations.ts owns the rules; these rows wire them) ---
+
+  declare_relation: {
+    validate: (change, ctx) => rel.validateDeclare(ctx, change),
+    preview(change, preview) { preview.relations.push(rel.declaredRelation(change)); },
+    focus: relationFocus,
+    apply: (change, ctx) => rel.declareRelation(ctx, change),
+  },
+
+  amend_relation: {
+    validate: (change, ctx) => rel.validateAmend(ctx, change),
+    preview(change, preview) {
+      const i = preview.relations.findIndex((r) => r.name === change.name);
+      if (i >= 0) preview.relations[i] = rel.amendedRelation(preview.relations[i], change);
+    },
+    focus: relationFocus,
+    violations: (change, ctx) => rel.amendViolations(ctx.db, change),
+    apply: (change, ctx) => rel.amendRelation(ctx, change),
+  },
+
+  retire_relation: {
+    validate: (change, ctx) => rel.validateRetire(ctx, change),
+    preview(change, preview) { preview.relations = preview.relations.filter((r) => r.name !== change.name); },
+    focus: (change) => ({ relation: change.name ?? null, retired: true }),
+    violations: (change, ctx) => rel.retireViolations(ctx.db, change),
+    apply: (change, ctx) => rel.retireRelation(ctx, change),
+  },
 };
 
 // The change types an agent may propose — the single source the MCP tool's
@@ -484,6 +522,8 @@ export const CHANGE_TYPE_NAMES = Object.keys(CHANGE_TYPES) as [string, ...string
 // plus what the change actually breaks. That's a targeted inbound-reference
 // query, not a re-serialization of the hive.
 function focusedPreview(change: any, index: StoreIndex, ctx: EvolutionContext): Record<string, unknown> {
+  const focus = CHANGE_TYPES[change.type]?.focus;
+  if (focus) return focus(change, index);
   const name = change.pattern_name;
   switch (change.type) {
     case "set_sharing":
@@ -560,6 +600,7 @@ export function proposeChange(
   if (err) return errorJson(err);
 
   handler.preview(change, preview);
+  const violations = handler.violations?.(change, ctx);
 
   const changeId = crypto.randomUUID();
   ctx.db.exec(
@@ -572,8 +613,10 @@ export function proposeChange(
     description,
     change_type: change.type,
     version: preview.version,
-    preview: focusedPreview(change, preview, ctx),
-    message: "Change proposed. Call apply_change with this change_id to commit.",
+    preview: { ...focusedPreview(change, preview, ctx), ...(violations ? { violations } : {}) },
+    message: violations?.length
+      ? `Change proposed, but ${violations.length} active link(s) would violate it (preview.violations). apply_change is refused until they are archived or moved.`
+      : "Change proposed. Call apply_change with this change_id to commit.",
   }, null, 2);
 }
 
@@ -591,6 +634,16 @@ export async function applyChange(
   const change = JSON.parse(pending.change_spec);
   const handler = CHANGE_TYPES[change.type];
   if (!handler) return errorJson(`Unknown change type: ${change.type}`);
+
+  // Re-check against CURRENT data: a violator written between propose and apply
+  // blocks the change just as one present at propose does. Nothing is written.
+  const violations = handler.violations?.(change, ctx) ?? [];
+  if (violations.length)
+    return JSON.stringify({
+      error: true,
+      message: `Refused: ${violations.length} active link(s) would violate this change — ${violations.map((v) => `${v.source} → ${v.target} (${v.reason})`).join("; ")}. Archive or move them, then apply again.`,
+      violations,
+    });
 
   try {
     handler.apply(change, ctx);
