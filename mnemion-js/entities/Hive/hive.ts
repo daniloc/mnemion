@@ -32,6 +32,7 @@ import * as docs from "./documents";
 import * as served from "./served";
 import * as fed from "./federation";
 import * as reports from "./reports";
+import * as rel from "./relations";
 
 // === Constants ===
 
@@ -274,11 +275,8 @@ export class HiveDO extends DurableObject {
 
       // Superseded entries are annotated, never hidden — the chain stays navigable
       try {
-        const sup = this.db.exec(
-          `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
-          patternName, entryId
-        ).toArray() as any[];
-        if (sup.length > 0) result.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
+        const by = rel.supersededBy(this.db, patternName, entryId);
+        if (by) result.superseded_by = by;
       } catch { /* _links may not exist */ }
 
       // One-hop link following
@@ -518,7 +516,7 @@ export class HiveDO extends DurableObject {
           ...(result.possible_overlap ?? []),
           ...conflictCheck.neighbors.map(n => ({ ...n, reason: "semantic_similarity" })),
         ];
-        result.overlap_guidance = "Advisory only — the entry was created. If it duplicates or replaces an existing entry, consider updating that entry instead, or link supersession: mutate(pattern: \"link\", data: {source: \"" + patternName + "/" + result.entry?.id + "\", target: \"" + patternName + "/{old_id}\", label: \"supersedes\"}).";
+        result.overlap_guidance = "Advisory only — the entry was created. If it duplicates or replaces an existing entry, consider updating that entry instead, or link supersession: mutate(pattern: \"link\", data: {source: \"" + patternName + "/" + result.entry?.id + "\", target: \"" + patternName + "/{old_id}\", label: \"supersedes\"}) (supersedes is the kernel relation with the supersession behavior; link labels must name a declared relation — see " + uri("relations") + ").";
       }
       // Granular delta so the UI can patch one element instead of refetching the
       // whole pattern — the heart of "only the element the agent changed redraws".
@@ -768,6 +766,10 @@ export class HiveDO extends DurableObject {
       return this.getIndex();
     }
 
+    if (path === "relations") {
+      return JSON.stringify({ relations: rel.listRelations(this.db) }, null, 2);
+    }
+
     if (path === "history" || path.startsWith("history?")) {
       const params = new URLSearchParams(path.split("?")[1] || "");
       const limit = Number(params.get("limit")) || 20;
@@ -809,7 +811,7 @@ export class HiveDO extends DurableObject {
       return this.getMutationLog(tableName, limit);
     }
 
-    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
+    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("relations")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
   }
 
   // === Federated resolve: foreign hive URIs ===
@@ -945,16 +947,8 @@ export class HiveDO extends DurableObject {
         } catch { return null; }
       },
       supersededIds: (pattern, ids) => {
-        if (ids.length === 0) return new Set<number>();
-        try {
-          const placeholders = ids.map(() => "?").join(",");
-          return new Set(
-            this.db.exec(
-              `SELECT target_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id IN (${placeholders})`,
-              pattern, ...ids,
-            ).toArray().map((r: any) => r.target_id as number),
-          );
-        } catch { return new Set<number>(); }
+        try { return rel.supersededAmong(this.db, pattern, ids); }
+        catch { return new Set<number>(); }
       },
       facetMeta: (pattern) => {
         try {

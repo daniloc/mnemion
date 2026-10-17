@@ -16,6 +16,7 @@ import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { logWarn } from "../../shared/core/log";
 import { isKernelPattern, primeIncluded, seal } from "./policy";
+import { linksOf, supersededBy } from "./relations";
 
 // === Types ===
 
@@ -33,7 +34,21 @@ export interface PrimeResult {
   superseded_by?: string;
   entry: Record<string, unknown>;
   uri: string;
-  linked?: { pattern: string; id: number; entry: Record<string, unknown>; uri: string }[];
+  linked?: LinkedItem[];
+}
+
+/** One hop from an entry: a reference-facet target, or one active link. A link
+ *  item carries its `direction` ("out": the reader is the source; "in": the
+ *  target) and `relation`, the relation's name read from the reader's side (the
+ *  name out, the inverse in); `label` keeps the canonical name. */
+export interface LinkedItem {
+  pattern: string;
+  id: number;
+  entry: Record<string, unknown>;
+  uri: string;
+  label?: string;
+  direction?: "out" | "in";
+  relation?: string;
 }
 
 export interface MemoryPolicy {
@@ -334,14 +349,12 @@ export async function prime(
   for (const r of results) {
     let weight = 1;
 
-    // Superseded entries are demoted, not hidden — the chain stays navigable
+    // Superseded entries are demoted, not hidden — the chain stays navigable.
+    // "Superseded" is any relation declaring the supersession behavior (relations.ts).
     try {
-      const sup = ctx.db.exec(
-        `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
-        r.pattern, r.id
-      ).toArray() as { source_pattern: string; source_id: number }[];
-      if (sup.length > 0) {
-        r.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
+      const by = supersededBy(ctx.db, r.pattern, r.id);
+      if (by) {
+        r.superseded_by = by;
         weight *= SUPERSEDED_DEMOTION;
       }
     } catch { /* _links may not exist yet */ }
@@ -385,13 +398,15 @@ export function parseDbDate(s: string | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-/** Follow foreign key links one hop from an entry. */
+/** Follow an entry's connections one hop: reference facets, then every active
+ *  link in both directions — one item per link, so a pair carrying two relations
+ *  yields two items. */
 export function followLinks(
   ctx: PrimeContext,
   pattern: string,
   entry: Record<string, unknown>,
-): { pattern: string; id: number; entry: Record<string, unknown>; uri: string; label?: string }[] {
-  const linked: { pattern: string; id: number; entry: Record<string, unknown>; uri: string; label?: string }[] = [];
+): LinkedItem[] {
+  const linked: LinkedItem[] = [];
   const seen = new Set<string>();
 
   // 1. Schema-level foreign key references (single-value facets)
@@ -425,38 +440,29 @@ export function followLinks(
     } catch { /* target table may not exist */ }
   }
 
-  // 2. _links table (many-to-many, bidirectional)
+  // 2. _links (typed, directed): read from this entry's side via relations.ts
   const entryId = entry.id as number;
   if (entryId != null) {
     try {
-      const linkRows = ctx.db.exec(
-        `SELECT target_pattern, target_id, label FROM "_links" WHERE source_pattern = ? AND source_id = ? AND archived_at IS NULL
-         UNION ALL
-         SELECT source_pattern, source_id, label FROM "_links" WHERE target_pattern = ? AND target_id = ? AND archived_at IS NULL`,
-        pattern, entryId, pattern, entryId
-      ).toArray() as { target_pattern: string; target_id: number; label: string | null }[];
-
-      for (const link of linkRows) {
-        const key = `${link.target_pattern}:${link.target_id}`;
-        if (seen.has(key)) continue;
-        if (!ctx.patternExists(link.target_pattern)) continue;
-
+      for (const link of linksOf(ctx.db, pattern, entryId)) {
+        if (!ctx.patternExists(link.pattern)) continue;
         try {
           const rows = ctx.db.exec(
-            `SELECT * FROM ${quoteIdent(link.target_pattern)} WHERE id = ? AND archived_at IS NULL`,
-            link.target_id
+            `SELECT * FROM ${quoteIdent(link.pattern)} WHERE id = ? AND archived_at IS NULL`,
+            link.id
           ).toArray();
           if (rows.length > 0) {
-            seen.add(key);
             linked.push({
-              pattern: link.target_pattern,
-              id: link.target_id,
+              pattern: link.pattern,
+              id: link.id,
               // seal: linked rows ride into the prime / resolve response (and agent
               // transcripts) — strip secret + redact columns so a link target never
               // egresses a redact-classified column, same boundary as getEntry.
-              entry: seal(link.target_pattern, rows[0] as Record<string, unknown>),
-              uri: uri(`entry/${link.target_pattern}/${link.target_id}`),
-              label: link.label || undefined,
+              entry: seal(link.pattern, rows[0] as Record<string, unknown>),
+              uri: uri(`entry/${link.pattern}/${link.id}`),
+              label: link.label,
+              direction: link.direction,
+              relation: link.relation,
             });
           }
         } catch { /* target table may not exist */ }

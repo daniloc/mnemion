@@ -17,6 +17,7 @@ import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { parseDbDate, getMemoryPolicy } from "./prime";
 import { IMMUTABLE } from "./kernel";
+import { listRelations, supersededBy, type Relation } from "./relations";
 
 export interface ReportsContext {
   db: any;
@@ -41,6 +42,8 @@ export interface StoreIndex {
   charter: Record<string, string>;
   patterns: IndexPatternEntry[];
   guidance: string;
+  /** The active relation vocabulary — every label a link may carry (relations.ts). */
+  relations: Relation[];
 }
 
 export interface IndexPatternEntry {
@@ -117,6 +120,7 @@ export function getCurrentIndex(ctx: ReportsContext): StoreIndex {
     }),
     charter,
     guidance: meta.guidance,
+    relations: listRelations(ctx.db),
   };
 }
 
@@ -333,11 +337,8 @@ export async function getStaleEntries(ctx: ReportsContext, days?: number): Promi
           horizon_days: horizon,
         };
         try {
-          const sup = ctx.db.exec(
-            `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
-            pat.name, row.id
-          ).toArray() as any[];
-          if (sup.length > 0) item.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
+          const by = supersededBy(ctx.db, pat.name, row.id);
+          if (by) item.superseded_by = by;
         } catch { /* _links may not exist */ }
         stale.push(item);
       }
