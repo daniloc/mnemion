@@ -540,3 +540,242 @@ and a staged break has made the test fail.
 | Kernel seeding | `schema.ts:1060-1075` (model); boot oracles at `1100-1116` |
 | Agent docs | `src/system-docs/schema-evolution.md:48-55`, `memory-maintenance.md:11-49`, `http-io.md:61-101`, `conventions.md:17`; `tools.ts:22-105`; `session.ts:75-81`; `lexicon.json` |
 | Tests to revise or extend | `memory.test.ts` (supersession), `publications.test.ts:231`, `integrity-fixes.test.ts:66`, `hive.test.ts:141-162, 1461`, `formats.test.ts:44`, `data-is-destiny.test.ts:47` |
+
+## Interface (Phase 1)
+
+This appendix pins every shape the Phase 1 acceptance tests
+(`mnemion-js/src/__tests__/relations.test.ts`) assume. The implementer builds to
+it; a later auditor checks against it. Where the design above is silent, the
+choice is listed under "Choices made by the test author".
+
+### A. The `_relations` kernel pattern
+
+Write class **System** (`policy.test.ts` expects `_relations: WriteClass.System`):
+`mutate` create and update are refused with the usual "managed by the system"
+message. Owner `query` reads it. Kernel columns (`id`, `version`, `created_at`,
+`updated_at`, `archived_at`, `created_by`, `updated_by`) as on every pattern.
+
+| Column | SQLite type | Value |
+|---|---|---|
+| `name` | TEXT NOT NULL | The handle stored in `_links.label`. Unique among active rows. |
+| `inverse` | TEXT NOT NULL | Unique across every active `name` and `inverse`. |
+| `description` | TEXT NOT NULL | |
+| `source` | TEXT NOT NULL | JSON array of pattern names, or `["*"]`. |
+| `target` | TEXT NOT NULL | JSON array of pattern names, or `["*"]`. |
+| `cardinality` | TEXT NOT NULL | `"one"` or `"many"`; default `"many"`. |
+| `required` | INTEGER NOT NULL DEFAULT 0 | Phase 2. Always 0 in Phase 1. |
+| `behaviors` | TEXT NOT NULL DEFAULT `'[]'` | JSON array, a subset of the palette. |
+| `chain` | TEXT | Phase 2. NULL in Phase 1. |
+| `kernel` | INTEGER NOT NULL DEFAULT 0 | 1 for the seeded defaults. |
+| `legacy` | INTEGER NOT NULL DEFAULT 0 | 1 for a relation the legacy migration declared, until its description is amended. |
+
+A retired relation is an archived row (`archived_at` set). Its name may be
+declared again.
+
+The five kernel defaults are seeded with `kernel = 1`, `legacy = 0`,
+`source = target = ["*"]`, `cardinality = "many"`, a description of at least
+120 characters, and the inverse and behaviors in the Kernel defaults table,
+except that `part-of` carries `["acyclic"]` only. Boot refreshes their inverse,
+behaviors and description from code, and seeding is idempotent.
+
+`*` as a source means any user pattern. `*` as a target means any user pattern,
+`_documents` or `_web_cache`. No other kernel pattern is admitted on either end,
+and no kernel pattern is admitted as a source; that refusal's message contains
+`kernel pattern`.
+
+### B. Relation change types
+
+All three go through `proposeChange` then `applyChange`, and each is logged to
+`_schema_history` with `change_type` equal to its type.
+
+```jsonc
+// declare_relation
+{ "type": "declare_relation",
+  "name": "cites",                 // kebab-case: /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
+  "inverse": "cited-by",           // required
+  "description": "…",              // >= 120 chars, more than the name restated
+  "source": ["notes"],             // pattern names, or ["*"]
+  "target": ["papers"],            // pattern names, "_documents", "_web_cache", or ["*"]
+  "cardinality": "many",           // optional; "one" | "many"; default "many"
+  "behaviors": ["acyclic"] }       // optional; subset of BEHAVIOR_PALETTE; default []
+
+// amend_relation: name identifies the relation; every other field is optional
+{ "type": "amend_relation", "name": "cites",
+  "description": "…", "inverse": "…", "behaviors": [], "cardinality": "one" }
+
+// retire_relation
+{ "type": "retire_relation", "name": "cites" }
+```
+
+`declare_relation` refuses at propose, with an error message naming the
+offending part, when:
+
+- the name is not kebab-case or starts with `_`;
+- the name is already an active name or inverse;
+- the inverse is missing, equals the name, or is already an active name or
+  inverse;
+- the description is under 120 characters, or is the name (or inverse)
+  restated: removing every occurrence of them and the whitespace and
+  punctuation leaves no substantive text;
+- a listed pattern does not exist, a listed source is a kernel pattern, or a
+  listed target is a kernel pattern other than `_documents` or `_web_cache`;
+- a behavior is outside the palette; `containment` (and a `required: true` or a
+  `chain` field) is refused with a message containing `not yet supported`;
+- cardinality is not `one` or `many`.
+
+`amend_relation` refuses at propose when the relation does not exist or is a
+kernel default; when the payload carries `new_name` (the name is immutable);
+and on any field that fails the `declare_relation` rule for that field.
+Amending a relation's `description` sets `legacy` to 0.
+
+**Violations.** When an `amend_relation` (to cardinality `one`, or adding
+`acyclic`) or a `retire_relation` meets active links that would violate the
+result, propose still succeeds and returns them in `preview.violations`:
+
+```jsonc
+{ "violations": [ { "source": "notes/1", "target": "papers/2" /*, link id, label, reason as the implementer likes */ } ] }
+```
+
+`applyChange` re-checks against current data and returns `{ error: true, … }`
+while any violation remains, leaving the relation unchanged. A violator written
+between propose and apply also blocks the apply. For a retire, every active link
+using the relation is a violation. Kernel defaults cannot be amended or
+retired: propose refuses.
+
+### C. The link write chokepoint
+
+Both the `link` shortcut and raw `_links` create cross it. A refusal is
+`{ error: true, message }` authored by the engine: never `internal: true`, and
+never the raw text of a SQLite UNIQUE constraint.
+
+**Undeclared or missing label:**
+
+```jsonc
+{ "error": true,
+  "message": "… names each available relation … declare_relation …",
+  "available_relations": ["supersedes", "references", "depends-on", "derived-from", "part-of", "cites"] }
+```
+
+`available_relations` lists the canonical names of the active relations whose
+source admits the source entry's pattern and whose target admits the target
+entry's pattern. The message names each of them and contains `declare_relation`.
+A missing, `null` or empty label gets the same shape.
+
+**Inverse writes.** A label equal to an active relation's inverse is stored as
+that relation's name, with source and target swapped. Every later check
+(patterns, cardinality, acyclicity, uniqueness) judges the canonical row.
+
+**Uniqueness.** Over active links, (source, target, label) is unique. The old
+pair-only index `_links_pair_active` is gone, and an upgraded hive that still
+carries it loses it at boot.
+
+**Immutability.** `source_pattern`, `source_id`, `target_pattern`, `target_id`
+and `label` cannot be changed by `update` or `patch`, and neither can the `source`
+and `target` shorthands on update. The refusal message contains `immutable`.
+These fields go in `IMMUTABLE_AFTER_CREATE`, not `IMMUTABLE`: in this codebase
+`IMMUTABLE` refuses the field on create too. Unarchiving a link re-runs every
+create check against current data: active relation, active endpoints, patterns,
+cardinality, acyclicity and uniqueness.
+
+### D. Resolve direction
+
+`getEntry` and `resolve(mnemion://entry/…)` return `linked` items with two added
+fields:
+
+```jsonc
+{ "pattern": "notes", "id": 2, "uri": "…", "entry": { … },
+  "direction": "out",            // "out": the reader is the source; "in": the reader is the target
+  "relation": "depends-on" }     // the name for "out", the inverse for "in"
+```
+
+There is one linked item per active link. A pair carrying two relations yields
+two items. The existing `label` field may stay; it carries the canonical name.
+
+### E. Index and `mnemion://relations`
+
+`getIndex()` gains a top-level `relations` array, and
+`resolve("mnemion://relations")` returns `{ "relations": [...] }`. Both list the
+active relations as:
+
+```jsonc
+{ "name": "cites", "inverse": "cited-by", "description": "…",
+  "source": ["notes"], "target": ["papers"],  // parsed arrays, not JSON text
+  "cardinality": "many", "behaviors": [],     // parsed array
+  "kernel": false, "legacy": false }          // booleans
+```
+
+Retired relations are absent from both.
+
+### F. Legacy labels and the boot warning
+
+On boot, for each distinct label on active links that names no active relation:
+
+- `NULL` or empty labels are rewritten to `references`;
+- every other label is declared verbatim, even when it is not kebab-case.
+  `source` and `target` are the distinct source and target patterns of its
+  active links, `behaviors` is `[]`, `cardinality` is `many`, `kernel` is 0 and
+  `legacy` is 1. The description is a non-empty placeholder. The inverse is
+  implementation-chosen, non-empty, and unique across every name and inverse
+  (for example `<name>-inverse`).
+
+`supersedes` and the other kernel names already resolve to kernel defaults, so
+they are never declared again. Labels found only on archived links are not
+declared. The integrity sweep runs first, so no relation names a pattern that
+does not exist. The migration is idempotent.
+
+The boot warning is observable as a `console.warn` during `initializeSchema`,
+directly or through `logWarn`. Its text contains `legacy` and the name of every
+relation with `legacy = 1`. It does not name a relation whose description has
+been amended. The warning is built from a pure findings function in
+`relations.ts`, in the style of `findUnclassifiedSensitiveColumns`.
+
+### G. Integrity sweep and GC
+
+At boot, an active link is archived when its source or target pattern does not
+exist, its entry row does not exist, or its entry is archived. One exception: a
+link whose target is an archived `_web_cache` row stays, because that row is a
+superseded snapshot the link protects (§4a).
+
+The `_web_cache` GC skips any row that is the target of an active link. This is
+derived in the GC query; there is no stored flag.
+
+### H. `entities/Hive/relations.ts`
+
+The module exports `BEHAVIOR_PALETTE`, a table (an object, not an array) keyed
+by behavior name. In Phase 1 its keys are exactly `supersession` and `acyclic`.
+It is the only worker source file allowed to filter `_links` on a label literal,
+or to compare a label to a relation name in code.
+
+`PrimeContext` stays `{ env, db, patternExists }`. Supersession lookups read
+`_relations` through the `db` it is handed.
+
+### Choices made by the test author
+
+1. **Archived `_web_cache` targets survive the integrity sweep** (G). The brief
+   says the sweep archives links to archived endpoints. The GC deletes only
+   archived cache rows, so without this exception the §4a protection would
+   last a single boot.
+2. **Unlabeled legacy links become `references`** (F). Relation declaration
+   totality requires every active link to name a relation, and `references`
+   is the link that asserts nothing structural.
+3. **Violations are previewed, then refused at apply** (B), the same shape for
+   amend and retire as the doc gives for `required`. Apply re-checks.
+4. **Kernel endpoint refusals say `kernel pattern`.** The existing
+   `integrity-fixes.test.ts` case links to `_members/1` with an undeclared
+   label and expects `/kernel pattern/`. To keep it green, the kernel-endpoint
+   check runs before label resolution.
+5. **JSON-array TEXT** for `source`, `target` and `behaviors`. This matches
+   `_fields.options` and `memory_policy`. The read surfaces (E) return parsed
+   arrays.
+6. **`*` is stored as `["*"]`**, not as a bare string.
+7. **`available_relations`** is the structured field on the
+   undeclared-label refusal, mirroring the clipboard `violations` model. Its
+   contents are canonical names only.
+8. **One linked item per link** in resolve (D), so a second relation on the
+   same pair is visible.
+9. **`relation`** is the new reader-side field name. `label` keeps the
+   canonical name for compatibility.
+10. **Legacy cardinality is `many`** and legacy labels are declared verbatim,
+    so the hive stays writable on the first deploy.
+11. **Amend refuses `new_name`** to make "the name is immutable" testable.
+    Source and target are not amendable in Phase 1, though no test pins that.

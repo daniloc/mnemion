@@ -46,6 +46,7 @@ const EXPECTED: Record<string, WriteClass> = {
   _long_term_fragments: WriteClass.Open,
   // System-only — never agent-writable
   _web_cache: WriteClass.System,
+  _relations: WriteClass.System, // relation vocabulary: written only via declare/amend/retire_relation
   _fragment_access_log: WriteClass.System,
   _entry_access_log: WriteClass.System,
   _mutation_log: WriteClass.System,
