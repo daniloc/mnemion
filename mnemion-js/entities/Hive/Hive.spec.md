@@ -58,6 +58,17 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: commit-ordered-effects dismissed: egress sealing does not schedule a post-commit effect
   checklist: circuit-breaker-policy dismissed: sealing makes no remote call
   checklist: declared-target-coverage declared as egress-sensitivity totality
+- boot sensitive-column oracle: The boot check for unclassified secret-shaped columns reads every kernel-like table it can and reports every table it cannot, so no refused table silences it; only the declared platform tables are exempt.
+  over: every _-prefixed table at boot, with a real _cf_METADATA present, a planted unclassified column, and a non-platform table whose PRAGMA is refused; the platform allow-list PLATFORM_RESERVED_TABLES (exactly _cf_METADATA); and the _cf_ prefix across KERNEL_TABLES, boot DDL, _objects and user pattern names
+  via: boot sensitive-column oracle
+  because: A check that fails silent is worse than none; one platform table refusing PRAGMA once a PITR bookmark existed silenced the whole oracle in production, so an unclassified secret column could ship unseen.
+  kinds: credential
+  checklist: capability-authorization dismissed: the oracle classifies columns at boot; callers are authorized elsewhere
+  checklist: revalidated-permission dismissed: no permission is checked or cached by the oracle
+  checklist: message-authenticity dismissed: the oracle reads local schema, not a peer message
+  checklist: encrypted-storage dismissed: the oracle reports classification gaps; it does not encrypt storage
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: separation-of-duties dismissed: the oracle grants no actor privileges
 - pattern-effects totality: Every effect-bearing pattern has a composed post-mutate effect.
   over: every effect-bearing pattern in the composed feature set
   via: pattern-effects totality
