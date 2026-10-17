@@ -208,8 +208,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: capability-authorization dismissed: this rule selects a URL host after the capability has been granted
   checklist: canonical-encoding dismissed: it selects a configured host; URL encoding is applied by the URL builder
   checklist: identity-continuity declared as instance-identity host
-- relation declaration totality: Every active link's label names an active relation, and its endpoints satisfy that relation's source, target and cardinality.
-  over: every active _links row against every active _relations row, after admitted and refused link writes and after the legacy-label migration (inverse rewrite, generated inverses, sweep) on its first boot
+- relation declaration totality: Every active link carries a label that names exactly one active relation, and its endpoints satisfy that relation's source, target and cardinality.
+  over: every active _links row against every active _relations row (names and inverses unique, no unlabeled link, endpoint rows present), after admitted and refused link writes and after the legacy-label migration on its first boot, including order-independent generated inverses, the inverse rewrite before the sweep, and the one DDL-nullable kernel facet (_links.label) with no schema drift
   via: relation declaration totality
   because: A free-text label let the edge vocabulary drift and let a link join any two patterns; an undeclared label must be refused, not stored.
   crossing: agent-mcp -> storage
@@ -241,7 +241,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage dismissed: the rule is over the fields of one link, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - behavior by declaration: A relation behavior takes effect because a relation declares it, and no worker source outside the relations module filters links on a label literal.
-  over: every worker source file outside entities/Hive/relations.ts (no literal equal to a kernel relation name or inverse except declared seed-data files; no label comparison in a file that queries _links), and every supersession reader (getEntry, resolve, the stale view, publications, prime) driven by a hive-declared relation
+  over: every worker source file outside entities/Hive/relations.ts (no literal equal to a kernel relation name or inverse except declared seed-data files; no label comparison, quoted or not, in a file that queries _links, schema-qualified or not; no reference to KERNEL_RELATIONS or BEHAVIOR_PALETTE), and every supersession reader (getEntry, resolve, the stale view, publications, prime) driven by a hive-declared relation
   via: behavior by declaration
   because: Supersession meant five copies of label = 'supersedes', the guard-at-every-call-site pattern that fails open at the next copy.
   kinds: storage

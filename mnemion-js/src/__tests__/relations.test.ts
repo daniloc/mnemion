@@ -17,7 +17,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, vi } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
-import { initializeSchema } from "../../entities/Hive/schema";
+import { initializeSchema, KERNEL_TABLES } from "../../entities/Hive/schema";
 import { prime, type PrimeContext } from "../../entities/Hive/prime";
 // This file reads its own source to prove each palette behavior names a describe that
 // exists. A ?raw default import, not import.meta.glob: Vite drops the importing file
@@ -244,7 +244,8 @@ async function rowExists(store: Store, pattern: string, id: number): Promise<boo
 
 /**
  * The relation-declaration-totality oracle, evaluated over the live tables:
- * every ACTIVE link's label names an ACTIVE relation, its endpoints satisfy that
+ * every active name and inverse is unique (so a label names exactly one relation),
+ * no active link is unlabeled, every ACTIVE link's label names an ACTIVE relation, its endpoints satisfy that
  * relation's source/target, both endpoint rows EXIST (present in their pattern's
  * table; an archived entry or pattern still exists, which makes the link dormant,
  * not dangling), and a cardinality-`one` relation holds at most one active link per
@@ -254,6 +255,12 @@ async function totalityViolations(store: Store): Promise<string[]> {
   const rels = await sql(store, `SELECT * FROM "_relations" WHERE archived_at IS NULL`);
   const byName = new Map(rels.map((r) => [r.name as string, r]));
   const out: string[] = [];
+  // A label must name exactly one relation: names and inverses share one vocabulary.
+  const owners = new Map<string, string[]>();
+  for (const r of rels) for (const h of [r.name, r.inverse]) owners.set(h, [...(owners.get(h) ?? []), `${r.name}.${h === r.name ? "name" : "inverse"}`]);
+  for (const [h, who] of owners) if (who.length > 1) out.push(`vocabulary handle "${h}" is claimed by ${who.join(", ")}`);
+  const nullLabels = (await sql(store, `SELECT id FROM "_links" WHERE archived_at IS NULL AND (label IS NULL OR trim(label) = '')`)).map((r) => r.id);
+  if (nullLabels.length) out.push(`active links with no label: ${nullLabels.join(", ")}`);
   const perSource = new Map<string, number>();
   for (const l of await activeLinks(store)) {
     const tag = `link ${l.id} ${l.source_pattern}/${l.source_id} -[${l.label}]-> ${l.target_pattern}/${l.target_id}`;
@@ -585,53 +592,6 @@ describe("legacy label migration", () => {
       expect(text).toContain("ethos-grounds");   // still legacy
       expect(text).not.toContain("refines");     // paid down
     } finally { warn2.mockRestore(); }
-  });
-
-  it("generated inverses never collide with an in-use label, whatever order the labels arrive in", async () => {
-    for (const order of [["bar-inverse", "bar"], ["bar", "bar-inverse"]]) {
-      const store = getStore();
-      await createPattern(store, "notes");
-      const a = await entry(store, "notes", "a"), b = await entry(store, "notes", "b"), c = await entry(store, "notes", "c");
-      await runInDurableObject(store, (_i, state) => {
-        const ins = (s: number, t: number, label: string) => state.storage.sql.exec(
-          `INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, 'notes', ?, ?)`, s, t, label);
-        ins(a, b, order[0]); // inserted FIRST
-        ins(b, c, order[1]);
-      });
-      await boot(store);
-      const all = await sql(store, `SELECT name, inverse FROM "_relations" WHERE archived_at IS NULL`);
-      expect(all.map((r) => r.name)).toEqual(expect.arrayContaining(["bar", "bar-inverse"]));
-      const vocab = all.flatMap((r) => [r.name, r.inverse]);
-      const names = new Set(all.map((r) => r.name));
-      expect(all.filter((r) => names.has(r.inverse)), `order ${order.join(", ")}: an inverse equals a name`).toEqual([]);
-      expect(new Set(vocab).size, `order ${order.join(", ")}: names and inverses are unique`).toBe(vocab.length);
-      expect(await totalityViolations(store)).toEqual([]);
-    }
-  });
-
-  it("an inverse-worded legacy link that canonicalizes onto a kernel source is swept in the same boot; a second boot changes nothing", async () => {
-    const store = getStore();
-    const { n1, n2 } = await world(store);
-    const doc = await insertDocument(store, "legacy citation");
-    const id = await runInDurableObject(store, (_i, state) => {
-      const db = state.storage.sql;
-      // notes/n1 referenced-by _documents/doc  ==  _documents/doc references notes/n1
-      db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, '_documents', ?, 'referenced-by')`, n1, doc);
-      const linkId = (db.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
-      // An inverse-worded link that canonicalizes onto sound ends, for contrast.
-      db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, 'notes', ?, 'required-by')`, n1, n2);
-      return linkId;
-    });
-
-    await boot(store);
-    expect(await totalityViolations(store), "relation declaration totality holds after the FIRST boot").toEqual([]);
-    expect((await linkRow(store, id)).archived_at, "the kernel-source link is swept in the same boot").not.toBeNull();
-    const sound = await sql(store, `SELECT * FROM "_links" WHERE archived_at IS NULL AND label = 'depends-on'`);
-    expect(sound.map((l) => `${l.source_pattern}/${l.source_id}->${l.target_pattern}/${l.target_id}`)).toEqual([`notes/${n2}->notes/${n1}`]);
-
-    const first = await edgeSnapshot(store);
-    await boot(store);
-    expect(await edgeSnapshot(store), "a second boot changes nothing").toEqual(first);
   });
 
   it("an upgraded hive loses the pair-only unique index: one pair may carry several relations", async () => {
@@ -1038,6 +998,38 @@ const RELATIONS_MODULE_PATH = "../../entities/Hive/relations.ts";
 
 /** Bodies of every string / template literal in `src`, comments skipped. A small
  *  tokenizer (not a regex) so backticks inside comments cannot mis-pair literals. */
+/** `src` with line and block comments removed; string and template literals kept. */
+function codeWithoutComments(src: string): string {
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i], d = src[i + 1];
+    if (c === "/" && d === "/") { const j = src.indexOf("\n", i); i = j < 0 ? n : j; continue; }
+    if (c === "/" && d === "*") { const j = src.indexOf("*/", i + 2); i = j < 0 ? n : j + 2; continue; }
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1, depth = 0;
+      while (j < n) {
+        const ch = src[j];
+        if (ch === "\\") { j += 2; continue; }
+        if (c === "`") {
+          if (depth === 0 && ch === "`") break;
+          if (ch === "$" && src[j + 1] === "{") { depth++; j += 2; continue; }
+          if (depth > 0 && ch === "{") depth++;
+          if (depth > 0 && ch === "}") depth--;
+        } else if (ch === c || ch === "\n") break;
+        j++;
+      }
+      out += src.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
 function stringLiterals(src: string): string[] {
   const out: string[] = [];
   let i = 0;
@@ -1176,9 +1168,14 @@ describe("behavior by declaration", () => {
   //      or names no table at all (a fragment concatenated onto a `_links` query).
   //      A `label` comparison on another table (e.g. `_members WHERE label = ?`)
   //      names its table and is allowed.
+  //   3. No code (comments skipped) refers to KERNEL_RELATIONS or BEHAVIOR_PALETTE:
+  //      reading the vocabulary's names out of the relations module to filter on
+  //      them elsewhere is the same literal, one indirection removed.
   const SEED_DATA_FILES = new Set(["../../shared/core/dev-seed.ts"]);
-  const LINKS_SQL = /\b(?:FROM|INTO|UPDATE|JOIN)\s+"?_links"?(?!\w)/i;
-  const LABEL_CMP = /\blabel\s*(?:=|==|!=|<>|\bIN\b|\bLIKE\b|\bGLOB\b|\bIS\b)/i;
+  // Table may be quoted and schema-qualified (main._links, "main"."_links");
+  // the column may be quoted ("label", `label`).
+  const LINKS_SQL = /\b(?:FROM|INTO|UPDATE|JOIN)\s+(?:["`]?\w+["`]?\.)?["`]?_links["`]?(?!\w)/i;
+  const LABEL_CMP = /["`]?\blabel\b["`]?\s*(?:=|==|!=|<>|\bIN\b|\bLIKE\b|\bGLOB\b|\bIS\b)/i;
   const TABLE_REF = /\b(?:FROM|INTO|UPDATE|JOIN)\s+["`]?[\w$]/i;
 
   it("no worker source outside the relations module names a kernel relation in a literal", () => {
@@ -1212,6 +1209,16 @@ describe("behavior by declaration", () => {
           offenders.push(`${path}: ${lit.replace(/\s+/g, " ").slice(0, 160)}`);
     }
     expect(querying, "at least one file outside the relations module queries _links (the rule is exercised)").toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
+
+  it("no worker source outside the relations module reaches into KERNEL_RELATIONS or BEHAVIOR_PALETTE", () => {
+    const offenders: string[] = [];
+    for (const [path, src] of Object.entries(WORKER_SOURCES)) {
+      if (path === RELATIONS_MODULE_PATH) continue;
+      for (const m of codeWithoutComments(src).matchAll(/\b(?:KERNEL_RELATIONS|BEHAVIOR_PALETTE)\b/g))
+        offenders.push(`${path}: ${m[0]}`);
+    }
     expect(offenders).toEqual([]);
   });
 });
@@ -1931,6 +1938,74 @@ describe("palette totality", () => {
 // =====================================================================
 
 describe("relation declaration totality", () => {
+  // Boot-order guards (moved here from "legacy label migration" so a regression
+  // turns this requirement red): generated inverses are order-independent, and
+  // the inverse rewrite runs before the sweep.
+  it("generated inverses never collide with an in-use label, whatever order the labels arrive in", async () => {
+    for (const order of [["bar-inverse", "bar"], ["bar", "bar-inverse"]]) {
+      const store = getStore();
+      await createPattern(store, "notes");
+      const a = await entry(store, "notes", "a"), b = await entry(store, "notes", "b"), c = await entry(store, "notes", "c");
+      await runInDurableObject(store, (_i, state) => {
+        const ins = (s: number, t: number, label: string) => state.storage.sql.exec(
+          `INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, 'notes', ?, ?)`, s, t, label);
+        ins(a, b, order[0]); // inserted FIRST
+        ins(b, c, order[1]);
+      });
+      await boot(store);
+      const all = await sql(store, `SELECT name, inverse FROM "_relations" WHERE archived_at IS NULL`);
+      expect(all.map((r) => r.name)).toEqual(expect.arrayContaining(["bar", "bar-inverse"]));
+      const vocab = all.flatMap((r) => [r.name, r.inverse]);
+      const names = new Set(all.map((r) => r.name));
+      expect(all.filter((r) => names.has(r.inverse)), `order ${order.join(", ")}: an inverse equals a name`).toEqual([]);
+      expect(new Set(vocab).size, `order ${order.join(", ")}: names and inverses are unique`).toBe(vocab.length);
+      expect(await totalityViolations(store)).toEqual([]);
+    }
+  });
+
+  it("an inverse-worded legacy link that canonicalizes onto a kernel source is swept in the same boot; a second boot changes nothing", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    const doc = await insertDocument(store, "legacy citation");
+    const id = await runInDurableObject(store, (_i, state) => {
+      const db = state.storage.sql;
+      // notes/n1 referenced-by _documents/doc  ==  _documents/doc references notes/n1
+      db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, '_documents', ?, 'referenced-by')`, n1, doc);
+      const linkId = (db.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+      // An inverse-worded link that canonicalizes onto sound ends, for contrast.
+      db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, 'notes', ?, 'required-by')`, n1, n2);
+      return linkId;
+    });
+
+    await boot(store);
+    expect(await totalityViolations(store), "relation declaration totality holds after the FIRST boot").toEqual([]);
+    expect((await linkRow(store, id)).archived_at, "the kernel-source link is swept in the same boot").not.toBeNull();
+    const sound = await sql(store, `SELECT * FROM "_links" WHERE archived_at IS NULL AND label = 'depends-on'`);
+    expect(sound.map((l) => `${l.source_pattern}/${l.source_id}->${l.target_pattern}/${l.target_id}`)).toEqual([`notes/${n2}->notes/${n1}`]);
+
+    const first = await edgeSnapshot(store);
+    await boot(store);
+    expect(await edgeSnapshot(store), "a second boot changes nothing").toEqual(first);
+  });
+
+
+  it("the only kernel facet nullable in DDL is _links.label, and boot leaves no active link unlabeled", async () => {
+    const nullable = KERNEL_TABLES.flatMap((t) => t.facets.filter((f: any) => f.nullableInDdl).map((f) => `${t.name}.${f.name}`));
+    expect(nullable).toEqual(["_links.label"]);
+
+    const store = getStore();
+    await seedLegacyLinks(store); // includes an unlabeled pre-registry link
+    await boot(store);
+    expect(await sql(store, `SELECT id FROM "_links" WHERE archived_at IS NULL AND (label IS NULL OR trim(label) = '')`)).toEqual([]);
+  });
+
+  it("a fresh boot reports no schema integrity drift", async () => {
+    const store = getStore();
+    await world(store);
+    const lines = await warnLines(() => boot(store));
+    expect(lines.filter((l) => /schema integrity drift/i.test(l))).toEqual([]);
+  });
+
   it("holds after any mix of admitted and refused link writes", async () => {
     const store = getStore();
     const { n1, n2, n3, p1, p2 } = await world(store);

@@ -645,6 +645,11 @@ offending part, when:
   `description`, `source` or `target`. A `null` is never read as "use the
   default", and the refusal is engine-authored, never SQLite text.
 
+`checkNoNulls` in `relations.ts` is a message-quality guard: it makes a
+`null` refusal name the field. It is not an independent enforcement point. The
+per-field rules refuse a `null` on their own, and the tests pin the refusal,
+not this helper.
+
 `amend_relation` refuses at propose when the relation does not exist or is a
 kernel default; when the payload carries `new_name` (the name is immutable);
 and on any field that fails the `declare_relation` rule for that field. That
@@ -829,7 +834,22 @@ Link creation and link unarchive still require active endpoints (section C).
 An archived `_web_cache` snapshot is simply a dormant link's target.
 
 The relation-declaration-totality oracle requires each active link's endpoint
-rows to exist, not to be active.
+rows to exist, not to be active. It also requires every active name and inverse
+to be unique, so a label names exactly one relation, and no active link to be
+unlabeled. The boot-order guards from §F (order-independent generated inverses,
+and the rewrite before the sweep) sit in its describe, so a regression in
+either turns the requirement red.
+
+**`_links.label` and `nullableInDdl`.** `_links.label` is declared required in
+`_fields` but nullable in the table DDL, so pre-registry rows with a `NULL`
+label still load and the migration can rewrite them to `references`. The facet
+flag `nullableInDdl` lets `verifyFieldsIntegrity` accept that one mismatch. The
+contract pins three things:
+
+- the set of kernel facets carrying `nullableInDdl` is exactly
+  `{_links.label}`;
+- a fresh boot emits no "schema integrity drift" warning line;
+- no active `_links` row has a `NULL` or empty label after boot.
 
 The `_web_cache` GC skips any row that is the target of an active link,
 dormant or not. The 30-day archived-pattern drop skips any archived pattern
@@ -854,11 +874,30 @@ file, reading string and template literal bodies with comments skipped:
    are the declared exception, since their labels are data, not behavior. Today
    that is `shared/core/dev-seed.ts`.
 2. **No label comparisons near `_links`.** A file whose SQL touches `_links`
-   (`FROM`/`INTO`/`UPDATE`/`JOIN "_links"`) holds no literal comparing `label`
-   (`=`, `!=`, `<>`, `IN`, `LIKE`, `GLOB` or `IS`) when that literal either
-   mentions `_links` or names no table at all, as a fragment would. A `label`
+   holds no literal comparing `label` (`=`, `!=`, `<>`, `IN`, `LIKE`, `GLOB` or
+   `IS`) when that literal either mentions `_links` or names no table at all, as
+   a fragment would. "Touches" means `FROM`, `INTO`, `UPDATE` or `JOIN` on the
+   table, quoted or not and schema-qualified or not (`main._links`,
+   `"main"."_links"`). The column may be quoted (`"label"`). A `label`
    comparison that names another table, such as `_members WHERE label = ?`, is
    allowed.
+3. **No reaching into the vocabulary.** No code outside the relations module
+   refers to `KERNEL_RELATIONS` or `BEHAVIOR_PALETTE`; comments are skipped.
+   Reading the vocabulary's names out of the module to filter on them
+   elsewhere is the same literal, one indirection removed. Tests may import
+   both.
+
+The three rules pass the current tree with no false positives. Six evasions
+were each proven to turn them red, by appending the evasion, running the tests
+and restoring the file byte for byte (`cmp`):
+
+- E1: a bound parameter;
+- E2: a split literal;
+- E3: `[SUP].includes`;
+- E4: a quoted `"label" = ?` with `"super" + "sedes"` bound;
+- E5: `FROM main._links … label = ?` bound to an imported
+  `KERNEL_RELATIONS[0].name`;
+- E6: `l.label === KERNEL_RELATIONS[0].name`.
 
 `PrimeContext` stays `{ env, db, patternExists }`. Supersession lookups read
 `_relations` through the `db` it is handed.
