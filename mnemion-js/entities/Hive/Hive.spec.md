@@ -344,3 +344,17 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: the rule is over one pair's links, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write
+- migration restore point: The first boot that runs the relations migration records exactly one restore_point history row whose bookmark was captured before any migration step touched data, and reverting it hands exactly that bookmark to the existing restore path.
+  over: a pre-migration hive booted through the HiveDO constructor with the bookmark available and unavailable, repeated boots, the order of the capture against every migration effect (relations table creation, pair-index drop, relations writes, link rewrites), and revert of the recorded row
+  via: restore point
+  because: Deploying Phase 1 rewrites links and drops an index; without a bookmark taken before that boot there is no exact way to undo the deploy.
+  kinds: storage
+  checklist: scoped-reads dismissed: the rule records a restore point at boot; it is not a read path
+  checklist: encrypted-storage dismissed: a PITR bookmark is an opaque position, not confidential data
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation dismissed: boot admits no input
+  checklist: revision-preservation declared as migration restore point
+  checklist: commit-ordered-effects declared as migration restore point
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: one migration, one restore point
+  checklist: completion-evidence dismissed: the row is written synchronously during boot

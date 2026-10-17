@@ -411,6 +411,29 @@ of a connection is the content. Each is limited to the patterns that use it.
   seeded with `acyclic` and gains `containment` in Phase 2, so no behavior is
   declared before the engine performs it.
 
+- **A restore point before the migration.** On the first boot that runs the
+  relations migration, the hive captures a PITR bookmark before any v17 step
+  touches data. It records it as one `_schema_history` row with `change_type`
+  `restore_point`, so the deploy can be undone exactly (appendix §J).
+
+**Rolling back Phase 1.** First find the `restore_point` entry in
+`mnemion://history`. Revert it with the existing revert path: over MCP, call
+`apply_change` with `revert_history_id: <that id>`. It is a consent round-trip,
+so call it once, then again to confirm. There is no HTTP revert route today. The
+revert restores the whole Durable Object (data and schema) to the moment
+before the migration's first boot; anything written since is lost. Then
+`wrangler rollback` the worker to the pre-Phase-1 version, so the old code
+doesn't boot over the restored state and migrate it again. If the bookmark was
+unavailable (the row's `bookmark` is NULL), the revert returns "Rollback
+unavailable" and only the worker rollback applies.
+
+**Caveat.** The old code's boot recreates the pair-only unique index
+`_links_pair_active`. If any pair carries two active relations, creating that
+index fails at boot. Restoring the bookmark avoids this, since it returns the
+data to its pre-migration state. If you skip the restore and only roll the
+worker back, roll back before any pair carries two relations, or archive the
+extra links first.
+
 ### Phase 2: composition and atomic writes (code)
 
 - `required` relations and the `containment` behavior, including upward-only
@@ -958,6 +981,55 @@ optionally, one relation. The tests drive it through the `unlink` shortcut.
   relation on the same pair, or a link on the reverse pair.
 
 All refusals are clean, as defined in section C.
+
+### J. Restore point before the relations migration
+
+**First run** means the `_relations` table does not exist in `sqlite_master`
+when boot starts. That is true of a pre-Phase-1 hive and of a brand-new hive.
+On that boot, inside the `HiveDO` constructor's `blockConcurrencyWhile`:
+
+1. `ctx.storage.getCurrentBookmark()` is called before any v17 step touches
+   data. That means before `_relations` is created, before
+   `_links_pair_active` is dropped, before any `_relations` write (seed,
+   legacy declaration) and before any `_links` update (rewrite, sweep).
+2. Boot then runs as usual.
+3. Exactly one `_schema_history` row is recorded:
+
+   ```jsonc
+   { "change_type": "restore_point",
+     "description": "Restore point before the relations registry migration (v17)",  // must mention "restore point" and "relations"
+     "bookmark": "<the captured bookmark>",      // NULL when unavailable
+     "change_detail": "…" }                      // implementation's choice
+   ```
+
+Later boots find `_relations` present and record nothing, so the step is
+idempotent. When `getCurrentBookmark` throws or is unavailable, as in local dev
+and tests, the row is still recorded with `bookmark` NULL and boot never
+fails.
+
+**Revert** uses the existing path, `HiveDO.revertChange(historyId)`, which is
+`evo.revertChange`. It hands exactly the stored bookmark to
+`ctx.storage.onNextSessionRestoreBookmark`, calls `ctx.abort()`, and returns
+`{ reverted: true, … }`. A NULL bookmark returns the existing "No PITR bookmark
+stored … Rollback unavailable" error, without calling the restore hook or
+aborting. No new revert mechanism is introduced.
+
+**How the tests observe it.** The tests construct a real `HiveDO` on the Durable
+Object's own state. For the constructor and the instance's later calls, they
+patch these as own properties, then restore the original descriptors:
+
+- `storage.getCurrentBookmark`, `storage.onNextSessionRestoreBookmark` and
+  `storage.sql` (wrapped to record v17 statements in order);
+- `state.blockConcurrencyWhile` and `state.abort`.
+
+So the implementation must capture the bookmark through `ctx.storage`, write
+SQL through `ctx.storage.sql`, and do it from the constructor's boot.
+
+**Side effect, noted for review:** a brand-new hive also records a restore point
+on its first boot. That makes `_schema_history` non-empty from birth, and the
+maintenance nag reads the hive's birth as `MIN(created_at)` over that table.
+For a hive with no earlier history, the restore point's time becomes its birth.
+That is the same moment a fresh hive is born, so the nag is unaffected.
 
 ### Choices made by the test author
 

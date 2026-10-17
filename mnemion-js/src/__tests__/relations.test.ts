@@ -16,7 +16,7 @@
 // assertions) before that module exists.
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, vi } from "vitest";
-import type { HiveDO } from "../../entities/Hive/hive";
+import { HiveDO } from "../../entities/Hive/hive";
 import { initializeSchema, KERNEL_TABLES } from "../../entities/Hive/schema";
 import { prime, type PrimeContext } from "../../entities/Hive/prime";
 // This file reads its own source to prove each palette behavior names a describe that
@@ -1971,6 +1971,162 @@ describe("linked targets survive GC", () => {
     expect((await mut(store, "_links", "archive", { id: linkId })).error).toBeUndefined();
     await boot(store);
     expect(await ids(), "archiving the link makes the row collectable again").not.toContain(linked);
+  });
+});
+
+// =====================================================================
+// Restore point: the first v17 boot records a PITR bookmark before touching data
+// =====================================================================
+
+/** What a constructed HiveDO did while booting on a wrapped state. */
+interface BootTrace { events: string[]; restored: string[]; unpatch?: () => void }
+
+/** Classify a SQL statement as a v17 (relations migration) effect, or null. */
+function v17Effect(q: string): string | null {
+  if (/DROP\s+INDEX[^;]*_links_pair_active/i.test(q)) return "v17:drop-pair-index";
+  if (/CREATE\s+TABLE[^(]*"?_relations"?\s*\(/i.test(q)) return "v17:create-relations";
+  if (/INSERT\s+INTO\s+"?_relations"?/i.test(q)) return "v17:write-relations";
+  if (/UPDATE\s+"?_links"?\s+SET/i.test(q)) return "v17:update-links";
+  return null;
+}
+
+/**
+ * Construct a real HiveDO on this DO's own storage (so its constructor runs the
+ * whole boot sequence), with three storage hooks stubbed: getCurrentBookmark
+ * (returns or throws per `bookmark`), onNextSessionRestoreBookmark, and abort.
+ * Every SQL statement that is a v17 effect is recorded in order beside the
+ * "bookmark" capture, so tests can prove the capture came first.
+ */
+async function bootWith(state: DurableObjectState, bookmark: () => string, trace: BootTrace): Promise<HiveDO> {
+  // The runtime only accepts a real DurableObjectState, so the hooks are patched
+  // onto this DO's own state/storage for the duration of the constructor (and
+  // the returned instance's later calls); `unpatch` restores each original
+  // property descriptor exactly.
+  const storage = state.storage as any;
+  const sqlReal = storage.sql;
+  const sql = new Proxy(sqlReal, {
+    get(t, k) {
+      if (k === "exec") return (q: string, ...p: unknown[]) => { const e = v17Effect(q); if (e) trace.events.push(e); return t.exec(q, ...p); };
+      const v = t[k];
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  const pending: Promise<unknown>[] = [];
+  const saved: [any, string, PropertyDescriptor | undefined][] = [];
+  const patch = (o: any, k: string, d: PropertyDescriptor) => {
+    saved.push([o, k, Object.getOwnPropertyDescriptor(o, k)]);
+    Object.defineProperty(o, k, { configurable: true, ...d });
+  };
+  patch(storage, "sql", { get: () => sql });
+  patch(storage, "getCurrentBookmark", { value: async () => { trace.events.push("bookmark"); return bookmark(); } });
+  patch(storage, "onNextSessionRestoreBookmark", { value: async (b: string) => { trace.restored.push(b); return b; } });
+  patch(state, "blockConcurrencyWhile", { value: (fn: () => Promise<unknown>) => { const p = Promise.resolve().then(fn); pending.push(p); return p; } });
+  patch(state, "abort", { value: () => { trace.events.push("abort"); } });
+  trace.unpatch = () => {
+    for (const [o, k, d] of saved.reverse()) {
+      if (d) Object.defineProperty(o, k, d); else delete o[k];
+    }
+  };
+  const hive = new HiveDO(state, env);
+  await Promise.all(pending);
+  return hive;
+}
+
+/** Boot on patched hooks, run `body` with the instance and its trace, always unpatch. */
+async function booted<T>(state: DurableObjectState, bookmark: () => string, body: (hive: HiveDO, trace: BootTrace) => Promise<T>): Promise<T> {
+  const trace: BootTrace = { events: [], restored: [] };
+  try {
+    const hive = await bootWith(state, bookmark, trace);
+    return await body(hive, trace);
+  } finally { trace.unpatch?.(); }
+}
+
+/** Put this hive back in its pre-v17 shape: no `_relations` (table, metadata or
+ *  history), the old pair-only unique index, and some links worth migrating. */
+function makePreV17(db: any) {
+  db.exec(`DELETE FROM _schema_history WHERE change_type = 'restore_point'`);
+  db.exec(`DROP TABLE IF EXISTS "_relations"`);
+  db.exec(`DELETE FROM _fields WHERE object_name = '_relations'`);
+  db.exec(`DELETE FROM _objects WHERE name = '_relations'`);
+  db.exec(`DROP INDEX IF EXISTS "_links_pair_active"`);
+  db.exec(`CREATE UNIQUE INDEX "_links_pair_active" ON "_links" ("source_pattern", "source_id", "target_pattern", "target_id") WHERE archived_at IS NULL`);
+}
+
+const restorePoints = (db: any) =>
+  db.exec(`SELECT * FROM _schema_history WHERE change_type = 'restore_point' ORDER BY id`).toArray() as any[];
+
+describe("restore point", () => {
+  async function preV17Store() {
+    const store = getStore();
+    await seedLegacyLinks(store); // pre-registry links: unlabeled, legacy labels, supersedes
+    await runInDurableObject(store, (_i, state) => makePreV17(state.storage.sql));
+    return store;
+  }
+  const hasRelationsTable = (state: DurableObjectState) =>
+    state.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_relations'`).toArray().length === 1;
+
+  it("the first v17 boot records exactly one restore_point row; later boots add none", async () => {
+    const store = await preV17Store();
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm-before-v17", async () => {});
+      const rows = restorePoints(state.storage.sql);
+      expect(rows.length).toBe(1);
+      expect(rows[0].description).toMatch(/restore point/i);
+      expect(rows[0].description).toMatch(/relations/i);
+      expect(rows[0].bookmark).toBe("bm-before-v17");
+      expect(hasRelationsTable(state), "the migration really ran on that boot").toBe(true);
+
+      await booted(state, () => "bm-later", async () => {});
+      await booted(state, () => "bm-later-still", async () => {});
+      expect(restorePoints(state.storage.sql).length).toBe(1);
+      expect(restorePoints(state.storage.sql)[0].bookmark).toBe("bm-before-v17");
+    });
+  });
+
+  it("captures the bookmark before any v17 step touches data", async () => {
+    const store = await preV17Store();
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm-first", async (_hive, trace) => {
+        const first = trace.events.findIndex((e) => e.startsWith("v17:"));
+        expect(trace.events, "the v17 steps ran (the ordering check is not vacuous)").toEqual(
+          expect.arrayContaining(["v17:create-relations", "v17:drop-pair-index", "v17:write-relations"]));
+        expect(trace.events.indexOf("bookmark"), "the bookmark was captured").toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), `capture precedes every v17 effect: ${trace.events.join(", ")}`).toBeLessThan(first);
+      });
+      expect(restorePoints(state.storage.sql)[0]?.bookmark).toBe("bm-first");
+    });
+  });
+
+  it("reverting the restore point hands exactly the stored bookmark to the existing restore hook", async () => {
+    const store = await preV17Store();
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm-to-restore", async (hive, trace) => {
+        const row = restorePoints(state.storage.sql)[0];
+        expect(row, "a restore point exists").toBeDefined();
+        const r = JSON.parse(await hive.revertChange(row.id));
+        expect(r.error).toBeUndefined();
+        expect(r.reverted).toBe(true);
+        expect(trace.restored).toEqual(["bm-to-restore"]);
+        expect(trace.events).toContain("abort");
+      });
+    });
+  });
+
+  it("with no bookmark available, boot still succeeds, the row holds NULL, and revert says rollback is unavailable", async () => {
+    const store = await preV17Store();
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => { throw new Error("bookmarks unavailable in local dev"); }, async (hive, trace) => {
+        const rows = restorePoints(state.storage.sql);
+        expect(rows.length).toBe(1);
+        expect(rows[0].bookmark).toBeNull();
+        expect(hasRelationsTable(state), "the migration still ran").toBe(true);
+        const r = JSON.parse(await hive.revertChange(rows[0].id));
+        expect(r.error).toBe(true);
+        expect(r.message).toMatch(/unavailable/i);
+        expect(trace.restored).toEqual([]);
+        expect(trace.events).not.toContain("abort");
+      });
+    });
   });
 });
 
