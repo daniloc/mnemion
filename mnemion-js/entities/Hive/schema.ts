@@ -22,7 +22,7 @@ import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared
 import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
-import { migrateRelations, findLegacyRelations, activeRelations, NOT_LINK_TARGET_SQL } from "./relations";
+import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql } from "./relations";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
 
@@ -76,7 +76,14 @@ const SYSTEM_DOCS_SEED = [
 // facet metadata together. The full kernel surface is visible by scanning
 // this array.
 
-interface KernelFacet { name: string; type: string; required: boolean; options?: string[] }
+interface KernelFacet {
+  name: string; type: string; required: boolean; options?: string[];
+  /** Required at the write chokepoint, but the column stays nullable in DDL
+   *  because pre-existing rows may hold NULL until a boot migration rewrites them
+   *  (SQLite can't add NOT NULL without a table rebuild). verifyFieldsIntegrity
+   *  accepts this one declared divergence instead of reporting drift. */
+  nullableInDdl?: true;
+}
 
 interface KernelTable {
   name: string;
@@ -331,7 +338,9 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       { name: "source_id", type: "integer", required: true },
       { name: "target_pattern", type: "text", required: true },
       { name: "target_id", type: "integer", required: true },
-      { name: "label", type: "text", required: false },
+      // Every link names a declared relation (relations.ts checkLinkWrite refuses a
+      // missing label); legacy NULL labels are rewritten to `references` at boot.
+      { name: "label", type: "text", required: true, nullableInDdl: true },
     ],
   },
   {
@@ -983,11 +992,14 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     );
   } catch {}
 
-  // --- GC: drop archived patterns older than 30 days ---
+  // --- GC: drop archived patterns older than 30 days — except one an active link
+  //     from outside it still targets (a link protects its target; its links stay
+  //     dormant until removed, then the normal rule resumes). Derived, no flag. ---
 
   try {
     const expired = db.exec(
-      `SELECT name FROM _objects WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-30 days') AND name NOT LIKE '\\_%' ESCAPE '\\'`
+      `SELECT name FROM _objects WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-30 days') AND name NOT LIKE '\\_%' ESCAPE '\\'
+       AND ${notLinkTargetPatternSql("_objects.name")}`
     ).toArray() as any[];
     for (const obj of expired) {
       for (const op of ["insert", "update", "delete"]) {
@@ -1064,7 +1076,9 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     );
     for (const f of table.facets) {
       db.exec(
-        "INSERT OR IGNORE INTO _fields (object_name, name, type, required, options) VALUES (?, ?, ?, ?, ?)",
+        // Code owns a kernel facet's requiredness: refresh it so an existing
+        // install's schema tracks the declaration (other columns stay insert-once).
+        "INSERT INTO _fields (object_name, name, type, required, options) VALUES (?, ?, ?, ?, ?) ON CONFLICT(object_name, name) DO UPDATE SET required = excluded.required",
         table.name, f.name, f.type, f.required ? 1 : 0, f.options ? JSON.stringify(f.options) : null
       );
     }
@@ -1104,12 +1118,14 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 
   // --- v17: relations registry ---
   //
-  // Link labels become declared relations (project-docs/relations.md). After
-  // kernel registration (the sweep reads _objects) and before audit triggers: drop
-  // the pair-only unique index, seed/refresh the kernel relations, archive links
-  // whose endpoint is gone (never merely archived — those stay dormant), then bring legacy labels under the registry (NULL →
-  // references; inverse wording → canonical; the rest declared as `legacy`). Every
-  // step is idempotent. The boot warning for legacy debt is in the integrity block.
+  // Link labels become declared relations (project-docs/relations.md §F/§G). After
+  // kernel registration (the sweep reads _objects) and before audit triggers:
+  // drop the pair-only unique index; seed/refresh the kernel relations; rewrite
+  // legacy labels (NULL → references, inverse wording → canonical); sweep links
+  // whose endpoint is gone or inadmissible (never merely archived — those stay
+  // dormant); declare what remains as `legacy` relations. Idempotent: a second
+  // boot changes nothing. Legacy debt and pre-existing cycles are warned about in
+  // the integrity block below.
   try { migrateRelations(db); } catch (err) { console.warn("[schema] relations migration failed", err); }
 
   // --- Seed the owner member ---
@@ -1170,6 +1186,13 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
   try {
     const legacy = findLegacyRelations(activeRelations(db));
     if (legacy.length) console.warn(`[schema] legacy relations awaiting a description (${legacy.length}):\n  ${legacy.join("\n  ")}`);
+  } catch { /* best-effort */ }
+
+  // --- Integrity: cycles already present across an acyclic relation (pre-registry
+  //     data or the legacy inverse rewrite). Reported one line per cycle, never
+  //     auto-repaired — maintenance is owner-ratified. ---
+  try {
+    for (const line of findCycles(acyclicGraphs(db))) console.warn(`[schema] ${line}`);
   } catch { /* best-effort */ }
 
   // --- data-is-destiny: warn on a stored aggregate of rows the schema retains ---
@@ -1246,6 +1269,7 @@ function verifyFieldsIntegrity(db: any): void {
     // required flag mismatch — agents told a column is optional but DB rejects NULL (or vice versa).
     // NOT NULL with DEFAULT is effectively optional from the agent's perspective (SQLite fills it in)
     // — skip those, only flag the case where the DB will actually reject an omitted value.
+    const ddlNullable = new Set(KERNEL_TABLES.find((t) => t.name === obj.name)?.facets.filter((f) => f.nullableInDdl).map((f) => f.name) ?? []);
     const secretCols = new Set(sensitiveColumns(obj.name).filter((s) => s.kind === "secret").map((s) => s.column));
     for (const [name, ddl] of ddlCols) {
       const f = fieldsByName.get(name);
@@ -1254,6 +1278,7 @@ function verifyFieldsIntegrity(db: any): void {
       // system always supplies the digest) yet required:false in _fields (the AGENT
       // never supplies it). That divergence is by design, not drift.
       if (secretCols.has(name)) continue;
+      if (ddlNullable.has(name)) continue;
       const ddlRequired = ddl.notnull && !ddl.hasDefault ? 1 : 0;
       if (ddlRequired !== f.required) {
         drifts.push(`"${obj.name}".${name}: _fields.required=${f.required} but DDL ${ddl.notnull ? "NOT NULL" : "nullable"}${ddl.hasDefault ? " with default" : ""}`);

@@ -476,7 +476,26 @@ export function linksOf(db: DB, pattern: string, id: number): EntryLink[] {
  *  (the `linked targets survive GC` invariant). */
 export const NOT_LINK_TARGET_SQL = `id NOT IN (SELECT target_id FROM "_links" WHERE target_pattern = ? AND archived_at IS NULL)`;
 
-// === Boot: kernel seed, integrity sweep, legacy labels ===
+/** SQL predicate over a pattern-name expression (e.g. `_objects.name`): no
+ *  active link from an entry OUTSIDE that pattern targets one of its entries.
+ *  The archived-pattern drop ANDs this in, so a linked archived pattern is kept
+ *  (its links dormant) until those links go; links internal to the pattern don't
+ *  protect it. Derived from the links, no stored flag. */
+export function notLinkTargetPatternSql(nameExpr: string): string {
+  return `NOT EXISTS (SELECT 1 FROM "_links" WHERE archived_at IS NULL AND target_pattern = ${nameExpr} AND source_pattern != ${nameExpr})`;
+}
+
+/** The relations a pattern may stand in — canonical names whose source (or
+ *  target) admits it, `*` relations included. Read by mnemion://schema/<pattern>. */
+export function relationsFor(db: DB, pattern: string): { as_source: string[]; as_target: string[] } {
+  const rels = activeRelations(db);
+  return {
+    as_source: rels.filter((r) => admits(r.source, pattern, "source")).map((r) => r.name),
+    as_target: rels.filter((r) => admits(r.target, pattern, "target")).map((r) => r.name),
+  };
+}
+
+// === Boot: kernel seed, label rewrite, integrity sweep, legacy declarations ===
 
 /** Seed the kernel defaults (idempotent) and refresh their code-owned semantics. */
 export function seedKernelRelations(db: DB): void {
@@ -533,13 +552,15 @@ export function sweepDanglingLinks(db: DB): void {
   }
 }
 
-/** Bring links written before the registry under it. Runs after the kernel seed
- *  and the sweep, so every label it sees sits on a link whose endpoints exist:
- *  1. unlabeled links become `references` (archived if the pair already has one);
- *  2. links worded as an active relation's inverse are rewritten canonically;
- *  3. every other undeclared label is declared verbatim as a `legacy` relation,
- *     its ends inferred from usage, so the hive stays writable. */
-export function migrateLegacyLabels(db: DB): void {
+/** Boot step 2: rewrite pre-registry labels into canonical form, BEFORE the
+ *  sweep — so a link whose canonical form lands on an inadmissible endpoint (e.g.
+ *  `notes/1 -[referenced-by]-> _documents/1` becomes a kernel SOURCE) is swept in
+ *  the same boot and totality holds after the first one.
+ *  1. Unlabeled links become `references` (archived if the pair already has one).
+ *  2. Links worded as an active relation's inverse swap ends and take its name
+ *     (archived if that duplicates an existing link). This may close a cycle in
+ *     an acyclic relation; that is reported at boot (findCycles), never repaired. */
+export function rewriteLegacyLabels(db: DB): void {
   const dupOf = `EXISTS (SELECT 1 FROM "_links" d WHERE d.archived_at IS NULL AND d.id != "_links".id
     AND d.source_pattern = "_links".source_pattern AND d.source_id = "_links".source_id
     AND d.target_pattern = "_links".target_pattern AND d.target_id = "_links".target_id AND d.label = ?)`;
@@ -562,23 +583,34 @@ export function migrateLegacyLabels(db: DB): void {
       );
     }
   }
+}
 
+/** Boot step 4, after the sweep (so no relation names a pattern that is gone):
+ *  declare every remaining undeclared label verbatim as a `legacy` relation, its
+ *  ends inferred from usage, so the hive stays writable.
+ *
+ *  @why Generated inverses must avoid every declared name and inverse AND every
+ *  in-use label — those labels become names in this same pass. The taken set is
+ *  complete before the first inverse is generated, so the result never depends on
+ *  the order labels arrive in (an in-use `bar-inverse` can't collide with `bar`'s
+ *  generated inverse either way). */
+export function declareLegacyRelations(db: DB): void {
+  const rels = activeRelations(db);
   const declared = new Set(rels.map((r) => r.name));
-  const handles = new Set(rels.flatMap((r) => [r.name, r.inverse]));
   const usage = new Map<string, { source: Set<string>; target: Set<string> }>();
   for (const u of db.exec(
-    `SELECT DISTINCT label, source_pattern, target_pattern FROM "_links" WHERE archived_at IS NULL`,
+    `SELECT DISTINCT label, source_pattern, target_pattern FROM "_links" WHERE archived_at IS NULL ORDER BY label`,
   ).toArray() as { label: string; source_pattern: string; target_pattern: string }[]) {
     if (declared.has(u.label)) continue;
     const e = usage.get(u.label) ?? { source: new Set(), target: new Set() };
     e.source.add(u.source_pattern); e.target.add(u.target_pattern);
     usage.set(u.label, e);
   }
+  const taken = new Set([...rels.flatMap((r) => [r.name, r.inverse]), ...usage.keys()]);
   for (const [name, ends] of usage) {
-    handles.add(name);
     let inverse = `${name}-inverse`;
-    for (let n = 2; handles.has(inverse); n++) inverse = `${name}-inverse-${n}`;
-    handles.add(inverse);
+    for (let n = 2; taken.has(inverse); n++) inverse = `${name}-inverse-${n}`;
+    taken.add(inverse);
     db.exec(
       `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, kernel, legacy) VALUES (?, ?, ?, ?, ?, 'many', '[]', 0, 1)`,
       name, inverse,
@@ -595,12 +627,66 @@ export function findLegacyRelations(relations: Pick<Relation, "name" | "legacy">
     `relation "${r.name}" is legacy (placeholder description) — amend_relation with a real description to clear it`);
 }
 
-/** The relations migration, in boot order. Each step is idempotent. */
+/** One acyclic relation's active edges, as `pattern/id` endpoints. */
+export interface RelationGraph { relation: string; edges: { source: string; target: string }[] }
+
+/** The active links of every relation declaring `acyclic` — the input to findCycles. */
+export function acyclicGraphs(db: DB): RelationGraph[] {
+  return relationsWith(db, "acyclic").map((relation) => ({
+    relation,
+    edges: (db.exec(
+      `SELECT source_pattern, source_id, target_pattern, target_id FROM "_links" WHERE archived_at IS NULL AND label = ? ORDER BY id`,
+      relation,
+    ).toArray() as any[]).map((l) => ({ source: ref(l.source_pattern, l.source_id), target: ref(l.target_pattern, l.target_id) })),
+  }));
+}
+
+/**
+ * Boot findings: cycles already present across an acyclic relation. Writes can
+ * never create one (checkLinkWrite), but pre-registry data, or the legacy
+ * inverse rewrite, can. One line per cycle — each strongly connected group of
+ * entries that loops (a self-loop included) — naming the relation and every
+ * entry in it. Pure and report-only: maintenance is owner-ratified, so the
+ * links stay in place.
+ */
+export function findCycles(graphs: RelationGraph[]): string[] {
+  const out: string[] = [];
+  for (const { relation, edges } of graphs) {
+    const next = new Map<string, string[]>();
+    for (const e of edges) next.set(e.source, [...(next.get(e.source) ?? []), e.target]);
+    const selfLoop = new Set(edges.filter((e) => e.source === e.target).map((e) => e.source));
+    // Tarjan's strongly connected components.
+    const index = new Map<string, number>(), low = new Map<string, number>(), onStack = new Set<string>();
+    const stack: string[] = [];
+    let counter = 0;
+    const visit = (v: string) => {
+      index.set(v, counter); low.set(v, counter); counter++;
+      stack.push(v); onStack.add(v);
+      for (const w of next.get(v) ?? []) {
+        if (!index.has(w)) { visit(w); low.set(v, Math.min(low.get(v)!, low.get(w)!)); }
+        else if (onStack.has(w)) low.set(v, Math.min(low.get(v)!, index.get(w)!));
+      }
+      if (low.get(v) === index.get(v)) {
+        const group: string[] = [];
+        let w: string;
+        do { w = stack.pop()!; onStack.delete(w); group.push(w); } while (w !== v);
+        if (group.length > 1 || selfLoop.has(v))
+          out.push(`cycle across acyclic relation "${relation}": ${group.reverse().join(" → ")} — pre-existing data, left in place; archive a link to break it`);
+      }
+    };
+    for (const v of next.keys()) if (!index.has(v)) visit(v);
+  }
+  return out;
+}
+
+/** The relations migration, in boot order. Each step is idempotent: a second
+ *  boot changes nothing. */
 export function migrateRelations(db: DB): void {
   db.exec(`DROP INDEX IF EXISTS "_links_pair_active"`); // one pair may now carry several relations
-  seedKernelRelations(db);
-  sweepDanglingLinks(db);
-  migrateLegacyLabels(db);
+  seedKernelRelations(db);    // 1. kernel defaults (so supersedes etc. resolve below)
+  rewriteLegacyLabels(db);    // 2. NULL → references; inverse wording → canonical
+  sweepDanglingLinks(db);     // 3. gone or inadmissible endpoints (incl. ones the rewrite exposed)
+  declareLegacyRelations(db); // 4. what remains undeclared becomes a legacy relation
 }
 
 // === Vocabulary evolution: declare / amend / retire ===
@@ -661,13 +747,23 @@ function checkEnd(ctx: RelationsContext, end: "source" | "target", value: unknow
   return null;
 }
 
+/** Every field a relation change may carry. */
+const RELATION_FIELDS = ["name", "inverse", "description", "source", "target", "cardinality", "behaviors", "required", "chain", "new_name"] as const;
+
+/** An explicit null is refused for every field: it never means "use the default"
+ *  (declare) or "clear it" (amend) — omit a field to leave it out. */
+function checkNoNulls(change: any): string | null {
+  const f = RELATION_FIELDS.find((k) => change[k] === null);
+  return f ? `"${f}" is null — omit a field to leave it unset; null never means "use the default" or "clear it".` : null;
+}
+
 function checkShape(change: any): string | null {
   for (const f of NOT_YET_SUPPORTED.fields)
-    if (change[f] != null && change[f] !== false)
+    if (change[f] !== undefined && change[f] !== false)
       return `"${f}" relations are not yet supported (Phase 2). Declare the relation without it.`;
-  if (change.cardinality != null && !(CARDINALITIES as readonly string[]).includes(change.cardinality))
+  if (change.cardinality !== undefined && !(CARDINALITIES as readonly string[]).includes(change.cardinality))
     return `cardinality must be "one" or "many", got ${JSON.stringify(change.cardinality)}.`;
-  if (change.behaviors != null) {
+  if (change.behaviors !== undefined) {
     if (!Array.isArray(change.behaviors)) return `behaviors must be an array, a subset of: ${Object.keys(BEHAVIOR_PALETTE).join(", ")}.`;
     for (const b of change.behaviors) {
       if (NOT_YET_SUPPORTED.behaviors.has(b)) return `Behavior "${b}" is not yet supported (Phase 2) — the engine does not perform it yet.`;
@@ -705,7 +801,8 @@ export function amendedRelation(current: Relation, change: any): Relation {
 
 export function validateDeclare(ctx: RelationsContext, change: any): string | null {
   const taken = vocabulary(activeRelations(ctx.db));
-  return checkHandle("name", change.name, taken)
+  return checkNoNulls(change)
+    ?? checkHandle("name", change.name, taken)
     ?? checkHandle("inverse", change.inverse, taken)
     ?? (change.inverse === change.name ? `The inverse must differ from the name "${change.name}".` : null)
     ?? checkDescription(change.description, [change.name, change.inverse])
@@ -720,6 +817,8 @@ export function validateAmend(ctx: RelationsContext, change: any): string | null
   const current = activeRelation(ctx.db, change.name);
   if (!current) return `No active relation named ${JSON.stringify(change.name)} to amend. Read ${uri("relations")} for the vocabulary.`;
   if (current.kernel) return `"${current.name}" is a kernel default — its meaning is owned by code and cannot be amended. Declare a new relation instead.`;
+  const nulls = checkNoNulls(change);
+  if (nulls) return nulls;
   if (change.new_name !== undefined) return `A relation's name is immutable ("${current.name}"). Declare a new relation and move the links to it instead.`;
   for (const f of ["source", "target"] as const)
     if (change[f] !== undefined) return `A relation's ${f} patterns are not amendable yet. Declare a new relation with the ends you need.`;

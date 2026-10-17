@@ -244,6 +244,9 @@ export class HiveDO extends DurableObject {
         return facet;
       }),
       kernel_columns: [...STRUCTURAL_KERNEL_COLUMNS],
+      // The relations this pattern may stand in (canonical names, `*` included),
+      // so an agent reading the schema meets the link vocabulary that applies.
+      relations: rel.relationsFor(this.db, patternName),
     }, null, 2);
   }
 
@@ -1163,6 +1166,9 @@ export class HiveDO extends DurableObject {
       practice: "Always write notes to yourself as you work: mutate(pattern: \"fragment\", data: {content: \"your observation\"}). Write what you noticed about the session, including where the substrate's framing didn't match what you observed. The next instance will arrive with no memory of this conversation — your observations are the only thing that survives. Write in first person. Operation is implied.",
       system_docs: "Resolve mnemion://_system/ for detailed reference on tools, schema evolution, conventions, and system mechanics.",
       ...(maintenance ? { maintenance } : {}),
+      // The link vocabulary rides the universal handshake (web clients never see
+      // MCP init instructions): name + inverse; mnemion://relations has the rest.
+      relations: rel.listRelations(this.db).map(({ name, inverse }) => ({ name, inverse })),
       ...primeResult,
       advisory_repeat: ADVISORY,
     }, null, 2);
