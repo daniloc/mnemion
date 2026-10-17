@@ -19,7 +19,7 @@ import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/con
 import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
-import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints } from "./policy";
+import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints, PLATFORM_RESERVED_TABLES } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
 import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL } from "./relations";
@@ -1204,21 +1204,29 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
   } catch { /* best-effort */ }
 
   // --- Integrity: every secret-shaped column on a kernel table must be classified
-  //     for egress (SENSITIVE_COLUMNS), or it could leak through a serializer. ---
+  //     for egress (SENSITIVE_COLUMNS), or it could leak through a serializer.
+  //     Enumerate ALL `_`-prefixed tables (not just _objects rows) so raw-DDL kernel
+  //     tables like _passkeys are covered — matching the security.test oracle. Each
+  //     table is read on its own: one table refusing PRAGMA must never silence the
+  //     rest (df-45866a77). A refusal is itself reported unless the table is a
+  //     declared platform table (PLATFORM_RESERVED_TABLES), which is skipped. ---
   try {
+    const reserved = new Set(PLATFORM_RESERVED_TABLES);
     const kernelCols: Record<string, string[]> = {};
-    // Enumerate ALL `_`-prefixed tables (not just _objects rows) so raw-DDL kernel
-    // tables like _passkeys are covered — matching the security.test oracle exactly.
-    // `_cf_*` tables are the platform's own (e.g. _cf_METADATA, created once the
-    // PITR bookmark API is used — every first boot now captures a restore point);
-    // they are not kernel tables and PRAGMA on them is refused (SQLITE_AUTH).
-    const tables = (db.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'`).toArray() as any[]).map((t: any) => t.name as string);
+    const unreadable: string[] = [];
+    const tables = (db.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'`).toArray() as any[]).map((t: any) => t.name as string);
     for (const name of tables) {
-      kernelCols[name] = (db.exec(`PRAGMA table_info(${quoteIdent(name)})`).toArray() as any[]).map((c: any) => c.name as string);
+      if (reserved.has(name)) continue;
+      try {
+        kernelCols[name] = (db.exec(`PRAGMA table_info(${quoteIdent(name)})`).toArray() as any[]).map((c: any) => c.name as string);
+      } catch {
+        unreadable.push(name);
+      }
     }
     const gaps = findUnclassifiedSensitiveColumns(kernelCols);
     if (gaps.length) console.warn(`[schema] unclassified sensitive columns (add to SENSITIVE_COLUMNS): ${gaps.join(", ")}`);
-  } catch { /* PRAGMA best-effort */ }
+    if (unreadable.length) console.warn(`[schema] sensitive-column check could not inspect ${unreadable.join(", ")} (PRAGMA refused) — its columns are unchecked; declare it in PLATFORM_RESERVED_TABLES only if the platform owns it`);
+  } catch (err) { console.warn("[schema] sensitive-column check could not enumerate tables", err); }
 
   // --- Integrity: legacy relations still carry a placeholder description — keep
   //     the debt visible until each is amended. ---

@@ -280,6 +280,14 @@ const CORE_SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> = {
 // egress (seal/sealAll, the audit trigger, export) and the egress totality oracle
 // (findUnclassifiedSensitiveColumns) read THIS composed map, so a feature's
 // redacted/secret columns inherit every egress + the loud-fail oracle unchanged.
+/** Platform-owned tables that may refuse inspection (PRAGMA → SQLITE_AUTH) and are
+ *  not Mnemion's to classify. `_cf_METADATA` appears once the PITR bookmark API is
+ *  used (the v17 restore point does on every first boot). The sensitive-column
+ *  oracles skip ONLY these; any other table that refuses inspection is reported,
+ *  so a refusal can never silence the check. Fail loud: an unknown platform table
+ *  is a finding until it is declared here. */
+export const PLATFORM_RESERVED_TABLES: readonly string[] = ["_cf_METADATA"];
+
 export const SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> =
   mergeDisjoint(CORE_SENSITIVE_COLUMNS, FEATURE_SENSITIVE_COLUMNS, "sensitive-columns");
 
