@@ -75,11 +75,6 @@ export const ANY = "*";
  *  (followLinks) and treated as memory by a supersession link. */
 export const KERNEL_LINK_TARGETS: ReadonlySet<string> = new Set(["_documents", "_web_cache"]);
 
-/** Link targets whose ARCHIVED rows are retained snapshots, not dead entries: a
- *  re-fetch archives the old `_web_cache` row, and a link to it protects it from
- *  GC. The integrity sweep keeps links to these. */
-const SNAPSHOT_TARGETS: ReadonlySet<string> = new Set(["_web_cache"]);
-
 /** The honest generic link: asserts nothing structural. Legacy unlabeled links
  *  become this relation. */
 const GENERIC_RELATION = "references";
@@ -508,31 +503,38 @@ export function seedKernelRelations(db: DB): void {
 
 const ARCHIVE_LINKS = `UPDATE "_links" SET archived_at = datetime('now'), updated_at = datetime('now') WHERE archived_at IS NULL`;
 
-/** Archive every active link with an endpoint no link may hold: a pattern that
- *  no longer exists, an entry that is gone or archived (except an archived
- *  SNAPSHOT_TARGETS row, which the link protects), or a kernel pattern outside
- *  the admissible ends. */
+/** Archive every active link whose endpoint is GONE, or is a kernel pattern no
+ *  relation may admit. "Gone" means the pattern has no `_objects` row or no table,
+ *  or the entry row no longer exists — never merely archived.
+ *
+ *  @why Every Durable Object cold start is a boot, and archive is reversible. A
+ *  link to an archived entry or pattern stays active ("dormant"): reads hide it
+ *  (followLinks only expands into active endpoints), it still counts for
+ *  uniqueness and cardinality, and it is back unchanged on unarchive. Sweeping it
+ *  would make a link's survival depend on eviction timing. (An archived
+ *  `_web_cache` snapshot is just a dormant link's target, protected from GC by
+ *  NOT_LINK_TARGET_SQL.) */
 export function sweepDanglingLinks(db: DB): void {
-  const live = (p: string) => {
-    if (db.exec(`SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NULL`, p).toArray().length === 0) return false;
-    try { db.exec(`SELECT 1 FROM ${quoteIdent(p)} LIMIT 1`); return true; } catch { return false; }
+  const exists = (p: string) => {
+    if (db.exec(`SELECT 1 FROM _objects WHERE name = ?`, p).toArray().length === 0) return false;
+    return db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, p).toArray().length > 0;
   };
   const patterns = (db.exec(
     `SELECT source_pattern AS p FROM "_links" WHERE archived_at IS NULL
      UNION SELECT target_pattern FROM "_links" WHERE archived_at IS NULL`,
   ).toArray() as { p: string }[]).map((r) => r.p);
   for (const p of patterns) {
-    if (!live(p)) { db.exec(`${ARCHIVE_LINKS} AND (source_pattern = ? OR target_pattern = ?)`, p, p); continue; }
+    if (!exists(p)) { db.exec(`${ARCHIVE_LINKS} AND (source_pattern = ? OR target_pattern = ?)`, p, p); continue; }
     if (!endpointAdmissible(p, "source")) db.exec(`${ARCHIVE_LINKS} AND source_pattern = ?`, p);
     if (!endpointAdmissible(p, "target")) db.exec(`${ARCHIVE_LINKS} AND target_pattern = ?`, p);
     const table = quoteIdent(p);
-    db.exec(`${ARCHIVE_LINKS} AND source_pattern = ? AND source_id NOT IN (SELECT id FROM ${table} WHERE archived_at IS NULL)`, p);
-    db.exec(`${ARCHIVE_LINKS} AND target_pattern = ? AND target_id NOT IN (SELECT id FROM ${table}${SNAPSHOT_TARGETS.has(p) ? "" : " WHERE archived_at IS NULL"})`, p);
+    db.exec(`${ARCHIVE_LINKS} AND source_pattern = ? AND source_id NOT IN (SELECT id FROM ${table})`, p);
+    db.exec(`${ARCHIVE_LINKS} AND target_pattern = ? AND target_id NOT IN (SELECT id FROM ${table})`, p);
   }
 }
 
 /** Bring links written before the registry under it. Runs after the kernel seed
- *  and the sweep, so every label it sees sits on a sound link:
+ *  and the sweep, so every label it sees sits on a link whose endpoints exist:
  *  1. unlabeled links become `references` (archived if the pair already has one);
  *  2. links worded as an active relation's inverse are rewritten canonically;
  *  3. every other undeclared label is declared verbatim as a `legacy` relation,

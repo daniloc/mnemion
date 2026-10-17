@@ -1107,7 +1107,7 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
   // Link labels become declared relations (project-docs/relations.md). After
   // kernel registration (the sweep reads _objects) and before audit triggers: drop
   // the pair-only unique index, seed/refresh the kernel relations, archive links
-  // with a dangling endpoint, then bring legacy labels under the registry (NULL →
+  // whose endpoint is gone (never merely archived — those stay dormant), then bring legacy labels under the registry (NULL →
   // references; inverse wording → canonical; the rest declared as `legacy`). Every
   // step is idempotent. The boot warning for legacy debt is in the integrity block.
   try { migrateRelations(db); } catch (err) { console.warn("[schema] relations migration failed", err); }

@@ -59,6 +59,8 @@ The write is checked at one chokepoint: an undeclared label is refused, and the 
 
 Links are immutable: endpoints and relation never change after create. To move or relabel a link, archive it and create a new one. Unarchiving re-runs every check.
 
+Archiving an entry (or a pattern) leaves its links in place but dormant: reads stop showing them, they still count toward uniqueness and cardinality, and they come back unchanged when the entry is unarchived. A link is removed only when an endpoint is gone for good.
+
 Reading: `resolve` lists linked entries one per link, each with `direction` (`out` — this entry is the source; `in` — the target) and `relation`, the name read from this entry's side (`depends-on` out, `required-by` in).
 
 ## Evolving the relation vocabulary
