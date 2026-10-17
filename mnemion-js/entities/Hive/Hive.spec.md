@@ -270,8 +270,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: the rule is over one relation's edges, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
-- linked targets survive GC: No garbage-collection pass removes a row or table that is the target of an active link from outside it.
-  over: every GC pass that removes rows or tables: the _web_cache GC over linked and unlinked rows past their TTL and grace window, and the 30-day archived-pattern drop over patterns targeted from outside, linked only internally, and whose inbound link was archived, on repeated boots
+- linked targets survive GC: No garbage-collection pass removes a row or table that is the target of an active link from outside it, and every archived pattern held past its drop horizon is reported in the stale view for the owner to ratify.
+  over: every GC pass that removes rows or tables: the _web_cache GC over linked and unlinked rows past their TTL and grace window, and the 30-day archived-pattern drop over patterns targeted from outside (including mutually-linked archived patterns), linked only internally, under the horizon, and whose inbound link was archived, on repeated boots; and the stale view's held_patterns over the same cases
   via: linked targets survive GC
   because: A cited snapshot deleted under its link leaves the citation dangling; the protection is derived from the link so no pinned flag can drift from it.
   kinds: storage

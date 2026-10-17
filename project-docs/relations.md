@@ -199,7 +199,9 @@ archived for 30 days. It skips any archived pattern that holds the target of an
 active link from an entry outside that pattern; links internal to the pattern
 don't count. The pattern stays archived, and its links stay dormant, until
 those links are removed. Then the normal 30-day rule resumes. This protection
-is derived too.
+is derived too. Held patterns are reported in the stale view for the owner to
+ratify, and never auto-dropped (owner decision, 2026-10-17, option A). That
+includes two archived patterns that link to each other and so hold each other.
 
 `_documents` has no GC today; a document goes away only when it is archived
 explicitly. Any future document GC must honour the same rule.
@@ -858,6 +860,29 @@ the pattern; links internal to the pattern don't count. Both are derived in
 the GC query, with no stored flag. When the protecting link is archived, the
 normal rule resumes on the next boot. Within a boot, the sweep runs after the
 label rewrite (§F).
+
+**Held patterns in the stale view.** `resolve("mnemion://stale")` gains a
+top-level `held_patterns` array. It lists every archived user pattern past the
+30-day drop horizon that the drop skipped because active links from outside
+the pattern point into it:
+
+```jsonc
+"held_patterns": [
+  { "pattern": "drafts",
+    "archived_at": "2026-09-15 12:00:00",   // the _objects.archived_at value
+    "days_archived": 31,                     // whole days since archived_at
+    "held_by": [ { "source": "notes/4", "target": "drafts/1", "label": "references" } ] } ]  // canonical label
+```
+
+- `held_by` lists every active link from outside the pattern that targets one
+  of its entries. Internal links never appear, because they never hold.
+- The array is empty when nothing is held. A pattern under the horizon never
+  appears.
+- Two archived patterns that link to each other each appear, each held by the
+  other's link.
+- The owner resolves a held pattern by archiving or re-pointing the holding
+  links, or by unarchiving the pattern. Nothing is dropped automatically while
+  a link holds it.
 
 ### H. `entities/Hive/relations.ts`
 

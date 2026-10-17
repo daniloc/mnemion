@@ -1853,6 +1853,74 @@ describe("linked targets survive GC", () => {
     expect(await tableExists(store, "drafts")).toBe(false);
   });
 
+  const held = async (store: Store) => {
+    const stale = JSON.parse(await store.resolve("mnemion://stale"));
+    return stale.held_patterns as any[] | undefined;
+  };
+
+  it("mutually-linked archived patterns past the horizon are both held, reported in the stale view, and survive boot", async () => {
+    const store = getStore();
+    await createPattern(store, "drafts");
+    await createPattern(store, "sketches");
+    const d1 = await entry(store, "drafts", "draft"), s1 = await entry(store, "sketches", "sketch");
+    await mustLink(store, `drafts/${d1}`, `sketches/${s1}`, "references");
+    await mustLink(store, `sketches/${s1}`, `drafts/${d1}`, "derived-from");
+    await archivePatternDaysAgo(store, "drafts", 31);
+    await archivePatternDaysAgo(store, "sketches", 33);
+
+    await boot(store);
+    expect(await tableExists(store, "drafts")).toBe(true);
+    expect(await tableExists(store, "sketches")).toBe(true);
+
+    const list_ = await held(store);
+    expect(Array.isArray(list_)).toBe(true);
+    const drafts = list_!.find((h) => h.pattern === "drafts");
+    const sketches = list_!.find((h) => h.pattern === "sketches");
+    expect(drafts).toMatchObject({ pattern: "drafts", archived_at: expect.any(String) });
+    expect(drafts.days_archived).toBeGreaterThanOrEqual(31);
+    expect(drafts.held_by).toEqual([{ source: `sketches/${s1}`, target: `drafts/${d1}`, label: "derived-from" }]);
+    expect(sketches.days_archived).toBeGreaterThanOrEqual(33);
+    expect(sketches.held_by).toEqual([{ source: `drafts/${d1}`, target: `sketches/${s1}`, label: "references" }]);
+  });
+
+  it("an archived pattern held by a link from a live pattern is reported with that link", async () => {
+    const store = getStore();
+    const { n1 } = await world(store);
+    await createPattern(store, "drafts");
+    const d1 = await entry(store, "drafts", "draft");
+    await mustLink(store, `notes/${n1}`, `drafts/${d1}`, "references");
+    await archivePatternDaysAgo(store, "drafts", 31);
+    await boot(store);
+    const h = (await held(store))?.find((x) => x.pattern === "drafts");
+    expect(h).toBeDefined();
+    expect(h.held_by).toEqual([{ source: `notes/${n1}`, target: `drafts/${d1}`, label: "references" }]);
+  });
+
+  it("an archived pattern under the 30-day horizon is not reported; nothing held means an empty array", async () => {
+    const store = getStore();
+    const { n1 } = await world(store);
+    expect(await held(store)).toEqual([]);
+    await createPattern(store, "drafts");
+    const d1 = await entry(store, "drafts", "draft");
+    await mustLink(store, `notes/${n1}`, `drafts/${d1}`, "references");
+    await archivePatternDaysAgo(store, "drafts", 10);
+    await boot(store);
+    expect(await held(store)).toEqual([]);
+  });
+
+  it("once the holding link is archived, the pattern is no longer reported and the next boot drops it", async () => {
+    const store = getStore();
+    const { n1 } = await world(store);
+    await createPattern(store, "drafts");
+    const d1 = await entry(store, "drafts", "draft");
+    const id = await mustLink(store, `notes/${n1}`, `drafts/${d1}`, "references");
+    await archivePatternDaysAgo(store, "drafts", 31);
+    expect((await mut(store, "_links", "archive", { id })).error).toBeUndefined();
+    expect(((await held(store)) ?? []).some((x) => x.pattern === "drafts")).toBe(false);
+    await boot(store);
+    expect(await tableExists(store, "drafts")).toBe(false);
+  });
+
   it("an archived pattern whose only links are internal still drops after 30 days", async () => {
     const store = getStore();
     await createPattern(store, "drafts");
