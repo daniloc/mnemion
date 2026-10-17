@@ -16,6 +16,7 @@
 import { applyKernelRules, immutableFieldError, type KernelContext } from "./kernel";
 import { isInternalWriteProtected, isKernelPattern, isValidWriteTarget } from "./policy";
 import { getMemoryPolicy } from "./prime";
+import { resolveUnlink } from "./relations";
 import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { logError } from "../../shared/core/log";
@@ -668,6 +669,19 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   delete (data as any).created_by;
   delete (data as any).updated_by;
 
+  // unlink names a link by its endpoints (+ optional relation) instead of by id.
+  // relations.ts resolves that selector to exactly one active link (normalizing an
+  // inverse label, refusing an ambiguous or malformed one); the write itself is an
+  // ordinary archive of that id, through this same chokepoint.
+  if (operation === "unlink") {
+    if (patternName !== "_links") return { error: true, message: `unlink applies to links only — use mutate(pattern: "unlink", data: {source, target, label?}).` };
+    const sel = resolveUnlink(ctx.db, data);
+    if ("error" in sel) return sel;
+    const archived = executeMutate(ctx, "_links", "archive", { id: sel.id });
+    if (archived.error) return archived;
+    return { operation: "unlink", pattern: "_links", id: sel.id, source: sel.source, target: sel.target };
+  }
+
   // Kernel rules (immutable fields, create hooks)
   const kernelCtx: KernelContext = {
     patternExists: (name) => ctx.patternExists(name),
@@ -690,6 +704,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         return null;
       }
     },
+    relations: { db: ctx.db, patternExists: (name) => ctx.patternExists(name), entryExists: (pattern, id) => ctx.entryExists(pattern, id) },
   };
   const ruled = applyKernelRules(patternName, operation, data, kernelCtx);
   if ('error' in ruled) return ruled;
@@ -806,7 +821,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         const result: any = { operation: "create", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${(row as any).id}`) };
         if (overlap?.length) {
           result.possible_overlap = overlap;
-          result.overlap_guidance = `Advisory only — the entry was created. These facets are declared exclusive in this pattern's memory policy; if the new entry replaces one of them, link supersession: mutate(pattern: "link", data: {source: "${patternName}/${(row as any).id}", target: "${patternName}/{old_id}", label: "supersedes"}).`;
+          result.overlap_guidance = `Advisory only — the entry was created. These facets are declared exclusive in this pattern's memory policy; if the new entry replaces one of them, link supersession: mutate(pattern: "link", data: {source: "${patternName}/${(row as any).id}", target: "${patternName}/{old_id}", label: "supersedes"}) (supersedes is the kernel relation with the supersession behavior; labels must name a declared relation — see ${uri("relations")}).`;
         }
         if (clip) attachSubmissionProgress(ctx, patternName, clip, result);
         return result;
@@ -966,37 +981,6 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         if (changes.c === 0)
           return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
         return { operation: "archive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
-      }
-
-      case "unlink": {
-        // Find link by source+target shorthand and archive it
-        let sp = data.source_pattern as string, si = data.source_id as number;
-        let tp = data.target_pattern as string, ti = data.target_id as number;
-
-        // Parse shorthand if provided
-        if (data.source && typeof data.source === "string") {
-          const parts = (data.source as string).split("/");
-          if (parts.length === 2) { sp = parts[0]; si = Number(parts[1]); }
-        }
-        if (data.target && typeof data.target === "string") {
-          const parts = (data.target as string).split("/");
-          if (parts.length === 2) { tp = parts[0]; ti = Number(parts[1]); }
-        }
-
-        if (!sp || si == null || !tp || ti == null)
-          return { error: true, message: "unlink requires source and target (e.g. source: \"tasks/6\", target: \"goals/9\")" };
-
-        const links = ctx.db.exec(
-          `SELECT id FROM "_links" WHERE source_pattern = ? AND source_id = ? AND target_pattern = ? AND target_id = ? AND archived_at IS NULL`,
-          sp, si, tp, ti
-        ).toArray() as any[];
-        if (links.length === 0)
-          return { error: true, message: `No active link from ${sp}/${si} to ${tp}/${ti}` };
-
-        ctx.db.exec(
-          `UPDATE "_links" SET archived_at = datetime('now'), updated_at = datetime('now'), updated_by = ? WHERE id = ?`, ctx.actor, links[0].id
-        );
-        return { operation: "unlink", pattern: "_links", id: links[0].id, source: `${sp}/${si}`, target: `${tp}/${ti}` };
       }
 
       case "unarchive": {

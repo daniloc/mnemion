@@ -176,6 +176,10 @@ const CORE_KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
   // Planting a _web_cache row would make resolve() serve attacker-chosen content
   // as a trusted cache hit; the logs are append-only point-in-time records.
   _web_cache: { class: WriteClass.System },
+  // The relation vocabulary changes only through declare/amend/retire_relation
+  // (propose/apply, logged to _schema_history) — never mutate, like pattern and
+  // facet definitions. Kernel defaults are refreshed from code at boot.
+  _relations: { class: WriteClass.System },
   _fragment_access_log: { class: WriteClass.System, auditExempt: true },
   _entry_access_log: { class: WriteClass.System, auditExempt: true },
   // Not registered in _objects (never reach the mutate path), but listed for

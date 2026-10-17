@@ -22,6 +22,7 @@ import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared
 import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
+import { migrateRelations, findLegacyRelations, activeRelations, NOT_LINK_TARGET_SQL } from "./relations";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
 
@@ -304,8 +305,8 @@ Adding a member is a two-step invite: (1) create the member here with label + di
   },
   {
     name: "_links",
-    description: "Cross-pattern connections between entries. Use the 'link' shortcut: mutate(pattern: \"link\", data: {source: \"pattern/id\", target: \"pattern/id\", label: \"optional\"}). Links surface automatically in prime results via one-hop following.",
-    doctrine: "Use links to connect entries across patterns — tasks to goals, axioms to strategies, etc. Always use the link shortcut rather than storing IDs in text fields. Links are structural and validated. The label describes the relationship (e.g. 'serves', 'inspired-by', 'blocks').",
+    description: `Typed connections between entries. Each link's label names a declared relation — the vocabulary lives in ${uri("relations")} (also the index's "relations" key): name, inverse, what it asserts, which patterns it joins, its cardinality and behaviors. Use the 'link' shortcut: mutate(pattern: "link", data: {source: "pattern/id", target: "pattern/id", label: "<relation>"}). A relation's inverse name is accepted and stored in canonical direction. One pair may carry several relations, each once. Links surface in prime and resolve with their direction and the relation read from that side. A link to a _documents or _web_cache entry protects it from garbage collection.`,
+    doctrine: `Pick the relation that says what the connection asserts — supersedes, references, depends-on, derived-from, part-of, or one this hive declared; use references when nothing more specific fits. An undeclared label is refused, and the refusal lists the relations available for that pair of patterns. If none fits, declare one with propose_change type "declare_relation" (name, inverse, a detailed description, source and target patterns) rather than stretching an existing one. Links are immutable: to move or relabel one, archive it and create a new one. Unlink names the relation when a pair carries several. Never store entry IDs in text facets — link them.`,
     ddl: `CREATE TABLE IF NOT EXISTS "_links" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "source_pattern" TEXT NOT NULL,
@@ -319,7 +320,9 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       version INTEGER NOT NULL DEFAULT 0
     )`,
     indexes: [
-      `CREATE UNIQUE INDEX IF NOT EXISTS "_links_pair_active" ON "_links" ("source_pattern", "source_id", "target_pattern", "target_id") WHERE archived_at IS NULL`,
+      // One pair may carry several relations, each once. (The pre-registry
+      // pair-only "_links_pair_active" is dropped by migrateRelations.)
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_links_relation_active" ON "_links" ("source_pattern", "source_id", "target_pattern", "target_id", "label") WHERE archived_at IS NULL`,
       `CREATE INDEX IF NOT EXISTS "_links_source_active" ON "_links" ("source_pattern", "source_id") WHERE archived_at IS NULL`,
       `CREATE INDEX IF NOT EXISTS "_links_target_active" ON "_links" ("target_pattern", "target_id") WHERE archived_at IS NULL`,
     ],
@@ -329,6 +332,45 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       { name: "target_pattern", type: "text", required: true },
       { name: "target_id", type: "integer", required: true },
       { name: "label", type: "text", required: false },
+    ],
+  },
+  {
+    name: "_relations",
+    description: `The relation vocabulary: every label a link may carry. Each relation has a name (stored in _links.label), an inverse (how it reads from the target's side), a detailed description, the patterns it joins (source/target: JSON arrays of pattern names, or ["*"] for any user pattern — _documents and _web_cache are admitted as targets), a cardinality (one|many links per source entry) and behaviors from a fixed palette (supersession: the target is demoted as replaced; acyclic: no cycles). Kernel defaults (supersedes, references, depends-on, derived-from, part-of) are owned by code. Legacy relations were declared automatically from links written before the registry and await a real description. Read it as ${uri("relations")}.`,
+    doctrine: `Written only through propose_change: declare_relation (name, inverse, a description of at least 120 characters that says what it asserts, when to prefer it over its nearest neighbour, and an example), amend_relation (description, inverse, behaviors, cardinality — the name is immutable), retire_relation (refused while active links use it). Never mutate directly. Prefer a kernel default; declare a new relation only when the connection means something none of them says.`,
+    ddl: `CREATE TABLE IF NOT EXISTS "_relations" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "name" TEXT NOT NULL,
+      "inverse" TEXT NOT NULL,
+      "description" TEXT NOT NULL,
+      "source" TEXT NOT NULL,
+      "target" TEXT NOT NULL,
+      "cardinality" TEXT NOT NULL DEFAULT 'many',
+      "required" INTEGER NOT NULL DEFAULT 0,
+      "behaviors" TEXT NOT NULL DEFAULT '[]',
+      "chain" TEXT,
+      "kernel" INTEGER NOT NULL DEFAULT 0,
+      "legacy" INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_relations_name_active" ON "_relations" ("name") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "name", type: "text", required: true },
+      { name: "inverse", type: "text", required: true },
+      { name: "description", type: "text", required: true },
+      { name: "source", type: "text", required: true },
+      { name: "target", type: "text", required: true },
+      { name: "cardinality", type: "select", required: false, options: ["one", "many"] },
+      { name: "required", type: "boolean", required: false },
+      { name: "behaviors", type: "text", required: false },
+      { name: "chain", type: "text", required: false },
+      { name: "kernel", type: "boolean", required: false },
+      { name: "legacy", type: "boolean", required: false },
     ],
   },
   {
@@ -895,11 +937,14 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 
   // --- GC: superseded web-cache rows (a re-fetch archives the old row and
   // inserts a fresh one). Only these duplicates are evicted — active cached
-  // content is retained indefinitely as durable memory, never deleted on TTL. ---
+  // content is retained indefinitely as durable memory, never deleted on TTL.
+  // A row that is the target of an active link survives: a link protects its
+  // target, derived from the link itself (NOT_LINK_TARGET_SQL), no stored flag. ---
 
   try {
     db.exec(
-      `DELETE FROM "_web_cache" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days') AND pinned = 0`
+      `DELETE FROM "_web_cache" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days') AND pinned = 0 AND ${NOT_LINK_TARGET_SQL}`,
+      "_web_cache",
     );
   } catch {}
 
@@ -1057,6 +1102,16 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     }
   } catch {}
 
+  // --- v17: relations registry ---
+  //
+  // Link labels become declared relations (project-docs/relations.md). After
+  // kernel registration (the sweep reads _objects) and before audit triggers: drop
+  // the pair-only unique index, seed/refresh the kernel relations, archive links
+  // with a dangling endpoint, then bring legacy labels under the registry (NULL →
+  // references; inverse wording → canonical; the rest declared as `legacy`). Every
+  // step is idempotent. The boot warning for legacy debt is in the integrity block.
+  try { migrateRelations(db); } catch (err) { console.warn("[schema] relations migration failed", err); }
+
   // --- Seed the owner member ---
   //
   // Every hive has an "owner" — the founder, and the actor that the bootstrap
@@ -1109,6 +1164,13 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     const gaps = findUnclassifiedSensitiveColumns(kernelCols);
     if (gaps.length) console.warn(`[schema] unclassified sensitive columns (add to SENSITIVE_COLUMNS): ${gaps.join(", ")}`);
   } catch { /* PRAGMA best-effort */ }
+
+  // --- Integrity: legacy relations still carry a placeholder description — keep
+  //     the debt visible until each is amended. ---
+  try {
+    const legacy = findLegacyRelations(activeRelations(db));
+    if (legacy.length) console.warn(`[schema] legacy relations awaiting a description (${legacy.length}):\n  ${legacy.join("\n  ")}`);
+  } catch { /* best-effort */ }
 
   // --- data-is-destiny: warn on a stored aggregate of rows the schema retains ---
   try {
