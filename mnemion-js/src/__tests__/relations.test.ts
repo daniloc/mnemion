@@ -1896,6 +1896,21 @@ describe("linked targets survive GC", () => {
     expect(h.held_by).toEqual([{ source: `notes/${n1}`, target: `drafts/${d1}`, label: "references" }]);
   });
 
+  it("held_by lists only links from outside the pattern, never its internal links", async () => {
+    const store = getStore();
+    const { n1 } = await world(store);
+    await createPattern(store, "drafts");
+    const d1 = await entry(store, "drafts", "one"), d2 = await entry(store, "drafts", "two");
+    await mustLink(store, `notes/${n1}`, `drafts/${d1}`, "references");   // from outside: holds
+    await mustLink(store, `drafts/${d2}`, `drafts/${d1}`, "derived-from"); // internal: never holds
+    await archivePatternDaysAgo(store, "drafts", 31);
+    await boot(store);
+    const h = (await held(store))?.find((x) => x.pattern === "drafts");
+    expect(h, "drafts is held").toBeDefined();
+    expect(h.held_by).toEqual([{ source: `notes/${n1}`, target: `drafts/${d1}`, label: "references" }]);
+    expect(h.held_by.some((l: any) => l.source === `drafts/${d2}`), "the internal link is absent").toBe(false);
+  });
+
   it("an archived pattern under the 30-day horizon is not reported; nothing held means an empty array", async () => {
     const store = getStore();
     const { n1 } = await world(store);
