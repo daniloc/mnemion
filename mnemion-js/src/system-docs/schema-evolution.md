@@ -59,7 +59,9 @@ The write is checked at one chokepoint: an undeclared label is refused, and the 
 
 Links are immutable: endpoints and relation never change after create. To move or relabel a link, archive it and create a new one. Unarchiving re-runs every check.
 
-Archiving an entry (or a pattern) leaves its links in place but dormant: reads stop showing them, they still count toward uniqueness and cardinality, and they come back unchanged when the entry is unarchived. A link is removed only when an endpoint is gone for good.
+Archiving an entry (or a pattern) leaves its links in place but dormant: reads stop showing them, they still count toward uniqueness and cardinality (and a dormant link still closes a cycle), and they come back unchanged when the entry is unarchived. A link is removed only when an endpoint is gone for good.
+
+A link protects its target from garbage collection: a linked `_web_cache` snapshot is never collected, and an archived pattern that an active link from outside it still points into is not dropped after its 30 days — it stays archived, its links dormant, until those links are archived. Links internal to the pattern don't protect it.
 
 Reading: `resolve` lists linked entries one per link, each with `direction` (`out` — this entry is the source; `in` — the target) and `relation`, the name read from this entry's side (`depends-on` out, `required-by` in).
 
@@ -73,6 +75,8 @@ Prefer a kernel default. Declare a relation when a connection means something no
 
 Behavior palette: `supersession` (the target is demoted as replaced — see the memory-maintenance doc) and `acyclic` (no cycles). A behavior is declared, never coded: the engine performs each one at a single place.
 
+Explicit `null` is refused for every field — omit a field to leave it out; `null` never means "use the default" or "clear it".
+
 If existing links would violate an amend (a second link from one source under cardinality `one`, a cycle under `acyclic`) or a retire, the proposal lists them in `preview.violations` and `apply_change` is refused until they are archived or moved — it re-checks against the data at apply time.
 
-**Legacy relations.** Labels in use before the registry were declared automatically, flagged `legacy`, with a placeholder description; their patterns were inferred from usage. Pay the debt down with `amend_relation` and a real description — that clears the flag.
+**Legacy relations.** Labels in use before the registry were declared automatically, flagged `legacy`, with a placeholder description; their patterns were inferred from usage. Pay the debt down with `amend_relation` and a real description — that clears the flag. Cycles that pre-registry data already holds across an acyclic relation are reported at boot and left in place; propose which link to archive and let the owner ratify.
