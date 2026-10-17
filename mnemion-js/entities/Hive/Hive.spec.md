@@ -209,7 +209,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: canonical-encoding dismissed: it selects a configured host; URL encoding is applied by the URL builder
   checklist: identity-continuity declared as instance-identity host
 - relation declaration totality: Every active link's label names an active relation, and its endpoints satisfy that relation's source, target and cardinality.
-  over: every active _links row against every active _relations row, after admitted and refused link writes and after the legacy-label migration
+  over: every active _links row against every active _relations row, after admitted and refused link writes and after the legacy-label migration (inverse rewrite, generated inverses, sweep) on its first boot
   via: relation declaration totality
   because: A free-text label let the edge vocabulary drift and let a link join any two patterns; an undeclared label must be refused, not stored.
   crossing: agent-mcp -> storage
@@ -241,7 +241,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage dismissed: the rule is over the fields of one link, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - behavior by declaration: A relation behavior takes effect because a relation declares it, and no worker source outside the relations module filters links on a label literal.
-  over: every worker source file outside entities/Hive/relations.ts, and every supersession reader (getEntry, resolve, the stale view, publications, prime) driven by a hive-declared relation
+  over: every worker source file outside entities/Hive/relations.ts (no literal equal to a kernel relation name or inverse except declared seed-data files; no label comparison in a file that queries _links), and every supersession reader (getEntry, resolve, the stale view, publications, prime) driven by a hive-declared relation
   via: behavior by declaration
   because: Supersession meant five copies of label = 'supersedes', the guard-at-every-call-site pattern that fails open at the next copy.
   kinds: storage
@@ -254,10 +254,10 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage declared as behavior by declaration
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
-- acyclicity: No cycle exists across a relation that declares the acyclic behavior.
-  over: every acyclic relation, kernel default or hive-declared, across direct writes, inverse writes, self-links and unarchives
+- acyclicity: No write creates a cycle across a relation that declares the acyclic behavior, and cycles already present in pre-registry data are reported at boot, never auto-repaired.
+  over: every acyclic relation, kernel default or hive-declared, across direct writes, inverse writes, self-links, unarchives and walks through dormant links, plus pre-registry cycles (2-cycles, self-loops, and cycles the inverse rewrite creates) reported by the boot warning
   via: acyclicity
-  because: A cycle in depends-on, derived-from or supersedes makes the chain unanswerable: nothing is first, and supersession demotes both ends.
+  because: A cycle in depends-on, derived-from or supersedes makes the chain unanswerable: nothing is first, and supersession demotes both ends; legacy cycles are owner-ratified maintenance, so boot reports them instead of deleting links.
   crossing: agent-mcp -> storage
   entrances: none
   kinds: storage
@@ -270,8 +270,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: the rule is over one relation's edges, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
-- linked targets survive GC: No garbage-collection pass removes a row that is the target of an active link.
-  over: the _web_cache GC pass over linked and unlinked rows past their TTL and grace window, on repeated boots and after the link is archived
+- linked targets survive GC: No garbage-collection pass removes a row or table that is the target of an active link from outside it.
+  over: every GC pass that removes rows or tables: the _web_cache GC over linked and unlinked rows past their TTL and grace window, and the 30-day archived-pattern drop over patterns targeted from outside, linked only internally, and whose inbound link was archived, on repeated boots
   via: linked targets survive GC
   because: A cited snapshot deleted under its link leaves the citation dangling; the protection is derived from the link so no pinned flag can drift from it.
   kinds: storage
@@ -282,7 +282,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
   checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
-  checklist: declared-target-coverage dismissed: one GC pass over one table; any future document GC must honor the same rule
+  checklist: declared-target-coverage dismissed: the rule names each GC pass that removes rows or tables; any future GC, including documents, must honor it
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - palette totality: Every behavior in the relation behavior palette has an enforcement test.
   over: every key of BEHAVIOR_PALETTE in entities/Hive/relations.ts
@@ -299,7 +299,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage declared as palette totality
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - relation vocabulary evolution: Relations are declared, amended and retired only through validated change types, each previewed and logged, and never so that existing active links violate the result.
-  over: declare_relation, amend_relation and retire_relation across every validation rule, kernel defaults, legacy relations, and violators that exist at propose or appear before apply
+  over: declare_relation, amend_relation and retire_relation across every validation rule including explicit nulls, kernel defaults, legacy relations, violators that exist at propose or appear before apply, and the same payloads sent through the MCP propose_change tool
   via: relation vocabulary evolution
   because: Refusing an undeclared label is fair only when declaring one is possible, and an amend or retire must not strand links already written.
   crossing: agent-mcp -> storage

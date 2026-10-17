@@ -23,6 +23,7 @@ import { prime, type PrimeContext } from "../../entities/Hive/prime";
 // exists. A ?raw default import, not import.meta.glob: Vite drops the importing file
 // from its own glob results, so a self-glob is always empty.
 import THIS_FILE_SRC from "./relations.test.ts?raw";
+import { getAgentByName } from "agents";
 
 type Store = DurableObjectStub<HiveDO>;
 
@@ -190,6 +191,46 @@ async function insertDocument(store: Store, title: string): Promise<number> {
 
 const isKernel = (p: string) => p.startsWith("_");
 
+/** Drive the real MCP layer (SessionDO: zod schemas + tool handlers) over the agents
+ *  RPC transport, against the hive named `hiveId`. Returns the initialize result and
+ *  a tools/call helper. */
+async function mcpSession(hiveId: string) {
+  const session: any = await getAgentByName(env.MCP_OBJECT as any, `rpc:${crypto.randomUUID()}`, { props: { hiveId, actor: "owner" } });
+  const init = await session.handleMcpMessage({
+    jsonrpc: "2.0", id: 1, method: "initialize",
+    params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "relations-test", version: "1" } },
+  });
+  await session.handleMcpMessage({ jsonrpc: "2.0", method: "notifications/initialized" });
+  let next = 2;
+  const call = async (name: string, args: Record<string, unknown>) => {
+    const r = await session.handleMcpMessage({ jsonrpc: "2.0", id: next++, method: "tools/call", params: { name, arguments: args } });
+    return r.result as { isError?: boolean; content: { type: string; text: string }[] };
+  };
+  return { init: init.result, call };
+}
+
+/** A hive stub addressed by name, so an MCP session and the test share it. */
+function namedStore(hiveId: string): Store {
+  return env.MNEMION_HIVE.get(env.MNEMION_HIVE.idFromName(hiveId));
+}
+
+/** Snapshot of the edge store and vocabulary, for "a second boot changes nothing". */
+async function edgeSnapshot(store: Store) {
+  return {
+    links: await sql(store, `SELECT * FROM "_links" ORDER BY id`),
+    relations: await sql(store, `SELECT * FROM "_relations" ORDER BY id`),
+  };
+}
+
+/** Every console.warn line emitted while `fn` runs (one array entry per line). */
+async function warnLines(fn: () => Promise<void>): Promise<string[]> {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await fn();
+    return warn.mock.calls.map((c) => c.map(String).join(" ")).join("\n").split("\n");
+  } finally { warn.mockRestore(); }
+}
+
 /** True when `pattern` has an _objects row (archived or not), its table exists, and
  *  row `id` is present in it (archived or not). */
 async function rowExists(store: Store, pattern: string, id: number): Promise<boolean> {
@@ -336,6 +377,41 @@ describe("relations registry: kernel defaults", () => {
 // =====================================================================
 
 describe("relations surface: index and mnemion://relations", () => {
+  it("mnemion://schema/<pattern> lists the relations it may be a source or target of, `*` included", async () => {
+    const store = getStore();
+    await world(store);
+    await declare(store, { name: "cites", inverse: "cited-by", source: ["notes"], target: ["papers"] });
+    const notes = JSON.parse(await store.resolve("mnemion://schema/notes"));
+    expect(notes.relations).toBeDefined();
+    expect(notes.relations.as_source).toEqual(expect.arrayContaining([...KERNEL_NAMES, "cites"]));
+    expect(notes.relations.as_target).toEqual(expect.arrayContaining(KERNEL_NAMES));
+    expect(notes.relations.as_target).not.toContain("cites");
+    const papers = JSON.parse(await store.resolve("mnemion://schema/papers"));
+    expect(papers.relations.as_target).toEqual(expect.arrayContaining([...KERNEL_NAMES, "cites"]));
+    expect(papers.relations.as_source).not.toContain("cites");
+    // Names only, canonical — never inverses.
+    expect(notes.relations.as_source).not.toContain("superseded-by");
+  });
+
+  it("the prime response carries the active vocabulary as relations: [{name, inverse}]", async () => {
+    const store = getStore();
+    await world(store);
+    await declare(store, { name: "cites", inverse: "cited-by", source: ["notes"], target: ["papers"] });
+    const primed = JSON.parse(await store.prime("what do notes cite", "", 3));
+    expect(Array.isArray(primed.relations)).toBe(true);
+    expect(primed.relations).toEqual(expect.arrayContaining([
+      { name: "supersedes", inverse: "superseded-by" },
+      { name: "references", inverse: "referenced-by" },
+      { name: "cites", inverse: "cited-by" },
+    ]));
+    for (const r of primed.relations) expect(Object.keys(r).sort()).toEqual(["inverse", "name"]);
+  });
+
+  it("the MCP init instructions point agents at mnemion://relations", async () => {
+    const { init } = await mcpSession(`user:rel-mcp:${crypto.randomUUID()}`);
+    expect(String(init.instructions)).toContain("mnemion://relations");
+  });
+
   const shapeOk = (r: any) => {
     expect(typeof r.name).toBe("string");
     expect(typeof r.inverse).toBe("string");
@@ -509,6 +585,53 @@ describe("legacy label migration", () => {
       expect(text).toContain("ethos-grounds");   // still legacy
       expect(text).not.toContain("refines");     // paid down
     } finally { warn2.mockRestore(); }
+  });
+
+  it("generated inverses never collide with an in-use label, whatever order the labels arrive in", async () => {
+    for (const order of [["bar-inverse", "bar"], ["bar", "bar-inverse"]]) {
+      const store = getStore();
+      await createPattern(store, "notes");
+      const a = await entry(store, "notes", "a"), b = await entry(store, "notes", "b"), c = await entry(store, "notes", "c");
+      await runInDurableObject(store, (_i, state) => {
+        const ins = (s: number, t: number, label: string) => state.storage.sql.exec(
+          `INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, 'notes', ?, ?)`, s, t, label);
+        ins(a, b, order[0]); // inserted FIRST
+        ins(b, c, order[1]);
+      });
+      await boot(store);
+      const all = await sql(store, `SELECT name, inverse FROM "_relations" WHERE archived_at IS NULL`);
+      expect(all.map((r) => r.name)).toEqual(expect.arrayContaining(["bar", "bar-inverse"]));
+      const vocab = all.flatMap((r) => [r.name, r.inverse]);
+      const names = new Set(all.map((r) => r.name));
+      expect(all.filter((r) => names.has(r.inverse)), `order ${order.join(", ")}: an inverse equals a name`).toEqual([]);
+      expect(new Set(vocab).size, `order ${order.join(", ")}: names and inverses are unique`).toBe(vocab.length);
+      expect(await totalityViolations(store)).toEqual([]);
+    }
+  });
+
+  it("an inverse-worded legacy link that canonicalizes onto a kernel source is swept in the same boot; a second boot changes nothing", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    const doc = await insertDocument(store, "legacy citation");
+    const id = await runInDurableObject(store, (_i, state) => {
+      const db = state.storage.sql;
+      // notes/n1 referenced-by _documents/doc  ==  _documents/doc references notes/n1
+      db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, '_documents', ?, 'referenced-by')`, n1, doc);
+      const linkId = (db.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+      // An inverse-worded link that canonicalizes onto sound ends, for contrast.
+      db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, 'notes', ?, 'required-by')`, n1, n2);
+      return linkId;
+    });
+
+    await boot(store);
+    expect(await totalityViolations(store), "relation declaration totality holds after the FIRST boot").toEqual([]);
+    expect((await linkRow(store, id)).archived_at, "the kernel-source link is swept in the same boot").not.toBeNull();
+    const sound = await sql(store, `SELECT * FROM "_links" WHERE archived_at IS NULL AND label = 'depends-on'`);
+    expect(sound.map((l) => `${l.source_pattern}/${l.source_id}->${l.target_pattern}/${l.target_id}`)).toEqual([`notes/${n2}->notes/${n1}`]);
+
+    const first = await edgeSnapshot(store);
+    await boot(store);
+    expect(await edgeSnapshot(store), "a second boot changes nothing").toEqual(first);
   });
 
   it("an upgraded hive loses the pair-only unique index: one pair may carry several relations", async () => {
@@ -741,6 +864,49 @@ describe("acyclicity", () => {
     const { n1, n2 } = await world(store);
     await mustLink(store, `notes/${n2}`, `notes/${n1}`, "supersedes");
     expectCleanRefusal(await link(store, `notes/${n1}`, `notes/${n2}`, "supersedes"));
+  });
+
+  it("a dormant link still takes part in the cycle walk: the closing write is refused", async () => {
+    const store = getStore();
+    const { n1, n2, n3 } = await world(store);
+    await mustLink(store, `notes/${n1}`, `notes/${n2}`, "depends-on");
+    await mustLink(store, `notes/${n2}`, `notes/${n3}`, "depends-on");
+    await mut(store, "notes", "archive", { id: n2 }); // both links now dormant
+    expectCleanRefusal(await link(store, `notes/${n3}`, `notes/${n1}`, "depends-on"));
+    await mut(store, "notes", "unarchive", { id: n2 });
+    expect(await acyclicCycles(store)).toEqual([]);
+  });
+
+  it("pre-registry cycles are reported at boot and left in place, never auto-repaired", async () => {
+    const store = getStore();
+    const { n1, n2, n3 } = await world(store);
+    const ids = await runInDurableObject(store, (_i, state) => {
+      const db = state.storage.sql;
+      const ins = (s: number, t: number, label: string) => {
+        db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES ('notes', ?, 'notes', ?, ?)`, s, t, label);
+        return (db.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+      };
+      return [
+        ins(n1, n2, "supersedes"), ins(n2, n1, "supersedes"), // 2-cycle
+        ins(n3, n3, "depends-on"),                            // self-loop
+        ins(n1, n3, "derived-from"), ins(n1, n3, "source-of"), // the rewrite makes n3 derived-from n1: a 2-cycle
+      ];
+    });
+
+    const lines = await warnLines(() => boot(store));
+    const reported = (relation: string, entries: string[]) =>
+      lines.some((l) => l.includes(relation) && entries.every((e) => new RegExp(`${e}(?!\\d)`).test(l)));
+    expect(reported("supersedes", [`notes/${n1}`, `notes/${n2}`]), "supersedes 2-cycle reported").toBe(true);
+    expect(reported("depends-on", [`notes/${n3}`]), "depends-on self-loop reported").toBe(true);
+    expect(reported("derived-from", [`notes/${n1}`, `notes/${n3}`]), "derived-from 2-cycle (after the inverse rewrite) reported").toBe(true);
+
+    for (const id of ids) expect((await linkRow(store, id)).archived_at, `legacy link ${id} left in place`).toBeNull();
+    const derived = await sql(store, `SELECT source_id, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'derived-from' ORDER BY source_id`);
+    expect(derived.map((l) => `${l.source_id}->${l.target_id}`).sort()).toEqual([`${n1}->${n3}`, `${n3}->${n1}`].sort());
+    // Reported, not repaired: the walk still finds them.
+    expect((await acyclicCycles(store)).length).toBeGreaterThanOrEqual(3);
+    // And no write may add to them.
+    expectCleanRefusal(await link(store, `notes/${n2}`, `notes/${n2}`, "supersedes"));
   });
 
   it("a hive relation declared acyclic is enforced; one declared without it is not", async () => {
@@ -994,37 +1160,58 @@ describe("behavior by declaration", () => {
     expect(result.results[0].id).toBe(newId);
   });
 
-  it("no worker source outside the relations module filters `_links` on a label literal", () => {
+  // The structural oracle. Two rules, both evaluated over every worker source file
+  // except the relations module, on string/template literal bodies (comments skipped):
+  //
+  //   1. No string literal anywhere is EXACTLY a kernel relation name or inverse.
+  //      This catches a bound parameter (`label = ?` with "supersedes" bound), a
+  //      constant (`const SUP = "supersedes"; [SUP].includes(l.label)`), and a JS
+  //      comparison (`l.label === "supersedes"`). Prose that merely mentions a
+  //      relation inside a sentence (the overlap guidance in data.ts / hive.ts) is
+  //      not an exact literal and is allowed. Seed DATA files that write link rows
+  //      (SEED_DATA_FILES) are the declared exception: labels there are data, not
+  //      behavior.
+  //   2. A file whose SQL touches `_links` (FROM/INTO/UPDATE/JOIN "_links") holds no
+  //      literal that compares `label`, where the literal either mentions `_links`
+  //      or names no table at all (a fragment concatenated onto a `_links` query).
+  //      A `label` comparison on another table (e.g. `_members WHERE label = ?`)
+  //      names its table and is allowed.
+  const SEED_DATA_FILES = new Set(["../../shared/core/dev-seed.ts"]);
+  const LINKS_SQL = /\b(?:FROM|INTO|UPDATE|JOIN)\s+"?_links"?(?!\w)/i;
+  const LABEL_CMP = /\blabel\s*(?:=|==|!=|<>|\bIN\b|\bLIKE\b|\bGLOB\b|\bIS\b)/i;
+  const TABLE_REF = /\b(?:FROM|INTO|UPDATE|JOIN)\s+["`]?[\w$]/i;
+
+  it("no worker source outside the relations module names a kernel relation in a literal", () => {
     const paths = Object.keys(WORKER_SOURCES);
     // Sanity: the glob really reads the worker tree (the check is not vacuous).
     expect(paths).toContain("../../entities/Hive/hive.ts");
     expect(paths).toContain("../../entities/Hive/prime.ts");
+    expect(paths).toContain("../../entities/Hive/data.ts");
     expect(paths.some((p) => p.includes("__tests__"))).toBe(false);
+    for (const seed of SEED_DATA_FILES) expect(paths, `declared seed file ${seed} exists`).toContain(seed);
 
+    const vocab = new Set(KERNEL_VOCAB);
     const offenders: string[] = [];
     for (const [path, src] of Object.entries(WORKER_SOURCES)) {
-      if (path === RELATIONS_MODULE_PATH) continue;
-      // Every string or template literal that mentions _links …
-      for (const lit of stringLiterals(src)) {
-        if (!lit.includes("_links")) continue;
-        // … must not compare its label column to a literal.
-        const m = lit.match(/\blabel\s*(?:=|==|!=|<>|\bIN\b|\bLIKE\b|\bGLOB\b)\s*\(?\s*'[^']*'/i);
-        if (m) offenders.push(`${path}: ${m[0]}`);
-      }
+      if (path === RELATIONS_MODULE_PATH || SEED_DATA_FILES.has(path)) continue;
+      for (const lit of stringLiterals(src)) if (vocab.has(lit.trim())) offenders.push(`${path}: "${lit}"`);
     }
     expect(offenders).toEqual([]);
   });
 
-  it("no worker source outside the relations module compares a label to a relation name in code", () => {
+  it("no worker source that queries `_links` compares `label` in SQL outside the relations module", () => {
     const offenders: string[] = [];
-    const vocab = new Set(KERNEL_VOCAB);
+    let querying = 0;
     for (const [path, src] of Object.entries(WORKER_SOURCES)) {
       if (path === RELATIONS_MODULE_PATH) continue;
-      for (const m of src.matchAll(/\blabel\s*(?:===|!==|==|!=)\s*["'`]([^"'`]+)["'`]|\bcase\s+["'`]([^"'`]+)["'`]\s*:/g)) {
-        const lit = m[1] ?? m[2];
-        if (vocab.has(lit)) offenders.push(`${path}: ${m[0]}`);
-      }
+      const lits = stringLiterals(src);
+      if (!lits.some((l) => LINKS_SQL.test(l))) continue;
+      querying++;
+      for (const lit of lits)
+        if (LABEL_CMP.test(lit) && (lit.includes("_links") || !TABLE_REF.test(lit)))
+          offenders.push(`${path}: ${lit.replace(/\s+/g, " ").slice(0, 160)}`);
     }
+    expect(querying, "at least one file outside the relations module queries _links (the rule is exercised)").toBeGreaterThan(0);
     expect(offenders).toEqual([]);
   });
 });
@@ -1168,6 +1355,17 @@ describe("dormant links", () => {
     expect((hit.linked ?? []).map((l) => l.id)).not.toContain(c);
   });
 
+  it("a dormant link still blocks a duplicate of itself", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    const id = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "references");
+    await mut(store, "notes", "archive", { id: n2 });
+    expectCleanRefusal(await link(store, `notes/${n1}`, `notes/${n2}`, "references"));
+    await mut(store, "notes", "unarchive", { id: n2 });
+    const rows = await sql(store, `SELECT id FROM "_links" WHERE archived_at IS NULL AND source_id = ? AND target_id = ? AND label = 'references'`, n1, n2);
+    expect(rows.map((r) => r.id)).toEqual([id]);
+  });
+
   it("a dormant link still counts for cardinality one, and the refusal names its endpoints", async () => {
     const store = getStore();
     const { n1, p1, p2 } = await world(store);
@@ -1285,6 +1483,12 @@ describe("relation vocabulary evolution", () => {
     ["required is not yet supported", { required: true }, /not yet supported/i],
     ["chain is not yet supported", { chain: ["references", "depends-on"] }, /not yet supported/i],
     ["cardinality outside one|many", { cardinality: "few" }, /cardinality/i],
+    ["explicit null cardinality", { cardinality: null as any }, /cardinality/i],
+    ["explicit null behaviors", { behaviors: null as any }, /behavio/i],
+    ["explicit null inverse", { inverse: null as any }, /inverse/i],
+    ["explicit null description", { description: null as any }, /description/i],
+    ["explicit null source", { source: null }, /source/i],
+    ["explicit null target", { target: null }, /target/i],
   ];
 
   it.each(REFUSALS)("declare_relation refuses: %s", async (_label, override, pattern) => {
@@ -1295,6 +1499,9 @@ describe("relation vocabulary evolution", () => {
     const p = await propose(store, change);
     expect(p.error).toBe(true);
     expect(p.message).toMatch(pattern);
+    // Engine-authored, never raw SQLite text.
+    expect(p.internal).toBeUndefined();
+    expect(p.message).not.toMatch(/SQLITE|constraint failed/i);
     // The refusal leaves the vocabulary untouched.
     const names = (await sql(store, `SELECT name FROM "_relations" WHERE archived_at IS NULL`)).map((r) => r.name);
     expect(new Set(names)).toEqual(new Set(KERNEL_NAMES));
@@ -1358,6 +1565,44 @@ describe("relation vocabulary evolution", () => {
     expect((await amend(store, { name: "no-such-relation", description: DESC("x") })).proposed.error).toBe(true);
     expect(await relationRow(store, "quotes")).toBeUndefined();
     expect((await relationRow(store, "cites")).inverse).toBe("cited-by");
+  });
+
+  it("amend_relation refuses an explicit null for any field instead of clearing it", async () => {
+    const store = getStore();
+    await world(store);
+    await declare(store, { name: "builds-on", inverse: "built-upon-by", source: ["notes"], target: ["notes"], behaviors: ["acyclic"], cardinality: "one" });
+    const before = await relationRow(store, "builds-on");
+    for (const field of ["behaviors", "cardinality", "inverse", "description"]) {
+      const { proposed, applied } = await amend(store, { name: "builds-on", [field]: null });
+      expect(proposed.error, `${field}: null is refused at propose`).toBe(true);
+      expect(proposed.internal, field).toBeUndefined();
+      expect(proposed.message, field).not.toMatch(/SQLITE|constraint failed/i);
+      expect(applied, field).toBeNull();
+    }
+    const after = await relationRow(store, "builds-on");
+    for (const k of ["inverse", "description", "cardinality", "behaviors", "source", "target"]) expect(after[k], k).toBe(before[k]);
+    expect(list(after.behaviors)).toEqual(["acyclic"]);
+  });
+
+  it("over MCP, required / chain / new_name reach the engine and are refused with its message", async () => {
+    const hiveId = `user:rel-mcp:${crypto.randomUUID()}`;
+    const store = namedStore(hiveId);
+    await declare(store, { name: "cites", inverse: "cited-by" });
+    const { call } = await mcpSession(hiveId);
+    const cases: Record<string, unknown>[] = [
+      { ...declareChange({ name: "quotes", inverse: "quoted-by" }), required: true },
+      { ...declareChange({ name: "quotes", inverse: "quoted-by" }), chain: ["references", "depends-on"] },
+      { type: "amend_relation", name: "cites", new_name: "quotes" },
+    ];
+    for (const change of cases) {
+      const engine = await propose(store, change);
+      expect(engine.error, `engine refuses ${JSON.stringify(change).slice(0, 80)}`).toBe(true);
+      const r = await call("propose_change", { description: "relations test", change });
+      expect(r.isError, `MCP refuses ${JSON.stringify(change).slice(0, 80)}`).toBe(true);
+      expect(r.content[0].text).toBe(engine.message);
+    }
+    expect(await relationRow(store, "quotes")).toBeUndefined();
+    expect((await sql(store, `SELECT COUNT(*) AS n FROM _pending_changes`))[0].n).toBe(0);
   });
 
   it("kernel defaults cannot be amended or retired through change types", async () => {
@@ -1561,6 +1806,58 @@ describe("unlink", () => {
 // =====================================================================
 
 describe("linked targets survive GC", () => {
+  /** Archive a user pattern through the change type, then backdate the archive. */
+  async function archivePatternDaysAgo(store: Store, name: string, days: number) {
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: name });
+    expect((await apply(store, ap.change_id)).error).toBeUndefined();
+    await sql(store, `UPDATE _objects SET archived_at = datetime('now', '-${days} days') WHERE name = ?`, name);
+  }
+  const tableExists = async (store: Store, name: string) =>
+    (await sql(store, `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name)).length > 0;
+
+  it("an archived pattern targeted by a link from outside it is not dropped after 30 days", async () => {
+    const store = getStore();
+    const { n1 } = await world(store);
+    await createPattern(store, "drafts");
+    const d1 = await entry(store, "drafts", "draft");
+    const id = await mustLink(store, `notes/${n1}`, `drafts/${d1}`, "references");
+    await archivePatternDaysAgo(store, "drafts", 31);
+
+    await boot(store);
+    expect(await tableExists(store, "drafts"), "the table survives").toBe(true);
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'drafts'`))[0]?.archived_at, "still archived").not.toBeNull();
+    expect((await linkRow(store, id)).archived_at, "the link stays active (dormant)").toBeNull();
+
+    const up = await propose(store, { type: "unarchive_pattern", pattern_name: "drafts" });
+    expect((await apply(store, up.change_id)).error).toBeUndefined();
+    const r = JSON.parse(await store.resolve(`mnemion://entry/notes/${n1}`));
+    expect(r.linked.find((l: any) => l.pattern === "drafts" && l.id === d1)).toMatchObject({ direction: "out", relation: "references" });
+  });
+
+  it("once the inbound link is archived, the 30-day drop proceeds (protection is derived, not sticky)", async () => {
+    const store = getStore();
+    const { n1 } = await world(store);
+    await createPattern(store, "drafts");
+    const d1 = await entry(store, "drafts", "draft");
+    const id = await mustLink(store, `notes/${n1}`, `drafts/${d1}`, "references");
+    expect((await mut(store, "_links", "archive", { id })).error).toBeUndefined();
+    await archivePatternDaysAgo(store, "drafts", 31);
+    await boot(store);
+    expect(await tableExists(store, "drafts")).toBe(false);
+  });
+
+  it("an archived pattern whose only links are internal still drops after 30 days", async () => {
+    const store = getStore();
+    await createPattern(store, "drafts");
+    const d1 = await entry(store, "drafts", "one"), d2 = await entry(store, "drafts", "two");
+    const id = await mustLink(store, `drafts/${d1}`, `drafts/${d2}`, "references");
+    await archivePatternDaysAgo(store, "drafts", 31);
+    await boot(store);
+    expect(await tableExists(store, "drafts")).toBe(false);
+    await boot(store); // the next pass sweeps links whose pattern is gone
+    expect((await linkRow(store, id)).archived_at).not.toBeNull();
+  });
+
   it("a linked _web_cache row past its TTL and grace window survives GC until the link is archived", async () => {
     const store = getStore();
     const { n1 } = await world(store);

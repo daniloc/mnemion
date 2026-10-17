@@ -193,12 +193,21 @@ sync. Archiving the link makes the row collectable again under the normal
 rules. A link does not freeze the snapshot; re-fetch behaviour is unchanged,
 and `resolve(retain: true)` is still how a snapshot is frozen.
 
+The same rule governs the **archived-pattern drop** (owner decision,
+2026-10-17, option A). That GC drops a user pattern's table once it has been
+archived for 30 days. It skips any archived pattern that holds the target of an
+active link from an entry outside that pattern; links internal to the pattern
+don't count. The pattern stays archived, and its links stay dormant, until
+those links are removed. Then the normal 30-day rule resumes. This protection
+is derived too.
+
 `_documents` has no GC today; a document goes away only when it is archived
 explicitly. Any future document GC must honour the same rule.
 
-Invariant: **linked targets survive GC.** No GC pass removes a row that is the
-target of an active link. A test seeds a linked cache row past its TTL and its
-grace window, runs GC, and asserts the row survives.
+Invariant: **linked targets survive GC.** No GC pass removes a row or table
+that is the target of an active link from outside it. Tests seed a linked cache
+row past its TTL and its grace window, and a linked pattern archived for 31
+days, run GC, and assert that both survive.
 
 ### 5. Writing relations atomically
 
@@ -387,11 +396,15 @@ of a connection is the content. Each is limited to the patterns that use it.
   never triggers the sweep, so the sweep is deterministic under cold starts.
 - `resolve` gains direction and the inverse names. The index gains
   `relations`, and `mnemion://relations` lists the vocabulary.
+  `mnemion://schema/{pattern}` lists the relations the pattern may be a source
+  or target of. The prime response carries the relation vocabulary, and the MCP
+  init instructions point at `mnemion://relations` (§6).
 - The `declare_relation`, `amend_relation` and `retire_relation` change types.
   They are needed now: refusing an undeclared label is only fair if declaring
   one is possible, and amending is how legacy descriptions get paid down.
 - `_documents` and `_web_cache` as link targets, and GC protection for linked
-  targets (§4a).
+  targets, covering both the `_web_cache` GC and the archived-pattern drop
+  (§4a).
 - **Palette in Phase 1: `supersession` and `acyclic` only.** `part-of` is
   seeded with `acyclic` and gains `containment` in Phase 2, so no behavior is
   declared before the engine performs it.
@@ -495,14 +508,17 @@ and a staged break has made the test fail.
   create. Unarchiving re-validates.
 - **behavior by declaration.** No query outside the relations module filters on
   a label literal. This is a structural check, and it is the one that catches
-  the next `'supersedes'`.
+  the next `'supersedes'`, whether it is written inline, bound as a parameter,
+  split across literals or held in a constant (appendix §H).
 - **required relations.** Every active entry of a pattern with a required
   relation holds one, checked at boot and by a test.
-- **acyclicity.** No cycle exists across an `acyclic` relation.
+- **acyclicity.** No write creates a cycle across an `acyclic` relation.
+  Cycles already in pre-registry data are reported at boot and never
+  auto-repaired: maintenance is owner-ratified.
 - **derived relations are never stored.** No `_links` row carries a chained
   relation's name.
-- **linked targets survive GC.** No GC pass removes a row that is the target of
-  an active link (§4a).
+- **linked targets survive GC.** No GC pass removes a row or table that is the
+  target of an active link from outside it (§4a).
 - **palette totality.** Every behavior in the palette has an enforcement test.
   A behavior added without one fails the suite.
 
@@ -624,12 +640,21 @@ offending part, when:
   listed target is a kernel pattern other than `_documents` or `_web_cache`;
 - a behavior is outside the palette; `containment` (and a `required: true` or a
   `chain` field) is refused with a message containing `not yet supported`;
-- cardinality is not `one` or `many`.
+- cardinality is not `one` or `many`;
+- any field is an explicit `null`: `cardinality`, `behaviors`, `inverse`,
+  `description`, `source` or `target`. A `null` is never read as "use the
+  default", and the refusal is engine-authored, never SQLite text.
 
 `amend_relation` refuses at propose when the relation does not exist or is a
 kernel default; when the payload carries `new_name` (the name is immutable);
-and on any field that fails the `declare_relation` rule for that field.
-Amending a relation's `description` sets `legacy` to 0.
+and on any field that fails the `declare_relation` rule for that field. That
+includes an explicit `null`, so `{behaviors: null}` is refused and never clears
+the behaviors. Amending a relation's `description` sets `legacy` to 0.
+
+**Over MCP.** The `propose_change` tool's schema carries every relation field
+through to the engine, including `required`, `chain` and `new_name`, so the
+engine refuses them. The tool's error text is the engine's message, verbatim.
+A field the schema dropped silently would make a refused payload look accepted.
 
 **Violations.** When an `amend_relation` (to cardinality `one`, or adding
 `acyclic`) or a `retire_relation` meets active links that would violate the
@@ -709,6 +734,23 @@ active relations as:
 
 Retired relations are absent from both.
 
+`resolve("mnemion://schema/<pattern>")` adds:
+
+```jsonc
+"relations": { "as_source": ["supersedes", "references", "…", "cites"],   // canonical names whose source admits the pattern, `*` included
+               "as_target": ["supersedes", "references", "…"] }            // canonical names whose target admits it
+```
+
+The prime response (`HiveDO.prime`) carries the active vocabulary beside
+`maintenance`, because web clients never see init instructions:
+
+```jsonc
+"relations": [ { "name": "supersedes", "inverse": "superseded-by" }, … ]   // exactly these two keys per item
+```
+
+It is present whether or not recall returns results. The MCP `initialize`
+result's `instructions` mention `mnemion://relations`.
+
 ### F. Legacy labels and the boot warning
 
 On boot, for each distinct label on active links that names no active relation:
@@ -718,13 +760,39 @@ On boot, for each distinct label on active links that names no active relation:
   `source` and `target` are the distinct source and target patterns of its
   active links, `behaviors` is `[]`, `cardinality` is `many`, `kernel` is 0 and
   `legacy` is 1. The description is a non-empty placeholder. The inverse is
-  implementation-chosen, non-empty, and unique across every name and inverse
-  (for example `<name>-inverse`).
+  implementation-chosen and non-empty, for example `<name>-inverse`. It must
+  differ from every declared name and inverse **and from every label in use on
+  active links**, which become names in the same pass. So an in-use
+  `bar-inverse` label forces `bar` to get some other inverse, whichever label
+  is processed first.
 
 `supersedes` and the other kernel names already resolve to kernel defaults, so
 they are never declared again. Labels found only on archived links are not
-declared. The integrity sweep runs first, so no relation names a pattern that
-does not exist. The migration is idempotent.
+declared. The migration is idempotent: a second boot changes nothing.
+
+**Boot order:**
+
+1. Seed the kernel relations.
+2. Rewrite labels: `NULL` becomes `references`, and an inverse-worded label
+   becomes its canonical name with source and target swapped.
+3. Run the integrity sweep (§G).
+4. Declare the remaining labels as legacy relations.
+
+The rewrite must precede the sweep. That way a link whose canonical form lands
+on an inadmissible endpoint is swept in the same boot. For example, the legacy
+`notes/1 -[referenced-by]-> _documents/1` becomes
+`_documents/1 references notes/1`, a kernel source. Relation declaration
+totality then holds after the first boot. Declaring after the sweep means no
+relation names a pattern that does not exist.
+
+**Legacy cycles.** Writes never create a cycle (§C), but pre-registry data may
+already hold one: a `supersedes` 2-cycle, a `depends-on` self-loop, or a pair
+of `derived-from` and `source-of` links that the rewrite turns into a 2-cycle.
+Such cycles are never auto-repaired; maintenance is owner-ratified, never
+auto-deleting. Each one is reported at boot by a pure findings function in
+`relations.ts`. It produces one `console.warn` line per cycle, naming the
+relation and every entry in the cycle as `pattern/id`, and leaves the links in
+place.
 
 The boot warning is observable as a `console.warn` during `initializeSchema`,
 directly or through `logWarn`. Its text contains `legacy` and the name of every
@@ -764,14 +832,33 @@ The relation-declaration-totality oracle requires each active link's endpoint
 rows to exist, not to be active.
 
 The `_web_cache` GC skips any row that is the target of an active link,
-dormant or not. This is derived in the GC query; there is no stored flag.
+dormant or not. The 30-day archived-pattern drop skips any archived pattern
+holding an entry that is the target of an active link from an entry outside
+the pattern; links internal to the pattern don't count. Both are derived in
+the GC query, with no stored flag. When the protecting link is archived, the
+normal rule resumes on the next boot. Within a boot, the sweep runs after the
+label rewrite (§F).
 
 ### H. `entities/Hive/relations.ts`
 
 The module exports `BEHAVIOR_PALETTE`, a table (an object, not an array) keyed
 by behavior name. In Phase 1 its keys are exactly `supersession` and `acyclic`.
-It is the only worker source file allowed to filter `_links` on a label literal,
-or to compare a label to a relation name in code.
+It is the only worker source file allowed to name relations or filter links by
+label. The structural oracle checks two rules over every other worker source
+file, reading string and template literal bodies with comments skipped:
+
+1. **No relation names in literals.** No string literal is exactly a kernel
+   relation name or inverse, whatever it is used for: a bound SQL parameter, a
+   constant, an `includes` list or a `===` comparison. Prose that mentions a
+   relation inside a sentence is allowed. Seed-data files that write link rows
+   are the declared exception, since their labels are data, not behavior. Today
+   that is `shared/core/dev-seed.ts`.
+2. **No label comparisons near `_links`.** A file whose SQL touches `_links`
+   (`FROM`/`INTO`/`UPDATE`/`JOIN "_links"`) holds no literal comparing `label`
+   (`=`, `!=`, `<>`, `IN`, `LIKE`, `GLOB` or `IS`) when that literal either
+   mentions `_links` or names no table at all, as a fragment would. A `label`
+   comparison that names another table, such as `_members WHERE label = ?`, is
+   allowed.
 
 `PrimeContext` stays `{ env, db, patternExists }`. Supersession lookups read
 `_relations` through the `db` it is handed.
@@ -840,3 +927,15 @@ All refusals are clean, as defined in section C.
     so the hive stays writable on the first deploy.
 11. **Amend refuses `new_name`** to make "the name is immutable" testable.
     Source and target are not amendable in Phase 1, though no test pins that.
+12. **Structural oracle exception list** (§H). The literal rule is global, not
+    limited to files that query `_links`. It catches a constant used by a
+    file that never touches SQL, at the cost of one declared exception,
+    `shared/core/dev-seed.ts`, whose labels are seed data. The rule passes the
+    current tree with no false positives. Each of three evasions, appended
+    temporarily and then restored byte for byte, turned it red: a bound
+    parameter in `hive.ts`, a split literal in `reports.ts`, and
+    `[SUP].includes` in `prime.ts`.
+13. **The MCP refusal text equals the engine's message** verbatim (§B), so the
+    test compares the two directly.
+14. **Legacy cycles: one warning line per cycle** (§F), naming the relation and
+    each entry as `pattern/id`.
