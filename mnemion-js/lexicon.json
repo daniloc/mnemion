@@ -68,6 +68,10 @@
     {
       "name": "view spec",
       "definition": "An agent-authored _views entry that chooses a fixed UI layout and maps pattern facets to display roles."
+    },
+    {
+      "name": "relation",
+      "definition": "A declared kind of link: a name, its inverse, the patterns it may join, a cardinality and a set of behaviors from a fixed palette, held in the _relations kernel pattern. Every link's label names one."
     }
   ]
 }

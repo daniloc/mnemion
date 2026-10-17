@@ -328,3 +328,19 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: the sweep is over one table's rows, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- unlink precision: Unlink archives exactly the one link it names, and refuses instead of guessing when its pair or relation is ambiguous, absent or malformed.
+  over: unlink by canonical label, by inverse label and without a label, on pairs carrying one or several relations, with absent labels and malformed source or target shorthands
+  via: unlink
+  because: Once one pair can carry several relations, archiving the first matching link would silently remove the wrong relation.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation declared as unlink precision
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule is over one pair's links, not a registry of targets
+  checklist: completion-evidence dismissed: the check is synchronous with the write

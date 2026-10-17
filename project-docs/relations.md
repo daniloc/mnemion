@@ -749,6 +749,38 @@ or to compare a label to a relation name in code.
 `PrimeContext` stays `{ env, db, patternExists }`. Supersession lookups read
 `_relations` through the `db` it is handed.
 
+### I. Unlink
+
+`mutate(pattern: "unlink", data: {source, target, label?})` names one pair and,
+optionally, one relation. The tests drive it through the `unlink` shortcut.
+
+- **With a `label`.** A canonical name targets that relation on the pair. An
+  inverse name is normalized as on create: source and target are swapped, and
+  the canonical relation is targeted. Unlink archives exactly that link and
+  returns `{ operation: "unlink", pattern: "_links", id, source, target }`,
+  where `id` is the archived link. When no such active link exists, unlink
+  returns a clean refusal. That covers an undeclared label, a relation absent
+  from the pair, and the reverse direction of an existing link.
+- **Without a `label`, exactly one active link on the pair.** Unlink archives
+  it, as it does today.
+- **Without a `label`, several active links on the pair.** Unlink is refused
+  and archives nothing:
+
+  ```jsonc
+  { "error": true, "message": "… names each label present …", "labels": ["depends-on", "references"] }
+  ```
+
+- **Malformed shorthand.** A `source` or `target` shorthand that is not
+  exactly `pattern/<integer id>` is refused. That includes the empty string,
+  a missing slash, extra segments and a non-integer id. The message contains
+  `pattern/id`. The shorthand is refused even when valid explicit
+  `source_pattern`/`source_id`/`target_pattern`/`target_id` fields are also
+  present; it is never ignored.
+- **Other links are never touched.** Unlink never archives a different
+  relation on the same pair, or a link on the reverse pair.
+
+All refusals are clean, as defined in section C.
+
 ### Choices made by the test author
 
 1. **Archived `_web_cache` targets survive the integrity sweep** (G). The brief

@@ -1317,6 +1317,102 @@ describe("relation vocabulary evolution", () => {
 });
 
 // =====================================================================
+// Unlink: one pair may carry several relations, so unlink must name which
+// =====================================================================
+
+const unlink = (store: Store, data: Record<string, unknown>) => mut(store, "unlink", "unlink", data);
+
+describe("unlink", () => {
+  it("with a label, archives exactly that relation's link and leaves the pair's other relations", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    const refs = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "references");
+    const dep = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "depends-on");
+    const back = await mustLink(store, `notes/${n2}`, `notes/${n1}`, "references");
+
+    const r = await unlink(store, { source: `notes/${n1}`, target: `notes/${n2}`, label: "depends-on" });
+    expect(r.error).toBeUndefined();
+    expect(r.id).toBe(dep);
+    expect((await linkRow(store, dep)).archived_at).not.toBeNull();
+    expect((await linkRow(store, refs)).archived_at).toBeNull();
+    expect((await linkRow(store, back)).archived_at).toBeNull();
+  });
+
+  it("an inverse label is normalized by swapping source and target, as on create", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    const refs = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "references");
+    const dep = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "depends-on");
+    // "n2 required-by n1" names the stored row "n1 depends-on n2".
+    const r = await unlink(store, { source: `notes/${n2}`, target: `notes/${n1}`, label: "required-by" });
+    expect(r.error).toBeUndefined();
+    expect(r.id).toBe(dep);
+    expect((await linkRow(store, dep)).archived_at).not.toBeNull();
+    expect((await linkRow(store, refs)).archived_at).toBeNull();
+  });
+
+  it("with a label that has no active link on the pair, refuses cleanly and archives nothing", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    const refs = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "references");
+    const dep = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "depends-on");
+    for (const label of ["derived-from", "superseded-by", "no-such-relation"]) {
+      expectCleanRefusal(await unlink(store, { source: `notes/${n1}`, target: `notes/${n2}`, label }));
+    }
+    // The reverse direction of an existing link is a different pair: refused, not matched.
+    expectCleanRefusal(await unlink(store, { source: `notes/${n2}`, target: `notes/${n1}`, label: "depends-on" }));
+    expect((await linkRow(store, refs)).archived_at).toBeNull();
+    expect((await linkRow(store, dep)).archived_at).toBeNull();
+  });
+
+  it("without a label, archives the pair's only active link (backward compatible)", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    const refs = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "references");
+    const r = await unlink(store, { source: `notes/${n1}`, target: `notes/${n2}` });
+    expect(r.error).toBeUndefined();
+    expect(r.id).toBe(refs);
+    expect((await linkRow(store, refs)).archived_at).not.toBeNull();
+  });
+
+  it("without a label, refuses when the pair carries several relations, naming them", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    const refs = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "references");
+    const dep = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "depends-on");
+    const r = await unlink(store, { source: `notes/${n1}`, target: `notes/${n2}` });
+    expectCleanRefusal(r);
+    expect(Array.isArray(r.labels)).toBe(true);
+    expect([...r.labels].sort()).toEqual(["depends-on", "references"]);
+    expect(r.message).toContain("references");
+    expect(r.message).toContain("depends-on");
+    expect((await linkRow(store, refs)).archived_at).toBeNull();
+    expect((await linkRow(store, dep)).archived_at).toBeNull();
+  });
+
+  it("refuses a malformed source or target shorthand instead of ignoring it", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    const refs = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "references");
+    const explicit = { source_pattern: "notes", source_id: n1, target_pattern: "notes", target_id: n2 };
+    for (const data of [
+      { source: "notes", target: `notes/${n2}` },
+      { source: `notes/${n1}/7`, target: `notes/${n2}` },
+      { source: `notes/abc`, target: `notes/${n2}` },
+      { source: `notes/${n1}`, target: "" },
+      // A malformed shorthand beside valid explicit fields is still refused, never skipped.
+      { ...explicit, source: "garbage" },
+      { ...explicit, target: "notes/x/y", label: "references" },
+    ]) {
+      const r = await unlink(store, data);
+      expectCleanRefusal(r);
+      expect(r.message, JSON.stringify(data)).toMatch(/pattern\/id/);
+    }
+    expect((await linkRow(store, refs)).archived_at).toBeNull();
+  });
+});
+
+// =====================================================================
 // Linked targets survive GC (§4a)
 // =====================================================================
 
