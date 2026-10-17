@@ -620,6 +620,41 @@ export const KERNEL_TABLES: KernelTable[] = [
 
 // === Initialization ===
 
+/**
+ * The Durable Object's boot: initializeSchema, preceded on the FIRST relations
+ * migration (no `_relations` table yet — a pre-Phase-1 hive, or a brand-new one)
+ * by a PITR bookmark capture, recorded afterwards as one `_schema_history` row
+ * (change_type `restore_point`). Later boots find `_relations` and record nothing.
+ *
+ * @why v17 rewrites and archives links and drops the pair-only index; the restore
+ * point lets the deploy be undone exactly through the existing revert path
+ * (evo.revertChange / apply_change revert_history_id). It must never fail boot:
+ * an unavailable bookmark (local dev, tests) is recorded as NULL, and revert then
+ * reports rollback unavailable.
+ */
+export async function bootSchema(
+  db: any, env: { MNEMION_SECRET?: string; DEV_SEED?: string } | undefined,
+  captureBookmark: () => Promise<string>,
+): Promise<void> {
+  let firstV17 = false;
+  try { firstV17 = db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_relations'`).toArray().length === 0; } catch { /* boot regardless */ }
+  let bookmark: string | null = null;
+  if (firstV17) {
+    try { const b = await captureBookmark(); bookmark = typeof b === "string" ? b : null; } catch { bookmark = null; }
+  }
+  initializeSchema(db, env);
+  if (firstV17) {
+    try {
+      db.exec(
+        "INSERT INTO _schema_history (description, change_type, change_detail, bookmark) VALUES (?, 'restore_point', ?, ?)",
+        "Restore point before the relations registry migration (v17)",
+        JSON.stringify({ type: "restore_point", before: "relations registry migration (v17)", revert: "apply_change with revert_history_id, then wrangler rollback the worker" }),
+        bookmark,
+      );
+    } catch (err) { console.warn("[schema] could not record the v17 restore point", err); }
+  }
+}
+
 export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_SEED?: string }): void {
   // --- Core schema tables ---
 
@@ -1174,7 +1209,10 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     const kernelCols: Record<string, string[]> = {};
     // Enumerate ALL `_`-prefixed tables (not just _objects rows) so raw-DDL kernel
     // tables like _passkeys are covered — matching the security.test oracle exactly.
-    const tables = (db.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'`).toArray() as any[]).map((t: any) => t.name as string);
+    // `_cf_*` tables are the platform's own (e.g. _cf_METADATA, created once the
+    // PITR bookmark API is used — every first boot now captures a restore point);
+    // they are not kernel tables and PRAGMA on them is refused (SQLITE_AUTH).
+    const tables = (db.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'`).toArray() as any[]).map((t: any) => t.name as string);
     for (const name of tables) {
       kernelCols[name] = (db.exec(`PRAGMA table_info(${quoteIdent(name)})`).toArray() as any[]).map((c: any) => c.name as string);
     }

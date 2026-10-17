@@ -15,7 +15,7 @@ import { DurableObject } from "cloudflare:workers";
 import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { evaluateMapping } from "./transform";
-import { initializeSchema } from "./schema";
+import { bootSchema } from "./schema";
 import { KERNEL_COLUMN_SET, STRUCTURAL_KERNEL_COLUMNS } from "./kernel-columns";
 import { expandShortcut, normalizeHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
@@ -52,7 +52,8 @@ export class HiveDO extends DurableObject {
   constructor(ctx: DurableObjectState, env: any) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      initializeSchema(this.db, env);
+      // A PITR restore point is captured before the first relations migration (v17).
+      await bootSchema(this.db, env, () => this.ctx.storage.getCurrentBookmark());
       await this.migrateTokenHashes();
     });
   }

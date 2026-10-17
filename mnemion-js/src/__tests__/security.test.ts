@@ -185,7 +185,9 @@ describe("egress totality: every secret-shaped column on a kernel table is class
   it("the REAL kernel schema has no unclassified secret-shaped column (the loud oracle)", async () => {
     const store = getStore();
     await runInDurableObject(store, async (_i, state) => {
-      const tables = (state.storage.sql.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'`).toArray() as any[]).map((t) => t.name as string);
+      // `_cf_*` tables belong to the platform (e.g. _cf_METADATA from the PITR bookmark
+      // API the boot's restore point uses), not the kernel; PRAGMA on them is refused.
+      const tables = (state.storage.sql.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'`).toArray() as any[]).map((t) => t.name as string);
       const cols: Record<string, string[]> = {};
       for (const t of tables) cols[t] = (state.storage.sql.exec(`PRAGMA table_info("${t}")`).toArray() as any[]).map((c: any) => c.name as string);
       // a new secret-shaped column (token/password/public_key/…) on any kernel
