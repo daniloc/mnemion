@@ -16,7 +16,9 @@ mutate(pattern: "link", data: {source: "decisions/41", target: "decisions/23", l
 
 Source supersedes target. The old entry is never hidden: query, search, and resolve still return it, annotated with `superseded_by`. Prime demotes superseded entries heavily so current truth outranks replaced truth, but the chain stays navigable — the history of how understanding evolved is often the valuable part.
 
-Cross-pattern supersession is legitimate (a decision can supersede a note). Archive the link to undo it.
+Supersession is a **behavior a relation declares**, not a magic label. `supersedes` is the kernel relation that carries it (inverse `superseded-by`); a hive relation declared with the `supersession` behavior is honored the same way everywhere — prime demotion, `superseded_by` annotations, the stale view, and publications. Supersession is acyclic: an entry can't (transitively) supersede its own successor. See `{{uri:relations}}` for the vocabulary.
+
+Cross-pattern supersession is legitimate (a decision can supersede a note). Archive the link to undo it (or `unlink` with `label: "supersedes"` when the pair carries other relations too).
 
 ## Memory policy
 
