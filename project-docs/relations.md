@@ -1475,7 +1475,8 @@ Phase 1-era cases in `hive.test.ts`, `formats.test.ts` and
 
 ### P3-B. The fork migration (v19)
 
-**When.** At boot, when `_fields` holds any row with a non-null
+**When.** At boot, when `_fields` holds any MIGRATABLE row (see the governing
+rule below) with a non-null
 `references_object`. Hives without one record and change nothing.
 
 **Order.**
@@ -1546,10 +1547,46 @@ is itself rebuilt. Afterwards no user table's DDL contains `REFERENCES`.
 or `_fields` row, and records no second restore point. Later boots record
 nothing.
 
-**Dangling values.** Durable Object SQLite enforces foreign keys, so a value
-naming a missing row can't be planted, and the tests don't pin it. An
-implementation that meets one should skip it and warn, naming `P/id` and the
-facet.
+**The governing rule** (audit, 2026-10-19): **v19 never drops a column whose
+values did not ALL become links.** A facet is migratable only when every
+non-null value resolves to an existing row of an admissible target. Otherwise
+the facet is **kept**:
+
+- its column, its data and its `_fields` row stay as they are;
+- no relation is declared and no link is written for it;
+- every boot reports it in a `console.warn` naming `<pattern>.<facet>`, the
+  word "kept", and the reason.
+
+A kept facet is not migratable work. v19's restore-point `firstRun` is true
+only while some facet is migratable, so a hive whose only reference facets are
+kept records no v19 restore point on any boot.
+
+The reasons a facet is kept:
+
+- **A value doesn't resolve.** A dangling id, or a dangling non-id key, is
+  possible on a hive that ran without foreign-key enforcement. The tests plant
+  one with `PRAGMA foreign_keys = OFF`.
+- **A kernel target no link admits** (df-165e843e), such as
+  `references_object = '_members'`. The report says the reference to kernel
+  pattern `_members` can't become a link. `_documents` and `_web_cache` are
+  admissible targets and migrate normally.
+
+**How values resolve.**
+
+- **Non-id foreign keys** (df-9a3ddf19). An old `create_pattern` allowed
+  `links: {pattern, facet: "code"}`. Each value is resolved through the
+  foreign key's target column (`PRAGMA foreign_key_list` `to`) to that row's
+  `id`, and the link points at the id. If any non-null value fails to resolve
+  to exactly one row, the facet is kept.
+- **Cycles** (df-221287d2). Facets that reference each other's tables (for
+  example `alpha.beta_id → beta` and `beta.alpha_id → alpha`) migrate fully on
+  one boot: links written, both columns gone, triggers rebuilt, no "migration
+  failed". After that boot `firstRun` is false. A self-reference migrates like
+  any other facet.
+- **Recovery comes first** (df-48e8c52e). An interrupted swap, where only
+  `<table>__rebuild` is present, is recovered before any facet's columns are
+  read. Then the migration proceeds: the table has its data, the column is
+  gone, the links are present, and `query` works.
 
 **The dev seed** has no reference facet. It declares every relation its links
 use on the seeding boot itself, with real descriptions, so none is legacy
@@ -1654,8 +1691,8 @@ interface RelationGroup { relation: string; direction: "out" | "in"; derived: bo
    requires.
 4. **Archived sources and targets still get their links** (dormant), so
    unarchiving restores the connection.
-5. **Dangling FK values are not tested,** because the runtime enforces foreign
-   keys (P3-B).
+5. *(Superseded by the governing rule in P3-B: dangling values are planted
+   with `PRAGMA foreign_keys = OFF`, and their facet is kept and reported.)*
 6. **`relation-view.ts` lives in `shared/core`,** beside `format-palette.ts`, so
    the worker suite tests it and the SPA bundles it.
 

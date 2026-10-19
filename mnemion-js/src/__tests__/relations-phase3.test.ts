@@ -104,6 +104,43 @@ async function plantReferenceFacet(store: Store, pattern: string, facet: string,
   });
 }
 
+/**
+ * Plant any pre-Phase-3 reference facet: a column of `sqlType` with
+ * `REFERENCES target(to)`, its `_fields` row, values, and production triggers.
+ * `dangling: true` writes values with foreign keys off (as a hive that ran without
+ * enforcement could hold), then turns enforcement back on.
+ */
+async function plantFk(store: Store, o: { pattern: string; facet: string; sqlType?: string; target: string; to?: string; values?: Record<number, unknown>; dangling?: boolean }) {
+  await runInDurableObject(store, (_i, state) => {
+    const db = state.storage.sql;
+    db.exec(`ALTER TABLE "${o.pattern}" ADD COLUMN "${o.facet}" ${o.sqlType ?? "INTEGER"} REFERENCES "${o.target}"("${o.to ?? "id"}")`);
+    db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES (?, ?, ?, 0, ?)`,
+      o.pattern, o.facet, o.sqlType === "TEXT" ? "text" : "integer", o.target);
+    if (!o.dangling)
+      for (const [id, v] of Object.entries(o.values ?? {})) db.exec(`UPDATE "${o.pattern}" SET "${o.facet}" = ? WHERE id = ?`, v, Number(id));
+    productionTriggers(db, o.pattern, o.facet);
+  });
+  if (!o.dangling) return;
+  // PRAGMA foreign_keys is a no-op inside a transaction, so each toggle opens its
+  // own event, as the first statement; enforcement is verified back ON after.
+  await runInDurableObject(store, (_i, state) => {
+    const db = state.storage.sql;
+    db.exec(`PRAGMA foreign_keys = OFF`);
+    for (const [id, v] of Object.entries(o.values ?? {})) db.exec(`UPDATE "${o.pattern}" SET "${o.facet}" = ? WHERE id = ?`, v, Number(id));
+  });
+  await runInDurableObject(store, (_i, state) => { state.storage.sql.exec(`PRAGMA foreign_keys = ON`); });
+  const fk = (await sql(store, `PRAGMA foreign_keys`))[0];
+  expect(Object.values(fk)[0], "foreign keys are enforced again before the boot under test").toBe(1);
+}
+
+/** The column is still there with exactly these values (the facet was kept). */
+async function keptColumn(store: Store, pattern: string, facet: string, values: Record<number, unknown>) {
+  expect(await columns(store, pattern), `${pattern}.${facet} is kept`).toContain(facet);
+  for (const [id, v] of Object.entries(values))
+    expect((await sql(store, `SELECT "${facet}" AS v FROM "${pattern}" WHERE id = ?`, Number(id)))[0].v, `${pattern}/${id}.${facet} is untouched`).toBe(v);
+  expect(await sql(store, `SELECT name FROM _fields WHERE object_name = ? AND name = ?`, pattern, facet), "its _fields row stays").toHaveLength(1);
+}
+
 /** Production shape (lesson of the v18 incident, 2026-10-19): on a deployed hive
  *  every boot rebuilt the pattern's audit triggers over ALL its columns, so they
  *  name the reference-facet column, and SQLite refuses DROP COLUMN on a column a
@@ -273,10 +310,89 @@ describe("reference facets retired", () => {
 });
 
 // =====================================================================
+// 1c. One trigger-safe path for column drops and table rebuilds
+// =====================================================================
+
+// The v18 incident: a hand-rolled DROP COLUMN under live audit triggers threw on
+// production. entities/Hive/audit-triggers.ts owns the only sanctioned mechanism
+// (dropColumn, plus a sibling trigger-safe table rebuild for v19's FK columns).
+const WORKER_SRC = import.meta.glob(
+  ["../../entities/**/*.ts", "../../shared/**/*.ts", "../../src/**/*.ts", "!../../src/__tests__/**"],
+  { query: "?raw", import: "default", eager: true },
+) as Record<string, string>;
+const AUDIT_TRIGGERS_PATH = "../../entities/Hive/audit-triggers.ts";
+
+/** Pre-existing kernel retirements and whole-table GC, each named by file and the
+ *  exact literal body. None is a column drop or rebuild of a user table under its
+ *  triggers. Each must still exist, so the list can't rot. */
+const SANCTIONED_DROPS: [string, string][] = [
+  ["../../entities/Hive/schema.ts", `ALTER TABLE "_short_term_fragments" DROP COLUMN "access_count"`], // v10, kernel
+  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS "\${old}"`],                                  // v5 retired token tables (kernel)
+  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS _passkeys_old`],                               // _passkeys rebuild (kernel)
+  ["../../entities/Hive/schema.ts", `DROP TABLE _passkeys_old`],                                         // _passkeys rebuild (kernel)
+  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS "_canvases"`],                                 // v16 Canvas retirement (kernel)
+  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS \${quoteIdent(obj.name)}`],                   // 30-day archived-pattern GC: whole table and its triggers
+];
+
+/** String and template literal bodies, comments skipped. */
+function literals(src: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i], d = src[i + 1];
+    if (c === "/" && d === "/") { const j = src.indexOf("\n", i); i = j < 0 ? n : j; continue; }
+    if (c === "/" && d === "*") { const j = src.indexOf("*/", i + 2); i = j < 0 ? n : j + 2; continue; }
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1, body = "", depth = 0;
+      while (j < n) {
+        const ch = src[j];
+        if (ch === "\\") { body += src.slice(j, j + 2); j += 2; continue; }
+        if (c === "`") {
+          if (depth === 0 && ch === "`") break;
+          if (ch === "$" && src[j + 1] === "{") { depth++; body += "${"; j += 2; continue; }
+          if (depth > 0 && ch === "{") depth++;
+          if (depth > 0 && ch === "}") depth--;
+        } else if (ch === c || ch === "\n") break;
+        body += ch; j++;
+      }
+      out.push(body); i = j + 1; continue;
+    }
+    i++;
+  }
+  return out;
+}
+
+/** The structural half of "reference facet migration" (df-15151f79): it runs
+ *  inside that describe, so a hand-rolled drop fails the requirement's oracle. */
+function triggerSafeDrops() {
+  {
+    const paths = Object.keys(WORKER_SRC);
+    expect(paths, "the scan reads the worker tree").toContain(AUDIT_TRIGGERS_PATH);
+    expect(paths).toContain("../../entities/Hive/schema.ts");
+    const offenders: string[] = [];
+    const seen = new Set<string>();
+    for (const [path, src] of Object.entries(WORKER_SRC)) {
+      if (path === AUDIT_TRIGGERS_PATH) continue;
+      for (const lit of literals(src)) {
+        if (!/\bDROP\s+COLUMN\b|\bDROP\s+TABLE\b/i.test(lit)) continue;
+        const flat = lit.replace(/\s+/g, " ").trim();
+        const ok = SANCTIONED_DROPS.find(([p, body]) => p === path && flat === body);
+        if (ok) seen.add(ok[1]); else offenders.push(`${path}: ${flat.slice(0, 120)}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect([...seen].sort(), "every sanctioned exception still exists").toEqual(SANCTIONED_DROPS.map(([, b]) => b).sort());
+  }
+}
+
+// =====================================================================
 // 1b. The fork migration (v19)
 // =====================================================================
 
 describe("reference facet migration", () => {
+  it("no worker source outside audit-triggers.ts drops a column or a table, except the listed kernel retirements and GC", triggerSafeDrops);
+
   it("turns each reference facet into a legacy relation plus links, and rebuilds the table without the column", async () => {
     const { store, g1, g2, t1, t2, t3, t4 } = await legacyFkHive();
     const before = await sql(store, `SELECT id, title, created_at, archived_at, version FROM tasks ORDER BY id`);
@@ -318,6 +434,159 @@ describe("reference facet migration", () => {
     const t5 = await entry(store, "tasks", { title: "after" });
     expect((await mut(store, "tasks", "update", { id: t5, title: "after, edited" })).error).toBeUndefined();
     expect((await mut(store, "tasks", "create", { title: "x", goal_id: g1 })).error).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------
+  // The governing rule (audit, 2026-10-19): v19 never drops a column whose
+  // values did not ALL become links. An unconvertible facet keeps its column
+  // and data and is reported; it is not migratable work for the restore point.
+  // ---------------------------------------------------------------------
+
+  it("a dangling id value keeps the whole facet: column, data and _fields row stay, nothing is declared, it is reported", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPattern(store, "tasks");
+    const g = await entry(store, "goals", { title: "g" });
+    const t1 = await entry(store, "tasks", { title: "t1" });
+    const t2 = await entry(store, "tasks", { title: "t2" });
+    await plantFk(store, { pattern: "tasks", facet: "goal_id", target: "goals", values: { [t1]: g, [t2]: 99999 }, dangling: true });
+    const lines = await bootMigrating(store);
+    await keptColumn(store, "tasks", "goal_id", { [t1]: g, [t2]: 99999 });
+    expect(await relationOf(store, "goal-id"), "nothing declared for the facet").toBeUndefined();
+    expect(await sql(store, `SELECT id FROM "_links" WHERE source_pattern = 'tasks'`), "no partial links").toEqual([]);
+    expect(lines.some((l) => l.includes("tasks.goal_id") && /kept/i.test(l)), lines.join(" | ")).toBe(true);
+    // Reported again next boot, still kept: the report is the debt, not a retry loop.
+    const again = await bootMigrating(store);
+    expect(again.some((l) => l.includes("tasks.goal_id"))).toBe(true);
+    await keptColumn(store, "tasks", "goal_id", { [t1]: g, [t2]: 99999 });
+  });
+
+  // df-9a3ddf19: an old create_pattern allowed links: {pattern, facet: "code"}.
+  it("a foreign key to a non-id column resolves each value through the target column to the row's id", async () => {
+    const store = getStore();
+    await createPattern(store, "goals", [{ name: "title", type: "text" }, { name: "code", type: "text" }]);
+    await sql(store, `CREATE UNIQUE INDEX goals_code ON goals(code)`);
+    const g7 = await entry(store, "goals", { title: "seven", code: "G7" });
+    await entry(store, "goals", { title: "eight", code: "G8" });
+    await createPattern(store, "tasks");
+    const t1 = await entry(store, "tasks", { title: "t1" });
+    const t2 = await entry(store, "tasks", { title: "t2 (none)" });
+    await plantFk(store, { pattern: "tasks", facet: "goal_code", sqlType: "TEXT", target: "goals", to: "code", values: { [t1]: "G7" } });
+    await bootMigrating(store);
+    expect(await sql(store, `SELECT source_id, target_pattern, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'goal-code'`))
+      .toEqual([{ source_id: t1, target_pattern: "goals", target_id: g7 }]);
+    expect(await columns(store, "tasks")).not.toContain("goal_code");
+    await triggersAfter(store, "tasks", "goal_code");
+    expect(t2).toBeGreaterThan(0);
+  });
+
+  it("a non-id foreign key with a value that doesn't resolve keeps the facet and is reported", async () => {
+    const store = getStore();
+    await createPattern(store, "goals", [{ name: "title", type: "text" }, { name: "code", type: "text" }]);
+    await sql(store, `CREATE UNIQUE INDEX goals_code ON goals(code)`);
+    await entry(store, "goals", { title: "seven", code: "G7" });
+    await createPattern(store, "tasks");
+    const t1 = await entry(store, "tasks", { title: "t1" });
+    const t2 = await entry(store, "tasks", { title: "t2" });
+    await plantFk(store, { pattern: "tasks", facet: "goal_code", sqlType: "TEXT", target: "goals", to: "code", values: { [t1]: "G7", [t2]: "G9" }, dangling: true });
+    const lines = await bootMigrating(store);
+    await keptColumn(store, "tasks", "goal_code", { [t1]: "G7", [t2]: "G9" });
+    expect(await relationOf(store, "goal-code")).toBeUndefined();
+    expect(await sql(store, `SELECT id FROM "_links" WHERE source_pattern = 'tasks'`), "nothing migrated for the facet").toEqual([]);
+    expect(lines.some((l) => l.includes("tasks.goal_code") && /kept/i.test(l)), lines.join(" | ")).toBe(true);
+  });
+
+  // df-221287d2
+  it("a reference cycle between two patterns migrates fully on one boot", async () => {
+    const store = getStore();
+    await createPattern(store, "alpha");
+    await createPattern(store, "beta");
+    const a = await entry(store, "alpha", { title: "a" });
+    const b = await entry(store, "beta", { title: "b" });
+    await plantFk(store, { pattern: "alpha", facet: "beta_id", target: "beta", values: { [a]: b } });
+    await plantFk(store, { pattern: "beta", facet: "alpha_id", target: "alpha", values: { [b]: a } });
+    await bootMigrating(store);
+    expect(await sql(store, `SELECT source_pattern, source_id, target_pattern, target_id, label FROM "_links" WHERE archived_at IS NULL ORDER BY label`)).toEqual([
+      { source_pattern: "beta", source_id: b, target_pattern: "alpha", target_id: a, label: "alpha-id" },
+      { source_pattern: "alpha", source_id: a, target_pattern: "beta", target_id: b, label: "beta-id" },
+    ]);
+    expect(await columns(store, "alpha")).not.toContain("beta_id");
+    expect(await columns(store, "beta")).not.toContain("alpha_id");
+    await triggersAfter(store, "alpha", "beta_id");
+    await triggersAfter(store, "beta", "alpha_id");
+    expect(await sql(store, `SELECT name FROM _fields WHERE references_object IS NOT NULL`), "nothing left to migrate").toEqual([]);
+  });
+
+  it("a self-reference migrates (guard)", async () => {
+    const store = getStore();
+    await createPattern(store, "tasks");
+    const parent = await entry(store, "tasks", { title: "parent" });
+    const child = await entry(store, "tasks", { title: "child" });
+    await plantFk(store, { pattern: "tasks", facet: "parent_id", target: "tasks", values: { [child]: parent } });
+    await bootMigrating(store);
+    expect(await sql(store, `SELECT source_id, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'parent-id'`)).toEqual([{ source_id: child, target_id: parent }]);
+    expect(await columns(store, "tasks")).not.toContain("parent_id");
+  });
+
+  // df-165e843e
+  it("a reference to a kernel pattern no link may target is kept and reported, never migrated", async () => {
+    const store = getStore();
+    await createPattern(store, "tasks");
+    const t = await entry(store, "tasks", { title: "t" });
+    const owner = (await sql(store, `SELECT id FROM "_members" WHERE label = 'owner'`))[0].id;
+    await plantFk(store, { pattern: "tasks", facet: "member_id", target: "_members", values: { [t]: owner } });
+    const lines = await bootMigrating(store);
+    await keptColumn(store, "tasks", "member_id", { [t]: owner });
+    expect(await relationOf(store, "member-id")).toBeUndefined();
+    expect(await sql(store, `SELECT id FROM "_links" WHERE target_pattern = '_members'`)).toEqual([]);
+    expect(lines.some((l) => l.includes("tasks.member_id") && l.includes("_members") && /link/i.test(l)), lines.join(" | ")).toBe(true);
+  });
+
+  it("references to _documents and _web_cache are admissible targets and migrate normally", async () => {
+    const store = getStore();
+    await createPattern(store, "notes");
+    const n = await entry(store, "notes", { title: "n" });
+    const doc = await runInDurableObject(store, (_i, state) => {
+      state.storage.sql.exec(`INSERT INTO "_documents" (title) VALUES ('spec')`);
+      return (state.storage.sql.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+    });
+    const web = await runInDurableObject(store, (_i, state) => {
+      state.storage.sql.exec(`INSERT INTO "_web_cache" (url, content, source_adapter, expires_at) VALUES ('https://example.com/x', 'c', 'test', datetime('now', '+1 day'))`);
+      return (state.storage.sql.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+    });
+    await plantFk(store, { pattern: "notes", facet: "doc_id", target: "_documents", values: { [n]: doc } });
+    await plantFk(store, { pattern: "notes", facet: "page_id", target: "_web_cache", values: { [n]: web } });
+    await bootMigrating(store);
+    expect(await sql(store, `SELECT target_pattern, target_id, label FROM "_links" WHERE archived_at IS NULL AND source_id = ? ORDER BY label`, n)).toEqual([
+      { target_pattern: "_documents", target_id: doc, label: "doc-id" },
+      { target_pattern: "_web_cache", target_id: web, label: "page-id" },
+    ]);
+    expect(await columns(store, "notes")).not.toContain("doc_id");
+    expect(await columns(store, "notes")).not.toContain("page_id");
+  });
+
+  // df-48e8c52e
+  it("an interrupted swap (only <table>__rebuild present) is recovered before any facet is read; the migration then completes", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPattern(store, "tasks");
+    const g = await entry(store, "goals", { title: "g" });
+    const t1 = await entry(store, "tasks", { title: "t1" });
+    const t2 = await entry(store, "tasks", { title: "t2" });
+    await plantFk(store, { pattern: "tasks", facet: "goal_id", target: "goals", values: { [t1]: g } });
+    // A previous boot's rebuild of "tasks" dropped the original and crashed before the rename.
+    await sql(store, `ALTER TABLE "tasks" RENAME TO "tasks__rebuild"`);
+    expect(await sql(store, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'`)).toEqual([]);
+
+    await bootMigrating(store);
+    expect(await sql(store, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks__rebuild'`), "the swap was finished").toEqual([]);
+    expect((await sql(store, `SELECT id, title FROM tasks ORDER BY id`)).map((r) => r.title)).toEqual(["t1", "t2"]);
+    expect(await sql(store, `SELECT source_id, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'goal-id'`)).toEqual([{ source_id: t1, target_id: g }]);
+    expect(await columns(store, "tasks")).not.toContain("goal_id");
+    const q = JSON.parse(await store.query("tasks", "", "", "", 10, false));
+    expect(q.error, q.message).toBeUndefined();
+    expect(q.entries).toHaveLength(2);
+    expect(t2).toBeGreaterThan(0);
   });
 
   it("migrates every reference facet in one pass, including one pointing at a table it also rebuilds", async () => {
@@ -462,81 +731,6 @@ describe("reference facet migration", () => {
     await boot(store);
     const rels = JSON.parse(await store.resolve("mnemion://relations")).relations;
     expect(rels.filter((r: any) => r.legacy).map((r: any) => r.name)).toEqual([]);
-  });
-});
-
-// =====================================================================
-// 1c. One trigger-safe path for column drops and table rebuilds
-// =====================================================================
-
-// The v18 incident: a hand-rolled DROP COLUMN under live audit triggers threw on
-// production. entities/Hive/audit-triggers.ts owns the only sanctioned mechanism
-// (dropColumn, plus a sibling trigger-safe table rebuild for v19's FK columns).
-const WORKER_SRC = import.meta.glob(
-  ["../../entities/**/*.ts", "../../shared/**/*.ts", "../../src/**/*.ts", "!../../src/__tests__/**"],
-  { query: "?raw", import: "default", eager: true },
-) as Record<string, string>;
-const AUDIT_TRIGGERS_PATH = "../../entities/Hive/audit-triggers.ts";
-
-/** Pre-existing kernel retirements and whole-table GC, each named by file and the
- *  exact literal body. None is a column drop or rebuild of a user table under its
- *  triggers. Each must still exist, so the list can't rot. */
-const SANCTIONED_DROPS: [string, string][] = [
-  ["../../entities/Hive/schema.ts", `ALTER TABLE "_short_term_fragments" DROP COLUMN "access_count"`], // v10, kernel
-  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS "\${old}"`],                                  // v5 retired token tables (kernel)
-  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS _passkeys_old`],                               // _passkeys rebuild (kernel)
-  ["../../entities/Hive/schema.ts", `DROP TABLE _passkeys_old`],                                         // _passkeys rebuild (kernel)
-  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS "_canvases"`],                                 // v16 Canvas retirement (kernel)
-  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS \${quoteIdent(obj.name)}`],                   // 30-day archived-pattern GC: whole table and its triggers
-];
-
-/** String and template literal bodies, comments skipped. */
-function literals(src: string): string[] {
-  const out: string[] = [];
-  let i = 0;
-  const n = src.length;
-  while (i < n) {
-    const c = src[i], d = src[i + 1];
-    if (c === "/" && d === "/") { const j = src.indexOf("\n", i); i = j < 0 ? n : j; continue; }
-    if (c === "/" && d === "*") { const j = src.indexOf("*/", i + 2); i = j < 0 ? n : j + 2; continue; }
-    if (c === '"' || c === "'" || c === "`") {
-      let j = i + 1, body = "", depth = 0;
-      while (j < n) {
-        const ch = src[j];
-        if (ch === "\\") { body += src.slice(j, j + 2); j += 2; continue; }
-        if (c === "`") {
-          if (depth === 0 && ch === "`") break;
-          if (ch === "$" && src[j + 1] === "{") { depth++; body += "${"; j += 2; continue; }
-          if (depth > 0 && ch === "{") depth++;
-          if (depth > 0 && ch === "}") depth--;
-        } else if (ch === c || ch === "\n") break;
-        body += ch; j++;
-      }
-      out.push(body); i = j + 1; continue;
-    }
-    i++;
-  }
-  return out;
-}
-
-describe("trigger-safe drops", () => {
-  it("no worker source outside audit-triggers.ts drops a column or a table, except the listed kernel retirements and GC", () => {
-    const paths = Object.keys(WORKER_SRC);
-    expect(paths, "the scan reads the worker tree").toContain(AUDIT_TRIGGERS_PATH);
-    expect(paths).toContain("../../entities/Hive/schema.ts");
-    const offenders: string[] = [];
-    const seen = new Set<string>();
-    for (const [path, src] of Object.entries(WORKER_SRC)) {
-      if (path === AUDIT_TRIGGERS_PATH) continue;
-      for (const lit of literals(src)) {
-        if (!/\bDROP\s+COLUMN\b|\bDROP\s+TABLE\b/i.test(lit)) continue;
-        const flat = lit.replace(/\s+/g, " ").trim();
-        const ok = SANCTIONED_DROPS.find(([p, body]) => p === path && flat === body);
-        if (ok) seen.add(ok[1]); else offenders.push(`${path}: ${flat.slice(0, 120)}`);
-      }
-    }
-    expect(offenders).toEqual([]);
-    expect([...seen].sort(), "every sanctioned exception still exists").toEqual(SANCTIONED_DROPS.map(([, b]) => b).sort());
   });
 });
 

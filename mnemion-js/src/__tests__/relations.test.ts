@@ -2305,6 +2305,53 @@ describe("restore point", () => {
     });
   });
 
+  // Audit 2026-10-19: v19's firstRun counts MIGRATABLE work only. A reference facet
+  // v19 must keep (a kernel target no link admits, a value that doesn't resolve)
+  // never records a restore point, boot after boot; a cycle finishes on one boot.
+  it("reportable-only reference facets record no v19 restore point, boot after boot", async () => {
+    const store = getStore();
+    await createPattern(store, "tasks");
+    const t = await entry(store, "tasks", "t");
+    await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      const owner = (db.exec(`SELECT id FROM "_members" WHERE label = 'owner'`).toArray()[0] as any).id;
+      db.exec(`ALTER TABLE "tasks" ADD COLUMN "member_id" INTEGER REFERENCES "_members"("id")`);
+      db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES ('tasks', 'member_id', 'integer', 0, '_members')`);
+      db.exec(`UPDATE tasks SET member_id = ? WHERE id = ?`, owner, t);
+      ensureAuditTriggers(db, "tasks");
+      for (const bm of ["bm-1", "bm-2", "bm-3"]) await booted(state, () => bm, async () => {});
+      expect(restorePoints(db).filter((r) => /v19/.test(r.description)), "no v19 restore point").toEqual([]);
+      expect((db.exec(`PRAGMA table_info("tasks")`).toArray() as any[]).map((c) => c.name)).toContain("member_id");
+    });
+  });
+
+  it("a reference cycle migrates on one boot and records exactly one v19 restore point", async () => {
+    const store = getStore();
+    await createPattern(store, "alpha");
+    await createPattern(store, "beta");
+    const a = await entry(store, "alpha", "a");
+    const b = await entry(store, "beta", "b");
+    await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      db.exec(`ALTER TABLE "alpha" ADD COLUMN "beta_id" INTEGER REFERENCES "beta"("id")`);
+      db.exec(`ALTER TABLE "beta" ADD COLUMN "alpha_id" INTEGER REFERENCES "alpha"("id")`);
+      db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES ('alpha', 'beta_id', 'integer', 0, 'beta'), ('beta', 'alpha_id', 'integer', 0, 'alpha')`);
+      db.exec(`UPDATE alpha SET beta_id = ? WHERE id = ?`, b, a);
+      db.exec(`UPDATE beta SET alpha_id = ? WHERE id = ?`, a, b);
+      ensureAuditTriggers(db, "alpha");
+      ensureAuditTriggers(db, "beta");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        for (const bm of ["bm-cycle", "bm-cycle-2", "bm-cycle-3"]) await booted(state, () => bm, async () => {});
+        expect(warn.mock.calls.map((c) => c.map(String).join(" ")).join("\n")).not.toMatch(/migration failed/i);
+      } finally { warn.mockRestore(); }
+      const rows = restorePoints(db).filter((r) => /v19/.test(r.description));
+      expect(rows.map((r) => r.bookmark)).toEqual(["bm-cycle"]);
+      for (const [tbl, col] of [["alpha", "beta_id"], ["beta", "alpha_id"]])
+        expect((db.exec(`PRAGMA table_info("${tbl}")`).toArray() as any[]).map((c) => c.name), `${tbl}.${col} is gone`).not.toContain(col);
+    });
+  });
+
   it("a fresh hive's first boot records the v17 restore point only, never v18 too", async () => {
     const store = getStore();
     await runInDurableObject(store, async (_i, state) => {
