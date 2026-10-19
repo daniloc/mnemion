@@ -101,7 +101,8 @@ export function dropColumn(db: any, table: string, column: string): void {
  */
 export function rebuildTableWithout(db: any, table: string, columns: string[]): void {
   const t = quoteIdent(table);
-  const tmpName = `${table}__rebuild`;
+  const tmpName = `${table}${REBUILD_SUFFIX}`;
+  if (isRegistered(db, tmpName)) throw new Error(`can't rebuild "${table}": "${tmpName}" is a registered pattern`);
   const tmp = quoteIdent(tmpName);
   const exists = (name: string) => db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name).toArray().length > 0;
   recoverRebuild(db, table);
@@ -145,17 +146,37 @@ export function rebuildTableWithout(db: any, table: string, columns: string[]): 
  *  swap interrupted after the drop (renamed into place, audit triggers rebuilt). */
 function recoverRebuild(db: any, table: string): void {
   const exists = (name: string) => db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name).toArray().length > 0;
-  const tmpName = `${table}__rebuild`;
-  if (!exists(tmpName)) return;
+  const tmpName = `${table}${REBUILD_SUFFIX}`;
+  if (!exists(tmpName) || isRegistered(db, tmpName)) return; // a registered pattern is never a leftover
   if (exists(table)) db.exec(`DROP TABLE ${quoteIdent(tmpName)}`);
   else { db.exec(`ALTER TABLE ${quoteIdent(tmpName)} RENAME TO ${quoteIdent(table)}`); ensureAuditTriggers(db, table); }
 }
 
+/** The suffix of a rebuild's temporary copy. create_pattern reserves it. */
+export const REBUILD_SUFFIX = "__rebuild";
+export const isRebuildName = (name: string) => name.endsWith(REBUILD_SUFFIX);
+
+/** Does an `_objects` row (archived or not) name this table? A registered
+ *  pattern is never a recovery candidate, whatever its name (df-4b8c3cf3). */
+export function isRegistered(db: any, table: string): boolean {
+  try { return db.exec(`SELECT 1 FROM _objects WHERE name = ?`, table).toArray().length > 0; } catch { return false; }
+}
+
+/** The unregistered leftover of an interrupted rebuild of `table`, if any. */
+export function rebuildLeftover(db: any, table: string): string | null {
+  const tmp = `${table}${REBUILD_SUFFIX}`;
+  const exists = db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, tmp).toArray().length > 0;
+  return exists && !isRegistered(db, tmp) ? tmp : null;
+}
+
 /** Recover EVERY interrupted rebuild before anything reads a table's columns
- *  (a boot that crashed mid-swap leaves only `<table>__rebuild`). */
+ *  (a boot that crashed mid-swap leaves only `<table>__rebuild`). Recovery runs on
+ *  every boot of every hive, so it touches ONLY an `x__rebuild` table that no
+ *  `_objects` row names: a real leftover is never registered. */
 export function recoverInterruptedRebuilds(db: any): void {
   const leftovers = (db.exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%\\_\\_rebuild' ESCAPE '\\'`).toArray() as { name: string }[])
-    .map((r) => r.name.slice(0, -"__rebuild".length));
+    .filter((r) => !isRegistered(db, r.name))
+    .map((r) => r.name.slice(0, -REBUILD_SUFFIX.length));
   for (const table of leftovers) recoverRebuild(db, table);
 }
 

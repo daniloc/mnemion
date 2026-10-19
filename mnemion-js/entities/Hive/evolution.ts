@@ -14,7 +14,7 @@
 
 import { PRODUCT_NAME, uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
-import { ensureAuditTriggers, dropColumn } from "./audit-triggers";
+import { ensureAuditTriggers, dropColumn, isRebuildName, REBUILD_SUFFIX } from "./audit-triggers";
 import { isKernelPattern } from "./policy";
 import { FACET_RESERVED_COLUMNS, USER_OVERRIDABLE_KERNEL_COLUMNS } from "./kernel-columns";
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
@@ -154,6 +154,10 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       // (isKernelPattern) and be denied as unclassified. Refuse it at the source.
       if (isKernelPattern(change.pattern_name))
         return `Pattern name "${change.pattern_name}" is reserved — names starting with "_" belong to the kernel. Choose a name starting with a letter.`;
+      // The `__rebuild` suffix names the temporary copy of a trigger-safe table
+      // rebuild (audit-triggers.ts), which boot recovery acts on: never a pattern.
+      if (isRebuildName(change.pattern_name))
+        return `Pattern name "${change.pattern_name}" is reserved — names ending in "${REBUILD_SUFFIX}" belong to table-rebuild recovery. Choose another name.`;
       if (!change.doctrine) return "doctrine is required for create_pattern — describe how this pattern should be used";
       if (!change.facets?.length) return "At least one facet is required for create_pattern";
       if (change.facets.length > LIMITS.FACETS_PER_PATTERN)

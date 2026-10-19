@@ -47,7 +47,7 @@ Always export before archiving — there is no undo after GC. The export is the 
 
 ## Links between entries
 
-Facets hold values, never connections. Reference (foreign-key) facets are retired: `create_pattern` and `add_facet` refuse a facet with `links`. Hives that had them were migrated at boot (v19): each became a legacy relation named after the facet, its values became links, and the column was removed. A facet whose values couldn't all become links (a value naming no row, or a reference to a kernel pattern no link may target) was kept as it was and is reported at every boot — fix or clear the values (or drop the facet once it's no longer a reference) and a later boot migrates it.
+Facets hold values, never connections. Reference (foreign-key) facets are retired: `create_pattern` and `add_facet` refuse a facet with `links`. Hives that had them were migrated at boot (v19): each became a legacy relation named after the facet, its values became links, and the column was removed. A facet whose values couldn't all become links (a value naming no row, a reference to a kernel pattern no link may target, or a reference cycle with no optional column to break it) was kept as it was and is reported at every boot — fix or clear the values (or drop the facet once it's no longer a reference) and a later boot migrates it.
 
 Use the `_links` pattern instead of storing IDs in text fields. A link's label names a **declared relation**, and relations are schema: declared, evolved and enforced like patterns and facets. The vocabulary is `{{uri:relations}}` (also the index's `relations` key) — each relation's name, inverse, description, the patterns it joins, its cardinality and behaviors.
 

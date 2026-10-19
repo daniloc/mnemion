@@ -18,7 +18,7 @@
 import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { isKernelPattern } from "./policy";
-import { dropColumn, rebuildTableWithout, recoverInterruptedRebuilds, nullColumns } from "./audit-triggers";
+import { dropColumn, rebuildTableWithout, recoverInterruptedRebuilds, rebuildLeftover, nullColumns } from "./audit-triggers";
 
 type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one: () => any } };
 
@@ -1061,19 +1061,59 @@ function migratedName(pattern: string, facet: string, taken: Set<string>, reuse:
 }
 
 /** One reference facet v19 can migrate: every non-null value resolved to a row
- *  id of an admissible target. */
+ *  id of an admissible target. `column` is the actual column (matched to the
+ *  `_fields` name case-insensitively, as SQLite does). */
 export interface MigratableFacet {
-  pattern: string; facet: string; target: string; mandatory: boolean;
+  pattern: string; facet: string; column: string; target: string; mandatory: boolean;
   links: { source: number; target: number }[];
 }
 /** One reference facet v19 must keep, with why (reported every boot). */
 export interface KeptFacet { pattern: string; facet: string; reason: string }
+/** One step of v19's rebuild, in order: clear a nullable FK column to break a
+ *  reference cycle, or rebuild a table without its migrated columns. */
+export type RebuildStep = { kind: "clear"; table: string; column: string } | { kind: "rebuild"; table: string; columns: string[] };
 
 /** The table that holds `name`'s rows now: the table itself, or — after a swap
- *  interrupted between its drop and its rename — `<name>__rebuild`. */
+ *  interrupted between its drop and its rename — its unregistered `__rebuild`
+ *  leftover (a registered pattern by that name is never one). */
 function liveTable(db: DB, name: string): string | null {
-  const has = (t: string) => db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, t).toArray().length > 0;
-  return has(name) ? name : has(`${name}__rebuild`) ? `${name}__rebuild` : null;
+  const has = db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name).toArray().length > 0;
+  return has ? name : rebuildLeftover(db, name);
+}
+
+/**
+ * The rebuild order for the migratable facets, or the tables that can't be
+ * rebuilt. Dropping a table's old copy is blocked while another table's rows
+ * still reference it through an FK column that stays: a kept facet's column
+ * (never touched), or a migrated column of a table not yet rebuilt and not
+ * cleared. Tables with no blocker go first; a cycle is broken by clearing ONE
+ * nullable migrated column on it (its values are links by then) — so the side
+ * holding a NOT NULL column is rebuilt first. A cycle with no nullable edge, or a
+ * table a kept facet references, can't be rebuilt: those tables are `stuck`.
+ */
+function rebuildPlan(migrate: MigratableFacet[], kept: { pattern: string; target: string }[], nullable: (f: MigratableFacet) => boolean): { steps: RebuildStep[]; stuck: Set<string> } {
+  const pending = new Set(migrate.map((f) => f.pattern));
+  const cleared = new Set<MigratableFacet>();
+  const steps: RebuildStep[] = [];
+  const blockers = (t: string) => [
+    ...kept.filter((k) => k.target === t && k.pattern !== t),
+    ...migrate.filter((f) => f.target === t && f.pattern !== t && pending.has(f.pattern) && !cleared.has(f)),
+  ];
+  while (pending.size) {
+    const ready = [...pending].filter((t) => !blockers(t).length);
+    if (ready.length) {
+      for (const t of ready) {
+        pending.delete(t);
+        steps.push({ kind: "rebuild", table: t, columns: migrate.filter((f) => f.pattern === t).map((f) => f.column) });
+      }
+      continue;
+    }
+    const breaker = migrate.find((f) => pending.has(f.pattern) && pending.has(f.target) && f.pattern !== f.target && !cleared.has(f) && nullable(f));
+    if (!breaker) return { steps, stuck: pending };
+    cleared.add(breaker);
+    steps.push({ kind: "clear", table: breaker.pattern, column: breaker.column });
+  }
+  return { steps, stuck: new Set() };
 }
 
 /**
@@ -1082,44 +1122,62 @@ function liveTable(db: DB, name: string): string | null {
  * non-null value resolves to exactly one row of an admissible target — through
  * the foreign key's target column (`PRAGMA foreign_key_list` `to`, the id by
  * default) — and the facet is MIGRATABLE, or the facet is KEPT with a reason.
- * `orphans` are `_fields` rows whose column no longer exists (metadata only).
+ * A migratable facet whose table can't be rebuilt (a reference cycle with no
+ * nullable column, or a table a kept facet references) is kept too. `orphans`
+ * are `_fields` rows with no column of that name in any case (metadata only).
  *
  * @why The governing rule (P3-B): v19 never drops a column whose values did not
  * ALL become links. A dangling value (a hive that ran without FK enforcement), a
  * non-id key that doesn't resolve, or a kernel target no link admits keeps the
  * whole facet — column, data, `_fields` row — and nothing is declared for it.
  */
-export function planReferenceFacets(db: DB): { migrate: MigratableFacet[]; keep: KeptFacet[]; orphans: { pattern: string; facet: string }[] } {
-  const migrate: MigratableFacet[] = [], keep: KeptFacet[] = [], orphans: { pattern: string; facet: string }[] = [];
+export function planReferenceFacets(db: DB): { migrate: MigratableFacet[]; keep: KeptFacet[]; orphans: { pattern: string; facet: string }[]; steps: RebuildStep[] } {
+  let migrate: MigratableFacet[] = [];
+  const keep: KeptFacet[] = [], orphans: { pattern: string; facet: string }[] = [];
+  const keptTargets: { pattern: string; target: string }[] = [];
+  const nullableCols = new Set<string>();
   const rows = db.exec(
     `SELECT object_name AS pattern, name AS facet, required, references_object AS target FROM _fields WHERE references_object IS NOT NULL ORDER BY object_name, id`,
   ).toArray() as { pattern: string; facet: string; required: number; target: string }[];
   for (const f of rows) {
     const table = liveTable(db, f.pattern);
     const info = table ? db.exec(`PRAGMA table_info(${quoteIdent(table)})`).toArray() as { name: string; notnull: number }[] : [];
-    const col = info.find((c) => c.name === f.facet);
+    const col = info.find((c) => c.name.toLowerCase() === f.facet.toLowerCase());
     if (!col) { orphans.push({ pattern: f.pattern, facet: f.facet }); continue; }
-    const kept = (reason: string) => keep.push({ pattern: f.pattern, facet: f.facet, reason });
+    const kept = (reason: string) => { keep.push({ pattern: f.pattern, facet: f.facet, reason }); keptTargets.push({ pattern: f.pattern, target: f.target }); };
     if (!endpointAdmissible(f.target, "target")) {
       kept(`it references kernel pattern "${f.target}", which no link may target, so the reference can't become a link`);
       continue;
     }
     const targetTable = liveTable(db, f.target);
     if (!targetTable) { kept(`its target pattern "${f.target}" no longer exists`); continue; }
-    const fk = (db.exec(`PRAGMA foreign_key_list(${quoteIdent(table!)})`).toArray() as { from: string; to: string | null }[]).find((k) => k.from === f.facet);
+    const fk = (db.exec(`PRAGMA foreign_key_list(${quoteIdent(table!)})`).toArray() as { from: string; to: string | null }[])
+      .find((k) => k.from.toLowerCase() === col.name.toLowerCase());
     const via = fk?.to ?? "id";
     const links: { source: number; target: number }[] = [];
     let unresolved: string | null = null;
-    for (const row of db.exec(`SELECT id, ${quoteIdent(f.facet)} AS v FROM ${quoteIdent(table!)} WHERE ${quoteIdent(f.facet)} IS NOT NULL ORDER BY id`).toArray() as { id: number; v: unknown }[]) {
+    for (const row of db.exec(`SELECT id, ${quoteIdent(col.name)} AS v FROM ${quoteIdent(table!)} WHERE ${quoteIdent(col.name)} IS NOT NULL ORDER BY id`).toArray() as { id: number; v: unknown }[]) {
       let hits: { id: number }[] = [];
       try { hits = db.exec(`SELECT id FROM ${quoteIdent(targetTable)} WHERE ${quoteIdent(via)} = ? LIMIT 2`, row.v).toArray() as { id: number }[]; } catch { /* no such column */ }
       if (hits.length !== 1) { unresolved = `${ref(f.pattern, row.id)} holds ${JSON.stringify(row.v)}, which doesn't resolve to exactly one "${f.target}" row (by ${via})`; break; }
       links.push({ source: row.id, target: hits[0].id });
     }
     if (unresolved) { kept(`a value doesn't resolve: ${unresolved}`); continue; }
-    migrate.push({ pattern: f.pattern, facet: f.facet, target: f.target, mandatory: !!(col.notnull || f.required), links });
+    if (!col.notnull) nullableCols.add(`${f.pattern}\u0000${col.name}`);
+    migrate.push({ pattern: f.pattern, facet: f.facet, column: col.name, target: f.target, mandatory: !!(col.notnull || f.required), links });
   }
-  return { migrate, keep, orphans };
+
+  // A table that can't be rebuilt keeps all its facets; that may block others,
+  // so re-plan until the kept set is stable.
+  for (;;) {
+    const { steps, stuck } = rebuildPlan(migrate, keptTargets, (f) => nullableCols.has(`${f.pattern}\u0000${f.column}`));
+    if (!stuck.size) return { migrate, keep, orphans, steps };
+    for (const f of migrate.filter((m) => stuck.has(m.pattern))) {
+      keep.push({ pattern: f.pattern, facet: f.facet, reason: `its table can't be rebuilt without the column: it is in a reference cycle with no nullable column to break it, or a kept reference points into it` });
+      keptTargets.push({ pattern: f.pattern, target: f.target });
+    }
+    migrate = migrate.filter((m) => !stuck.has(m.pattern));
+  }
 }
 
 /**
@@ -1131,15 +1189,14 @@ export function planReferenceFacets(db: DB): { migrate: MigratableFacet[]; keep:
  * - a MIGRATABLE facet `P.f` → `T` gets a legacy relation (D-P3-1 name, P → T,
  *   cardinality one, optional; placeholder description and generated inverse —
  *   both legacy debts; "was mandatory" recorded when it was NOT NULL or required,
- *   D-P3-2), one link per value (archived rows included: dormant), then its table
- *   is rebuilt without the column through audit-triggers.ts and the `_fields` row
- *   goes.
- * Rebuilds run referencing tables first (a referenced parent can't be dropped
- * while child rows point at it). A cycle (`alpha.beta_id ↔ beta.alpha_id`) is
- * broken once every link is written: the cycle's FK columns are cleared
- * (nullColumns) so each drop is unobstructed. Every stored `reference` format
- * clears. Idempotent: a finished pass leaves nothing migratable; an interrupted
- * one resumes (its relations are reused, its links not duplicated).
+ *   D-P3-2) and one link per value (archived rows included: dormant);
+ * - then the plan's steps run in order, once every link is written: clear the
+ *   nullable column chosen to break each reference cycle (nullColumns), and
+ *   rebuild each table without its migrated columns (rebuildTableWithout), its
+ *   `_fields` rows removed.
+ * Every stored `reference` format clears. Idempotent: a finished pass leaves
+ * nothing migratable; an interrupted one resumes (its relations are reused, its
+ * links not duplicated).
  */
 export function migrateReferenceFacets(db: DB): void {
   recoverInterruptedRebuilds(db);
@@ -1152,7 +1209,6 @@ export function migrateReferenceFacets(db: DB): void {
 
   const rels = activeRelations(db);
   const taken = new Set(rels.flatMap((r) => [r.name, r.inverse]));
-  const byTable = new Map<string, string[]>();
   for (const f of plan.migrate) {
     const own = (n: string) => {
       const r = rels.find((x) => x.name === n);
@@ -1177,31 +1233,16 @@ export function migrateReferenceFacets(db: DB): void {
       ).toArray().length > 0;
       if (!dup) db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES (?, ?, ?, ?, ?)`, f.pattern, l.source, f.target, l.target, name);
     }
-    byTable.set(f.pattern, [...(byTable.get(f.pattern) ?? []), f.facet]);
   }
 
-  // Rebuild referencing tables before the tables they reference; break a cycle by
-  // clearing its FK columns (their values are links now).
-  const pending = new Set(byTable.keys());
-  const refsInto = (t: string) => plan.migrate.filter((f) => f.target === t && f.pattern !== t && pending.has(f.pattern));
-  while (pending.size) {
-    let ready = [...pending].filter((t) => !refsInto(t).length);
-    if (!ready.length) {
-      for (const t of pending) {
-        const cols = plan.migrate.filter((f) => f.pattern === t && f.target !== t && pending.has(f.target)).map((f) => f.facet);
-        if (cols.length) nullColumns(db, t, cols);
-      }
-      ready = [...pending];
-    }
-    for (const table of ready) {
-      pending.delete(table);
-      const cols = byTable.get(table)!;
-      try {
-        rebuildTableWithout(db, table, cols);
-        for (const c of cols) db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, table, c);
-      } catch (err) {
-        console.warn(`[schema] relations v19 migration failed to rebuild "${table}" without ${cols.join(", ")} — its relations and links are in place; the next boot retries`, err);
-      }
+  for (const step of plan.steps) {
+    try {
+      if (step.kind === "clear") { nullColumns(db, step.table, [step.column]); continue; }
+      rebuildTableWithout(db, step.table, step.columns);
+      for (const f of plan.migrate.filter((m) => m.pattern === step.table))
+        db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, f.pattern, f.facet);
+    } catch (err) {
+      console.warn(`[schema] relations v19 migration failed at ${step.kind} "${step.table}" — its relations and links are in place; the next boot retries`, err);
     }
   }
 }
