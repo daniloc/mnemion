@@ -244,8 +244,12 @@ export function seedDevData(db: DB): void {
   ins(db, "tweets", { summary: "threads keeps suggesting i post and i keep obliging", faves: 520, retweets: 30, engagement: 2400, year: 2026, platform: "threads" });
 
   // --- Links ---
+  //
+  // Labels are kernel-default relations (relations.ts KERNEL_RELATIONS), so a
+  // fresh dev hive carries no legacy-relation debt: the seed runs after the
+  // relations migration and never passes through the link chokepoint.
 
-  ins(db, "_links", { source_pattern: "tasks", source_id: 1, target_pattern: "notes", target_id: 3, label: "inspired-by" });
+  ins(db, "_links", { source_pattern: "tasks", source_id: 1, target_pattern: "notes", target_id: 3, label: "derived-from" });
   ins(db, "_links", { source_pattern: "goals", source_id: 1, target_pattern: "goals", target_id: 2, label: "depends-on" });
   ins(db, "_links", { source_pattern: "notes", source_id: 1, target_pattern: "bookmarks", target_id: 1, label: "references" });
 

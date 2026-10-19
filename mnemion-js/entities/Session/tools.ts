@@ -23,7 +23,7 @@ export const TOOLS: ToolMeta[] = [
 
 Write 1-3 natural sentences describing the current conversational focus. Embedding-based retrieval responds better to descriptive language than keyword lists.
 
-Relevance is weighted at read time: entries superseded by a newer entry (a "supersedes" link) are demoted and annotated with superseded_by — prefer the superseding entry as current truth. Patterns with a memory policy half-life decay in recall weight when neither updated nor recalled (raw_similarity shows the unweighted score). A maintenance field appears when a cleanup pass is overdue — offer it to the human.`,
+Relevance is weighted at read time: entries superseded by a newer entry (a "supersedes" link, or any relation declaring the supersession behavior) are demoted and annotated with superseded_by — prefer the superseding entry as current truth. Patterns with a memory policy half-life decay in recall weight when neither updated nor recalled (raw_similarity shows the unweighted score). A maintenance field appears when a cleanup pass is overdue — offer it to the human.`,
     when: "First action on connect. When topics shift. When you need to recall what's relevant.",
   },
   {
@@ -38,6 +38,8 @@ Patch: edit a text facet without sending the entire value. Pass {id, facet, matc
 Update supports optimistic locking: include the version field from a prior read to detect conflicts across concurrent surfaces.
 
 Overlap advisories: creating an entry that is semantically very similar to an existing one (or duplicates an exclusive facet declared in the pattern's memory policy) returns possible_overlap in the response. Advisory only — the entry is still created. When the new entry replaces an old one, link supersession: mutate(pattern: "link", data: {source: "pattern/new_id", target: "pattern/old_id", label: "supersedes"}). Superseded entries are demoted in prime, annotated everywhere, never hidden.
+
+Links: mutate(pattern: "link", data: {source: "pattern/id", target: "pattern/id", label}). The label must name a declared relation — the vocabulary is ${uri("relations")} (kernel defaults: supersedes, references, depends-on, derived-from, part-of; references is the generic link). A relation's inverse name is accepted and stored canonically. An undeclared label is refused with the relations available for that pattern pair; declare a new one with propose_change type declare_relation. Links are immutable — to move one, archive it and link again. Unlink: mutate(pattern: "unlink", data: {source, target, label?}) — pass label when the pair carries several relations.
 
 Large content: to write content too large for MCP parameters, create an _access_tokens entry with {scope: "upload", constraints: {target_pattern, target_id, target_facet, mode}}. Returns a single-use token (15-min expiry). POST content to /upload/{token} via HTTP. Resolve ${uri("_system/instance")} for the full upload URL.
 
@@ -70,10 +72,11 @@ Aggregation (the analysis verb — compute over rows instead of fetching them): 
   },
   {
     name: "resolve",
-    description: `Use this to help the user read specific resources, fetch web content, or access system documentation. Accepts ${URI_SCHEME}:// addresses and https:// URLs. Returns linked entries one hop deep for entry URIs.
+    description: `Use this to help the user read specific resources, fetch web content, or access system documentation. Accepts ${URI_SCHEME}:// addresses and https:// URLs. Returns linked entries one hop deep for entry URIs — one item per link, each with direction ("out": this entry is the source; "in": the target) and relation (the relation's name read from this entry's side, e.g. depends-on out, required-by in).
 
 Valid URIs:
 - ${uri("index")} — master index (orientation, what patterns exist)
+- ${uri("relations")} — the relation vocabulary: every label a link may carry, with inverse, meaning, allowed patterns, cardinality and behaviors
 - ${uri("schema/{pattern}")} — facet definitions for a pattern
 - ${uri("entry/{pattern}/{id}")} — a single entry
 - ${uri("history")} — schema change log (supports ?limit=N)
@@ -101,7 +104,7 @@ Federation: use this to help the user access content on other hives.
     name: "propose_change",
     description: `Use this to help the user evolve the structure of their hive. Propose a structural change — validates and returns a preview without committing.
 
-Supports: create_pattern (with facets), add_facet (to existing pattern), set_sharing (entry-level HTTP visibility), set_options, set_doctrine, set_memory_policy, set_class, set_facet_format (how a facet's value renders in the web app — pass facet + format), archive_pattern, unarchive_pattern.
+Supports: create_pattern (with facets), add_facet (to existing pattern), set_sharing (entry-level HTTP visibility), set_options, set_doctrine, set_memory_policy, set_class, set_facet_format (how a facet's value renders in the web app — pass facet + format), archive_pattern, unarchive_pattern, declare_relation, amend_relation, retire_relation (the link vocabulary).
 Facets can declare foreign key links to other patterns via the links parameter.
 Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 facets per pattern.
 
@@ -116,7 +119,13 @@ set_memory_policy: per-pattern recall hygiene, pass policy: {half_life_days?, co
 - half_life_days: prime relevance halves per half-life an entry goes untouched and unrecalled (decay affects ranking only, never data). Journals want short half-lives; axioms want none.
 - conflict_check: "annotate" (default) surfaces possible_overlap advisories on create; "off" disables.
 - exclusive_facets: facets where one active entry per value is expected — duplicates get a supersession advisory.
-Propose policies when a pattern reveals its nature (fast-staling entries, repeated near-duplicates) and let the human ratify.`,
+Propose policies when a pattern reveals its nature (fast-staling entries, repeated near-duplicates) and let the human ratify.
+
+Relations (the vocabulary of link labels, ${uri("relations")}): prefer a kernel default (supersedes, references, depends-on, derived-from, part-of); declare one only when a connection means something none of them says.
+- declare_relation: name (kebab-case, immutable), inverse (how it reads from the target), description (≥120 chars: what it asserts, when to prefer it over its nearest neighbour, one example), source and target (pattern lists or ["*"]; _documents/_web_cache allowed as targets), cardinality ("one"|"many", default many), behaviors (subset of: supersession, acyclic).
+- amend_relation: name + any of description, inverse, behaviors, cardinality. Amending the description of a legacy relation clears its legacy flag. Kernel defaults can't be amended.
+- retire_relation: name. Refused while active links use it — the preview lists them.
+If existing links would violate an amend (a second link under cardinality one, a cycle under acyclic) or a retire, the preview lists them in preview.violations and apply is refused until they are archived or moved.`,
     when: "Before any structural change. Returns a preview diff without committing.",
   },
   {

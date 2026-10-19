@@ -58,6 +58,17 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: commit-ordered-effects dismissed: egress sealing does not schedule a post-commit effect
   checklist: circuit-breaker-policy dismissed: sealing makes no remote call
   checklist: declared-target-coverage declared as egress-sensitivity totality
+- boot sensitive-column oracle: The boot check for unclassified secret-shaped columns reads every kernel-like table it can and reports every table it cannot, so no refused table silences it; only the declared platform tables are exempt.
+  over: every _-prefixed table at boot, with a real _cf_METADATA present, a planted unclassified column, and a non-platform table whose PRAGMA is refused; the platform allow-list PLATFORM_RESERVED_TABLES (exactly _cf_METADATA); and the _cf_ prefix across KERNEL_TABLES, boot DDL, _objects and user pattern names
+  via: boot sensitive-column oracle
+  because: A check that fails silent is worse than none; one platform table refusing PRAGMA once a PITR bookmark existed silenced the whole oracle in production, so an unclassified secret column could ship unseen.
+  kinds: credential
+  checklist: capability-authorization dismissed: the oracle classifies columns at boot; callers are authorized elsewhere
+  checklist: revalidated-permission dismissed: no permission is checked or cached by the oracle
+  checklist: message-authenticity dismissed: the oracle reads local schema, not a peer message
+  checklist: encrypted-storage dismissed: the oracle reports classification gaps; it does not encrypt storage
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: separation-of-duties dismissed: the oracle grants no actor privileges
 - pattern-effects totality: Every effect-bearing pattern has a composed post-mutate effect.
   over: every effect-bearing pattern in the composed feature set
   via: pattern-effects totality
@@ -208,3 +219,153 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: capability-authorization dismissed: this rule selects a URL host after the capability has been granted
   checklist: canonical-encoding dismissed: it selects a configured host; URL encoding is applied by the URL builder
   checklist: identity-continuity declared as instance-identity host
+- relation declaration totality: Every active link carries a label that names exactly one active relation, and its endpoints satisfy that relation's source, target and cardinality.
+  over: every active _links row against every active _relations row (names and inverses unique, no unlabeled link, endpoint rows present), after admitted and refused link writes and after the legacy-label migration on its first boot, including order-independent generated inverses, the inverse rewrite before the sweep, and the one DDL-nullable kernel facet (_links.label) with no schema drift
+  via: relation declaration totality
+  because: A free-text label let the edge vocabulary drift and let a link join any two patterns; an undeclared label must be refused, not stored.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link and relation writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation declared as relation declaration totality
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage declared as relation declaration totality
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- link immutability: A link's endpoints and relation never change after create, and unarchiving a link re-validates it against the current registry.
+  over: update, patch and unarchive of every _links row across label, source and target, and every unarchive precondition: retired relation, inactive endpoint, cycle, cardinality and duplicate
+  via: link immutability
+  because: Validation ran only on create, so update, patch and unarchive could repoint or revive a link past every check.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link and relation writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation declared as link immutability
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule is over the fields of one link, not a registry of targets
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- behavior by declaration: A relation behavior takes effect because a relation declares it, and no worker source outside the relations module filters links on a label literal.
+  over: every worker source file outside entities/Hive/relations.ts (no literal equal to a kernel relation name or inverse except declared seed-data files; no label comparison, quoted or not, in a file that queries _links, schema-qualified or not; no reference to KERNEL_RELATIONS or BEHAVIOR_PALETTE), and every supersession reader (getEntry, resolve, the stale view, publications, prime) driven by a hive-declared relation
+  via: behavior by declaration
+  because: Supersession meant five copies of label = 'supersedes', the guard-at-every-call-site pattern that fails open at the next copy.
+  kinds: storage
+  checklist: scoped-reads dismissed: the supersession readers are owner reads; this rule fixes where behavior is looked up, not which rows a reader may see
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation dismissed: this rule locates behavior lookups; payload validation is the chokepoint's
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage declared as behavior by declaration
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- acyclicity: No write creates a cycle across a relation that declares the acyclic behavior, and cycles already present in pre-registry data are reported at boot, never auto-repaired.
+  over: every acyclic relation, kernel default or hive-declared, across direct writes, inverse writes, self-links, unarchives and walks through dormant links, plus pre-registry cycles (2-cycles, self-loops, and cycles the inverse rewrite creates) reported by the boot warning
+  via: acyclicity
+  because: A cycle in depends-on, derived-from or supersedes makes the chain unanswerable: nothing is first, and supersession demotes both ends; legacy cycles are owner-ratified maintenance, so boot reports them instead of deleting links.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link and relation writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation declared as acyclicity
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule is over one relation's edges, not a registry of targets
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- linked targets survive GC: No garbage-collection pass removes a row or table that is the target of an active link from outside it, and every archived pattern held past its drop horizon is reported in the stale view for the owner to ratify.
+  over: every GC pass that removes rows or tables: the _web_cache GC over linked and unlinked rows past their TTL and grace window, and the 30-day archived-pattern drop over patterns targeted from outside (including mutually-linked archived patterns), linked only internally, under the horizon, and whose inbound link was archived, on repeated boots; and the stale view's held_patterns over the same cases
+  via: linked targets survive GC
+  because: A cited snapshot deleted under its link leaves the citation dangling; the protection is derived from the link so no pinned flag can drift from it.
+  kinds: storage
+  checklist: scoped-reads dismissed: GC is a boot-time sweep, not a read path
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation dismissed: GC admits no input; the rule is over which rows a pass may delete
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule names each GC pass that removes rows or tables; any future GC, including documents, must honor it
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- palette totality: Every behavior in the relation behavior palette has an enforcement test.
+  over: every key of BEHAVIOR_PALETTE in entities/Hive/relations.ts
+  via: palette totality
+  because: A behavior declared before the engine performs it is a lie in the schema that agents would rely on.
+  kinds: storage
+  checklist: scoped-reads dismissed: the rule is over test coverage of behaviors, not reads
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation dismissed: the rule is over the palette's coverage, not a payload
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage declared as palette totality
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- relation vocabulary evolution: Relations are declared, amended and retired only through validated change types, each previewed and logged, and never so that existing active links violate the result.
+  over: declare_relation, amend_relation and retire_relation across every validation rule including explicit nulls, kernel defaults, legacy relations, violators that exist at propose or appear before apply, and the same payloads sent through the MCP propose_change tool
+  via: relation vocabulary evolution
+  because: Refusing an undeclared label is fair only when declaring one is possible, and an amend or retire must not strand links already written.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link and relation writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation declared as relation vocabulary evolution
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: each change type acts on one relation and its own links
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- link endpoint integrity: The boot sweep archives a link only when an endpoint is gone (its pattern or entry row no longer exists) or is a kernel pattern no relation admits, never because an endpoint is archived.
+  over: active _links rows whose pattern was dropped, whose entry row is gone, or whose kernel endpoint is inadmissible, against dormant links to archived entries and archived patterns across repeated boots and unarchive
+  via: integrity sweep
+  because: Every cold start is a boot, and archive is reversible; sweeping links to archived endpoints made an entry's links survive or vanish depending on eviction timing, so the sweep removes only what is gone and stays deterministic.
+  kinds: storage
+  checklist: scoped-reads dismissed: the sweep is a boot-time repair, not a read path
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation dismissed: the sweep repairs stored rows; write-time validation is relation declaration totality
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the sweep is over one table's rows, not a registry of targets
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- unlink precision: Unlink archives exactly the one link it names, and refuses instead of guessing when its pair or relation is ambiguous, absent or malformed.
+  over: unlink by canonical label, by inverse label and without a label, on pairs carrying one or several relations, with absent labels and malformed source or target shorthands
+  via: unlink
+  because: Once one pair can carry several relations, archiving the first matching link would silently remove the wrong relation.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows and link labels are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates in relations or links
+  checklist: input-validation declared as unlink precision
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule is over one pair's links, not a registry of targets
+  checklist: completion-evidence dismissed: the check is synchronous with the write
+- migration restore point: The first boot that runs the relations migration records exactly one restore_point history row whose bookmark was captured before any migration step touched data, and reverting it hands exactly that bookmark to the existing restore path.
+  over: a pre-migration hive booted through the HiveDO constructor with the bookmark available and unavailable, repeated boots, the order of the capture against every migration effect (relations table creation, pair-index drop, relations writes, link rewrites), and revert of the recorded row
+  via: restore point
+  because: Deploying Phase 1 rewrites links and drops an index; without a bookmark taken before that boot there is no exact way to undo the deploy.
+  kinds: storage
+  checklist: scoped-reads dismissed: the rule records a restore point at boot; it is not a read path
+  checklist: encrypted-storage dismissed: a PITR bookmark is an opaque position, not confidential data
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation dismissed: boot admits no input
+  checklist: revision-preservation declared as migration restore point
+  checklist: commit-ordered-effects declared as migration restore point
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: one migration, one restore point
+  checklist: completion-evidence dismissed: the row is written synchronously during boot

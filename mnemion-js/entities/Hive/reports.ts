@@ -17,6 +17,7 @@ import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { parseDbDate, getMemoryPolicy } from "./prime";
 import { IMMUTABLE } from "./kernel";
+import { listRelations, supersededBy, heldPatterns, type Relation } from "./relations";
 
 export interface ReportsContext {
   db: any;
@@ -41,6 +42,8 @@ export interface StoreIndex {
   charter: Record<string, string>;
   patterns: IndexPatternEntry[];
   guidance: string;
+  /** The active relation vocabulary — every label a link may carry (relations.ts). */
+  relations: Relation[];
 }
 
 export interface IndexPatternEntry {
@@ -117,6 +120,7 @@ export function getCurrentIndex(ctx: ReportsContext): StoreIndex {
     }),
     charter,
     guidance: meta.guidance,
+    relations: listRelations(ctx.db),
   };
 }
 
@@ -333,11 +337,8 @@ export async function getStaleEntries(ctx: ReportsContext, days?: number): Promi
           horizon_days: horizon,
         };
         try {
-          const sup = ctx.db.exec(
-            `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
-            pat.name, row.id
-          ).toArray() as any[];
-          if (sup.length > 0) item.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
+          const by = supersededBy(ctx.db, pat.name, row.id);
+          if (by) item.superseded_by = by;
         } catch { /* _links may not exist */ }
         stale.push(item);
       }
@@ -350,7 +351,10 @@ export async function getStaleEntries(ctx: ReportsContext, days?: number): Promi
     stale: capped,
     count: capped.length,
     total: stale.length,
-    guidance: "Read-only review surface. Propose supersession or archival to the human; never bulk-archive unprompted. See the memory-maintenance system doc.",
+    // Archived patterns past the 30-day drop that inbound links from outside keep
+    // alive — reported for the owner to ratify, never auto-dropped.
+    held_patterns: heldPatterns(ctx.db),
+    guidance: "Read-only review surface. Propose supersession or archival to the human; never bulk-archive unprompted. held_patterns lists archived patterns kept past their 30-day drop because links from outside point into them — ask the owner whether to archive or re-point those links, or unarchive the pattern. See the memory-maintenance system doc.",
   }, null, 2);
 }
 

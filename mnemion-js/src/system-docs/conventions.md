@@ -14,13 +14,15 @@ title: "Conventions"
 | **Pattern** | object | An organizing structure that defines the shape of data |
 | **Entry** | record | An instance within a pattern |
 | **Facet** | field | A dimension of an entry |
-| **Link** | reference | A connection between entries across patterns |
+| **Link** | reference | A typed connection between two entries; its label names a relation |
+| **Relation** | relation | A declared kind of link: name, inverse, meaning, the patterns it joins, cardinality and behaviors (`{{uri:relations}}`) |
 
 Tool parameters and URIs use the code terms (`object`, `fields`, `records/{object}/{id}`).
 
 ## URI scheme
 All {{PRODUCT_NAME}} data is addressable via `{{URI_PREFIX}}` URIs:
 - `{{uri:index}}` — the master index
+- `{{uri:relations}}` — the relation vocabulary (every label a link may carry)
 - `{{uri:schema/{object}}}` — facet definitions for a pattern
 - `{{uri:records/{object}/{id}}}` — individual entry
 - `{{uri:history}}` — schema change log

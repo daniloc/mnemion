@@ -25,6 +25,7 @@
 
 import { isKernelPattern, isValidWriteTarget } from "./policy";
 import { validateViewSpec, DEFAULT_VIEW_TYPE } from "../../shared/core/view-palette";
+import { checkLinkWrite, revalidateLink, parseEntryRef, type RelationsContext } from "./relations";
 import { FEATURES } from "../features";
 import { composeOnCreate, composeOnWrite, composeImmutable } from "../features/compose";
 
@@ -41,6 +42,9 @@ export interface KernelContext {
    *  a partial update doesn't carry them (e.g. a _views config edit that omits
    *  the target pattern). Returns null if the row/column is absent. */
   entryField(pattern: string, id: number, field: string): unknown;
+  /** The relations registry's hands (db + existence probes). The `_links` hooks
+   *  delegate every link check to relations.ts through it. */
+  relations: RelationsContext;
 }
 
 export type HookResult = Record<string, unknown> | { error: true; message: string };
@@ -94,6 +98,14 @@ export const IMMUTABLE_AFTER_CREATE: Record<string, ImmutableRule> = {
     // depth — processInput also re-validates at the write chokepoint).
     fields: ["target_pattern"],
     message: "An ingress endpoint's target_pattern is fixed at creation — it gates which pattern anonymous POSTs can write. Archive this endpoint and create a new one to retarget.",
+  },
+  _links: {
+    // A link's endpoints and relation are what the create checks validated
+    // (relations.ts checkLinkWrite). Freezing them means update/patch can never
+    // repoint or relabel a link past those checks; `source`/`target` are the
+    // shorthand spellings of the same endpoints. Unarchive re-validates (ON_WRITE).
+    fields: ["source_pattern", "source_id", "target_pattern", "target_id", "label", "source", "target"],
+    message: "A link's endpoints and relation are immutable once created. To move or relabel it, archive this link and create a new one.",
   },
 };
 
@@ -288,45 +300,30 @@ const CORE_ON_CREATE: Record<string, CreateHook> = {
   },
 
   _links(data, ctx) {
-    // Accept shorthand: source: "pattern/id", target: "pattern/id"
-    if (data.source && typeof data.source === "string") {
-      const parts = (data.source as string).split("/");
-      if (parts.length !== 2) return { error: true, message: `Invalid source format "${data.source}". Use "pattern/id".` };
-      data.source_pattern = parts[0];
-      data.source_id = Number(parts[1]);
-      delete data.source;
-    }
-    if (data.target && typeof data.target === "string") {
-      const parts = (data.target as string).split("/");
-      if (parts.length !== 2) return { error: true, message: `Invalid target format "${data.target}". Use "pattern/id".` };
-      data.target_pattern = parts[0];
-      data.target_id = Number(parts[1]);
-      delete data.target;
+    // Accept the "pattern/id" shorthand (strict: one slash, integer id).
+    for (const end of ["source", "target"] as const) {
+      if (data[end] == null) continue;
+      const parsed = parseEntryRef(data[end]);
+      if (!parsed) return { error: true, message: `Invalid ${end} ${JSON.stringify(data[end])} — use "pattern/id" (e.g. "tasks/6").` };
+      data[`${end}_pattern`] = parsed.pattern;
+      data[`${end}_id`] = parsed.id;
+      delete data[end];
     }
 
-    if (!data.source_pattern) return { error: true, message: "source is required (e.g. source: \"tasks/6\")" };
-    if (data.source_id == null) return { error: true, message: "source is required (e.g. source: \"tasks/6\")" };
-    if (!data.target_pattern) return { error: true, message: "target is required (e.g. target: \"goals/9\")" };
-    if (data.target_id == null) return { error: true, message: "target is required (e.g. target: \"goals/9\")" };
+    if (!data.source_pattern || data.source_id == null) return { error: true, message: "source is required (e.g. source: \"tasks/6\")" };
+    if (!data.target_pattern || data.target_id == null) return { error: true, message: "target is required (e.g. target: \"goals/9\")" };
 
-    // Links connect user-pattern MEMORIES, not the control plane. A kernel target would
-    // weave _access_tokens/_members/_passkeys/etc. into the link graph — surfaced unsealed
-    // by followLinks (prime/resolve) and treated as superseded memory by a supersedes link.
-    // Mirror the _inputs/_publications kernel-target refusal.
-    for (const p of [data.source_pattern, data.target_pattern] as string[])
-      if (isKernelPattern(p))
-        return { error: true, message: `Links connect memories in user patterns, not kernel pattern "${p}".` };
-
-    if (!ctx.patternExists(data.source_pattern as string))
-      return { error: true, message: `Source pattern "${data.source_pattern}" does not exist` };
-    if (!ctx.entryExists(data.source_pattern as string, data.source_id as number))
-      return { error: true, message: `Source entry ${data.source_id} not found in "${data.source_pattern}"` };
-    if (!ctx.patternExists(data.target_pattern as string))
-      return { error: true, message: `Target pattern "${data.target_pattern}" does not exist` };
-    if (!ctx.entryExists(data.target_pattern as string, data.target_id as number))
-      return { error: true, message: `Target entry ${data.target_id} not found in "${data.target_pattern}"` };
-
-    return data;
+    // Every link check — kernel endpoints, declared relation (inverse wording
+    // swapped to canonical), existence, admitted patterns, uniqueness,
+    // cardinality, acyclicity — lives in relations.ts, the one home of edge
+    // vocabulary. The row is stored in canonical direction under the relation's name.
+    const toInt = (v: unknown) => (typeof v === "string" && /^\d+$/.test(v) ? Number(v) : v) as number;
+    const check = checkLinkWrite(ctx.relations, {
+      source_pattern: String(data.source_pattern), source_id: toInt(data.source_id),
+      target_pattern: String(data.target_pattern), target_id: toInt(data.target_id),
+    }, data.label);
+    if ("error" in check) return check;
+    return Object.assign(data, check);
   },
 
   _short_term_fragments(data) {
@@ -425,6 +422,15 @@ const CORE_ON_CREATE: Record<string, CreateHook> = {
 export type WriteHook = (data: Record<string, unknown>, operation: string, ctx: KernelContext) => HookResult;
 
 const CORE_ON_WRITE: Record<string, WriteHook> = {
+  // Endpoints and label are IMMUTABLE_AFTER_CREATE (refused before this runs), so
+  // update/patch cannot repoint a link, and create was judged by ON_CREATE. Unarchive
+  // revives a row the registry may no longer admit (retired relation, archived
+  // endpoint, a cycle or duplicate formed meanwhile): it re-runs every create check.
+  _links(data, operation, ctx) {
+    if (operation !== "unarchive") return data;
+    return revalidateLink(ctx.relations, data.id) ?? data;
+  },
+
   // _members create-time validation (reserve "owner", enum status) is in ON_CREATE; this
   // ON_WRITE re-validates on UPDATE too — otherwise a trusted update could set role:"owner"
   // (the reservation is create-only) or an invalid status, bypassing the create checks.

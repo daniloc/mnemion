@@ -78,7 +78,8 @@ Key capabilities:
 - prime: pass conversational context, get back charter + semantically relevant entries + linked entries. Your universal onramp.
 - mutate: create, update, archive. Supports batch (array of ops, atomic). Optimistic locking via version field.
 - propose_change / apply_change: schema evolution. Supports revert via PITR (30-day window).
-- resolve: read by ${URI_SCHEME}:// URI. Returns linked entries one hop deep.
+- resolve: read by ${URI_SCHEME}:// URI. Returns linked entries one hop deep, each with its direction and relation.
+- Links are typed: every link label names a declared relation. ${uri("relations")} lists the vocabulary (kernel defaults plus any this hive declared); prime returns it too. An undeclared label is refused — declare one with propose_change type declare_relation.
 - query: filtered reads. search: cross-pattern full-text.
 - ${uri("_system/")} has detailed reference docs if needed.
 - ${uri("_system/instance")} has this instance's hostname and endpoint URLs.
@@ -417,6 +418,21 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
             conflict_check: z.enum(["annotate", "off"]).optional().describe("Write-time semantic overlap advisory on create (default: annotate)"),
             exclusive_facets: z.array(z.string()).optional().describe("Facets where only one active entry per value should exist — duplicates get a supersession advisory"),
           }).nullable().optional().describe("Memory policy (for set_memory_policy; null clears the policy)"),
+          // Relation vocabulary (declare_relation / amend_relation / retire_relation).
+          // Rules live in entities/Hive/relations.ts; these only CARRY the payload.
+          // Every relation field passes through (nullable, and Phase 2 fields too) so
+          // the engine refuses what it refuses and the agent reads its message
+          // verbatim — a field dropped here would make a refused payload look accepted.
+          name: z.string().nullable().optional().describe("Relation name, kebab-case — the label links store (for declare/amend/retire_relation; immutable once declared)"),
+          new_name: z.string().nullable().optional().describe("Not allowed: a relation's name is immutable (amend_relation refuses it)"),
+          inverse: z.string().nullable().optional().describe("How the relation reads from the target's side, e.g. cites → cited-by (required for declare_relation; amendable)"),
+          description: z.string().nullable().optional().describe("What the relation asserts, when to use it rather than its nearest neighbour, and one example in canonical direction — at least 120 characters (for declare/amend_relation)"),
+          source: z.array(z.string()).nullable().optional().describe('Patterns a link of this relation may start from, or ["*"] for any user pattern (for declare_relation)'),
+          target: z.array(z.string()).nullable().optional().describe('Patterns it may point to, or ["*"] for any user pattern; _documents and _web_cache are allowed targets (for declare_relation)'),
+          cardinality: z.string().nullable().optional().describe('"one" or "many": most active links of this relation one source entry may hold (default "many")'),
+          behaviors: z.array(z.string()).nullable().optional().describe('Subset of the behavior palette: "supersession" (target demoted as replaced), "acyclic" (no cycles)'),
+          required: z.boolean().nullable().optional().describe("Phase 2 — not yet supported (refused)"),
+          chain: z.array(z.string()).nullable().optional().describe("Phase 2 — derived relations are not yet supported (refused)"),
         }),
       },
       async ({ description, change }) => {

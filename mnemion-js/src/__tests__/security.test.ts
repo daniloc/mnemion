@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
 import { query } from "../../entities/Hive/data";
 import { KERNEL_TABLES } from "../../entities/Hive/schema";
-import { seal, findUnclassifiedSensitiveColumns, verifyEgressTotality, SENSITIVE_COLUMNS } from "../../entities/Hive/policy";
+import { seal, findUnclassifiedSensitiveColumns, verifyEgressTotality, SENSITIVE_COLUMNS, PLATFORM_RESERVED_TABLES } from "../../entities/Hive/policy";
 import { FEATURE_DECLARED_SENSITIVE } from "../../entities/features/security";
 import { hashToken } from "../../shared/Auth/credentials";
 
@@ -185,7 +185,11 @@ describe("egress totality: every secret-shaped column on a kernel table is class
   it("the REAL kernel schema has no unclassified secret-shaped column (the loud oracle)", async () => {
     const store = getStore();
     await runInDurableObject(store, async (_i, state) => {
-      const tables = (state.storage.sql.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'`).toArray() as any[]).map((t) => t.name as string);
+      // Only the DECLARED platform tables (PLATFORM_RESERVED_TABLES, e.g. _cf_METADATA
+      // from the PITR bookmark API the boot's restore point uses) are skipped; any
+      // other table that refuses PRAGMA throws here and fails the oracle loudly.
+      const tables = (state.storage.sql.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'`).toArray() as any[])
+        .map((t) => t.name as string).filter((t) => !PLATFORM_RESERVED_TABLES.includes(t));
       const cols: Record<string, string[]> = {};
       for (const t of tables) cols[t] = (state.storage.sql.exec(`PRAGMA table_info("${t}")`).toArray() as any[]).map((c: any) => c.name as string);
       // a new secret-shaped column (token/password/public_key/…) on any kernel

@@ -176,6 +176,10 @@ const CORE_KERNEL_WRITE_POLICY: Record<string, KernelPolicy> = {
   // Planting a _web_cache row would make resolve() serve attacker-chosen content
   // as a trusted cache hit; the logs are append-only point-in-time records.
   _web_cache: { class: WriteClass.System },
+  // The relation vocabulary changes only through declare/amend/retire_relation
+  // (propose/apply, logged to _schema_history) — never mutate, like pattern and
+  // facet definitions. Kernel defaults are refreshed from code at boot.
+  _relations: { class: WriteClass.System },
   _fragment_access_log: { class: WriteClass.System, auditExempt: true },
   _entry_access_log: { class: WriteClass.System, auditExempt: true },
   // Not registered in _objects (never reach the mutate path), but listed for
@@ -276,6 +280,14 @@ const CORE_SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> = {
 // egress (seal/sealAll, the audit trigger, export) and the egress totality oracle
 // (findUnclassifiedSensitiveColumns) read THIS composed map, so a feature's
 // redacted/secret columns inherit every egress + the loud-fail oracle unchanged.
+/** Platform-owned tables that may refuse inspection (PRAGMA → SQLITE_AUTH) and are
+ *  not Mnemion's to classify. `_cf_METADATA` appears once the PITR bookmark API is
+ *  used (the v17 restore point does on every first boot). The sensitive-column
+ *  oracles skip ONLY these; any other table that refuses inspection is reported,
+ *  so a refusal can never silence the check. Fail loud: an unknown platform table
+ *  is a finding until it is declared here. */
+export const PLATFORM_RESERVED_TABLES: readonly string[] = ["_cf_METADATA"];
+
 export const SENSITIVE_COLUMNS: Record<string, SensitiveColumn[]> =
   mergeDisjoint(CORE_SENSITIVE_COLUMNS, FEATURE_SENSITIVE_COLUMNS, "sensitive-columns");
 

@@ -75,17 +75,18 @@ Mnemion uses biological vocabulary at every layer — API parameters, URIs, JSON
 - `mnemion://history` — schema evolution history (supports `?limit=N`)
 - `mnemion://entry/{pattern}/{id}` — individual entry by URI
 - `mnemion://stale` — entries past their staleness horizon (supports `?days=N`); review surface for maintenance passes
+- `mnemion://relations` — the relation vocabulary (every label a link may carry); also the index's `relations` key
 
 ### Tools (8 total)
 
 Tool metadata is centralized in `entities/Session/tools.ts` (SSOT for `session.ts` MCP registration + `/api/tools` frontend; the `tools SSOT totality` test reconciles the `TOOLS` rows against the actual `session.ts` registrations in both directions, so a tool can't be registered without a row or left as a stale row):
 
 - `prime` — auto-associative recall: pass conversational context, get semantically-nearest entries + one-hop links. Workers AI embeds entries on write, Vectorize indexes them, prime queries KNN. Relevance is weighted at read time: superseded entries demoted ×0.3 + annotated `superseded_by`; patterns with a memory-policy half-life decay by `0.5^(age/half_life)` where age runs from the later of `updated_at` and the last prime hit (`_entry_access_log` — recall is rehearsal). `raw_similarity` is kept alongside weighted `relevance`. A `maintenance` field appears when a cleanup pass is overdue.
-- `resolve` — read anything by `mnemion://` URI, including federated cross-hive URIs and `mnemion://web/<https-url>` for adapter-cached web fetches (escape hatch for platforms without resource support)
+- `resolve` — read anything by `mnemion://` URI, including federated cross-hive URIs and `mnemion://web/<https-url>` for adapter-cached web fetches (escape hatch for platforms without resource support). Entry reads list `linked` items one per link, each with `direction` (`out`/`in`) and `relation` (the name read from the reader's side; `label` keeps the canonical name)
 - `query` — filtered, sorted, paginated reads (supports `count_only` mode). Filter operators: `= != > < >= <= ~` (LIKE) and `|=` (IN, comma-separated values — e.g. `id|=1,3,7` for batched multi-id lookups)
 - `search` — cross-pattern full-text search across text facets
 - `mutate` — create, update, or archive entries. Single creates in user patterns run a policy-gated write-time conflict check (synchronous embed + KNN ≥0.80 same-pattern; the vector is reused for the post-write upsert) and return `possible_overlap` advisories; exclusive-facet duplicates advise via cheap SQL (batch included). Advisory only — never blocks.
-- `propose_change` — propose schema evolution (preview, no commit)
+- `propose_change` — propose schema evolution (preview, no commit), including the relation vocabulary (`declare_relation` / `amend_relation` / `retire_relation`)
 - `apply_change` — commit proposed change (fires resource update notifications)
 - `render` — visual twin of the read tools: returns a rich UI table (`view=patterns` or `view=entries`) via the `ui://mnemion/render` fragment in MCP-Apps-capable hosts, with a text fallback everywhere else
 
@@ -106,12 +107,25 @@ Federation is gated by a consent allow-list (`_federation_hosts` kernel pattern)
 
 All read-time-derived, owner-ratified, never auto-deleting:
 
-- **Supersession**: a `supersedes`-labeled `_links` row (source supersedes target). Prime demotes + annotates; entry resolution and the stale view annotate `superseded_by`. Entries are never hidden.
+- **Supersession**: a link whose relation declares the `supersession` behavior — the kernel `supersedes` (source supersedes target), or any hive relation declaring it. Prime demotes + annotates; entry resolution and the stale view annotate `superseded_by`; publications exclude it unless opted in. Entries are never hidden. Every reader asks `relations.ts` (`supersededBy` / `supersededAmong`) — no module filters `_links` on a label literal.
 - **Memory policy**: `memory_policy` JSON column on `_objects` (beside `doctrine`), set via the `set_memory_policy` change type. Shape: `{half_life_days?: number|null, conflict_check?: "annotate"|"off", exclusive_facets?: string[]}`. Defaults when unset: conflict check on, decay off. Surfaced per-pattern in the index. Kernel patterns can't carry policy.
 - **Decay**: `decayMultiplier` in prime.ts — `max(0.05, 0.5^(age/half_life))`, ranking only, never data. `_entry_access_log` records prime hits on user-pattern entries.
-- **Stale view**: `mnemion://stale` — per-pattern horizon of 3× half-life (90 days without a policy).
+- **Stale view**: `mnemion://stale` — per-pattern horizon of 3× half-life (90 days without a policy). Its `held_patterns` lists archived patterns past the 30-day drop that inbound links from outside keep alive (`{pattern, archived_at, days_archived, held_by: [{source, target, label}]}`), derived from the drop's own predicate (`PAST_DROP_HORIZON_SQL` + `notLinkTargetPatternSql` in relations.ts) — never auto-dropped; a maintenance pass reviews them with the owner (archive/re-point the links, or unarchive the pattern).
 - **Maintenance passes**: `_maintenance_passes` kernel pattern. Days-since derived from the latest row; interval from charter key `maintenance_interval_days` (default 14). Overdue status injected into MCP init instructions (session.ts) AND the prime response (web clients never see init instructions).
 - Agent protocol lives in `src/system-docs/memory-maintenance.md`.
+
+### Relations
+
+Link labels are declared relations — schema, like patterns and facets. Design and Phase 1 interface: `project-docs/relations.md`. One home: `entities/Hive/relations.ts` (the only worker file that compares a label to a relation name or filters `_links` on a label).
+
+- **Registry**: `_relations` kernel pattern (write class System — changed only via `declare_relation` / `amend_relation` / `retire_relation` in `CHANGE_TYPES`, logged to `_schema_history`). Row: `name` (immutable, = `_links.label`), `inverse`, a ≥120-char `description`, `source`/`target` (JSON arrays of patterns or `["*"]`), `cardinality` (`one`|`many`), `behaviors`, `kernel`, `legacy`. Kernel defaults `supersedes`, `references`, `depends-on`, `derived-from`, `part-of` are seeded and refreshed from code at boot (`KERNEL_RELATIONS`).
+- **Behavior palette** (`BEHAVIOR_PALETTE`): `supersession`, `acyclic`. A behavior joins the palette only with its enforcement and an enforcement test (palette totality). `containment`, `required`, `chain` are Phase 2 and refused as "not yet supported".
+- **Link chokepoint**: the `_links` ON_CREATE hook calls `checkLinkWrite` — kernel-endpoint check (before label resolution), declared label (an inverse name swaps to canonical direction), canonical source never kernel, active endpoints, relation's patterns, (source, target, label) uniqueness, cardinality, acyclic (recursive CTE). Refusals are engine-authored and list `available_relations`. Endpoints and label are `IMMUTABLE_AFTER_CREATE`; ON_WRITE re-runs every check on unarchive. Unlink resolves to exactly one link (`resolveUnlink`), refusing when ambiguous.
+- **Targets**: no kernel pattern is a link source; `_documents` and `_web_cache` may be targets.
+- **Boot** (`migrateRelations`, schema v17), in order: drop the pair-only `_links_pair_active` index; (1) seed/refresh the kernel defaults; (2) rewrite legacy labels — unlabeled → `references`, inverse wording → canonical name with ends swapped; (3) sweep active links whose endpoint is gone (pattern dropped or entry row deleted) or is an inadmissible kernel pattern — after the rewrite, so a link whose canonical form lands on a kernel source is swept the same boot; a link to an archived entry/pattern is never swept but stays active as a *dormant* link (hidden by reads, still counted for uniqueness/cardinality, back on unarchive), so every cold-start boot gives the same result; (4) declare remaining labels verbatim as `legacy` relations (ends inferred from usage; generated inverses avoid every declared handle and every in-use label). A second boot changes nothing. Boot then warns for every `legacy` relation (until `amend_relation` gives it a real description) and, via the pure `findCycles`, one line per pre-existing cycle across an acyclic relation — reported, never auto-repaired.
+- **Restore point / rollback**: on the first v17 boot (no `_relations` table yet) `bootSchema` (schema.ts) captures a PITR bookmark via `ctx.storage.getCurrentBookmark()` before any v17 step and records one `_schema_history` row, `change_type: "restore_point"` (bookmark NULL if unavailable — boot never fails). To roll Phase 1 back: find that row in `mnemion://history`, call MCP `apply_change` with `revert_history_id` (a consent round-trip — call, then confirm; it restores the whole DO to before the migration), then `wrangler rollback` the worker so old code doesn't re-migrate. See `project-docs/relations.md` "Rolling back Phase 1" for the pair-index caveat.
+- **GC**: a link protects its target everywhere — the `_web_cache` GC skips active link targets (`NOT_LINK_TARGET_SQL`), and the 30-day archived-pattern drop skips a pattern targeted by an active link from outside it (`notLinkTargetPatternSql`). Both derived in the query, no flag.
+- **Read surfaces**: index `relations`, `mnemion://relations`, `mnemion://schema/<pattern>` → `relations: {as_source, as_target}`, the prime response's `relations: [{name, inverse}]`, and the MCP init instructions.
 
 ### Entry sharing
 
@@ -145,6 +159,7 @@ Unified `_access_tokens` kernel pattern (replaced `_auth_codes`, `_upload_tokens
 - `_fragment_access_log` — append-only log of prime hits per short-term fragment. Promotion to `_long_term_fragments` is COUNT(*)-derived from this log, not a stored counter. GC'd alongside fragments. Audit-exempt (high-frequency append-only).
 - `_entry_access_log` — append-only log of prime hits per user-pattern entry. Feeds decay (`last_touch`) and the stale view. Audit-exempt, write-protected, GC'd at 90 days.
 - `_maintenance_passes` — record of completed memory-maintenance passes; days-since-last-pass is derived from the latest row, never stored.
+- `_relations` — the relation vocabulary for `_links.label` (see "Relations"); System write class, evolved only through the relation change types.
 
 ## Tech stack
 

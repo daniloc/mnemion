@@ -19,9 +19,10 @@ import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/con
 import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
-import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints } from "./policy";
+import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints, PLATFORM_RESERVED_TABLES } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
+import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL } from "./relations";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
 
@@ -75,7 +76,14 @@ const SYSTEM_DOCS_SEED = [
 // facet metadata together. The full kernel surface is visible by scanning
 // this array.
 
-interface KernelFacet { name: string; type: string; required: boolean; options?: string[] }
+interface KernelFacet {
+  name: string; type: string; required: boolean; options?: string[];
+  /** Required at the write chokepoint, but the column stays nullable in DDL
+   *  because pre-existing rows may hold NULL until a boot migration rewrites them
+   *  (SQLite can't add NOT NULL without a table rebuild). verifyFieldsIntegrity
+   *  accepts this one declared divergence instead of reporting drift. */
+  nullableInDdl?: true;
+}
 
 interface KernelTable {
   name: string;
@@ -304,8 +312,8 @@ Adding a member is a two-step invite: (1) create the member here with label + di
   },
   {
     name: "_links",
-    description: "Cross-pattern connections between entries. Use the 'link' shortcut: mutate(pattern: \"link\", data: {source: \"pattern/id\", target: \"pattern/id\", label: \"optional\"}). Links surface automatically in prime results via one-hop following.",
-    doctrine: "Use links to connect entries across patterns — tasks to goals, axioms to strategies, etc. Always use the link shortcut rather than storing IDs in text fields. Links are structural and validated. The label describes the relationship (e.g. 'serves', 'inspired-by', 'blocks').",
+    description: `Typed connections between entries. Each link's label names a declared relation — the vocabulary lives in ${uri("relations")} (also the index's "relations" key): name, inverse, what it asserts, which patterns it joins, its cardinality and behaviors. Use the 'link' shortcut: mutate(pattern: "link", data: {source: "pattern/id", target: "pattern/id", label: "<relation>"}). A relation's inverse name is accepted and stored in canonical direction. One pair may carry several relations, each once. Links surface in prime and resolve with their direction and the relation read from that side. A link to a _documents or _web_cache entry protects it from garbage collection.`,
+    doctrine: `Pick the relation that says what the connection asserts — supersedes, references, depends-on, derived-from, part-of, or one this hive declared; use references when nothing more specific fits. An undeclared label is refused, and the refusal lists the relations available for that pair of patterns. If none fits, declare one with propose_change type "declare_relation" (name, inverse, a detailed description, source and target patterns) rather than stretching an existing one. Links are immutable: to move or relabel one, archive it and create a new one. Unlink names the relation when a pair carries several. Never store entry IDs in text facets — link them.`,
     ddl: `CREATE TABLE IF NOT EXISTS "_links" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "source_pattern" TEXT NOT NULL,
@@ -319,7 +327,9 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       version INTEGER NOT NULL DEFAULT 0
     )`,
     indexes: [
-      `CREATE UNIQUE INDEX IF NOT EXISTS "_links_pair_active" ON "_links" ("source_pattern", "source_id", "target_pattern", "target_id") WHERE archived_at IS NULL`,
+      // One pair may carry several relations, each once. (The pre-registry
+      // pair-only "_links_pair_active" is dropped by migrateRelations.)
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_links_relation_active" ON "_links" ("source_pattern", "source_id", "target_pattern", "target_id", "label") WHERE archived_at IS NULL`,
       `CREATE INDEX IF NOT EXISTS "_links_source_active" ON "_links" ("source_pattern", "source_id") WHERE archived_at IS NULL`,
       `CREATE INDEX IF NOT EXISTS "_links_target_active" ON "_links" ("target_pattern", "target_id") WHERE archived_at IS NULL`,
     ],
@@ -328,7 +338,48 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       { name: "source_id", type: "integer", required: true },
       { name: "target_pattern", type: "text", required: true },
       { name: "target_id", type: "integer", required: true },
-      { name: "label", type: "text", required: false },
+      // Every link names a declared relation (relations.ts checkLinkWrite refuses a
+      // missing label); legacy NULL labels are rewritten to `references` at boot.
+      { name: "label", type: "text", required: true, nullableInDdl: true },
+    ],
+  },
+  {
+    name: "_relations",
+    description: `The relation vocabulary: every label a link may carry. Each relation has a name (stored in _links.label), an inverse (how it reads from the target's side), a detailed description, the patterns it joins (source/target: JSON arrays of pattern names, or ["*"] for any user pattern — _documents and _web_cache are admitted as targets), a cardinality (one|many links per source entry) and behaviors from a fixed palette (supersession: the target is demoted as replaced; acyclic: no cycles). Kernel defaults (supersedes, references, depends-on, derived-from, part-of) are owned by code. Legacy relations were declared automatically from links written before the registry and await a real description. Read it as ${uri("relations")}.`,
+    doctrine: `Written only through propose_change: declare_relation (name, inverse, a description of at least 120 characters that says what it asserts, when to prefer it over its nearest neighbour, and an example), amend_relation (description, inverse, behaviors, cardinality — the name is immutable), retire_relation (refused while active links use it). Never mutate directly. Prefer a kernel default; declare a new relation only when the connection means something none of them says.`,
+    ddl: `CREATE TABLE IF NOT EXISTS "_relations" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "name" TEXT NOT NULL,
+      "inverse" TEXT NOT NULL,
+      "description" TEXT NOT NULL,
+      "source" TEXT NOT NULL,
+      "target" TEXT NOT NULL,
+      "cardinality" TEXT NOT NULL DEFAULT 'many',
+      "required" INTEGER NOT NULL DEFAULT 0,
+      "behaviors" TEXT NOT NULL DEFAULT '[]',
+      "chain" TEXT,
+      "kernel" INTEGER NOT NULL DEFAULT 0,
+      "legacy" INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT,
+      version INTEGER NOT NULL DEFAULT 0
+    )`,
+    indexes: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS "_relations_name_active" ON "_relations" ("name") WHERE archived_at IS NULL`,
+    ],
+    facets: [
+      { name: "name", type: "text", required: true },
+      { name: "inverse", type: "text", required: true },
+      { name: "description", type: "text", required: true },
+      { name: "source", type: "text", required: true },
+      { name: "target", type: "text", required: true },
+      { name: "cardinality", type: "select", required: false, options: ["one", "many"] },
+      { name: "required", type: "boolean", required: false },
+      { name: "behaviors", type: "text", required: false },
+      { name: "chain", type: "text", required: false },
+      { name: "kernel", type: "boolean", required: false },
+      { name: "legacy", type: "boolean", required: false },
     ],
   },
   {
@@ -568,6 +619,41 @@ export const KERNEL_TABLES: KernelTable[] = [
 ];
 
 // === Initialization ===
+
+/**
+ * The Durable Object's boot: initializeSchema, preceded on the FIRST relations
+ * migration (no `_relations` table yet — a pre-Phase-1 hive, or a brand-new one)
+ * by a PITR bookmark capture, recorded afterwards as one `_schema_history` row
+ * (change_type `restore_point`). Later boots find `_relations` and record nothing.
+ *
+ * @why v17 rewrites and archives links and drops the pair-only index; the restore
+ * point lets the deploy be undone exactly through the existing revert path
+ * (evo.revertChange / apply_change revert_history_id). It must never fail boot:
+ * an unavailable bookmark (local dev, tests) is recorded as NULL, and revert then
+ * reports rollback unavailable.
+ */
+export async function bootSchema(
+  db: any, env: { MNEMION_SECRET?: string; DEV_SEED?: string } | undefined,
+  captureBookmark: () => Promise<string>,
+): Promise<void> {
+  let firstV17 = false;
+  try { firstV17 = db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_relations'`).toArray().length === 0; } catch { /* boot regardless */ }
+  let bookmark: string | null = null;
+  if (firstV17) {
+    try { const b = await captureBookmark(); bookmark = typeof b === "string" ? b : null; } catch { bookmark = null; }
+  }
+  initializeSchema(db, env);
+  if (firstV17) {
+    try {
+      db.exec(
+        "INSERT INTO _schema_history (description, change_type, change_detail, bookmark) VALUES (?, 'restore_point', ?, ?)",
+        "Restore point before the relations registry migration (v17)",
+        JSON.stringify({ type: "restore_point", before: "relations registry migration (v17)", revert: "apply_change with revert_history_id, then wrangler rollback the worker" }),
+        bookmark,
+      );
+    } catch (err) { console.warn("[schema] could not record the v17 restore point", err); }
+  }
+}
 
 export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_SEED?: string }): void {
   // --- Core schema tables ---
@@ -895,11 +981,14 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
 
   // --- GC: superseded web-cache rows (a re-fetch archives the old row and
   // inserts a fresh one). Only these duplicates are evicted — active cached
-  // content is retained indefinitely as durable memory, never deleted on TTL. ---
+  // content is retained indefinitely as durable memory, never deleted on TTL.
+  // A row that is the target of an active link survives: a link protects its
+  // target, derived from the link itself (NOT_LINK_TARGET_SQL), no stored flag. ---
 
   try {
     db.exec(
-      `DELETE FROM "_web_cache" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days') AND pinned = 0`
+      `DELETE FROM "_web_cache" WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-7 days') AND pinned = 0 AND ${NOT_LINK_TARGET_SQL}`,
+      "_web_cache",
     );
   } catch {}
 
@@ -938,11 +1027,15 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     );
   } catch {}
 
-  // --- GC: drop archived patterns older than 30 days ---
+  // --- GC: drop archived patterns older than 30 days — except one an active link
+  //     from outside it still targets (a link protects its target; its links stay
+  //     dormant until removed, then the normal rule resumes). Derived, no flag.
+  //     The stale view reports what this skips (relations.ts heldPatterns, the
+  //     same two fragments negated), so a held pattern is never silent. ---
 
   try {
     const expired = db.exec(
-      `SELECT name FROM _objects WHERE archived_at IS NOT NULL AND archived_at < datetime('now', '-30 days') AND name NOT LIKE '\\_%' ESCAPE '\\'`
+      `SELECT name FROM _objects WHERE ${PAST_DROP_HORIZON_SQL} AND ${notLinkTargetPatternSql("_objects.name")}`
     ).toArray() as any[];
     for (const obj of expired) {
       for (const op of ["insert", "update", "delete"]) {
@@ -1019,7 +1112,9 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     );
     for (const f of table.facets) {
       db.exec(
-        "INSERT OR IGNORE INTO _fields (object_name, name, type, required, options) VALUES (?, ?, ?, ?, ?)",
+        // Code owns a kernel facet's requiredness: refresh it so an existing
+        // install's schema tracks the declaration (other columns stay insert-once).
+        "INSERT INTO _fields (object_name, name, type, required, options) VALUES (?, ?, ?, ?, ?) ON CONFLICT(object_name, name) DO UPDATE SET required = excluded.required",
         table.name, f.name, f.type, f.required ? 1 : 0, f.options ? JSON.stringify(f.options) : null
       );
     }
@@ -1056,6 +1151,18 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
       db.exec(`ALTER TABLE "_fields" ADD COLUMN "format" TEXT`);
     }
   } catch {}
+
+  // --- v17: relations registry ---
+  //
+  // Link labels become declared relations (project-docs/relations.md §F/§G). After
+  // kernel registration (the sweep reads _objects) and before audit triggers:
+  // drop the pair-only unique index; seed/refresh the kernel relations; rewrite
+  // legacy labels (NULL → references, inverse wording → canonical); sweep links
+  // whose endpoint is gone or inadmissible (never merely archived — those stay
+  // dormant); declare what remains as `legacy` relations. Idempotent: a second
+  // boot changes nothing. Legacy debt and pre-existing cycles are warned about in
+  // the integrity block below.
+  try { migrateRelations(db); } catch (err) { console.warn("[schema] relations migration failed", err); }
 
   // --- Seed the owner member ---
   //
@@ -1097,18 +1204,43 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
   } catch { /* best-effort */ }
 
   // --- Integrity: every secret-shaped column on a kernel table must be classified
-  //     for egress (SENSITIVE_COLUMNS), or it could leak through a serializer. ---
+  //     for egress (SENSITIVE_COLUMNS), or it could leak through a serializer.
+  //     Enumerate ALL `_`-prefixed tables (not just _objects rows) so raw-DDL kernel
+  //     tables like _passkeys are covered — matching the security.test oracle. Each
+  //     table is read on its own: one table refusing PRAGMA must never silence the
+  //     rest (df-45866a77). A refusal is itself reported unless the table is a
+  //     declared platform table (PLATFORM_RESERVED_TABLES), which is skipped. ---
   try {
+    const reserved = new Set(PLATFORM_RESERVED_TABLES);
     const kernelCols: Record<string, string[]> = {};
-    // Enumerate ALL `_`-prefixed tables (not just _objects rows) so raw-DDL kernel
-    // tables like _passkeys are covered — matching the security.test oracle exactly.
+    const unreadable: string[] = [];
     const tables = (db.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'`).toArray() as any[]).map((t: any) => t.name as string);
     for (const name of tables) {
-      kernelCols[name] = (db.exec(`PRAGMA table_info(${quoteIdent(name)})`).toArray() as any[]).map((c: any) => c.name as string);
+      if (reserved.has(name)) continue;
+      try {
+        kernelCols[name] = (db.exec(`PRAGMA table_info(${quoteIdent(name)})`).toArray() as any[]).map((c: any) => c.name as string);
+      } catch {
+        unreadable.push(name);
+      }
     }
     const gaps = findUnclassifiedSensitiveColumns(kernelCols);
     if (gaps.length) console.warn(`[schema] unclassified sensitive columns (add to SENSITIVE_COLUMNS): ${gaps.join(", ")}`);
-  } catch { /* PRAGMA best-effort */ }
+    if (unreadable.length) console.warn(`[schema] sensitive-column check could not inspect ${unreadable.join(", ")} (PRAGMA refused) — its columns are unchecked; declare it in PLATFORM_RESERVED_TABLES only if the platform owns it`);
+  } catch (err) { console.warn("[schema] sensitive-column check could not enumerate tables", err); }
+
+  // --- Integrity: legacy relations still carry a placeholder description — keep
+  //     the debt visible until each is amended. ---
+  try {
+    const legacy = findLegacyRelations(activeRelations(db));
+    if (legacy.length) console.warn(`[schema] legacy relations awaiting a description (${legacy.length}):\n  ${legacy.join("\n  ")}`);
+  } catch { /* best-effort */ }
+
+  // --- Integrity: cycles already present across an acyclic relation (pre-registry
+  //     data or the legacy inverse rewrite). Reported one line per cycle, never
+  //     auto-repaired — maintenance is owner-ratified. ---
+  try {
+    for (const line of findCycles(acyclicGraphs(db))) console.warn(`[schema] ${line}`);
+  } catch { /* best-effort */ }
 
   // --- data-is-destiny: warn on a stored aggregate of rows the schema retains ---
   try {
@@ -1184,6 +1316,7 @@ function verifyFieldsIntegrity(db: any): void {
     // required flag mismatch — agents told a column is optional but DB rejects NULL (or vice versa).
     // NOT NULL with DEFAULT is effectively optional from the agent's perspective (SQLite fills it in)
     // — skip those, only flag the case where the DB will actually reject an omitted value.
+    const ddlNullable = new Set(KERNEL_TABLES.find((t) => t.name === obj.name)?.facets.filter((f) => f.nullableInDdl).map((f) => f.name) ?? []);
     const secretCols = new Set(sensitiveColumns(obj.name).filter((s) => s.kind === "secret").map((s) => s.column));
     for (const [name, ddl] of ddlCols) {
       const f = fieldsByName.get(name);
@@ -1192,6 +1325,7 @@ function verifyFieldsIntegrity(db: any): void {
       // system always supplies the digest) yet required:false in _fields (the AGENT
       // never supplies it). That divergence is by design, not drift.
       if (secretCols.has(name)) continue;
+      if (ddlNullable.has(name)) continue;
       const ddlRequired = ddl.notnull && !ddl.hasDefault ? 1 : 0;
       if (ddlRequired !== f.required) {
         drifts.push(`"${obj.name}".${name}: _fields.required=${f.required} but DDL ${ddl.notnull ? "NOT NULL" : "nullable"}${ddl.hasDefault ? " with default" : ""}`);

@@ -15,7 +15,7 @@ import { DurableObject } from "cloudflare:workers";
 import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { evaluateMapping } from "./transform";
-import { initializeSchema } from "./schema";
+import { bootSchema } from "./schema";
 import { KERNEL_COLUMN_SET, STRUCTURAL_KERNEL_COLUMNS } from "./kernel-columns";
 import { expandShortcut, normalizeHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
@@ -32,6 +32,7 @@ import * as docs from "./documents";
 import * as served from "./served";
 import * as fed from "./federation";
 import * as reports from "./reports";
+import * as rel from "./relations";
 
 // === Constants ===
 
@@ -51,7 +52,8 @@ export class HiveDO extends DurableObject {
   constructor(ctx: DurableObjectState, env: any) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      initializeSchema(this.db, env);
+      // A PITR restore point is captured before the first relations migration (v17).
+      await bootSchema(this.db, env, () => this.ctx.storage.getCurrentBookmark());
       await this.migrateTokenHashes();
     });
   }
@@ -243,6 +245,9 @@ export class HiveDO extends DurableObject {
         return facet;
       }),
       kernel_columns: [...STRUCTURAL_KERNEL_COLUMNS],
+      // The relations this pattern may stand in (canonical names, `*` included),
+      // so an agent reading the schema meets the link vocabulary that applies.
+      relations: rel.relationsFor(this.db, patternName),
     }, null, 2);
   }
 
@@ -274,11 +279,8 @@ export class HiveDO extends DurableObject {
 
       // Superseded entries are annotated, never hidden — the chain stays navigable
       try {
-        const sup = this.db.exec(
-          `SELECT source_pattern, source_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id = ? LIMIT 1`,
-          patternName, entryId
-        ).toArray() as any[];
-        if (sup.length > 0) result.superseded_by = uri(`entry/${sup[0].source_pattern}/${sup[0].source_id}`);
+        const by = rel.supersededBy(this.db, patternName, entryId);
+        if (by) result.superseded_by = by;
       } catch { /* _links may not exist */ }
 
       // One-hop link following
@@ -518,7 +520,7 @@ export class HiveDO extends DurableObject {
           ...(result.possible_overlap ?? []),
           ...conflictCheck.neighbors.map(n => ({ ...n, reason: "semantic_similarity" })),
         ];
-        result.overlap_guidance = "Advisory only — the entry was created. If it duplicates or replaces an existing entry, consider updating that entry instead, or link supersession: mutate(pattern: \"link\", data: {source: \"" + patternName + "/" + result.entry?.id + "\", target: \"" + patternName + "/{old_id}\", label: \"supersedes\"}).";
+        result.overlap_guidance = "Advisory only — the entry was created. If it duplicates or replaces an existing entry, consider updating that entry instead, or link supersession: mutate(pattern: \"link\", data: {source: \"" + patternName + "/" + result.entry?.id + "\", target: \"" + patternName + "/{old_id}\", label: \"supersedes\"}) (supersedes is the kernel relation with the supersession behavior; link labels must name a declared relation — see " + uri("relations") + ").";
       }
       // Granular delta so the UI can patch one element instead of refetching the
       // whole pattern — the heart of "only the element the agent changed redraws".
@@ -768,6 +770,10 @@ export class HiveDO extends DurableObject {
       return this.getIndex();
     }
 
+    if (path === "relations") {
+      return JSON.stringify({ relations: rel.listRelations(this.db) }, null, 2);
+    }
+
     if (path === "history" || path.startsWith("history?")) {
       const params = new URLSearchParams(path.split("?")[1] || "");
       const limit = Number(params.get("limit")) || 20;
@@ -809,7 +815,7 @@ export class HiveDO extends DurableObject {
       return this.getMutationLog(tableName, limit);
     }
 
-    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
+    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("relations")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
   }
 
   // === Federated resolve: foreign hive URIs ===
@@ -945,16 +951,8 @@ export class HiveDO extends DurableObject {
         } catch { return null; }
       },
       supersededIds: (pattern, ids) => {
-        if (ids.length === 0) return new Set<number>();
-        try {
-          const placeholders = ids.map(() => "?").join(",");
-          return new Set(
-            this.db.exec(
-              `SELECT target_id FROM "_links" WHERE label = 'supersedes' AND archived_at IS NULL AND target_pattern = ? AND target_id IN (${placeholders})`,
-              pattern, ...ids,
-            ).toArray().map((r: any) => r.target_id as number),
-          );
-        } catch { return new Set<number>(); }
+        try { return rel.supersededAmong(this.db, pattern, ids); }
+        catch { return new Set<number>(); }
       },
       facetMeta: (pattern) => {
         try {
@@ -1169,6 +1167,9 @@ export class HiveDO extends DurableObject {
       practice: "Always write notes to yourself as you work: mutate(pattern: \"fragment\", data: {content: \"your observation\"}). Write what you noticed about the session, including where the substrate's framing didn't match what you observed. The next instance will arrive with no memory of this conversation — your observations are the only thing that survives. Write in first person. Operation is implied.",
       system_docs: "Resolve mnemion://_system/ for detailed reference on tools, schema evolution, conventions, and system mechanics.",
       ...(maintenance ? { maintenance } : {}),
+      // The link vocabulary rides the universal handshake (web clients never see
+      // MCP init instructions): name + inverse; mnemion://relations has the rest.
+      relations: rel.listRelations(this.db).map(({ name, inverse }) => ({ name, inverse })),
       ...primeResult,
       advisory_repeat: ADVISORY,
     }, null, 2);

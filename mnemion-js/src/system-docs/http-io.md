@@ -61,11 +61,11 @@ The projection is now served at `GET /p/now`, re-derived from current entries on
 - `include_superseded` — publications exclude superseded entries by default; set true to include them
 
 ### Current truth by default
-Entries targeted by an active `supersedes` link are dropped from publications unless `include_superseded` is set — public projections show what's current, not what was replaced.
+Entries targeted by an active link of a relation with the `supersession` behavior (the kernel `supersedes`, or any hive relation declaring it) are dropped from publications unless `include_superseded` is set — public projections show what's current, not what was replaced.
 
 ## Documents: `_documents`
 
-A document is a file whose **bytes live in R2**, with a `_documents` entry holding the metadata. Use it for PDFs, images, and anything binary or larger than the 1 MB entry limit. The entry is the evolvable knowledge layer; the file is immutable truth it points at — link documents to other entries like any pattern.
+A document is a file whose **bytes live in R2**, with a `_documents` entry holding the metadata. Use it for PDFs, images, and anything binary or larger than the 1 MB entry limit. The entry is the evolvable knowledge layer; the file is immutable truth it points at — link entries to it (a document can be a link target, never a link source).
 
 > **Requires R2.** File storage depends on Cloudflare R2, which is optional. If it isn't enabled on this instance, creating a `_documents` entry still works but the response carries a `documents_note` saying uploads are unavailable, and `POST /f` returns 503 — and the index marks `_documents` as `unavailable`. To enable it, tell the human: turn on R2 (dashboard → Storage & databases → R2), then run `npm run enable-documents` and redeploy. Everything else in Mnemion works without R2.
 
@@ -98,7 +98,7 @@ Creating a document auto-mints a `document`-scoped access token bound to that en
 `GET /f/{id}` streams the file with its stored `Content-Type`. Add `?download=1` for an attachment disposition. Visibility gates access exactly like shared entries: `private` → 404, `unlisted` → requires a bearer token with `read:document:{id}` scope, `public` → open and edge-cached. **Making a document non-private is consent-gated** — creating/uploading a private file is friction-free; publishing one requires a confirmation round-trip.
 
 ### Lifecycle
-Files cap at 25 MB. Archiving a document entry deletes both the metadata and the R2 object. Documents don't yet surface in `prime` (text extraction is a future capability) — link them to text entries so they're reachable through their neighbors.
+Files cap at 25 MB. Archiving a document entry deletes both the metadata and the R2 object. Documents don't yet surface in `prime` (text extraction is a future capability) — link text entries to them so they're reachable through their neighbors.
 
 ## Ingress: `_inputs`
 

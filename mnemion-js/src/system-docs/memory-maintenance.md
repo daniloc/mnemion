@@ -16,7 +16,9 @@ mutate(pattern: "link", data: {source: "decisions/41", target: "decisions/23", l
 
 Source supersedes target. The old entry is never hidden: query, search, and resolve still return it, annotated with `superseded_by`. Prime demotes superseded entries heavily so current truth outranks replaced truth, but the chain stays navigable — the history of how understanding evolved is often the valuable part.
 
-Cross-pattern supersession is legitimate (a decision can supersede a note). Archive the link to undo it.
+Supersession is a **behavior a relation declares**, not a magic label. `supersedes` is the kernel relation that carries it (inverse `superseded-by`); a hive relation declared with the `supersession` behavior is honored the same way everywhere — prime demotion, `superseded_by` annotations, the stale view, and publications. Supersession is acyclic: an entry can't (transitively) supersede its own successor. See `{{uri:relations}}` for the vocabulary.
+
+Cross-pattern supersession is legitimate (a decision can supersede a note). Archive the link to undo it (or `unlink` with `label: "supersedes"` when the pair carries other relations too).
 
 ## Memory policy
 
@@ -41,12 +43,14 @@ Decay affects recall ranking only. Prime's relevance is `similarity × decay(las
 
 `resolve("{{uri:stale}}")` (optionally `{{uri:stale}}?days=N`) lists entries that haven't been touched or recalled past their pattern's staleness horizon (3× half-life, or 90 days for patterns without one). Superseded entries are flagged. This is a read-only review surface — archiving is always a deliberate act.
 
+The stale view also carries `held_patterns`: archived patterns past their 30-day drop that are still kept because links from entries outside them point in. Each lists `days_archived` and the holding links (`held_by`). Nothing drops them automatically while a link holds them — they wait on the owner.
+
 ## The maintenance pass
 
 When connecting, you may see how long it's been since the last maintenance pass (default interval: 14 days; the human can set charter key `maintenance_interval_days`). When it's overdue, offer the human a cleanup pass — as a focused conversation or a subagent:
 
 1. Review `{{uri:stale}}` and recent `possible_overlap` advisories.
-2. Propose supersession links for replaced facts, archival for dead entries, and memory policies for patterns that have revealed their nature.
+2. Propose supersession links for replaced facts, archival for dead entries, and memory policies for patterns that have revealed their nature. For each held pattern, ask the owner: archive or re-point the holding links (the pattern then drops on a later boot), or unarchive the pattern.
 3. Apply only what the human ratifies.
 4. Record the pass: `mutate(pattern: "_maintenance_passes", operation: "create", data: {summary: "what was reviewed and changed"})`.
 

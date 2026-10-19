@@ -72,8 +72,9 @@ export interface ServedContext {
   /** The `_inputs` visibility for `path`, or null. */
   inputVisibility(path: string): string | null;
 
-  /** Of `ids`, which are superseded targets in `pattern` (a `supersedes` _links
-   *  row points at them). Used to drop superseded entries from a publication. */
+  /** Of `ids`, which are superseded targets in `pattern`: an active link of a
+   *  relation declaring the `supersession` behavior points at them (relations.ts
+   *  supersededAmong). Used to drop superseded entries from a publication. */
   supersededIds(pattern: string, ids: number[]): Set<number>;
 
   /** Facet metadata (name+type) for `pattern`, for the publication template/label. */
