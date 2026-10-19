@@ -2325,6 +2325,36 @@ describe("restore point", () => {
     });
   });
 
+  it("a reference cycle with a NOT NULL side records exactly one v19 restore point across three boots", async () => {
+    const store = getStore();
+    await createPattern(store, "beta");
+    const b = await entry(store, "beta", "b");
+    await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      db.exec(`CREATE TABLE "alpha" (id INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT, "beta_id" INTEGER NOT NULL REFERENCES "beta"("id"),
+        version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_by TEXT, updated_by TEXT, archived_at TEXT)`);
+      db.exec(`INSERT INTO _objects (name, description, doctrine, pattern_class) VALUES ('alpha', 'planted', 'planted', 'dataset')`);
+      db.exec(`INSERT INTO _fields (object_name, name, type, required) VALUES ('alpha', 'title', 'text', 0)`);
+      db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES ('alpha', 'beta_id', 'integer', 1, 'beta')`);
+      db.exec(`INSERT INTO alpha (title, beta_id) VALUES ('a', ?)`, b);
+      const a = (db.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+      db.exec(`ALTER TABLE "beta" ADD COLUMN "alpha_id" INTEGER REFERENCES "alpha"("id")`);
+      db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES ('beta', 'alpha_id', 'integer', 0, 'alpha')`);
+      db.exec(`UPDATE beta SET alpha_id = ? WHERE id = ?`, a, b);
+      ensureAuditTriggers(db, "alpha");
+      ensureAuditTriggers(db, "beta");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        for (const bm of ["bm-nn-cycle", "bm-nn-cycle-2", "bm-nn-cycle-3"]) await booted(state, () => bm, async () => {});
+        expect(warn.mock.calls.map((c) => c.map(String).join(" ")).join("\n")).not.toMatch(/migration failed/i);
+      } finally { warn.mockRestore(); }
+      expect(restorePoints(db).filter((r) => /v19/.test(r.description)).map((r) => r.bookmark)).toEqual(["bm-nn-cycle"]);
+      for (const [tbl, col] of [["alpha", "beta_id"], ["beta", "alpha_id"]])
+        expect((db.exec(`PRAGMA table_info("${tbl}")`).toArray() as any[]).map((c) => c.name), `${tbl}.${col} is gone`).not.toContain(col);
+    });
+  });
+
   it("a reference cycle migrates on one boot and records exactly one v19 restore point", async () => {
     const store = getStore();
     await createPattern(store, "alpha");

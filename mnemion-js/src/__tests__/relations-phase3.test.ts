@@ -197,6 +197,34 @@ async function plantMandatoryFkPattern(store: Store, pattern: string, facet: str
   });
 }
 
+/** A registered user pattern built raw (so a name create_pattern now reserves,
+ *  like `notes__rebuild`, can exist as it could on a hive created before the
+ *  reservation): table, `_objects` and `_fields` rows, audit triggers, entries. */
+async function plantRegisteredPattern(store: Store, name: string, titles: string[]): Promise<number[]> {
+  return runInDurableObject(store, (_i, state) => {
+    const db = state.storage.sql;
+    db.exec(`CREATE TABLE "${name}" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "title" TEXT,
+      version INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by TEXT,
+      updated_by TEXT,
+      archived_at TEXT
+    )`);
+    db.exec(`INSERT INTO _objects (name, description, doctrine, pattern_class) VALUES (?, 'planted', 'planted', 'dataset')`, name);
+    db.exec(`INSERT INTO _fields (object_name, name, type, required) VALUES (?, 'title', 'text', 0)`, name);
+    ensureAuditTriggers(db, name);
+    const ids: number[] = [];
+    for (const t of titles) {
+      db.exec(`INSERT INTO "${name}" (title) VALUES (?)`, t);
+      ids.push((db.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id);
+    }
+    return ids;
+  });
+}
+
 async function amendP3(store: Store, change: Record<string, unknown>) {
   const p = await propose(store, { type: "amend_relation", ...change });
   if (p.error) return p;
@@ -566,6 +594,86 @@ describe("reference facet migration", () => {
   });
 
   // df-48e8c52e
+  // df-4b8c3cf3 (MATERIAL): recovery runs on every boot and must never touch a
+  // table registered in _objects; the `__rebuild` suffix is reserved for new patterns.
+  it("a registered user pattern named <x>__rebuild survives any number of boots beside <x>", async () => {
+    const store = getStore();
+    await createPattern(store, "notes");
+    const n = await entry(store, "notes", { title: "plain note" });
+    const ids = await plantRegisteredPattern(store, "notes__rebuild", ["kept one", "kept two"]);
+    for (let i = 0; i < 3; i++) await bootMigrating(store);
+    expect(await sql(store, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notes__rebuild'`), "the table survives").toHaveLength(1);
+    expect((await sql(store, `SELECT id, title FROM "notes__rebuild" ORDER BY id`)).map((r) => r.id)).toEqual(ids);
+    expect(await sql(store, `SELECT name FROM _objects WHERE name = 'notes__rebuild'`), "its _objects row survives").toHaveLength(1);
+    expect((await sql(store, `SELECT title FROM notes WHERE id = ?`, n))[0].title).toBe("plain note");
+    const q = JSON.parse(await store.query("notes__rebuild", "", "", "", 10, false));
+    expect(q.error, q.message).toBeUndefined();
+    expect(q.entries).toHaveLength(2);
+  });
+
+  it("a lone registered <x>__rebuild is neither renamed nor dropped", async () => {
+    const store = getStore();
+    const ids = await plantRegisteredPattern(store, "drafts__rebuild", ["only draft"]);
+    for (let i = 0; i < 3; i++) await bootMigrating(store);
+    expect(await sql(store, `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('drafts', 'drafts__rebuild') ORDER BY name`)).toEqual([{ name: "drafts__rebuild" }]);
+    expect((await sql(store, `SELECT id FROM "drafts__rebuild"`)).map((r) => r.id)).toEqual(ids);
+    expect(await sql(store, `SELECT name FROM _objects WHERE name IN ('drafts', 'drafts__rebuild')`)).toEqual([{ name: "drafts__rebuild" }]);
+  });
+
+  it("an unregistered unfinished copy (<x>__rebuild beside a registered <x>) is still discarded", async () => {
+    const store = getStore();
+    await createPattern(store, "tasks");
+    const t = await entry(store, "tasks", { title: "real" });
+    await sql(store, `CREATE TABLE "tasks__rebuild" AS SELECT * FROM tasks`);
+    await bootMigrating(store);
+    expect(await sql(store, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks__rebuild'`), "the leftover copy is gone").toEqual([]);
+    expect((await sql(store, `SELECT title FROM tasks WHERE id = ?`, t))[0].title).toBe("real");
+  });
+
+  it("create_pattern refuses a name ending in __rebuild as reserved", async () => {
+    const store = getStore();
+    const p = await propose(store, { type: "create_pattern", pattern_name: "notes__rebuild", pattern_description: "x", doctrine: "x", facets: [{ name: "title", type: "text" }] });
+    expect(p.error).toBe(true);
+    expect(p.message).toMatch(/reserved/i);
+    expect(p.message).toContain("__rebuild");
+    expect(await sql(store, `SELECT name FROM _objects WHERE name = 'notes__rebuild'`)).toEqual([]);
+  });
+
+  // df-68c96718: a cycle with a NOT NULL side.
+  it("a reference cycle with a NOT NULL side migrates fully on one boot", async () => {
+    const store = getStore();
+    await createPattern(store, "beta");
+    const b = await entry(store, "beta", { title: "b" });
+    const [a] = await plantMandatoryFkPattern(store, "alpha", "beta_id", "beta", [b]); // alpha.beta_id NOT NULL → beta
+    await plantFk(store, { pattern: "beta", facet: "alpha_id", target: "alpha", values: { [b]: a } }); // nullable → alpha
+    await bootMigrating(store);
+    expect(await sql(store, `SELECT source_pattern, source_id, target_pattern, target_id, label FROM "_links" WHERE archived_at IS NULL ORDER BY label`)).toEqual([
+      { source_pattern: "beta", source_id: b, target_pattern: "alpha", target_id: a, label: "alpha-id" },
+      { source_pattern: "alpha", source_id: a, target_pattern: "beta", target_id: b, label: "beta-id" },
+    ]);
+    expect(await columns(store, "alpha")).not.toContain("beta_id");
+    expect(await columns(store, "beta")).not.toContain("alpha_id");
+    await triggersAfter(store, "alpha", "beta_id");
+    await triggersAfter(store, "beta", "alpha_id");
+    expect(await sql(store, `SELECT name FROM _fields WHERE references_object IS NOT NULL`)).toEqual([]);
+  });
+
+  // df-b85481f9: a _fields name differing only in case from its column is that column.
+  it("a _fields row whose name differs only in case from its column is migrated as that column, never dropped as an orphan", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPattern(store, "tasks");
+    const g = await entry(store, "goals", { title: "g" });
+    const t = await entry(store, "tasks", { title: "t" });
+    await plantFk(store, { pattern: "tasks", facet: "goal_id", target: "goals", values: { [t]: g } });
+    await sql(store, `UPDATE _fields SET name = 'Goal_ID' WHERE object_name = 'tasks' AND name = 'goal_id'`);
+    await bootMigrating(store);
+    expect(await sql(store, `SELECT source_id, target_pattern, target_id FROM "_links" WHERE archived_at IS NULL AND source_pattern = 'tasks'`), "its value became a link")
+      .toEqual([{ source_id: t, target_pattern: "goals", target_id: g }]);
+    expect(await columns(store, "tasks")).not.toContain("goal_id");
+    expect(await sql(store, `SELECT name FROM _fields WHERE object_name = 'tasks' AND lower(name) = 'goal_id'`)).toEqual([]);
+  });
+
   it("an interrupted swap (only <table>__rebuild present) is recovered before any facet is read; the migration then completes", async () => {
     const store = getStore();
     await createPattern(store, "goals");

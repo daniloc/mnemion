@@ -1587,6 +1587,30 @@ The reasons a facet is kept:
   `<table>__rebuild` is present, is recovered before any facet's columns are
   read. Then the migration proceeds: the table has its data, the column is
   gone, the links are present, and `query` works.
+- **Recovery never touches a registered pattern** (df-4b8c3cf3, material).
+  Recovery runs on every boot of every hive. A table named `<x>__rebuild` is a
+  recovery candidate only when no `_objects` row names it. A registered user
+  pattern called `notes__rebuild` survives any number of boots, untouched: its
+  table, its entries and its `_objects` row stay, even beside `notes`. A lone
+  registered `drafts__rebuild` is neither renamed nor dropped. An unregistered
+  leftover is still recovered:
+  - beside its registered original, it is an unfinished copy and is
+    discarded;
+  - alone, the swap was interrupted after the drop, and it is renamed into
+    place.
+
+  As defense in depth, `create_pattern` refuses a name ending in `__rebuild`
+  as reserved, with a message naming the suffix.
+- **A cycle with a NOT NULL side** (df-68c96718). For example,
+  `alpha.beta_id NOT NULL → beta` with `beta.alpha_id` nullable `→ alpha`. It
+  migrates fully on one boot: both links, both columns gone, triggers rebuilt,
+  no "migration failed", and exactly one v19 restore point across three boots.
+  The NOT NULL column can't be cleared to break the cycle, so the order or the
+  rebuild must not depend on clearing it.
+- **Facet names match columns case-insensitively** (df-b85481f9), as SQLite
+  does. A `_fields` row named `Goal_ID` over a column `goal_id` is that
+  column, never an orphan. It migrates like any other facet; only a `_fields`
+  row with no column of that name in any case is orphan metadata.
 
 **The dev seed** has no reference facet. It declares every relation its links
 use on the seeding boot itself, with real descriptions, so none is legacy
