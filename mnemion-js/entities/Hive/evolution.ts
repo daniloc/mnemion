@@ -700,6 +700,11 @@ export async function applyChange(
   const handler = CHANGE_TYPES[change.type];
   if (!handler) return errorJson(`Unknown change type: ${change.type}`);
 
+  // PITR bookmark BEFORE the change's first data effect, so reverting this
+  // history row restores the state before the change (as bootSchema does). Taken
+  // before the blocker re-check so no await separates that check from apply.
+  const bookmark = await getBookmark();
+
   // Re-check against CURRENT data: a blocker written between propose and apply
   // blocks the change just as one present at propose does. Nothing is written.
   const blocked = findBlockers(handler, change, ctx);
@@ -710,10 +715,6 @@ export async function applyChange(
       message: `Refused: ${items.length} item(s) block this change — ${items.map((v) => v.reason).join("; ")}. Resolve them, then apply again.`,
       ...Object.fromEntries(blocked),
     });
-
-  // PITR bookmark BEFORE the change's first data effect, so reverting this
-  // history row restores the state before the change (as bootSchema does).
-  const bookmark = await getBookmark();
 
   try {
     handler.apply(change, ctx);

@@ -194,13 +194,24 @@ const FACET_VALIDATORS: Record<string, (v: unknown) => Coerce> = {
   },
   // Canonical ISO 8601 so SQL comparison and ordering are always right: a
   // date-only input (no time of day, whatever its written form) is stored as
-  // YYYY-MM-DD; anything else parseable as a full UTC timestamp. Relative phrases
-  // don't parse and stay refused — resolving them is the writer's job.
+  // YYYY-MM-DD; anything else parseable as a full UTC timestamp. Only an
+  // unambiguous calendar day or a full timestamp is a date (owner ruling,
+  // df-79a5e65f): periods ("2026", "2026-03", "March 2026"), impossible days
+  // ("2026-02-30", which Date.parse would roll into March) and relative phrases
+  // are refused — resolving a period to a day is the writer's job.
   datetime: (v) => {
-    if (typeof v !== "string" && typeof v !== "number") return { ok: false, error: `expected a date string` };
-    const t = typeof v === "number" ? v : Date.parse(v);
-    if (Number.isNaN(t)) return { ok: false, error: `expected a valid date (ISO 8601), got ${JSON.stringify(v)}` };
-    return { ok: true, value: canonicalDatetime(v, t) };
+    if (typeof v !== "string" && typeof v !== "number") return { ok: false, error: `expected a full date (a calendar day or a timestamp)` };
+    const s = typeof v === "string" ? v.trim() : v;
+    if (typeof s === "string") {
+      if (PERIOD_RES.some((re) => re.test(s)))
+        return { ok: false, error: `expected a full date (a calendar day like 2026-03-07, or a full timestamp), got ${JSON.stringify(v)} — that is a period; resolving it to a day is the writer's job` };
+      const stated = statedDay(s);
+      if (stated && !isRealDay(stated.y, stated.m, stated.d))
+        return { ok: false, error: `expected a full date that exists on the calendar, got ${JSON.stringify(v)} — there is no such day` };
+    }
+    const t = typeof s === "number" ? s : Date.parse(s);
+    if (Number.isNaN(t)) return { ok: false, error: `expected a full date (a calendar day like 2026-03-07, or a full ISO 8601 timestamp), got ${JSON.stringify(v)}` };
+    return { ok: true, value: canonicalDatetime(s, t) };
   },
   select: (v) => ({ ok: true, value: v }), // option membership is checked separately
 };
@@ -211,6 +222,39 @@ const FACET_VALIDATORS: Record<string, (v: unknown) => Coerce> = {
 export function coerceFacetValue(type: string, value: unknown): Coerce {
   const coerce = FACET_VALIDATORS[type];
   return coerce ? coerce(value) : { ok: true, value };
+}
+
+/** A year, or a year and month — periods, not days. */
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const MONTH_NAME = `(?:${MONTHS.map((m) => `${m.slice(0, 3)}(?:${m.slice(3)})?`).join("|")})\\.?`;
+const PERIOD_RES = [
+  /^\d{4}$/,                                    // 2026
+  /^\d{4}[-/.]\d{1,2}$/,                        // 2026-03, 2026/03
+  /^\d{1,2}[-/.]\d{4}$/,                        // 03/2026
+  new RegExp(`^${MONTH_NAME},?\\s+\\d{4}$`, "i"),   // March 2026
+  new RegExp(`^\\d{4}\\s+${MONTH_NAME}$`, "i"),     // 2026 March
+];
+
+/** The year, month and day the writer STATED, when the form states one — so an
+ *  impossible day is refused instead of silently rolled over by Date.parse. */
+function statedDay(s: string): { y: number; m: number; d: number } | null {
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|[T\s])/);
+  if (m) return { y: +m[1], m: +m[2], d: +m[3] };
+  m = s.match(new RegExp(`^(${MONTH_NAME})\\s+(\\d{1,2}),?\\s+(\\d{4})`, "i"));
+  if (m) return { y: +m[3], m: monthIndex(m[1]), d: +m[2] };
+  m = s.match(new RegExp(`^(\\d{1,2})\\s+(${MONTH_NAME}),?\\s+(\\d{4})`, "i"));
+  if (m) return { y: +m[3], m: monthIndex(m[2]), d: +m[1] };
+  return null;
+}
+
+function monthIndex(name: string): number {
+  const k = name.toLowerCase().slice(0, 3);
+  return MONTHS.findIndex((m) => m.startsWith(k)) + 1;
+}
+
+function isRealDay(y: number, m: number, d: number): boolean {
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return m >= 1 && m <= 12 && t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
 }
 
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;

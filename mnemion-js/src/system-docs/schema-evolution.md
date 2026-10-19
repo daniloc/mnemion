@@ -115,4 +115,4 @@ It is refused while anything still names the facet — a memory policy's `exclus
 
 ## Dates
 
-A `datetime` facet stores ISO 8601 in every user pattern, knowledge or dataset: a date-only value ("March 7, 2026") as `YYYY-MM-DD`, anything with a time of day as a full UTC timestamp. Relative phrases ("next week", "Q2") are refused — resolve them to a date against the moment of writing. Values written before this rule stay as they are until that facet is written again.
+A `datetime` facet stores ISO 8601 in every user pattern, knowledge or dataset: a date-only value ("March 7, 2026") as `YYYY-MM-DD`, anything with a time of day as a full UTC timestamp. Only a full date counts: periods ("2026", "2026-03", "March 2026"), days that don't exist ("2026-02-30") and relative phrases ("next week", "Q2") are refused — resolving a period or phrase to a specific day, against the moment of writing, is the writer's job. The same rule applies to uploads into a datetime facet. Values written before this rule stay as they are until that facet is written again.

@@ -69,10 +69,12 @@ export const FACET_REFERENCE_FINDERS: Record<string, (db: DB, pattern: string, f
   },
   upload_token(db, pattern, facet) {
     // A live (unarchived, unconsumed, unexpired) upload token still targets the
-    // facet; the token value is never echoed.
-    return rows(db, `SELECT id, constraints FROM "_access_tokens"
-        WHERE (scope = 'upload' OR scope LIKE 'upload:%') AND archived_at IS NULL AND consumed_at IS NULL
-          AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ORDER BY id`)
+    // facet; the token value is never echoed. Expiry is compared as a DATE, the
+    // way credentials.ts judges it — never as text, where "YYYY-MM-DD HH:MM:SS"
+    // sorts before an ISO "…T…" now and a live token would look expired.
+    return rows(db, `SELECT id, constraints, expires_at FROM "_access_tokens"
+        WHERE (scope = 'upload' OR scope LIKE 'upload:%') AND archived_at IS NULL AND consumed_at IS NULL ORDER BY id`)
+      .filter((t) => !(t.expires_at && new Date(t.expires_at) < new Date()))
       .filter((t) => {
         const c = parse(t.constraints) as any;
         return c?.target_pattern === pattern && c?.target_facet === facet;
