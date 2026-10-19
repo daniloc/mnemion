@@ -22,7 +22,7 @@ import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared
 import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints, PLATFORM_RESERVED_TABLES } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
-import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL } from "./relations";
+import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, findRequiredGaps, requiredGaps, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL } from "./relations";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
 
@@ -312,8 +312,8 @@ Adding a member is a two-step invite: (1) create the member here with label + di
   },
   {
     name: "_links",
-    description: `Typed connections between entries. Each link's label names a declared relation — the vocabulary lives in ${uri("relations")} (also the index's "relations" key): name, inverse, what it asserts, which patterns it joins, its cardinality and behaviors. Use the 'link' shortcut: mutate(pattern: "link", data: {source: "pattern/id", target: "pattern/id", label: "<relation>"}). A relation's inverse name is accepted and stored in canonical direction. One pair may carry several relations, each once. Links surface in prime and resolve with their direction and the relation read from that side. A link to a _documents or _web_cache entry protects it from garbage collection.`,
-    doctrine: `Pick the relation that says what the connection asserts — supersedes, references, depends-on, derived-from, part-of, or one this hive declared; use references when nothing more specific fits. An undeclared label is refused, and the refusal lists the relations available for that pair of patterns. If none fits, declare one with propose_change type "declare_relation" (name, inverse, a detailed description, source and target patterns) rather than stretching an existing one. Links are immutable: to move or relabel one, archive it and create a new one. Unlink names the relation when a pair carries several. Never store entry IDs in text facets — link them.`,
+    description: `Typed connections between entries. Each link's label names a declared relation — the vocabulary lives in ${uri("relations")} (also the index's "relations" key): name, inverse, what it asserts, which patterns it joins, its cardinality and behaviors. Use the 'link' shortcut: mutate(pattern: "link", data: {source: "pattern/id", target: "pattern/id", label: "<relation>"}). A relation's inverse name is accepted and stored in canonical direction. One pair may carry several relations, each once. Links surface in prime and resolve with their direction and the relation read from that side. A link to a _documents or _web_cache entry protects it from garbage collection. A new entry can be born with its links: mutate(create, {…facets, _relate: {"<relation>": "pattern/id" | [...]}}) — required relations must be given this way. Batches accept link/unlink items and judge required/containment on their end state.`,
+    doctrine: `Pick the relation that says what the connection asserts — supersedes, references, depends-on, derived-from, part-of, or one this hive declared; use references when nothing more specific fits. An undeclared label is refused, and the refusal lists the relations available for that pair of patterns. If none fits, declare one with propose_change type "declare_relation" (name, inverse, a detailed description, source and target patterns) rather than stretching an existing one. Links are immutable: to move or relabel one, archive it and create a new one — in one batch when the relation is required. Derived (chain) relations are read-only. Unlink names the relation when a pair carries several. Never store entry IDs in text facets — link them.`,
     ddl: `CREATE TABLE IF NOT EXISTS "_links" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "source_pattern" TEXT NOT NULL,
@@ -345,8 +345,8 @@ Adding a member is a two-step invite: (1) create the member here with label + di
   },
   {
     name: "_relations",
-    description: `The relation vocabulary: every label a link may carry. Each relation has a name (stored in _links.label), an inverse (how it reads from the target's side), a detailed description, the patterns it joins (source/target: JSON arrays of pattern names, or ["*"] for any user pattern — _documents and _web_cache are admitted as targets), a cardinality (one|many links per source entry) and behaviors from a fixed palette (supersession: the target is demoted as replaced; acyclic: no cycles). Kernel defaults (supersedes, references, depends-on, derived-from, part-of) are owned by code. Legacy relations were declared automatically from links written before the registry and await a real description. Read it as ${uri("relations")}.`,
-    doctrine: `Written only through propose_change: declare_relation (name, inverse, a description of at least 120 characters that says what it asserts, when to prefer it over its nearest neighbour, and an example), amend_relation (description, inverse, behaviors, cardinality — the name is immutable), retire_relation (refused while active links use it). Never mutate directly. Prefer a kernel default; declare a new relation only when the connection means something none of them says.`,
+    description: `The relation vocabulary: every label a link may carry. Each relation has a name (stored in _links.label), an inverse (how it reads from the target's side), a detailed description, the patterns it joins (source/target: JSON arrays of pattern names, or ["*"] for any user pattern — _documents and _web_cache are admitted as targets), a cardinality (one|many links per source entry) behaviors from a fixed palette (supersession: the target is demoted as replaced; acyclic: no cycles; containment: the source is part of the target — a container with active members can't be archived, and recall goes member → container only), and required (every active entry of the listed source patterns must hold one). A relation with a chain is derived: composed from stored relations at read time, never written. Kernel defaults (supersedes, references, depends-on, derived-from, part-of) are owned by code. Legacy relations were declared automatically from links written before the registry; their legacy_debt (placeholder description, generated inverse) is derived from current values. Read it as ${uri("relations")}.`,
+    doctrine: `Written only through propose_change: declare_relation (name, inverse, a description of at least 120 characters that says what it asserts, when to prefer it over its nearest neighbour, and an example), or with chain for a derived relation; amend_relation (description, inverse, behaviors, cardinality, required — the name is immutable); retire_relation (refused while active links or a chain use it). Never mutate directly. Prefer a kernel default; declare a new relation only when the connection means something none of them says.`,
     ddl: `CREATE TABLE IF NOT EXISTS "_relations" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       "name" TEXT NOT NULL,
@@ -359,7 +359,6 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       "behaviors" TEXT NOT NULL DEFAULT '[]',
       "chain" TEXT,
       "kernel" INTEGER NOT NULL DEFAULT 0,
-      "legacy" INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       archived_at TEXT,
@@ -379,7 +378,6 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       { name: "behaviors", type: "text", required: false },
       { name: "chain", type: "text", required: false },
       { name: "kernel", type: "boolean", required: false },
-      { name: "legacy", type: "boolean", required: false },
     ],
   },
   {
@@ -620,38 +618,60 @@ export const KERNEL_TABLES: KernelTable[] = [
 
 // === Initialization ===
 
-/**
- * The Durable Object's boot: initializeSchema, preceded on the FIRST relations
- * migration (no `_relations` table yet — a pre-Phase-1 hive, or a brand-new one)
- * by a PITR bookmark capture, recorded afterwards as one `_schema_history` row
- * (change_type `restore_point`). Later boots find `_relations` and record nothing.
+/** Boot migrations that rewrite data in a way the previous worker can't read
+ * back, each recorded with a PITR restore point on its first run. `firstRun` is
+ * evaluated BEFORE initializeSchema touches anything; the conditions are disjoint
+ * by construction, so one boot records at most one point.
  *
- * @why v17 rewrites and archives links and drops the pair-only index; the restore
- * point lets the deploy be undone exactly through the existing revert path
- * (evo.revertChange / apply_change revert_history_id). It must never fail boot:
- * an unavailable bookmark (local dev, tests) is recorded as NULL, and revert then
- * reports rollback unavailable.
+ * - v17 (relations registry): rewrites/archives links, drops the pair-only index.
+ *   First run: no `_relations` table yet (a pre-Phase-1 hive, or a brand-new one).
+ * - v18 (relations Phase 2): drops the stored `_relations.legacy` flag, now
+ *   derived. Phase 1 code SELECTs and INSERTs that column, so a worker rollback
+ *   without a DO restore would break the registry. First run: the column is there.
+ */
+const MIGRATION_RESTORE_POINTS: { migration: string; description: string; firstRun: (db: any) => boolean }[] = [
+  {
+    migration: "v17",
+    description: "Restore point before the relations registry migration (v17)",
+    firstRun: (db) => db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_relations'`).toArray().length === 0,
+  },
+  {
+    migration: "v18",
+    description: "Restore point before the relations Phase 2 migration (v18: the stored legacy flag becomes derived legacy debt)",
+    firstRun: (db) => (db.exec(`PRAGMA table_info("_relations")`).toArray() as { name: string }[]).some((c) => c.name === "legacy"),
+  },
+];
+
+/**
+ * The Durable Object's boot: initializeSchema, preceded — on the first run of a
+ * migration in MIGRATION_RESTORE_POINTS — by a PITR bookmark capture, recorded
+ * afterwards as one `_schema_history` row (change_type `restore_point`). Later
+ * boots find the migration done and record nothing.
+ *
+ * @why The restore point lets a deploy be undone exactly through the existing
+ * revert path (evo.revertChange / apply_change revert_history_id), before the old
+ * worker is rolled back. It must never fail boot: an unavailable bookmark (local
+ * dev, tests) is recorded as NULL, and revert then reports rollback unavailable.
  */
 export async function bootSchema(
   db: any, env: { MNEMION_SECRET?: string; DEV_SEED?: string } | undefined,
   captureBookmark: () => Promise<string>,
 ): Promise<void> {
-  let firstV17 = false;
-  try { firstV17 = db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_relations'`).toArray().length === 0; } catch { /* boot regardless */ }
+  const due = MIGRATION_RESTORE_POINTS.filter((m) => { try { return m.firstRun(db); } catch { return false; } });
   let bookmark: string | null = null;
-  if (firstV17) {
+  if (due.length) {
     try { const b = await captureBookmark(); bookmark = typeof b === "string" ? b : null; } catch { bookmark = null; }
   }
   initializeSchema(db, env);
-  if (firstV17) {
+  for (const m of due) {
     try {
       db.exec(
         "INSERT INTO _schema_history (description, change_type, change_detail, bookmark) VALUES (?, 'restore_point', ?, ?)",
-        "Restore point before the relations registry migration (v17)",
-        JSON.stringify({ type: "restore_point", before: "relations registry migration (v17)", revert: "apply_change with revert_history_id, then wrangler rollback the worker" }),
+        m.description,
+        JSON.stringify({ type: "restore_point", before: m.migration, revert: "apply_change with revert_history_id, then wrangler rollback the worker" }),
         bookmark,
       );
-    } catch (err) { console.warn("[schema] could not record the v17 restore point", err); }
+    } catch (err) { console.warn(`[schema] could not record the ${m.migration} restore point`, err); }
   }
 }
 
@@ -1240,6 +1260,13 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
   //     auto-repaired — maintenance is owner-ratified. ---
   try {
     for (const line of findCycles(acyclicGraphs(db))) console.warn(`[schema] ${line}`);
+  } catch { /* best-effort */ }
+
+  // --- Integrity: active entries lacking a link of a required relation (data that
+  //     predates the requirement or bypassed the engine). One line per entry,
+  //     never repaired. ---
+  try {
+    for (const line of findRequiredGaps(requiredGaps(db))) console.warn(`[schema] ${line}`);
   } catch { /* best-effort */ }
 
   // --- data-is-destiny: warn on a stored aggregate of rows the schema retains ---

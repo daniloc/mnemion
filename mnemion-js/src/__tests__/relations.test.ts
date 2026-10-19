@@ -23,6 +23,7 @@ import { prime, type PrimeContext } from "../../entities/Hive/prime";
 // exists. A ?raw default import, not import.meta.glob: Vite drops the importing file
 // from its own glob results, so a self-glob is always empty.
 import THIS_FILE_SRC from "./relations.test.ts?raw";
+import SCHEMA_SRC from "../../entities/Hive/schema.ts?raw";
 import { getAgentByName } from "agents";
 
 type Store = DurableObjectStub<HiveDO>;
@@ -34,8 +35,8 @@ const KERNEL_DEFAULTS = [
   { name: "references", inverse: "referenced-by", behaviors: [] as string[] },
   { name: "depends-on", inverse: "required-by", behaviors: ["acyclic"] },
   { name: "derived-from", inverse: "source-of", behaviors: ["acyclic"] },
-  // Phase 1: acyclic only — containment arrives in Phase 2.
-  { name: "part-of", inverse: "has-part", behaviors: ["acyclic"] },
+  // Phase 2: part-of gains containment at boot refresh.
+  { name: "part-of", inverse: "has-part", behaviors: ["containment", "acyclic"] },
 ];
 const KERNEL_NAMES = KERNEL_DEFAULTS.map((k) => k.name);
 const KERNEL_VOCAB = KERNEL_DEFAULTS.flatMap((k) => [k.name, k.inverse]);
@@ -144,6 +145,14 @@ async function retire(store: Store, name: string) {
 /** The ACTIVE `_relations` row for `name`, or undefined. */
 async function relationRow(store: Store, name: string): Promise<any | undefined> {
   return (await sql(store, `SELECT * FROM "_relations" WHERE name = ? AND archived_at IS NULL`, name))[0];
+}
+
+/** A relation's legacy status as the read surface reports it (Phase 2: derived,
+ *  never a stored flag): { legacy, legacy_debt }. */
+async function legacyOf(store: Store, name: string): Promise<{ legacy: boolean; legacy_debt: string[] }> {
+  const r = JSON.parse(await store.resolve("mnemion://relations")).relations.find((x: any) => x.name === name);
+  if (!r) throw new Error(`relation ${name} not listed`);
+  return { legacy: r.legacy, legacy_debt: r.legacy_debt };
 }
 
 /** `_relations.source` / `.target` / `.behaviors` are TEXT holding a JSON array (Interface §A). */
@@ -333,11 +342,10 @@ describe("relations registry: kernel defaults", () => {
       expect(list(r.target), k.name).toEqual(["*"]);
       expect(r.cardinality, k.name).toBe("many");
       expect(r.kernel, k.name).toBe(1);
-      expect(r.legacy, k.name).toBe(0);
       expect(String(r.description).length, `${k.name} description meets the quality bar`).toBeGreaterThanOrEqual(120);
     }
-    // No behavior is declared before the engine performs it: part-of has no containment yet.
-    expect(list(rows.find((x) => x.name === "part-of")!.behaviors)).not.toContain("containment");
+    // Phase 2: the generic hierarchy relation contains.
+    expect(list(rows.find((x) => x.name === "part-of")!.behaviors)).toContain("containment");
   });
 
   it("seeding is idempotent across boots", async () => {
@@ -429,6 +437,9 @@ describe("relations surface: index and mnemion://relations", () => {
     expect(Array.isArray(r.behaviors)).toBe(true);
     expect(typeof r.kernel).toBe("boolean");
     expect(typeof r.legacy).toBe("boolean");
+    expect(Array.isArray(r.legacy_debt)).toBe(true); // Phase 2: which legacy debts remain
+    expect(typeof r.required).toBe("boolean");      // Phase 2
+    expect(typeof r.derived).toBe("boolean");       // Phase 2
   };
 
   it("the index carries `relations` with the declared vocabulary", async () => {
@@ -510,7 +521,7 @@ describe("legacy label migration", () => {
     expect(list(refines.behaviors)).toEqual([]);
     expect(refines.cardinality).toBe("many");
     expect(refines.kernel).toBe(0);
-    expect(refines.legacy).toBe(1);
+    expect(await legacyOf(store, "refines")).toEqual({ legacy: true, legacy_debt: ["placeholder description", "generated inverse"] });
     expect(String(refines.description).length).toBeGreaterThan(0);
     expect(String(refines.inverse).length).toBeGreaterThan(0);
     expect(refines.inverse).not.toBe("refines");
@@ -518,11 +529,11 @@ describe("legacy label migration", () => {
     const ethos = await relationRow(store, "ethos-grounds");
     expect(new Set(list(ethos.source))).toEqual(new Set(["axioms", "notes"]));
     expect(list(ethos.target)).toEqual(["frames"]);
-    expect(ethos.legacy).toBe(1);
+    expect((await legacyOf(store, "ethos-grounds")).legacy).toBe(true);
 
     const inspired = await relationRow(store, "Inspired By");
     expect(inspired, "a non-kebab legacy label is declared verbatim").toBeDefined();
-    expect(inspired.legacy).toBe(1);
+    expect((await legacyOf(store, "Inspired By")).legacy).toBe(true);
 
     // supersedes resolves to the kernel default — no hive duplicate.
     const sup = await sql(store, `SELECT * FROM "_relations" WHERE name = 'supersedes' AND archived_at IS NULL`);
@@ -566,7 +577,7 @@ describe("legacy label migration", () => {
     expect(bad.error).toBe(true);
   });
 
-  it("warns at boot for every legacy description until it is amended", async () => {
+  it("warns at boot for every legacy relation until both debts are paid", async () => {
     const store = getStore();
     await seedLegacyLinks(store);
     await boot(store); // migration runs
@@ -580,17 +591,17 @@ describe("legacy label migration", () => {
       expect(text).toContain("ethos-grounds");
     } finally { warn.mockRestore(); }
 
-    const { proposed, applied } = await amend(store, { name: "refines", description: DESC("refines") });
+    const { proposed, applied } = await amend(store, { name: "refines", description: DESC("refines"), inverse: "refined-by" });
     expect(proposed.error).toBeUndefined();
     expect(applied.error).toBeUndefined();
-    expect((await relationRow(store, "refines")).legacy).toBe(0);
+    expect((await legacyOf(store, "refines")).legacy).toBe(false);
 
     const warn2 = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await boot(store);
       const text = warn2.mock.calls.map((c) => c.map(String).join(" ")).join("\n");
       expect(text).toContain("ethos-grounds");   // still legacy
-      expect(text).not.toContain("refines");     // paid down
+      expect(text).not.toContain("refines");     // both debts paid
     } finally { warn2.mockRestore(); }
   });
 
@@ -1449,7 +1460,8 @@ describe("relation vocabulary evolution", () => {
     expect(a.error).toBeUndefined();
     expect(a.applied).toBe(true);
     const row = await relationRow(store, "cites");
-    expect(row).toMatchObject({ name: "cites", inverse: "cited-by", description: DESC("cites"), cardinality: "many", kernel: 0, legacy: 0 });
+    expect(row).toMatchObject({ name: "cites", inverse: "cited-by", description: DESC("cites"), cardinality: "many", kernel: 0 });
+    expect(await legacyOf(store, "cites")).toEqual({ legacy: false, legacy_debt: [] });
     expect(list(row.source)).toEqual(["notes"]);
     expect(list(row.target)).toEqual(["papers"]);
     expect(list(row.behaviors)).toEqual([]);
@@ -1485,10 +1497,9 @@ describe("relation vocabulary evolution", () => {
     ["target pattern does not exist", { target: ["nosuch"] }, /nosuch/],
     ["kernel source pattern", { source: ["_documents"] }, /_documents/],
     ["disallowed kernel target", { target: ["_members"] }, /_members/],
-    ["behavior containment is not yet supported", { behaviors: ["containment"] }, /not yet supported/i],
     ["unknown behavior", { behaviors: ["blocking"] }, /blocking/],
-    ["required is not yet supported", { required: true }, /not yet supported/i],
-    ["chain is not yet supported", { chain: ["references", "depends-on"] }, /not yet supported/i],
+    ["required on a `*` source", { required: true, source: ["*"] }, /source/i],
+    ["chain together with source/target/cardinality/behaviors", { chain: ["references", "depends-on"] }, /source|target|cardinality|behavio/i],
     ["cardinality outside one|many", { cardinality: "few" }, /cardinality/i],
     ["explicit null cardinality", { cardinality: null as any }, /cardinality/i],
     ["explicit null behaviors", { behaviors: null as any }, /behavio/i],
@@ -1565,9 +1576,9 @@ describe("relation vocabulary evolution", () => {
     expect((await amend(store, { name: "cites", description: "too short" })).proposed.error).toBe(true);
     expect((await amend(store, { name: "cites", inverse: "supersedes" })).proposed.error).toBe(true);
     expect((await amend(store, { name: "cites", inverse: "cites" })).proposed.error).toBe(true);
-    const contain = (await amend(store, { name: "cites", behaviors: ["containment"] })).proposed;
-    expect(contain.error).toBe(true);
-    expect(contain.message).toMatch(/not yet supported/i);
+    const unknown = (await amend(store, { name: "cites", behaviors: ["blocking"] })).proposed;
+    expect(unknown.error).toBe(true);
+    expect(unknown.message).toMatch(/blocking/);
     expect((await amend(store, { name: "cites", cardinality: "few" })).proposed.error).toBe(true);
     expect((await amend(store, { name: "no-such-relation", description: DESC("x") })).proposed.error).toBe(true);
     expect(await relationRow(store, "quotes")).toBeUndefined();
@@ -1591,6 +1602,8 @@ describe("relation vocabulary evolution", () => {
     expect(list(after.behaviors)).toEqual(["acyclic"]);
   });
 
+  // Phase 2: these payloads are refused for Phase 2 reasons (a required relation
+  // on a `*` source; a chain that also declares stored-relation fields; new_name).
   it("over MCP, required / chain / new_name reach the engine and are refused with its message", async () => {
     const hiveId = `user:rel-mcp:${crypto.randomUUID()}`;
     const store = namedStore(hiveId);
@@ -1670,16 +1683,78 @@ describe("relation vocabulary evolution", () => {
     expect(await totalityViolations(store)).toEqual([]);
   });
 
-  it("amending a legacy relation's description clears the legacy flag", async () => {
+  // Owner decision (Phase 2): legacy debt is two facts, a placeholder description
+  // and a migration-generated inverse. A relation stays legacy until both are paid.
+  it("legacy debt: a description-only amend keeps the relation legacy, the warning naming the generated inverse", async () => {
     const store = getStore();
     await seedLegacyLinks(store);
     await boot(store);
-    expect((await relationRow(store, "refines")).legacy).toBe(1);
     const { applied } = await amend(store, { name: "refines", description: DESC("refines") });
     expect(applied.error).toBeUndefined();
-    const row = await relationRow(store, "refines");
-    expect(row.legacy).toBe(0);
-    expect(row.description).toBe(DESC("refines"));
+    expect((await relationRow(store, "refines")).description).toBe(DESC("refines"));
+    expect(await legacyOf(store, "refines")).toEqual({ legacy: true, legacy_debt: ["generated inverse"] });
+    const lines = await warnLines(() => boot(store));
+    const mine = lines.filter((l) => l.includes("refines"));
+    expect(mine.join(" | ")).toMatch(/generated inverse/);
+    expect(mine.join(" | ")).not.toMatch(/placeholder description/);
+    const index = JSON.parse(await store.getIndex());
+    expect(index.relations.find((r: any) => r.name === "refines")).toMatchObject({ legacy: true, legacy_debt: ["generated inverse"] });
+  });
+
+  it("legacy debt: an inverse-only amend keeps the relation legacy, the warning naming the placeholder description", async () => {
+    const store = getStore();
+    await seedLegacyLinks(store);
+    await boot(store);
+    expect((await amend(store, { name: "refines", inverse: "refined-by" })).applied.error).toBeUndefined();
+    expect(await legacyOf(store, "refines")).toEqual({ legacy: true, legacy_debt: ["placeholder description"] });
+    const lines = (await warnLines(() => boot(store))).filter((l) => l.includes("refines"));
+    expect(lines.join(" | ")).toMatch(/placeholder description/);
+    expect(lines.join(" | ")).not.toMatch(/generated inverse/);
+  });
+
+  it("legacy debt: paying both, in one amend or across two, clears legacy", async () => {
+    const store = getStore();
+    await seedLegacyLinks(store);
+    await boot(store);
+    await amend(store, { name: "refines", description: DESC("refines") });
+    await amend(store, { name: "refines", inverse: "refined-by" });
+    expect(await legacyOf(store, "refines")).toEqual({ legacy: false, legacy_debt: [] });
+    await amend(store, { name: "ethos-grounds", description: DESC("ethos-grounds"), inverse: "grounded-in-ethos-of" });
+    expect(await legacyOf(store, "ethos-grounds")).toEqual({ legacy: false, legacy_debt: [] });
+    const lines = await warnLines(() => boot(store));
+    expect(lines.some((l) => l.includes("refines") || l.includes("ethos-grounds"))).toBe(false);
+  });
+
+  it("legacy debt: declared-from-scratch relations are never legacy; the generated inverse form is reserved", async () => {
+    const store = getStore();
+    await world(store);
+    await declare(store, { name: "cites", inverse: "cited-by", source: ["notes"], target: ["papers"] });
+    expect(await legacyOf(store, "cites")).toEqual({ legacy: false, legacy_debt: [] });
+    // The migration's own naming is not an owner choice: it can't be declared or amended in.
+    for (const inv of ["quotes-inverse", "quotes-inverse-2"]) {
+      const p = await propose(store, declareChange({ name: "quotes", inverse: inv }));
+      expect(p.error, inv).toBe(true);
+      expect(p.message, inv).toMatch(/reserved|generated/i);
+    }
+    const a = (await amend(store, { name: "cites", inverse: "cites-inverse" })).proposed;
+    expect(a.error).toBe(true);
+    expect(a.message).toMatch(/reserved|generated/i);
+  });
+
+  it("legacy debt is derived, never stored: an upgraded row whose description was already amended reports its inverse debt", async () => {
+    const store = getStore();
+    await seedLegacyLinks(store);
+    await boot(store);
+    // A Phase 1 hive amended the description, which cleared the old stored flag.
+    await runInDurableObject(store, (_i, state) => {
+      const db = state.storage.sql;
+      db.exec(`UPDATE "_relations" SET description = ? WHERE name = 'refines'`, DESC("refines"));
+      try { db.exec(`UPDATE "_relations" SET legacy = 0 WHERE name = 'refines'`); } catch { /* column already gone */ }
+    });
+    await boot(store);
+    expect(await legacyOf(store, "refines")).toEqual({ legacy: true, legacy_debt: ["generated inverse"] });
+    // No stored flag remains to drift from the facts.
+    expect((await sql(store, `PRAGMA table_info("_relations")`)).map((c) => c.name)).not.toContain("legacy");
   });
 
   it("retire_relation is refused while active links use it; the preview names them", async () => {
@@ -1979,7 +2054,7 @@ describe("linked targets survive GC", () => {
 // =====================================================================
 
 /** What a constructed HiveDO did while booting on a wrapped state. */
-interface BootTrace { events: string[]; restored: string[]; unpatch?: () => void }
+interface BootTrace { events: string[]; restored: string[]; sent?: string[]; unpatch?: () => void }
 
 /** Classify a SQL statement as a v17 (relations migration) effect, or null. */
 function v17Effect(q: string): string | null {
@@ -1987,6 +2062,12 @@ function v17Effect(q: string): string | null {
   if (/CREATE\s+TABLE[^(]*"?_relations"?\s*\(/i.test(q)) return "v17:create-relations";
   if (/INSERT\s+INTO\s+"?_relations"?/i.test(q)) return "v17:write-relations";
   if (/UPDATE\s+"?_links"?\s+SET/i.test(q)) return "v17:update-links";
+  // A change's own data effects (applyChange's handler.apply), for bookmark ordering.
+  if (/ALTER\s+TABLE\s+"?(?!_)[\w-]+"?\s+DROP\s+COLUMN/i.test(q)) return "change:drop-column";
+  if (/UPDATE\s+_objects\s+SET\s+doctrine/i.test(q)) return "change:set-doctrine";
+  // v18 (Phase 2): the stored legacy flag leaves _relations.
+  if (/ALTER\s+TABLE\s+"?_relations"?\s+DROP\s+COLUMN\s+"?legacy"?/i.test(q)) return "v18:drop-legacy-column";
+  if (/DROP\s+TABLE\s+(IF\s+EXISTS\s+)?"?_relations"?/i.test(q)) return "v18:rebuild-relations";
   return null;
 }
 
@@ -2022,6 +2103,8 @@ async function bootWith(state: DurableObjectState, bookmark: () => string, trace
   patch(storage, "onNextSessionRestoreBookmark", { value: async (b: string) => { trace.restored.push(b); return b; } });
   patch(state, "blockConcurrencyWhile", { value: (fn: () => Promise<unknown>) => { const p = Promise.resolve().then(fn); pending.push(p); return p; } });
   patch(state, "abort", { value: () => { trace.events.push("abort"); } });
+  // /ws broadcasts: one fake socket records every message the instance sends.
+  patch(state, "getWebSockets", { value: () => [{ send: (m: string) => { (trace.sent ??= []).push(m); } }] });
   trace.unpatch = () => {
     for (const [o, k, d] of saved.reverse()) {
       if (d) Object.defineProperty(o, k, d); else delete o[k];
@@ -2055,6 +2138,26 @@ function makePreV17(db: any) {
 const restorePoints = (db: any) =>
   db.exec(`SELECT * FROM _schema_history WHERE change_type = 'restore_point' ORDER BY id`).toArray() as any[];
 
+/** Every migration declared in schema.ts MIGRATION_RESTORE_POINTS, read from the
+ *  source (the list is module-private). */
+function declaredRestorePointMigrations(): string[] {
+  const block = SCHEMA_SRC.match(/\bMIGRATION_RESTORE_POINTS\b[^\n]*\]\s*=\s*\[([\s\S]*?)\n\];/);
+  if (!block) throw new Error("MIGRATION_RESTORE_POINTS not found in entities/Hive/schema.ts");
+  return [...block[1].matchAll(/migration:\s*"([^"]+)"/g)].map((m) => m[1]);
+}
+
+/** Each declared restore point → the `it` in the "restore point" describe that covers it. */
+const RESTORE_POINT_COVERED_BY: Record<string, string> = {
+  v17: "the first v17 boot records exactly one restore_point row; later boots add none",
+  v18: "a Phase 1-shaped hive records exactly one v18 restore point before the legacy column leaves; later boots add none",
+};
+
+/** Give a booted (Phase 2) hive the Phase 1 shape v18 migrates: the stored legacy flag. */
+function makePhase1Relations(db: any) {
+  db.exec(`DELETE FROM _schema_history WHERE change_type = 'restore_point'`);
+  db.exec(`ALTER TABLE "_relations" ADD COLUMN "legacy" INTEGER NOT NULL DEFAULT 0`);
+}
+
 describe("restore point", () => {
   async function preV17Store() {
     const store = getStore();
@@ -2081,6 +2184,53 @@ describe("restore point", () => {
       expect(restorePoints(state.storage.sql).length).toBe(1);
       expect(restorePoints(state.storage.sql)[0].bookmark).toBe("bm-before-v17");
     });
+  });
+
+  it("a Phase 1-shaped hive records exactly one v18 restore point before the legacy column leaves; later boots add none", async () => {
+    const store = getStore();
+    await seedLegacyLinks(store);
+    await boot(store);
+    await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      makePhase1Relations(db);
+      await booted(state, () => "bm-before-v18", async (_hive, trace) => {
+        const first = trace.events.findIndex((e) => e.startsWith("v18:"));
+        expect(first, `a v18 step ran: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), "the bookmark was captured").toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), `capture precedes every v18 effect: ${trace.events.join(", ")}`).toBeLessThan(first);
+      });
+      const rows = restorePoints(db);
+      expect(rows.length, "one restore point, v18 only").toBe(1);
+      expect(rows[0].description).toMatch(/restore point/i);
+      expect(rows[0].description).toMatch(/v18/);
+      expect(rows[0].bookmark).toBe("bm-before-v18");
+      expect((db.exec(`PRAGMA table_info("_relations")`).toArray() as any[]).map((c) => c.name)).not.toContain("legacy");
+
+      await booted(state, () => "bm-later", async () => {});
+      await booted(state, () => "bm-later-still", async () => {});
+      expect(restorePoints(db).length).toBe(1);
+    });
+  });
+
+  it("a fresh hive's first boot records the v17 restore point only, never v18 too", async () => {
+    const store = getStore();
+    await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      makePreV17(db); // as close to empty as a constructed DO gets: no _relations at all
+      await booted(state, () => "bm-fresh", async () => {});
+      const rows = restorePoints(db);
+      expect(rows.map((r) => r.description).join(" | ")).toMatch(/v17/);
+      expect(rows.length, rows.map((r) => r.description).join(" | ")).toBe(1);
+      expect(rows[0].description).not.toMatch(/v18/);
+    });
+  });
+
+  it("every MIGRATION_RESTORE_POINTS entry has a covering test in this describe", () => {
+    const declared = declaredRestorePointMigrations();
+    expect(declared.length, "the list is read from schema.ts").toBeGreaterThan(0);
+    expect(new Set(declared)).toEqual(new Set(Object.keys(RESTORE_POINT_COVERED_BY)));
+    for (const [migration, title] of Object.entries(RESTORE_POINT_COVERED_BY))
+      expect(THIS_FILE_SRC, `${migration} → it("${title}")`).toContain(`it(${JSON.stringify(title)}`);
   });
 
   it("captures the bookmark before any v17 step touches data", async () => {
@@ -2141,6 +2291,7 @@ const RELATIONS_MODULE = import.meta.glob("../../entities/Hive/relations.ts", { 
 const ENFORCED_BY: Record<string, string> = {
   supersession: "behavior by declaration",
   acyclic: "acyclicity",
+  containment: "containment",
 };
 
 describe("palette totality", () => {
@@ -2164,11 +2315,11 @@ describe("palette totality", () => {
       expect(src, `${behavior} → describe("${describeName}")`).toMatch(topLevelDescribe(describeName));
   });
 
-  it("the Phase 1 palette declares no behavior the engine does not yet perform", () => {
+  it("the palette declares no behavior the engine does not yet perform (Phase 2: supersession, acyclic, containment)", () => {
     const palette = Object.keys(RELATIONS_MODULE[RELATIONS_MODULE_PATH]?.BEHAVIOR_PALETTE ?? {});
-    for (const deferred of ["containment", "required", "chain", "blocking", "quiet", "rollup"])
+    for (const deferred of ["required", "chain", "blocking", "quiet", "rollup"])
       expect(palette).not.toContain(deferred);
-    expect(palette.length).toBe(2);
+    expect(new Set(palette)).toEqual(new Set(["supersession", "acyclic", "containment"]));
   });
 });
 
@@ -2287,5 +2438,1197 @@ describe("relation declaration totality", () => {
     for (const r of await sql(store, `SELECT * FROM "_relations" WHERE archived_at IS NULL`))
       for (const p of [...list(r.source), ...list(r.target)])
         expect(p === "*" || patterns.has(p), `${r.name} names ${p}`).toBe(true);
+  });
+});
+
+// #####################################################################
+// PHASE 2 — composition and atomic writes (project-docs/relations.md,
+// "Migration → Phase 2"; shapes pinned in "Interface (Phase 2)").
+// #####################################################################
+
+async function createPatternWith(store: Store, name: string, facets: Record<string, unknown>[], patternClass: "dataset" | "knowledge" = "dataset") {
+  const p = JSON.parse(await store.proposeChange(`Create ${name}`, JSON.stringify({
+    type: "create_pattern", pattern_name: name, pattern_description: `Test pattern ${name}`,
+    doctrine: `Test doctrine for ${name}`, pattern_class: patternClass, facets,
+  })));
+  if (p.error) throw new Error(p.message);
+  const a = JSON.parse(await store.applyChange(p.change_id));
+  if (a.error) throw new Error(a.message);
+}
+
+const batch = async (store: Store, ops: Record<string, unknown>[]) => JSON.parse(await store.batchMutate(JSON.stringify(ops)));
+const countRows = async (store: Store, table: string) => (await sql(store, `SELECT COUNT(*) AS n FROM "${table}"`))[0].n as number;
+
+/** tasks → projects → goals, the §8 shape. `required` and `containment` on
+ *  belongs-to are opt-in so each describe declares exactly what it tests. */
+async function portfolio(store: Store, opts: { required?: boolean; containment?: boolean } = {}) {
+  await createPattern(store, "tasks");
+  await createPattern(store, "projects");
+  await createPattern(store, "goals");
+  const p1 = await entry(store, "projects", "project one");
+  const p2 = await entry(store, "projects", "project two");
+  const g1 = await entry(store, "goals", "goal one");
+  const g2 = await entry(store, "goals", "goal two");
+  await declare(store, {
+    name: "belongs-to", inverse: "contains", source: ["tasks"], target: ["projects"], cardinality: "one",
+    behaviors: opts.containment ? ["containment"] : [], ...(opts.required ? { required: true } : {}),
+  });
+  await declare(store, { name: "serves", inverse: "served-by", source: ["projects"], target: ["goals"] });
+  return { p1, p2, g1, g2 };
+}
+
+/** Create a task carrying its project inline; returns the task id. */
+async function task(store: Store, title: string, project: number): Promise<number> {
+  const r = await mut(store, "tasks", "create", { title, _relate: { "belongs-to": `projects/${project}` } });
+  if (r.error) throw new Error(`task create refused: ${r.message}`);
+  return r.entry.id as number;
+}
+
+// =====================================================================
+// Required relations
+// =====================================================================
+
+describe("required relations", () => {
+  it("required is only allowed when source is an explicit list", async () => {
+    const store = getStore();
+    await createPattern(store, "tasks");
+    await createPattern(store, "projects");
+    const p = await propose(store, declareChange({ name: "belongs-to", inverse: "contains", source: ["*"], target: ["projects"], required: true }));
+    expect(p.error).toBe(true);
+    expect(p.message).toMatch(/required/i);
+    expect(p.message).toMatch(/source/i);
+    const ok = await propose(store, declareChange({ name: "belongs-to", inverse: "contains", source: ["tasks"], target: ["projects"], required: true }));
+    expect(ok.error).toBeUndefined();
+    expect(ok.preview?.violations ?? []).toEqual([]); // no tasks yet
+    expect((await apply(store, ok.change_id)).error).toBeUndefined();
+    expect((await relationRow(store, "belongs-to")).required).toBe(1);
+  });
+
+  it("a create in a required relation's source pattern must carry the link inline, or is refused naming relation and target", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { required: true });
+    const bare = await mut(store, "tasks", "create", { title: "orphan" });
+    expectCleanRefusal(bare);
+    expect(bare.message).toContain("belongs-to");
+    expect(bare.message).toContain("projects");
+    expect(bare.message).toContain("_relate");
+    expect(await countRows(store, "tasks")).toBe(0);
+
+    const ok = await mut(store, "tasks", "create", { title: "homed", _relate: { "belongs-to": `projects/${p1}` } });
+    expect(ok.error).toBeUndefined();
+    expect(ok.links).toEqual([expect.objectContaining({ source: `tasks/${ok.entry.id}`, target: `projects/${p1}`, label: "belongs-to" })]);
+  });
+
+  it("declaring or amending to required previews entries lacking the link and refuses at apply while any remain", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store);
+    const t1 = await entry(store, "tasks", "loose");
+    const t2 = await entry(store, "tasks", "homed");
+    await mustLink(store, `tasks/${t2}`, `projects/${p1}`, "belongs-to");
+
+    const { proposed, applied } = await amend(store, { name: "belongs-to", required: true });
+    expect(proposed.error).toBeUndefined();
+    const sources = proposed.preview.violations.map((v: any) => v.source);
+    expect(sources).toContain(`tasks/${t1}`);
+    expect(sources).not.toContain(`tasks/${t2}`);
+    expect(applied.error).toBe(true);
+    expect((await relationRow(store, "belongs-to")).required).toBe(0);
+
+    // A declare_relation with required:true meets the same preview + refusal.
+    const decl = await propose(store, declareChange({ name: "pinned-to", inverse: "pins", source: ["tasks"], target: ["projects"], required: true }));
+    expect(decl.error).toBeUndefined();
+    expect(decl.preview.violations.map((v: any) => v.source)).toEqual(expect.arrayContaining([`tasks/${t1}`, `tasks/${t2}`]));
+    expect((await apply(store, decl.change_id)).error).toBe(true);
+    expect(await relationRow(store, "pinned-to")).toBeUndefined();
+
+    // Backfill first, then flip.
+    await mustLink(store, `tasks/${t1}`, `projects/${p1}`, "belongs-to");
+    const again = await amend(store, { name: "belongs-to", required: true });
+    expect(again.proposed.preview?.violations ?? []).toEqual([]);
+    expect(again.applied.error).toBeUndefined();
+    expect((await relationRow(store, "belongs-to")).required).toBe(1);
+
+    // And off again, at any time.
+    expect((await amend(store, { name: "belongs-to", required: false })).applied.error).toBeUndefined();
+    expect((await relationRow(store, "belongs-to")).required).toBe(0);
+  });
+
+  it("unlinking or archiving the last required link is refused with guidance to move it; a one-batch move is allowed", async () => {
+    const store = getStore();
+    const { p1, p2 } = await portfolio(store, { required: true });
+    const t = await task(store, "t", p1);
+    const linkId = (await sql(store, `SELECT id FROM "_links" WHERE archived_at IS NULL AND source_id = ? AND label = 'belongs-to'`, t))[0].id;
+
+    const un = await unlink(store, { source: `tasks/${t}`, target: `projects/${p1}`, label: "belongs-to" });
+    expectCleanRefusal(un);
+    expect(un.message).toContain("belongs-to");
+    expect(un.message).toMatch(/move/i);
+    const arch = await mut(store, "_links", "archive", { id: linkId });
+    expectCleanRefusal(arch);
+    expect(arch.message).toMatch(/move/i);
+    expect((await linkRow(store, linkId)).archived_at).toBeNull();
+
+    // Move = archive + create in one batch; required is judged on the batch's end state.
+    const moved = await batch(store, [
+      { pattern: "_links", operation: "archive", data: { id: linkId } },
+      { pattern: "link", operation: "create", data: { source: `tasks/${t}`, target: `projects/${p2}`, label: "belongs-to" } },
+    ]);
+    expect(moved.error).toBeUndefined();
+    const now = await sql(store, `SELECT target_id FROM "_links" WHERE archived_at IS NULL AND source_id = ? AND label = 'belongs-to'`, t);
+    expect(now.map((r) => r.target_id)).toEqual([p2]);
+    expect(await totalityViolations(store)).toEqual([]);
+  });
+
+  it("with cardinality many, links beyond the last may be removed; the last may not", async () => {
+    const store = getStore();
+    await world(store);
+    await createPattern(store, "essays");
+    const pa = await entry(store, "papers", "pa"), pb = await entry(store, "papers", "pb");
+    await declare(store, { name: "draws-on", inverse: "drawn-on-by", source: ["essays"], target: ["papers"], required: true });
+    const r = await mut(store, "essays", "create", { title: "e", _relate: { "draws-on": [`papers/${pa}`, `papers/${pb}`] } });
+    expect(r.error).toBeUndefined();
+    const e = r.entry.id;
+    expect((await unlink(store, { source: `essays/${e}`, target: `papers/${pa}`, label: "draws-on" })).error).toBeUndefined();
+    expectCleanRefusal(await unlink(store, { source: `essays/${e}`, target: `papers/${pb}`, label: "draws-on" }));
+  });
+
+  it("an archived source entry is exempt; unarchiving it without its required link is refused", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { required: true });
+    const t = await task(store, "t", p1);
+    expect((await mut(store, "tasks", "archive", { id: t })).error).toBeUndefined(); // archiving the member is never blocked
+    // While the task is archived the constraint does not apply to it.
+    expect((await unlink(store, { source: `tasks/${t}`, target: `projects/${p1}`, label: "belongs-to" })).error).toBeUndefined();
+    const back = await mut(store, "tasks", "unarchive", { id: t });
+    expectCleanRefusal(back);
+    expect(back.message).toContain("belongs-to");
+    expect((await sql(store, `SELECT archived_at FROM tasks WHERE id = ?`, t))[0].archived_at).not.toBeNull();
+  });
+
+  it("boot reports active entries lacking a required link (pre-existing data), never repairing them", async () => {
+    const store = getStore();
+    await portfolio(store, { required: true });
+    const raw = await runInDurableObject(store, (_i, state) => {
+      state.storage.sql.exec(`INSERT INTO tasks (title) VALUES ('planted without a project')`);
+      return (state.storage.sql.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+    });
+    const lines = await warnLines(() => boot(store));
+    expect(lines.some((l) => l.includes("belongs-to") && new RegExp(`tasks/${raw}(?!\\d)`).test(l)), lines.join(" | ")).toBe(true);
+    expect((await sql(store, `SELECT archived_at FROM tasks WHERE id = ?`, raw))[0].archived_at).toBeNull();
+  });
+
+  // df-00ac1d54. Choice: required is REFUSED while any source pattern is archived.
+  // Counting those entries as violations would deadlock: links can't be created
+  // to or from an archived pattern's entries, so they could never be backfilled.
+  it("required is refused while a source pattern is archived (declare and amend)", async () => {
+    const store = getStore();
+    await portfolio(store);
+    await entry(store, "tasks", "would lack the link");
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: "tasks" });
+    expect((await apply(store, ap.change_id)).error).toBeUndefined();
+    const a = (await amend(store, { name: "belongs-to", required: true })).proposed;
+    expect(a.error).toBe(true);
+    expect(a.message).toContain("tasks");
+    expect(a.message).toMatch(/archived/i);
+    const d = await propose(store, declareChange({ name: "pinned-to", inverse: "pins", source: ["tasks"], target: ["projects"], required: true }));
+    expect(d.error).toBe(true);
+    expect(d.message).toMatch(/archived/i);
+    expect((await relationRow(store, "belongs-to")).required).toBe(0);
+  });
+
+  it("unarchive_pattern of a required relation's source pattern previews entries lacking the link and refuses at apply", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { required: true });
+    const t1 = await task(store, "keeps its link", p1);
+    const t2 = await task(store, "loses its link", p1);
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: "tasks" });
+    expect((await apply(store, ap.change_id)).error).toBeUndefined();
+    // While the pattern is archived, t2's link goes (simulated directly).
+    await sql(store, `UPDATE "_links" SET archived_at = datetime('now') WHERE source_pattern = 'tasks' AND source_id = ?`, t2);
+    const up = await propose(store, { type: "unarchive_pattern", pattern_name: "tasks" });
+    expect(up.error).toBeUndefined();
+    const sources = (up.preview?.violations ?? []).map((v: any) => v.source);
+    expect(sources).toContain(`tasks/${t2}`);
+    expect(sources).not.toContain(`tasks/${t1}`);
+    expect((await apply(store, up.change_id)).error).toBe(true);
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'tasks'`))[0].archived_at).not.toBeNull();
+  });
+
+  it("the read surfaces carry `required`", async () => {
+    const store = getStore();
+    await portfolio(store, { required: true });
+    const res = JSON.parse(await store.resolve("mnemion://relations"));
+    expect(res.relations.find((r: any) => r.name === "belongs-to").required).toBe(true);
+    expect(res.relations.find((r: any) => r.name === "serves").required).toBe(false);
+    const index = JSON.parse(await store.getIndex());
+    expect(index.relations.find((r: any) => r.name === "belongs-to").required).toBe(true);
+  });
+});
+
+// =====================================================================
+// Containment (palette behavior)
+// =====================================================================
+
+describe("containment", () => {
+  it("archiving a container with active members is refused, naming members and relation (kernel part-of and hive relations)", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    await mustLink(store, `notes/${n1}`, `notes/${n2}`, "part-of");
+    const r = await mut(store, "notes", "archive", { id: n2 });
+    expectCleanRefusal(r);
+    expect(r.message).toContain("part-of");
+    expect(r.message).toMatch(new RegExp(`notes/${n1}(?!\\d)`));
+    expect((await sql(store, `SELECT archived_at FROM notes WHERE id = ?`, n2))[0].archived_at).toBeNull();
+
+    const s2 = getStore();
+    const { p1 } = await portfolio(s2, { containment: true });
+    const t = await task(s2, "member", p1);
+    const rp = await mut(s2, "projects", "archive", { id: p1 });
+    expectCleanRefusal(rp);
+    expect(rp.message).toContain("belongs-to");
+    expect(rp.message).toMatch(new RegExp(`tasks/${t}(?!\\d)`));
+  });
+
+  it("archived members do not hold their container; non-containment relations never block an archive", async () => {
+    const store = getStore();
+    const { n1, n2, n3, p1 } = await world(store);
+    await mustLink(store, `notes/${n1}`, `notes/${n2}`, "part-of");
+    expectCleanRefusal(await mut(store, "notes", "archive", { id: n2 })); // control: an active member holds it
+    await mut(store, "notes", "archive", { id: n1 });
+    expect((await mut(store, "notes", "archive", { id: n2 })).error, "an archived member does not").toBeUndefined();
+    await mustLink(store, `notes/${n3}`, `papers/${p1}`, "references");
+    expect((await mut(store, "papers", "archive", { id: p1 })).error, "references never contains").toBeUndefined();
+  });
+
+  it("the same batch may archive the members or move them, in any order", async () => {
+    const store = getStore();
+    const { n1, n2, n3 } = await world(store);
+    const l1 = await mustLink(store, `notes/${n1}`, `notes/${n2}`, "part-of");
+    // Container first, member second: judged on the batch's end state.
+    const both = await batch(store, [
+      { pattern: "notes", operation: "archive", data: { id: n2 } },
+      { pattern: "notes", operation: "archive", data: { id: n1 } },
+    ]);
+    expect(both.error).toBeUndefined();
+
+    const s2 = getStore();
+    const w = await world(s2);
+    const lm = await mustLink(s2, `notes/${w.n1}`, `notes/${w.n2}`, "part-of");
+    const moved = await batch(s2, [
+      { pattern: "notes", operation: "archive", data: { id: w.n2 } },
+      { pattern: "_links", operation: "archive", data: { id: lm } },
+      { pattern: "link", operation: "create", data: { source: `notes/${w.n1}`, target: `notes/${w.n3}`, label: "part-of" } },
+    ]);
+    expect(moved.error).toBeUndefined();
+    expect((await sql(s2, `SELECT target_id FROM "_links" WHERE archived_at IS NULL AND label = 'part-of'`)).map((r) => r.target_id)).toEqual([w.n3]);
+    expect(l1).toBeGreaterThan(0);
+    expect(n3).toBeGreaterThan(0);
+  });
+
+  it("a batch that leaves an active member under an archived container is refused and rolled back whole", async () => {
+    const store = getStore();
+    const { n1, n2, n3 } = await world(store);
+    await mustLink(store, `notes/${n1}`, `notes/${n2}`, "part-of");
+    const r = await batch(store, [
+      { pattern: "notes", operation: "archive", data: { id: n3 } },
+      { pattern: "notes", operation: "archive", data: { id: n2 } },
+    ]);
+    expect(r.error).toBe(true);
+    expect(r.message).toContain("part-of");
+    const archived = await sql(store, `SELECT id FROM notes WHERE archived_at IS NOT NULL`);
+    expect(archived).toEqual([]); // n3's archive rolled back too
+  });
+
+  // Owner decision O2: archive_pattern on a containment target is refused while
+  // active members in OTHER patterns link into its active entries.
+  it("archive_pattern on a containment target previews the holding members and is refused at apply", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { containment: true });
+    const t = await task(store, "member", p1);
+    const p = await propose(store, { type: "archive_pattern", pattern_name: "projects" });
+    expect(p.error).toBeUndefined();
+    expect(p.preview.violations).toEqual(expect.arrayContaining([expect.objectContaining({ source: `tasks/${t}`, target: `projects/${p1}`, label: "belongs-to" })]));
+    const a = await apply(store, p.change_id);
+    expect(a.error).toBe(true);
+    expect(a.message).toContain("belongs-to");
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'projects'`))[0].archived_at).toBeNull();
+  });
+
+  it("archive_pattern: archived members and same-pattern members don't hold; non-containment links never do", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { containment: true });
+    const t = await task(store, "member", p1);
+    await mut(store, "tasks", "archive", { id: t });
+    await mustLink(store, `projects/${p1}`, `projects/${(await entry(store, "projects", "parent"))}`, "part-of"); // internal containment
+    await createPattern(store, "notes");
+    const n = await entry(store, "notes", "cites a project");
+    await mustLink(store, `notes/${n}`, `projects/${p1}`, "references"); // not containment
+    const p = await propose(store, { type: "archive_pattern", pattern_name: "projects" });
+    expect(p.preview?.violations ?? []).toEqual([]);
+    const a = await apply(store, p.change_id);
+    expect(a.error, a.message).toBeUndefined();
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'projects'`))[0].archived_at).not.toBeNull();
+  });
+
+  it("archive_pattern re-checks at apply: a member that arrives after a clean propose blocks it", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { containment: true });
+    const p = await propose(store, { type: "archive_pattern", pattern_name: "projects" });
+    expect(p.preview?.violations ?? []).toEqual([]);
+    await task(store, "late member", p1);
+    expect((await apply(store, p.change_id)).error).toBe(true);
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'projects'`))[0].archived_at).toBeNull();
+  });
+
+  // df-6809fa29 / df-f3e97410: containment is judged on unarchive too.
+  it("unarchiving a member whose container is archived is refused; doing both in one batch is fine", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    await mustLink(store, `notes/${n1}`, `notes/${n2}`, "part-of");
+    await mut(store, "notes", "archive", { id: n1 });
+    expect((await mut(store, "notes", "archive", { id: n2 })).error).toBeUndefined(); // the member is inactive
+    const r = await mut(store, "notes", "unarchive", { id: n1 });
+    expectCleanRefusal(r);
+    expect(r.message).toContain("part-of");
+    expect(r.message).toMatch(new RegExp(`notes/${n2}(?!\\d)`));
+    expect((await sql(store, `SELECT archived_at FROM notes WHERE id = ?`, n1))[0].archived_at).not.toBeNull();
+    // Container and member back together: judged on the batch's end state.
+    const both = await batch(store, [
+      { pattern: "notes", operation: "unarchive", data: { id: n1 } },
+      { pattern: "notes", operation: "unarchive", data: { id: n2 } },
+    ]);
+    expect(both.error, both.message).toBeUndefined();
+  });
+
+  it("unarchiving a member whose container's PATTERN is archived is refused", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { containment: true });
+    const t = await task(store, "member", p1);
+    await mut(store, "tasks", "archive", { id: t });
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: "projects" });
+    expect((await apply(store, ap.change_id)).error).toBeUndefined();
+    const r = await mut(store, "tasks", "unarchive", { id: t });
+    expectCleanRefusal(r);
+    expect(r.message).toContain("belongs-to");
+  });
+
+  it("unarchive_pattern of a member pattern previews members that would sit under an archived container, and apply re-checks", async () => {
+    const store = getStore();
+    const { p1, p2 } = await portfolio(store, { containment: true });
+    const t1 = await task(store, "member one", p1);
+    const t2 = await task(store, "member two", p2);
+    const archiveTasks = await propose(store, { type: "archive_pattern", pattern_name: "tasks" });
+    expect((await apply(store, archiveTasks.change_id)).error).toBeUndefined();
+    expect((await mut(store, "projects", "archive", { id: p1 })).error).toBeUndefined(); // members are inactive now
+
+    const up = await propose(store, { type: "unarchive_pattern", pattern_name: "tasks" });
+    expect(up.error).toBeUndefined();
+    expect(up.preview.violations).toEqual([expect.objectContaining({ source: `tasks/${t1}`, target: `projects/${p1}`, label: "belongs-to" })]);
+    expect((await apply(store, up.change_id)).error).toBe(true);
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'tasks'`))[0].archived_at).not.toBeNull();
+
+    // Clear it, propose clean, then archive the other container before apply: re-checked.
+    await mut(store, "projects", "unarchive", { id: p1 });
+    const clean = await propose(store, { type: "unarchive_pattern", pattern_name: "tasks" });
+    expect(clean.preview?.violations ?? []).toEqual([]);
+    expect((await mut(store, "projects", "archive", { id: p2 })).error).toBeUndefined();
+    expect((await apply(store, clean.change_id)).error, "apply re-checks").toBe(true);
+    expect(t2).toBeGreaterThan(0);
+  });
+
+  it("amend_relation adding containment previews archived containers with active members and refuses at apply", async () => {
+    const store = getStore();
+    const { n1, n2, p1, p2 } = await world(store);
+    await declare(store, { name: "filed-in", inverse: "files", source: ["notes"], target: ["papers"] });
+    await mustLink(store, `notes/${n1}`, `papers/${p1}`, "filed-in");
+    await mustLink(store, `notes/${n2}`, `papers/${p2}`, "filed-in");
+    await mut(store, "papers", "archive", { id: p1 });      // archived container, active member n1
+    await mut(store, "notes", "archive", { id: n2 });
+    await mut(store, "papers", "archive", { id: p2 });      // archived container, archived member: fine
+    const { proposed, applied } = await amend(store, { name: "filed-in", behaviors: ["containment"] });
+    expect(proposed.error).toBeUndefined();
+    expect(proposed.preview.violations).toEqual([expect.objectContaining({ source: `notes/${n1}`, target: `papers/${p1}`, label: "filed-in" })]);
+    expect(applied.error).toBe(true);
+    expect(list((await relationRow(store, "filed-in")).behaviors)).toEqual([]);
+  });
+
+  it("resolve still lists members, under the inverse name", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    await mustLink(store, `notes/${n1}`, `notes/${n2}`, "part-of");
+    const r = JSON.parse(await store.resolve(`mnemion://entry/notes/${n2}`));
+    expect(r.linked.find((l: any) => l.pattern === "notes" && l.id === n1)).toMatchObject({ direction: "in", relation: "has-part" });
+  });
+
+  it("prime recall is upward only: member → container, never container → members", async () => {
+    const store = getStore();
+    await createPattern(store, "notes", "knowledge");
+    const member = await entry(store, "notes", "chapter");
+    const container = await entry(store, "notes", "book");
+    const neighbor = await entry(store, "notes", "review");
+    await mustLink(store, `notes/${member}`, `notes/${container}`, "part-of");
+    await mustLink(store, `notes/${neighbor}`, `notes/${container}`, "references");
+    const primeOn = (id: number) => runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      const ctx: PrimeContext = {
+        db,
+        patternExists: (n) => db.exec(`SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NULL`, n).toArray().length > 0,
+        env: {
+          AI: { run: async () => ({ data: [[0.1, 0.2, 0.3]] }) },
+          VECTORIZE: { query: async () => ({ matches: [{ id: `notes:${id}`, score: 0.9, metadata: { pattern: "notes", entry_id: id } }] }) },
+        },
+      };
+      return prime(ctx, "anything", undefined, 5);
+    });
+    const fromContainer = (await primeOn(container)).results.find((r) => r.id === container)!;
+    const ids = (fromContainer.linked ?? []).map((l) => l.id);
+    expect(ids, "no fan-out from container to members").not.toContain(member);
+    expect(ids, "other relations still expand").toContain(neighbor);
+    const fromMember = (await primeOn(member)).results.find((r) => r.id === member)!;
+    expect((fromMember.linked ?? []).map((l) => l.id), "a member recalls its container").toContain(container);
+  });
+
+  it("declare_relation and amend_relation accept containment", async () => {
+    const store = getStore();
+    await world(store);
+    await declare(store, { name: "filed-in", inverse: "files", source: ["notes"], target: ["papers"], behaviors: ["containment"] });
+    expect(list((await relationRow(store, "filed-in")).behaviors)).toEqual(["containment"]);
+    await declare(store, { name: "cites", inverse: "cited-by", source: ["notes"], target: ["papers"] });
+    expect((await amend(store, { name: "cites", behaviors: ["containment", "acyclic"] })).applied.error).toBeUndefined();
+    expect(new Set(list((await relationRow(store, "cites")).behaviors))).toEqual(new Set(["containment", "acyclic"]));
+  });
+});
+
+// =====================================================================
+// Inline _relate on create (§5)
+// =====================================================================
+
+describe("inline _relate", () => {
+  it("creates the entry and its links together, accepting names or inverses and one or many targets", async () => {
+    const store = getStore();
+    const { n1, p1, p2 } = await world(store);
+    const r = await mut(store, "notes", "create", {
+      title: "new",
+      _relate: { references: [`papers/${p1}`, `papers/${p2}`], "has-part": `notes/${n1}` },
+    });
+    expect(r.error).toBeUndefined();
+    const id = r.entry.id;
+    expect(r.entry).not.toHaveProperty("_relate");
+    expect(r.links).toHaveLength(3);
+    for (const l of r.links) expect(Object.keys(l).sort()).toEqual(["id", "label", "source", "target"]);
+    expect(r.links.map((l: any) => `${l.source} ${l.label} ${l.target}`).sort()).toEqual([
+      `notes/${id} references papers/${p1}`,
+      `notes/${id} references papers/${p2}`,
+      `notes/${n1} part-of notes/${id}`,
+    ].sort());
+    const stored = await sql(store, `SELECT source_pattern, source_id, target_pattern, target_id, label FROM "_links" WHERE archived_at IS NULL ORDER BY id`);
+    expect(stored).toHaveLength(3);
+    expect((await sql(store, `PRAGMA table_info(notes)`)).map((c) => c.name)).not.toContain("_relate");
+  });
+
+  it("any link failure refuses cleanly and rolls back the entry too", async () => {
+    const store = getStore();
+    const { p1, p2 } = await world(store);
+    await declare(store, { name: "filed-under", inverse: "files", source: ["notes"], target: ["papers"], cardinality: "one" });
+    // Control: a sound _relate succeeds, so the refusals below are about the links.
+    const control = await mut(store, "notes", "create", { title: "control", _relate: { "filed-under": `papers/${p1}` } });
+    expect(control.error, control.message).toBeUndefined();
+    await mut(store, "notes", "archive", { id: control.entry.id });
+    await sql(store, `UPDATE "_links" SET archived_at = datetime('now') WHERE archived_at IS NULL`);
+    const notesBefore = await countRows(store, "notes");
+    for (const rel of [
+      { "made-up": `papers/${p1}` },                          // undeclared
+      { references: `papers/99999` },                         // missing target
+      { references: `_members/1` },                           // inadmissible kernel target
+      { "filed-under": [`papers/${p1}`, `papers/${p2}`] },    // cardinality one
+      { references: "papers" },                               // malformed ref
+      { references: [`papers/${p1}`, `papers/${p1}`] },       // duplicate in one create
+    ]) {
+      const r = await mut(store, "notes", "create", { title: "doomed", _relate: rel });
+      expectCleanRefusal(r);
+      expect(await countRows(store, "notes"), JSON.stringify(rel)).toBe(notesBefore);
+      expect(await activeLinks(store), JSON.stringify(rel)).toEqual([]);
+    }
+    expectCleanRefusal(await mut(store, "notes", "create", { title: "doomed", _relate: "papers/1" }));
+    expectCleanRefusal(await mut(store, "notes", "create", { title: "doomed", _relate: [`papers/${p1}`] }));
+    expect(await countRows(store, "notes")).toBe(notesBefore);
+  });
+
+  it("_relate is accepted only on create", async () => {
+    const store = getStore();
+    const { n1, p1 } = await world(store);
+    const control = await mut(store, "notes", "create", { title: "control", _relate: { references: `papers/${p1}` } });
+    expect(control.error, "control: _relate works on create").toBeUndefined();
+    await sql(store, `UPDATE "_links" SET archived_at = datetime('now') WHERE archived_at IS NULL`);
+    const r = await mut(store, "notes", "update", { id: n1, title: "renamed", _relate: { references: `papers/${p1}` } });
+    expectCleanRefusal(r);
+    expect(r.message).toContain("_relate");
+    expect((await sql(store, `SELECT title FROM notes WHERE id = ?`, n1))[0].title).toBe("note one");
+    expect(await activeLinks(store)).toEqual([]);
+  });
+
+  it("works on batch creates, and a failure anywhere rolls the whole batch back", async () => {
+    const store = getStore();
+    const { p1 } = await world(store);
+    const ok = await batch(store, [
+      { pattern: "notes", operation: "create", data: { title: "a", _relate: { references: `papers/${p1}` } } },
+      { pattern: "notes", operation: "create", data: { title: "b", _relate: { "derived-from": `papers/${p1}` } } },
+    ]);
+    expect(ok.error).toBeUndefined();
+    expect(ok.results.map((x: any) => x.links.length)).toEqual([1, 1]);
+    const before = await countRows(store, "notes");
+    const linksBefore = (await activeLinks(store)).length;
+    const bad = await batch(store, [
+      { pattern: "notes", operation: "create", data: { title: "c", _relate: { references: `papers/${p1}` } } },
+      { pattern: "notes", operation: "create", data: { title: "d", _relate: { "made-up": `papers/${p1}` } } },
+    ]);
+    expect(bad.error).toBe(true);
+    expect(await countRows(store, "notes")).toBe(before);
+    expect((await activeLinks(store)).length).toBe(linksBefore);
+  });
+
+  it("announces the links it creates over /ws, single and batch", async () => {
+    const store = getStore();
+    const { p1, p2 } = await world(store);
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm", async (hive, trace) => {
+        const patterns = () => new Set((trace.sent ?? []).flatMap((m) => { try { return JSON.parse(m).patterns ?? []; } catch { return []; } }));
+        trace.sent = [];
+        const r = JSON.parse(await hive.mutate("notes", "create", JSON.stringify({ title: "single", _relate: { references: `papers/${p1}` } })));
+        expect(r.error, r.message).toBeUndefined();
+        expect(patterns(), "single create").toContain("_links");
+        expect(patterns()).toContain("notes");
+        trace.sent = [];
+        const b = JSON.parse(await hive.batchMutate(JSON.stringify([
+          { pattern: "notes", operation: "create", data: { title: "batched", _relate: { references: `papers/${p2}` } } },
+        ])));
+        expect(b.error, b.message).toBeUndefined();
+        expect(patterns(), "batch create").toContain("_links");
+      });
+    });
+  });
+
+  it("passes through POST /api/mutate/:pattern", async () => {
+    const { mutateEntry } = await import("../../shared/Routing/routes/pages");
+    const store = getStore();
+    const { p1 } = await world(store);
+    const res = await mutateEntry({
+      request: new Request("https://test.local/api/mutate/notes", { method: "POST", body: JSON.stringify({ operation: "create", data: { title: "via api", _relate: { references: `papers/${p1}` } } }) }),
+      url: new URL("https://test.local/api/mutate/notes"), env: env as any, params: { pattern: "notes" }, hive: store, actor: "owner",
+    });
+    const body = await res.json() as any;
+    expect(body.error).toBeUndefined();
+    expect(body.links).toEqual([expect.objectContaining({ target: `papers/${p1}`, label: "references" })]);
+  });
+
+  it("works over MCP mutate", async () => {
+    const hiveId = `user:rel-mcp:${crypto.randomUUID()}`;
+    const store = namedStore(hiveId);
+    const { p1 } = await world(store);
+    const { call } = await mcpSession(hiveId);
+    const r = await call("mutate", { pattern: "notes", operation: "create", data: { title: "via mcp", _relate: { references: `papers/${p1}` } } });
+    expect(r.isError, r.content?.[0]?.text).toBeFalsy();
+    const created = await sql(store, `SELECT id FROM notes WHERE title = 'via mcp'`);
+    expect(created).toHaveLength(1);
+    expect(await sql(store, `SELECT label FROM "_links" WHERE archived_at IS NULL AND source_id = ? AND target_id = ?`, created[0].id, p1)).toEqual([{ label: "references" }]);
+  });
+});
+
+// =====================================================================
+// Link shortcuts inside batches
+// =====================================================================
+
+describe("link shortcuts in batches", () => {
+  it("link and unlink expand inside batchMutate exactly as in mutate", async () => {
+    const store = getStore();
+    const { n1, n2, p1 } = await world(store);
+    await mustLink(store, `notes/${n2}`, `papers/${p1}`, "references");
+    const r = await batch(store, [
+      { pattern: "link", operation: "create", data: { source: `notes/${n1}`, target: `papers/${p1}`, label: "references" } },
+      { pattern: "unlink", operation: "unlink", data: { source: `notes/${n2}`, target: `papers/${p1}`, label: "references" } },
+    ]);
+    expect(r.error).toBeUndefined();
+    expect(r.results).toHaveLength(2);
+    const active = await activeLinks(store);
+    expect(active.map((l) => `${l.source_id}->${l.target_id}`)).toEqual([`${n1}->${p1}`]);
+  });
+
+  it("a shortcut item's operation may be omitted; the shortcut decides it", async () => {
+    const store = getStore();
+    const { n1, p1 } = await world(store);
+    const r = await batch(store, [{ pattern: "link", data: { source: `notes/${n1}`, target: `papers/${p1}`, label: "references" } }]);
+    expect(r.error).toBeUndefined();
+    expect((await activeLinks(store)).length).toBe(1);
+  });
+
+  it("a refused link anywhere rolls back the whole batch", async () => {
+    const store = getStore();
+    const { n1, n2, p1 } = await world(store);
+    const r = await batch(store, [
+      { pattern: "notes", operation: "update", data: { id: n1, title: "changed" } },
+      { pattern: "link", operation: "create", data: { source: `notes/${n1}`, target: `papers/${p1}`, label: "references" } },
+      { pattern: "link", operation: "create", data: { source: `notes/${n2}`, target: `papers/${p1}`, label: "made-up" } },
+    ]);
+    expect(r.error).toBe(true);
+    expect(r.message).toContain("declare_relation");
+    expect(await activeLinks(store)).toEqual([]);
+    expect((await sql(store, `SELECT title FROM notes WHERE id = ?`, n1))[0].title).toBe("note one");
+  });
+
+  // df-8e8a97fe: the MCP batch consent gate judges EXPANDED items.
+  it("the batch consent gate judges items after shortcut expansion", async () => {
+    const gate = await import("../../entities/Hive/mutate-gate");
+    const kernel = await import("../../entities/Hive/kernel");
+    const shortcuts = kernel.SHORTCUTS as Record<string, { pattern: string; operation: string }>;
+    // Control: the gate refuses the consent-gated pattern named directly.
+    expect(gate.findGatedBatchOp([{ pattern: "_members", operation: "create", data: { label: "eve", display_name: "Eve" } }] as any)).not.toBeNull();
+    // A shortcut that expands to it must be judged the same.
+    shortcuts.zz_invite = { pattern: "_members", operation: "create" };
+    try {
+      const op = gate.findGatedBatchOp([
+        { pattern: "notes", operation: "create", data: { title: "harmless" } },
+        { pattern: "zz_invite", data: { label: "eve", display_name: "Eve" } },
+      ] as any);
+      expect(op, "an expanded consent-gated item is flagged").not.toBeNull();
+      // And the real shortcuts stay ungated (links and fragments are Open).
+      expect(gate.findGatedBatchOp([
+        { pattern: "link", data: { source: "notes/1", target: "notes/2", label: "references" } },
+        { pattern: "fragment", data: { content: "x" } },
+      ] as any)).toBeNull();
+    } finally { delete shortcuts.zz_invite; }
+  });
+
+  it("works over MCP batch, shortcut items without an operation", async () => {
+    const hiveId = `user:rel-mcp:${crypto.randomUUID()}`;
+    const store = namedStore(hiveId);
+    const { n1, n2, p1 } = await world(store);
+    await mustLink(store, `notes/${n2}`, `papers/${p1}`, "references");
+    const { call } = await mcpSession(hiveId);
+    const r = await call("mutate", { operation: "batch", data: [
+      { pattern: "link", data: { source: `notes/${n1}`, target: `papers/${p1}`, label: "references" } },
+      { pattern: "unlink", data: { source: `notes/${n2}`, target: `papers/${p1}`, label: "references" } },
+    ] });
+    expect(r.isError, r.content?.[0]?.text).toBeFalsy();
+    expect((await activeLinks(store)).map((l) => l.source_id)).toEqual([n1]);
+  });
+});
+
+// =====================================================================
+// Derived relations (chains, §3)
+// =====================================================================
+
+function chainChange(name: string, inverse: string, chain: string[], extra: Record<string, unknown> = {}) {
+  return { type: "declare_relation", name, inverse, description: DESC(name), chain, ...extra };
+}
+
+describe("derived relations", () => {
+  async function addresses(store: Store) {
+    const ids = await portfolio(store);
+    const p = await propose(store, chainChange("addresses", "addressed-by", ["belongs-to", "serves"]));
+    if (p.error) throw new Error(`chain declare refused: ${p.message}`);
+    const a = await apply(store, p.change_id);
+    if (a.error) throw new Error(`chain apply refused: ${a.message}`);
+    return ids;
+  }
+
+  it("declares a chain whose steps compose; the read surfaces mark it derived with ends taken from the chain", async () => {
+    const store = getStore();
+    await addresses(store);
+    const row = await relationRow(store, "addresses");
+    expect(row).toBeDefined();
+    expect(list(row.chain)).toEqual(["belongs-to", "serves"]);
+    const res = JSON.parse(await store.resolve("mnemion://relations"));
+    const rel = res.relations.find((r: any) => r.name === "addresses");
+    expect(rel).toMatchObject({ derived: true, chain: ["belongs-to", "serves"], source: ["tasks"], target: ["goals"], inverse: "addressed-by" });
+    expect(res.relations.find((r: any) => r.name === "belongs-to").derived).toBe(false);
+  });
+
+  const CHAIN_REFUSALS: [string, Record<string, unknown>, RegExp][] = [
+    ["an unknown step", chainChange("x-chain", "x-chain-of", ["belongs-to", "no-such"]), /no-such/],
+    ["steps that do not compose", chainChange("x-chain", "x-chain-of", ["serves", "belongs-to"]), /compose/i],
+    ["a single step", chainChange("x-chain", "x-chain-of", ["belongs-to"]), /chain/i],
+    ["a derived step", chainChange("x-chain", "x-chain-of", ["addresses", "serves"]), /addresses/],
+    ["cardinality on a chain", chainChange("x-chain", "x-chain-of", ["belongs-to", "serves"], { cardinality: "one" }), /cardinality/i],
+    ["behaviors on a chain", chainChange("x-chain", "x-chain-of", ["belongs-to", "serves"], { behaviors: ["acyclic"] }), /behavio/i],
+    ["required on a chain", chainChange("x-chain", "x-chain-of", ["belongs-to", "serves"], { required: true }), /required/i],
+    ["source/target on a chain", chainChange("x-chain", "x-chain-of", ["belongs-to", "serves"], { source: ["tasks"], target: ["goals"] }), /source|target/i],
+  ];
+
+  it.each(CHAIN_REFUSALS)("declare_relation refuses a chain with %s", async (_label, change, pattern) => {
+    const store = getStore();
+    await addresses(store);
+    const p = await propose(store, change);
+    expect(p.error).toBe(true);
+    expect(p.message).toMatch(pattern);
+    expect(await relationRow(store, "x-chain")).toBeUndefined();
+  });
+
+  it("a derived label can never be written: link, inverse wording and _relate are refused, naming the stored relations", async () => {
+    const store = getStore();
+    const { p1, g1 } = await addresses(store);
+    const t = await task(store, "t", p1);
+    for (const r of [
+      await link(store, `tasks/${t}`, `goals/${g1}`, "addresses"),
+      await link(store, `goals/${g1}`, `tasks/${t}`, "addressed-by"),
+      await mut(store, "tasks", "create", { title: "x", _relate: { "belongs-to": `projects/${p1}`, addresses: `goals/${g1}` } }),
+    ]) {
+      expectCleanRefusal(r);
+      expect(r.message).toContain("belongs-to");
+      expect(r.message).toContain("serves");
+    }
+    expect(await sql(store, `SELECT id FROM "_links" WHERE label IN ('addresses', 'addressed-by')`)).toEqual([]);
+    expect(await totalityViolations(store)).toEqual([]);
+  });
+
+  it("resolve derives chain items in both directions, flagged derived, deduplicated, through active entries only", async () => {
+    const store = getStore();
+    const { p1, p2, g1, g2 } = await addresses(store);
+    const t = await task(store, "t", p1);
+    await mustLink(store, `projects/${p1}`, `goals/${g1}`, "serves");
+    await mustLink(store, `projects/${p1}`, `goals/${g2}`, "serves");
+    await mustLink(store, `projects/${p2}`, `goals/${g1}`, "serves");
+
+    const fromTask = JSON.parse(await store.resolve(`mnemion://entry/tasks/${t}`)).linked;
+    const derived = fromTask.filter((l: any) => l.derived);
+    expect(derived.map((l: any) => `${l.pattern}/${l.id}`).sort()).toEqual([`goals/${g1}`, `goals/${g2}`].sort());
+    for (const l of derived) expect(l).toMatchObject({ direction: "out", relation: "addresses", derived: true });
+    expect(fromTask.find((l: any) => l.pattern === "projects" && l.id === p1)).toMatchObject({ relation: "belongs-to" });
+    expect(fromTask.find((l: any) => l.pattern === "projects").derived ?? false).toBe(false);
+
+    const fromGoal = JSON.parse(await store.resolve(`mnemion://entry/goals/${g1}`)).linked;
+    expect(fromGoal.filter((l: any) => l.derived)).toEqual([expect.objectContaining({ pattern: "tasks", id: t, direction: "in", relation: "addressed-by", derived: true })]);
+
+    // An archived intermediate hides the derivation (dormant links never derive).
+    await runInDurableObject(store, (_i, state) => { state.storage.sql.exec(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`, p1); });
+    const hidden = JSON.parse(await store.resolve(`mnemion://entry/tasks/${t}`)).linked ?? [];
+    expect(hidden.filter((l: any) => l.derived)).toEqual([]);
+  });
+
+  it("a stored relation used by an active chain cannot be retired; the chain itself can", async () => {
+    const store = getStore();
+    await addresses(store);
+    const r = await retire(store, "serves");
+    expect(r.proposed.error).toBe(true);
+    expect(r.proposed.message).toContain("addresses");
+    const c = await retire(store, "addresses");
+    expect(c.proposed.error).toBeUndefined();
+    expect(c.applied.error).toBeUndefined();
+    expect(await relationRow(store, "addresses")).toBeUndefined();
+    expect((await retire(store, "serves")).applied?.error).toBeUndefined();
+  });
+});
+
+// =====================================================================
+// drop_facet
+// =====================================================================
+
+describe("drop_facet", () => {
+  async function notebook(store: Store) {
+    await createPatternWith(store, "notebook", [{ name: "title", type: "text" }, { name: "scratch", type: "text" }, { name: "rank", type: "integer" }]);
+    for (const [title, scratch] of [["a", "x"], ["b", null], ["c", "z"]]) {
+      const r = await mut(store, "notebook", "create", { title, ...(scratch ? { scratch } : {}) });
+      if (r.error) throw new Error(r.message);
+    }
+  }
+
+  it("previews the data loss, then drops the column and its _fields row, logged with a bookmark", async () => {
+    const store = getStore();
+    await notebook(store);
+    const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
+    expect(p.error).toBeUndefined();
+    expect(p.preview.non_null_values).toBe(2);
+    expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).toContain("scratch"); // nothing before apply
+
+    const a = await apply(store, p.change_id);
+    expect(a.error).toBeUndefined();
+    expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).not.toContain("scratch");
+    expect(await sql(store, `SELECT name FROM _fields WHERE object_name = 'notebook' AND name = 'scratch'`)).toEqual([]);
+    const hist = await sql(store, `SELECT bookmark FROM _schema_history WHERE change_type = 'drop_facet'`);
+    expect(hist).toHaveLength(1);
+    expect(hist[0].bookmark, "logged with a PITR bookmark like every change").toBeTruthy();
+
+    // The pattern keeps working: entries remain, writes and updates succeed, the facet is gone.
+    expect(await countRows(store, "notebook")).toBe(3);
+    const c = await mut(store, "notebook", "create", { title: "d", rank: 1 });
+    expect(c.error).toBeUndefined();
+    expect((await mut(store, "notebook", "update", { id: c.entry.id, title: "d2" })).error).toBeUndefined();
+    expect((await mut(store, "notebook", "create", { title: "e", scratch: "nope" })).error).toBe(true);
+    const schema = JSON.parse(await store.resolve("mnemion://schema/notebook"));
+    expect(schema.facets.map((f: any) => f.name)).not.toContain("scratch");
+  });
+
+  const DROP_REFUSALS: [string, Record<string, unknown>, RegExp][] = [
+    ["a kernel pattern", { pattern_name: "_links", facet: "label" }, /kernel/i],
+    ["a kernel column", { pattern_name: "notebook", facet: "created_at" }, /kernel/i],
+    ["the id column", { pattern_name: "notebook", facet: "id" }, /kernel/i],
+    ["a facet that does not exist", { pattern_name: "notebook", facet: "ghost" }, /ghost/],
+    ["a pattern that does not exist", { pattern_name: "nosuch", facet: "title" }, /nosuch/],
+  ];
+
+  it.each(DROP_REFUSALS)("refuses %s", async (_label, change, pattern) => {
+    const store = getStore();
+    await notebook(store);
+    const p = await propose(store, { type: "drop_facet", ...change });
+    expect(p.error).toBe(true);
+    expect(p.message).toMatch(pattern);
+  });
+
+  // Owner decision O3: drop_facet is refused while anything names the facet.
+  // Each case plants one reference; the preview lists it, apply is refused, and
+  // removing the reference lets the drop through.
+  const FACET_REFERENCES: [string, string, (store: Store) => Promise<() => Promise<void>>][] = [
+    ["memory_policy", "memory-policy exclusive_facets", async (store) => {
+      const p = await propose(store, { type: "set_memory_policy", pattern_name: "notebook", policy: { exclusive_facets: ["scratch"] } });
+      expect((await apply(store, p.change_id)).error).toBeUndefined();
+      return async () => { const c = await propose(store, { type: "set_memory_policy", pattern_name: "notebook", policy: null }); await apply(store, c.change_id); };
+    }],
+    ["view", "a _views config", async (store) => {
+      const v = await mut(store, "_views", "create", { pattern: "notebook", name: "grid", view_type: "table", config: JSON.stringify({ columns: ["title", "scratch"] }) });
+      expect(v.error, v.message).toBeFalsy();
+      return async () => { await mut(store, "_views", "archive", { id: v.entry.id }); };
+    }],
+    ["publication", "a _publications filter", async (store) => {
+      const pub = await mut(store, "_publications", "create", { path: "nb", source_pattern: "notebook", format: "json", filters: JSON.stringify(["scratch=x"]) });
+      expect(pub.error, pub.message).toBeUndefined();
+      return async () => { await mut(store, "_publications", "archive", { id: pub.entry.id }); };
+    }],
+    ["publication", "a _publications template", async (store) => {
+      const pub = await mut(store, "_publications", "create", { path: "nbt", source_pattern: "notebook", format: "html", template: "<p>{{scratch}}</p>" });
+      expect(pub.error, pub.message).toBeUndefined();
+      return async () => { await mut(store, "_publications", "archive", { id: pub.entry.id }); };
+    }],
+    ["input", "an _inputs body_facet", async (store) => {
+      const i = await mut(store, "_inputs", "create", { path: "nb-in", target_pattern: "notebook", body_facet: "scratch", visibility: "private" });
+      expect(i.error, i.message).toBeFalsy();
+      return async () => { await mut(store, "_inputs", "archive", { id: i.entry.id }); };
+    }],
+    ["input", "an _inputs facet_mapping key", async (store) => {
+      const i = await mut(store, "_inputs", "create", { path: "nb-map", target_pattern: "notebook", facet_mapping: JSON.stringify({ title: "body.title", scratch: "body.note" }), visibility: "private" });
+      expect(i.error, i.message).toBeFalsy();
+      return async () => { await mut(store, "_inputs", "archive", { id: i.entry.id }); };
+    }],
+    ["upload_token", "an active, unconsumed upload token's target_facet", async (store) => {
+      const id = (await sql(store, `SELECT id FROM notebook ORDER BY id LIMIT 1`))[0].id;
+      const t = await mut(store, "_access_tokens", "create", { scope: "upload", constraints: JSON.stringify({ target_pattern: "notebook", target_id: id, target_facet: "scratch" }) });
+      expect(t.error, t.message).toBeFalsy();
+      return async () => { await mut(store, "_access_tokens", "archive", { id: t.entry.id }); };
+    }],
+    ["clipboard", "a _clipboards rule", async (store) => {
+      const c = await mut(store, "_clipboards", "create", { name: "nb", target_pattern: "notebook", fields: [{ facet: "scratch", min_length: 1 }] });
+      expect(c.error, c.message).toBeFalsy();
+      return async () => { await mut(store, "_clipboards", "archive", { id: c.entry.id }); };
+    }],
+  ];
+
+  it.each(FACET_REFERENCES)("is refused while %s (%s) names the facet; preview lists it, apply re-checks", async (kind, _label, plant) => {
+    const store = getStore();
+    await notebook(store);
+    const remove = await plant(store);
+    const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
+    expect(p.error).toBeUndefined();
+    expect(p.preview.facet_references).toEqual(expect.arrayContaining([expect.objectContaining({ kind })]));
+    const a = await apply(store, p.change_id);
+    expect(a.error).toBe(true);
+    expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).toContain("scratch");
+    await remove();
+    const again = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
+    expect(again.preview?.facet_references ?? []).toEqual([]);
+    expect((await apply(store, again.change_id)).error).toBeUndefined();
+  });
+
+  it("an upload token whose expires_at is stored in a non-ISO form, later today, still counts as live", async () => {
+    const store = getStore();
+    await notebook(store);
+    const id = (await sql(store, `SELECT id FROM notebook ORDER BY id LIMIT 1`))[0].id;
+    const t = await mut(store, "_access_tokens", "create", { scope: "upload", constraints: JSON.stringify({ target_pattern: "notebook", target_id: id, target_facet: "scratch" }) });
+    expect(t.error, t.message).toBeFalsy();
+    // "YYYY-MM-DD HH:MM:SS", the last second of today: compared as text against an
+    // ISO "…T…Z" now, the space sorts before "T" and the token would look expired.
+    await sql(store, `UPDATE "_access_tokens" SET expires_at = strftime('%Y-%m-%d 23:59:59', 'now') WHERE id = ?`, t.entry.id);
+    const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
+    expect(p.error, p.message).toBeUndefined();
+    expect(p.preview.facet_references).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "upload_token" })]));
+    expect((await apply(store, p.change_id)).error).toBe(true);
+    expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).toContain("scratch");
+  });
+
+  it("re-checks references at apply: one planted after a clean propose blocks the drop", async () => {
+    const store = getStore();
+    await notebook(store);
+    const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
+    expect(p.error, "control: the clean drop is proposable").toBeUndefined();
+    expect(p.preview.facet_references).toEqual([]);
+    await mut(store, "_views", "create", { pattern: "notebook", name: "late", view_type: "table", config: JSON.stringify({ columns: ["scratch"] }) });
+    expect((await apply(store, p.change_id)).error).toBe(true);
+    expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).toContain("scratch");
+  });
+
+  // Owner decision O4: a reference facet is retired in Phase 3, not dropped here.
+  it("refuses a reference facet, pointing to the Phase 3 retirement", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPatternWith(store, "plans", [{ name: "title", type: "text" }, { name: "goal_id", type: "integer", links: { pattern: "goals" } }]);
+    const p = await propose(store, { type: "drop_facet", pattern_name: "plans", facet: "goal_id" });
+    expect(p.error).toBe(true);
+    expect(p.message).toMatch(/reference/i);
+    expect(p.message).toMatch(/Phase 3|declare_relation|relation/i);
+  });
+
+  it("refuses dropping a pattern's only facet", async () => {
+    const store = getStore();
+    await createPattern(store, "solo");
+    const p = await propose(store, { type: "drop_facet", pattern_name: "solo", facet: "title" });
+    expect(p.error).toBe(true);
+    expect(p.message).toMatch(/only facet|last facet|at least one/i);
+  });
+
+  it("reverting the drop restores the state BEFORE it: the bookmark is captured before the column goes", async () => {
+    const store = getStore();
+    await notebook(store);
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm-before-drop", async (hive, trace) => {
+        const p = JSON.parse(await hive.proposeChange("drop", JSON.stringify({ type: "drop_facet", pattern_name: "notebook", facet: "scratch" })));
+        expect(p.error, p.message).toBeUndefined();
+        trace.events.length = 0;
+        expect(JSON.parse(await hive.applyChange(p.change_id)).error).toBeUndefined();
+        const drop = trace.events.indexOf("change:drop-column");
+        expect(drop, `the drop ran: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        const bm = trace.events.indexOf("bookmark");
+        expect(bm, "a bookmark was captured").toBeGreaterThanOrEqual(0);
+        expect(bm, `captured before the column was dropped: ${trace.events.join(", ")}`).toBeLessThan(drop);
+        const row = state.storage.sql.exec(`SELECT id, bookmark FROM _schema_history WHERE change_type = 'drop_facet'`).toArray()[0] as any;
+        expect(row.bookmark).toBe("bm-before-drop");
+        const r = JSON.parse(await hive.revertChange(row.id));
+        expect(r.reverted).toBe(true);
+        expect(trace.restored).toEqual(["bm-before-drop"]);
+      });
+    });
+  });
+});
+
+// =====================================================================
+// Change bookmarks: a schema-history bookmark is the state BEFORE the change
+// =====================================================================
+
+describe("change bookmarks", () => {
+  it("applyChange captures the PITR bookmark before the change's first data effect (set_doctrine)", async () => {
+    const store = getStore();
+    await createPattern(store, "notes");
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm-before-doctrine", async (hive, trace) => {
+        const p = JSON.parse(await hive.proposeChange("doctrine", JSON.stringify({ type: "set_doctrine", pattern_name: "notes", doctrine: "a new doctrine" })));
+        expect(p.error, p.message).toBeUndefined();
+        trace.events.length = 0;
+        expect(JSON.parse(await hive.applyChange(p.change_id)).error).toBeUndefined();
+        const effect = trace.events.indexOf("change:set-doctrine");
+        expect(effect, `the change ran: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), `captured before the change: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark")).toBeLessThan(effect);
+        const row = state.storage.sql.exec(`SELECT bookmark FROM _schema_history WHERE change_type = 'set_doctrine'`).toArray()[0] as any;
+        expect(row.bookmark).toBe("bm-before-doctrine");
+      });
+    });
+  });
+
+  it("the same holds for declare_relation", async () => {
+    const store = getStore();
+    await createPattern(store, "notes");
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm-before-declare", async (hive, trace) => {
+        const p = JSON.parse(await hive.proposeChange("declare", JSON.stringify(declareChange({ name: "echoes", inverse: "echoed-by", source: ["notes"], target: ["notes"] }))));
+        expect(p.error, p.message).toBeUndefined();
+        trace.events.length = 0;
+        expect(JSON.parse(await hive.applyChange(p.change_id)).error).toBeUndefined();
+        const effect = trace.events.indexOf("v17:write-relations"); // INSERT INTO _relations
+        expect(effect, `the change ran: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), `captured before the change: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark")).toBeLessThan(effect);
+      });
+    });
+  });
+});
+
+// =====================================================================
+// Canonical datetime storage (§8 engine fix)
+// =====================================================================
+
+describe("canonical datetime", () => {
+  async function events(store: Store) {
+    await createPatternWith(store, "events", [{ name: "title", type: "text" }, { name: "when", type: "datetime" }], "dataset");
+  }
+  // Owner decision O1: the rule covers `datetime` facets in every pattern class.
+  async function journal(store: Store) {
+    await createPatternWith(store, "journal", [{ name: "title", type: "text" }, { name: "note", type: "text" }, { name: "when", type: "datetime" }], "knowledge");
+  }
+  const storedK = async (store: Store, id: number) => (await sql(store, `SELECT "when" FROM journal WHERE id = ?`, id))[0].when;
+  const stored = async (store: Store, id: number) => (await sql(store, `SELECT "when" FROM events WHERE id = ?`, id))[0].when;
+
+  // Owner ruling 2026-10-19 (df-79a5e65f): only an unambiguous calendar day or a
+  // full timestamp is a date. Periods and impossible dates are refused, never
+  // resolved or rolled over: resolving a period is the writer's job.
+  const NOT_A_DAY: [string, string, boolean][] = [
+    ["year only", "2026", true],
+    ["year-month", "2026-03", true],
+    ["year/month", "2026/03", true],
+    ["month and year", "March 2026", true],
+    ["Feb 30 (Date.parse rolls it to March)", "2026-02-30", false],
+    ["month 13", "2026-13-01", false],
+    ["April 31", "2026-04-31", false],
+    ["not a date", "soonish", false],
+    ["empty", "", false],
+  ];
+
+  it.each(NOT_A_DAY)("refuses %s in every pattern class, writing nothing", async (_label, input, period) => {
+    const store = getStore();
+    await events(store);
+    await journal(store);
+    for (const pattern of ["events", "journal"]) {
+      const before = (await sql(store, `SELECT COUNT(*) AS n FROM "${pattern}"`))[0].n;
+      const r = await mut(store, pattern, "create", { title: input, when: input });
+      expect(r.error, `${pattern}: ${JSON.stringify(input)}`).toBe(true);
+      expect(r.message, pattern).toMatch(/full date|calendar date|valid date/i);
+      if (period) expect(r.message, pattern).toMatch(/writer/i);
+      expect((await sql(store, `SELECT COUNT(*) AS n FROM "${pattern}"`))[0].n, `${pattern}: nothing written`).toBe(before);
+      // An update is held to the same rule and leaves the stored value alone.
+      const ok = await mut(store, pattern, "create", { title: "anchor", when: "2026-03-07" });
+      expect(ok.error, ok.message).toBeUndefined();
+      expect((await mut(store, pattern, "update", { id: ok.entry.id, when: input })).error, `${pattern} update`).toBe(true);
+      expect((await sql(store, `SELECT "when" FROM "${pattern}" WHERE id = ?`, ok.entry.id))[0].when).toBe("2026-03-07");
+    }
+  });
+
+  it("the upload path refuses a partial date too, writing nothing and leaving the token usable", async () => {
+    const store = getStore();
+    await createPatternWith(store, "logbook", [{ name: "title", type: "text" }, { name: "when", type: "text" }], "knowledge");
+    const id = (await mut(store, "logbook", "create", { title: "x", when: "kept" })).entry.id;
+    const tok = await mut(store, "_access_tokens", "create", { scope: "upload", constraints: JSON.stringify({ target_pattern: "logbook", target_id: id, target_facet: "when" }) });
+    expect(tok.error, tok.message).toBeFalsy();
+    await sql(store, `UPDATE _fields SET type = 'datetime' WHERE object_name = 'logbook' AND name = 'when'`);
+    const r = JSON.parse(await store.consumeUpload(tok.entry.token, "2026-03"));
+    expect(r.error).toBe(true);
+    expect((await sql(store, `SELECT "when" FROM logbook WHERE id = ?`, id))[0].when).toBe("kept");
+    const ok = JSON.parse(await store.consumeUpload(tok.entry.token, "2026-03-07"));
+    expect(ok.error, "the refused upload did not consume the token").toBeUndefined();
+    expect((await sql(store, `SELECT "when" FROM logbook WHERE id = ?`, id))[0].when).toBe("2026-03-07");
+  });
+
+  it("a date-only input is stored as YYYY-MM-DD", async () => {
+    const store = getStore();
+    await events(store);
+    for (const input of ["2026-03-07", "March 7, 2026", "7 March 2026"]) {
+      const r = await mut(store, "events", "create", { title: input, when: input });
+      expect(r.error, input).toBeUndefined();
+      expect(await stored(store, r.entry.id), input).toBe("2026-03-07");
+      expect(r.entry.when, input).toBe("2026-03-07");
+    }
+  });
+
+  it("an input with a time is stored as a full ISO 8601 UTC timestamp", async () => {
+    const store = getStore();
+    await events(store);
+    for (const [input, want] of [
+      ["2026-03-07T14:30:00Z", "2026-03-07T14:30:00.000Z"],
+      ["2026-03-07T14:30:00+02:00", "2026-03-07T12:30:00.000Z"],
+      ["2026-03-07 14:30", "2026-03-07T14:30:00.000Z"],
+    ] as const) {
+      const r = await mut(store, "events", "create", { title: input, when: input });
+      expect(r.error, input).toBeUndefined();
+      expect(await stored(store, r.entry.id), input).toBe(want);
+    }
+  });
+
+  it("relative phrases stay refused", async () => {
+    const store = getStore();
+    await events(store);
+    for (const input of ["next week", "tomorrow", "this week", "Q2 2026"]) {
+      const r = await mut(store, "events", "create", { title: input, when: input });
+      expect(r.error, input).toBe(true);
+    }
+    expect(await countRows(store, "events")).toBe(0);
+  });
+
+  it("updates and batch creates canonicalize too", async () => {
+    const store = getStore();
+    await events(store);
+    const r = await mut(store, "events", "create", { title: "a", when: "2026-01-01" });
+    expect((await mut(store, "events", "update", { id: r.entry.id, when: "March 7, 2026" })).error).toBeUndefined();
+    expect(await stored(store, r.entry.id)).toBe("2026-03-07");
+    const b = await batch(store, [{ pattern: "events", operation: "create", data: { title: "b", when: "April 8, 2026" } }]);
+    expect(b.error).toBeUndefined();
+    expect(await stored(store, b.results[0].entry.id)).toBe("2026-04-08");
+  });
+
+  it("knowledge patterns too: datetime facets are canonicalized and relative phrases refused; text facets stay advisory", async () => {
+    const store = getStore();
+    await journal(store);
+    for (const [input, want] of [
+      ["March 7, 2026", "2026-03-07"],
+      ["2026-03-07", "2026-03-07"],
+      ["2026-03-07T14:30:00+02:00", "2026-03-07T12:30:00.000Z"],
+    ] as const) {
+      const r = await mut(store, "journal", "create", { title: input, when: input });
+      expect(r.error, input).toBeUndefined();
+      expect(await storedK(store, r.entry.id), input).toBe(want);
+    }
+    const before = await countRows(store, "journal");
+    for (const input of ["next week", "tomorrow", "Q2 2026"]) {
+      expect((await mut(store, "journal", "create", { title: input, when: input })).error, input).toBe(true);
+    }
+    expect(await countRows(store, "journal")).toBe(before);
+    // Prose stays prose: a text facet in a knowledge pattern is never coerced or refused.
+    const prose = await mut(store, "journal", "create", { title: "plans", note: "next week, probably" });
+    expect(prose.error).toBeUndefined();
+    expect((await sql(store, `SELECT note FROM journal WHERE id = ?`, prose.entry.id))[0].note).toBe("next week, probably");
+  });
+
+  it("knowledge patterns: updates canonicalize, and existing values stay untouched until written", async () => {
+    const store = getStore();
+    await journal(store);
+    const r = await mut(store, "journal", "create", { title: "a", when: "2026-01-01" });
+    expect((await mut(store, "journal", "update", { id: r.entry.id, when: "April 8, 2026" })).error).toBeUndefined();
+    expect(await storedK(store, r.entry.id)).toBe("2026-04-08");
+    const id = await runInDurableObject(store, (_i, state) => {
+      state.storage.sql.exec(`INSERT INTO journal (title, "when") VALUES ('legacy', 'sometime in spring')`);
+      return (state.storage.sql.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+    });
+    await boot(store);
+    expect((await mut(store, "journal", "update", { id, title: "legacy, retitled" })).error).toBeUndefined();
+    expect(await storedK(store, id), "an unrelated write leaves the stored value alone").toBe("sometime in spring");
+  });
+
+  it("an upload token can't target a datetime facet; one whose facet became datetime canonicalizes or refuses at consume", async () => {
+    const store = getStore();
+    await createPatternWith(store, "logbook", [{ name: "title", type: "text" }, { name: "when", type: "text" }], "knowledge");
+    const r = await mut(store, "logbook", "create", { title: "x" });
+    const id = r.entry.id;
+    const mint = (facet: string) => mut(store, "_access_tokens", "create", { scope: "upload", constraints: JSON.stringify({ target_pattern: "logbook", target_id: id, target_facet: facet }) });
+    const ok = await mint("when");          // a text facet today
+    const bad = await mint("when");
+    expect(ok.error, ok.message).toBeFalsy();
+    // The facet's type drifts to datetime after mint (as no change type does today):
+    await sql(store, `UPDATE _fields SET type = 'datetime' WHERE object_name = 'logbook' AND name = 'when'`);
+    expect((await mint("when")).error, "minting against a datetime facet is refused").toBe(true);
+    const up = JSON.parse(await store.consumeUpload(ok.entry.token, "March 7, 2026"));
+    expect(up.error, up.message).toBeUndefined();
+    expect((await sql(store, `SELECT "when" FROM logbook WHERE id = ?`, id))[0].when).toBe("2026-03-07");
+    const rel = JSON.parse(await store.consumeUpload(bad.entry.token, "next week"));
+    expect(rel.error).toBe(true);
+    expect((await sql(store, `SELECT "when" FROM logbook WHERE id = ?`, id))[0].when, "a refused upload writes nothing").toBe("2026-03-07");
+  });
+
+  it("existing non-canonical values are left untouched until that facet is written", async () => {
+    const store = getStore();
+    await events(store);
+    const id = await runInDurableObject(store, (_i, state) => {
+      state.storage.sql.exec(`INSERT INTO events (title, "when") VALUES ('legacy', 'March 7, 2026')`);
+      return (state.storage.sql.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+    });
+    await boot(store); // no migration rewrites it
+    const q = JSON.parse(await store.query("events", JSON.stringify([`id=${id}`]), "", "", 10, false));
+    expect(q.entries[0].when, "reads return the stored value as-is").toBe("March 7, 2026");
+    expect((await mut(store, "events", "update", { id, title: "legacy, retitled" })).error).toBeUndefined();
+    expect(await stored(store, id), "writing another facet leaves it alone").toBe("March 7, 2026");
+    expect((await mut(store, "events", "update", { id, when: "March 7, 2026" })).error).toBeUndefined();
+    expect(await stored(store, id), "writing the facet canonicalizes it").toBe("2026-03-07");
   });
 });

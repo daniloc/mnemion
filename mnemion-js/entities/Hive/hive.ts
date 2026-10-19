@@ -283,8 +283,9 @@ export class HiveDO extends DurableObject {
         if (by) result.superseded_by = by;
       } catch { /* _links may not exist */ }
 
-      // One-hop link following
-      const linked = priming.followLinks(this.primeCtx(), patternName, entry);
+      // One-hop link following — every relation in both directions, plus the
+      // derived (chain) connections, computed at read time.
+      const linked = priming.followLinks(this.primeCtx(), patternName, entry, "resolve");
       if (linked.length > 0) result.linked = linked;
 
       return JSON.stringify(result, null, 2);
@@ -328,6 +329,7 @@ export class HiveDO extends DurableObject {
       // missing spec). loadClipboard is one indexed SELECT on a tiny table — cheap enough
       // to run per write rather than risk intra-batch staleness.
       clipboardFor: (pattern) => this.loadClipboard(pattern),
+      atomic: (fn) => this.ctx.storage.transactionSync(fn),
     };
   }
 
@@ -524,7 +526,8 @@ export class HiveDO extends DurableObject {
       }
       // Granular delta so the UI can patch one element instead of refetching the
       // whole pattern — the heart of "only the element the agent changed redraws".
-      this.broadcastChange([patternName], { op: operation, id: result.entry?.id ?? parsed.id, entry: result.entry ?? null });
+      // Links born through _relate are announced too (_links among the patterns).
+      this.broadcastChange(result.links?.length ? [patternName, "_links"] : [patternName], { op: operation, id: result.entry?.id ?? parsed.id, entry: result.entry ?? null });
       this.embedAfterMutate(patternName, operation, result.entry?.id ?? result.id, conflictCheck?.vector ?? undefined);
       // The raw preimage exists ONLY here — placed on the response AFTER the
       // (sealed) broadcast above, so the one-time mint value reaches the caller
@@ -572,7 +575,12 @@ export class HiveDO extends DurableObject {
   }
 
   async batchMutate(operationsJson: string, actor: string = OWNER_ACTOR): Promise<string> {
-    const operations = JSON.parse(operationsJson) as { pattern: string; operation: string; data: any }[];
+    // Shortcuts expand exactly as in mutate(): {pattern: "link"} → _links create,
+    // {pattern: "unlink"} → _links unlink; the shortcut decides the operation.
+    const operations = (JSON.parse(operationsJson) as { pattern: string; operation?: string; data: any }[]).map((op) => {
+      const shortcut = expandShortcut(op.pattern);
+      return shortcut ? { ...op, pattern: shortcut.pattern, operation: shortcut.operation } : op;
+    }) as { pattern: string; operation: string; data: any }[];
 
     if (operations.length > data.LIMITS.BATCH_OPS) {
       return this.errorJson(`Batch too large: ${operations.length} operations exceeds limit of ${data.LIMITS.BATCH_OPS}`);
@@ -599,21 +607,14 @@ export class HiveDO extends DurableObject {
     const scratches = operations.map((op, i) =>
       effectsPerOp[i]?.before ? (effectsPerOp[i]!.before!(op.data, op.operation, effectCtx) || {}) : {});
 
-    const ctx = this.ownerDataCtx(actor);
-    const results: any[] = [];
-    // transactionSync is atomic: any throw inside rolls the whole batch back.
-    // A per-op {error} (validation/kernel) is re-thrown to trigger that rollback;
-    // a raw DB write throw (constraint, disk) also unwinds it. Both must leave
-    // here as the SAME structured error a single mutate returns — not a raw throw
-    // across the RPC/MCP boundary — so the caught message is returned, not re-raised.
+    // executeBatch is atomic (one transaction; the end-state rules judged once over
+    // the whole batch): a refusal anywhere, or a raw DB throw, rolls every op back
+    // and leaves here as the SAME structured error a single mutate returns.
+    let results: any[];
     try {
-      this.ctx.storage.transactionSync(() => {
-        for (const op of operations) {
-          const result = data.executeMutate(ctx, op.pattern, op.operation, op.data);
-          if (result.error) throw new Error(result.message);
-          results.push(result);
-        }
-      });
+      const out = data.executeBatch(this.ownerDataCtx(actor), operations);
+      if ("error" in out) return this.errorJson(`Batch mutate failed: ${out.message}`);
+      results = out.results;
     } catch (err: any) {
       logError("mutate.write_failed", err, { batch: true, operations: operations.length });
       return this.errorJson(`Batch mutate failed: ${err.message}`);
@@ -621,7 +622,10 @@ export class HiveDO extends DurableObject {
     // Attach each one-time raw preimage to its result (DB holds only the digest).
     results.forEach((r, i) => { const o = onces[i]; if (o && r.entry) { for (const [c, raw] of Object.entries(o)) r.entry[c] = raw; r._once = o; } });
 
-    const affectedPatterns = [...new Set(operations.map(op => op.pattern))];
+    const affectedPatterns = [...new Set([
+      ...operations.map(op => op.pattern),
+      ...(results.some((r) => r.links?.length) ? ["_links"] : []), // links born through _relate
+    ])];
     this.broadcastChange(affectedPatterns);
     for (const r of results) {
       this.embedAfterMutate(r.pattern, r.operation, r.entry?.id ?? r.id);
@@ -672,6 +676,18 @@ export class HiveDO extends DurableObject {
     const contentBytes = new TextEncoder().encode(content).length;
     if (contentBytes > data.LIMITS.ENTRY_BYTES)
       return this.errorJson(`Content too large: ${Math.round(contentBytes / 1024)}KB exceeds the 1MB limit`);
+
+    // A token minted against a text facet can outlive that facet's type: if it is
+    // datetime now, the upload is coerced exactly as a mutate would be (canonical
+    // ISO 8601, relative phrases refused) — refused uploads write nothing and
+    // leave the token unconsumed.
+    const facetType = (this.db.exec(`SELECT type FROM _fields WHERE object_name = ? AND name = ?`, constraints.target_pattern, constraints.target_facet).toArray()[0] as any)?.type;
+    if (facetType === "datetime") {
+      if (constraints.mode === "append") return this.errorJson(`Upload target "${constraints.target_facet}" is a datetime facet — it can only be replaced, not appended to. Nothing was written; the token was not consumed.`);
+      const coerced = data.coerceFacetValue("datetime", content.trim());
+      if (!coerced.ok) return this.errorJson(`Upload refused for datetime facet "${constraints.target_facet}": ${coerced.error}. Nothing was written; the token was not consumed.`);
+      content = coerced.value as string;
+    }
 
     try {
       if (constraints.mode === "append") {

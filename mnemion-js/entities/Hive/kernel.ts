@@ -500,20 +500,9 @@ export const ON_WRITE: Record<string, WriteHook> =
 export const IMMUTABLE: Record<string, ImmutableRule> =
   mergeDisjoint(CORE_IMMUTABLE, composeImmutable(FEATURES), "immutable-fields");
 
-// === Mutate shortcuts — kernel-level aliases for common operations ===
+// === Mutate shortcuts — declared in the shortcuts.ts leaf, re-exported here ===
 
-export interface Shortcut { pattern: string; operation: string }
-
-export const SHORTCUTS: Record<string, Shortcut> = {
-  fragment: { pattern: "_short_term_fragments", operation: "create" },
-  link:     { pattern: "_links", operation: "create" },
-  unlink:   { pattern: "_links", operation: "unlink" },
-};
-
-/** Expand a shortcut name to pattern + operation, or return null if not a shortcut. */
-export function expandShortcut(name: string): Shortcut | null {
-  return SHORTCUTS[name] ?? null;
-}
+export { SHORTCUTS, expandShortcut, type Shortcut } from "./shortcuts";
 
 // === Federation host validation ===
 

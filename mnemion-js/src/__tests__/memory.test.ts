@@ -139,8 +139,12 @@ describe("exclusive facets", () => {
     const second = await createEntry(store, "decisions", { topic: "database", body: "We switched to MySQL" });
     expect(second.error).toBeUndefined(); // never blocks
     expect(second.entry.id).toBeTypeOf("number");
-    expect(second.possible_overlap).toHaveLength(1);
-    expect(second.possible_overlap[0]).toMatchObject({ pattern: "decisions", id: first.entry.id, reason: "exclusive_facet", facet: "topic" });
+    // Exactly one exclusive-facet advisory. A semantic_similarity advisory may also
+    // appear: the KNN neighbor check runs against a real, shared Vectorize index whose
+    // contents (and indexing latency) are outside this test, so its count is not pinned.
+    const exclusive = second.possible_overlap.filter((o: any) => o.reason === "exclusive_facet");
+    expect(exclusive).toHaveLength(1);
+    expect(exclusive[0]).toMatchObject({ pattern: "decisions", id: first.entry.id, reason: "exclusive_facet", facet: "topic" });
     expect(second.overlap_guidance).toMatch(/supersedes/);
   });
 

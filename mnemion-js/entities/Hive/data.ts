@@ -16,7 +16,7 @@
 import { applyKernelRules, immutableFieldError, type KernelContext } from "./kernel";
 import { isInternalWriteProtected, isKernelPattern, isValidWriteTarget } from "./policy";
 import { getMemoryPolicy } from "./prime";
-import { resolveUnlink } from "./relations";
+import { resolveUnlink, endStateViolations, touch, type Touched } from "./relations";
 import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { logError } from "../../shared/core/log";
@@ -80,6 +80,10 @@ export interface DataContext {
    *  a check per call site. REQUIRED (no default): a context must declare its
    *  trust, so a new serve/ingress path can't silently inherit kernel access. */
   trusted: boolean;
+  /** Run `fn` as one transaction: a throw rolls every write in it back. The engine
+   *  wraps each mutate (and each batch) in it, so a refusal anywhere — a `_relate`
+   *  link, an end-state rule — leaves nothing behind. */
+  atomic<T>(fn: () => T): T;
 }
 
 // === Constants ===
@@ -157,7 +161,7 @@ function parseFilterJson(filterJson: string): string[] | null {
 // memory on semantic grounds, so it sits cleanly beside the never-blocks doctrine.
 // Each validator coerces to the canonical stored form or reports why it can't.
 
-type Coerce = { ok: true; value: unknown } | { ok: false; error: string };
+export type Coerce = { ok: true; value: unknown } | { ok: false; error: string };
 
 // A finite number from a number, or from a NON-EMPTY numeric string — never via
 // Number("")/Number("  ")/Number([]) which all coerce to 0 and would silently write 0
@@ -188,13 +192,82 @@ const FACET_VALIDATORS: Record<string, (v: unknown) => Coerce> = {
     if (v === "false" || v === "0") return { ok: true, value: 0 };
     return { ok: false, error: `expected a boolean, got ${JSON.stringify(v)}` };
   },
+  // Canonical ISO 8601 so SQL comparison and ordering are always right: a
+  // date-only input (no time of day, whatever its written form) is stored as
+  // YYYY-MM-DD; anything else parseable as a full UTC timestamp. Only an
+  // unambiguous calendar day or a full timestamp is a date (owner ruling,
+  // df-79a5e65f): periods ("2026", "2026-03", "March 2026"), impossible days
+  // ("2026-02-30", which Date.parse would roll into March) and relative phrases
+  // are refused — resolving a period to a day is the writer's job.
   datetime: (v) => {
-    if (typeof v !== "string" && typeof v !== "number") return { ok: false, error: `expected a date string` };
-    const t = Date.parse(String(v));
-    return Number.isNaN(t) ? { ok: false, error: `expected a valid date (ISO 8601), got ${JSON.stringify(v)}` } : { ok: true, value: String(v) };
+    if (typeof v !== "string" && typeof v !== "number") return { ok: false, error: `expected a full date (a calendar day or a timestamp)` };
+    const s = typeof v === "string" ? v.trim() : v;
+    if (typeof s === "string") {
+      if (PERIOD_RES.some((re) => re.test(s)))
+        return { ok: false, error: `expected a full date (a calendar day like 2026-03-07, or a full timestamp), got ${JSON.stringify(v)} — that is a period; resolving it to a day is the writer's job` };
+      const stated = statedDay(s);
+      if (stated && !isRealDay(stated.y, stated.m, stated.d))
+        return { ok: false, error: `expected a full date that exists on the calendar, got ${JSON.stringify(v)} — there is no such day` };
+    }
+    const t = typeof s === "number" ? s : Date.parse(s);
+    if (Number.isNaN(t)) return { ok: false, error: `expected a full date (a calendar day like 2026-03-07, or a full ISO 8601 timestamp), got ${JSON.stringify(v)}` };
+    return { ok: true, value: canonicalDatetime(s, t) };
   },
   select: (v) => ({ ok: true, value: v }), // option membership is checked separately
 };
+
+/** Coerce one value to a facet type's canonical stored form, or say why it can't
+ *  be — the single coercion every write path uses (mutate here; the upload path
+ *  in hive.consumeUpload). Types without a validator pass through unchanged. */
+export function coerceFacetValue(type: string, value: unknown): Coerce {
+  const coerce = FACET_VALIDATORS[type];
+  return coerce ? coerce(value) : { ok: true, value };
+}
+
+/** A year, or a year and month — periods, not days. */
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const MONTH_NAME = `(?:${MONTHS.map((m) => `${m.slice(0, 3)}(?:${m.slice(3)})?`).join("|")})\\.?`;
+const PERIOD_RES = [
+  /^\d{4}$/,                                    // 2026
+  /^\d{4}[-/.]\d{1,2}$/,                        // 2026-03, 2026/03
+  /^\d{1,2}[-/.]\d{4}$/,                        // 03/2026
+  new RegExp(`^${MONTH_NAME},?\\s+\\d{4}$`, "i"),   // March 2026
+  new RegExp(`^\\d{4}\\s+${MONTH_NAME}$`, "i"),     // 2026 March
+];
+
+/** The year, month and day the writer STATED, when the form states one — so an
+ *  impossible day is refused instead of silently rolled over by Date.parse. */
+function statedDay(s: string): { y: number; m: number; d: number } | null {
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|[T\s])/);
+  if (m) return { y: +m[1], m: +m[2], d: +m[3] };
+  m = s.match(new RegExp(`^(${MONTH_NAME})\\s+(\\d{1,2}),?\\s+(\\d{4})`, "i"));
+  if (m) return { y: +m[3], m: monthIndex(m[1]), d: +m[2] };
+  m = s.match(new RegExp(`^(\\d{1,2})\\s+(${MONTH_NAME}),?\\s+(\\d{4})`, "i"));
+  if (m) return { y: +m[3], m: monthIndex(m[2]), d: +m[1] };
+  return null;
+}
+
+function monthIndex(name: string): number {
+  const k = name.toLowerCase().slice(0, 3);
+  return MONTHS.findIndex((m) => m.startsWith(k)) + 1;
+}
+
+function isRealDay(y: number, m: number, d: number): boolean {
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return m >= 1 && m <= 12 && t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const TIME_OF_DAY_RE = /\d{1,2}:\d{2}|T\d/;
+
+function canonicalDatetime(v: string | number, t: number): string {
+  if (typeof v === "number" || TIME_OF_DAY_RE.test(v)) return new Date(t).toISOString();
+  if (ISO_DATE_RE.test(v.trim())) return new Date(t).toISOString().slice(0, 10); // parsed as UTC midnight
+  // Other date-only forms ("March 7, 2026") parse as LOCAL midnight: read the local date.
+  const d = new Date(t);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 interface FacetDef { name: string; type: string; required: boolean; hasDefault: boolean; }
 
@@ -647,7 +720,68 @@ function aggregate(
 
 // === Mutate ===
 
+/** A refusal raised inside `ctx.atomic` to roll the transaction back; carries the
+ *  engine-authored result the caller returns. */
+class Refused { constructor(readonly result: any) {} }
+
+/** Run a write body atomically, then judge the end state it leaves (required
+ *  relations, containment — relations.ts endStateViolations) before commit. Any
+ *  refusal, from the body or the end state, rolls everything back. */
+function atomically(ctx: DataContext, body: (touched: Touched) => any): any {
+  const touched: Touched = new Map();
+  try {
+    return ctx.atomic(() => {
+      const result = body(touched);
+      if (result?.error) throw new Refused(result);
+      const violation = endStateViolations(ctx.db, touched);
+      if (violation) throw new Refused({ error: true, message: violation });
+      return result;
+    });
+  } catch (err) {
+    if (err instanceof Refused) return err.result;
+    throw err;
+  }
+}
+
+/** The one chokepoint every engine write crosses: one operation, atomic, its end
+ *  state judged before commit. */
 export function executeMutate(ctx: DataContext, patternName: string, operation: string, data: any): any {
+  return atomically(ctx, (touched) => mutateOne(ctx, patternName, operation, data, touched));
+}
+
+/** Several operations as one atomic unit: each is checked as it runs (label,
+ *  ends, cardinality, acyclicity…), the end-state rules once over the whole batch
+ *  — so a move (archive + relink) or a container archived with its members passes
+ *  in any order. Returns every result, or the first refusal (nothing written). */
+export function executeBatch(ctx: DataContext, operations: { pattern: string; operation: string; data: any }[]): { results: any[] } | { error: true; message: string } {
+  return atomically(ctx, (touched) => {
+    const results: any[] = [];
+    for (const op of operations) {
+      const r = mutateOne(ctx, op.pattern, op.operation, op.data, touched);
+      if (r?.error) return r;
+      results.push(r);
+    }
+    return { results };
+  });
+}
+
+/** `_relate` on create: `{relation name or inverse: "pattern/id" | ["pattern/id", …]}`
+ *  — the links the new entry is born with. Each crosses the `_links` chokepoint
+ *  inside the same transaction as the entry. */
+function takeRelate(data: any, operation: string): { pairs: [string, unknown][] } | { error: true; message: string } | null {
+  if (!data || typeof data !== "object" || !("_relate" in data)) return null;
+  const rel = data._relate;
+  delete data._relate;
+  if (operation !== "create")
+    return { error: true, message: `_relate is accepted only on create — link an existing entry with mutate(pattern: "link", …).` };
+  if (!rel || typeof rel !== "object" || Array.isArray(rel))
+    return { error: true, message: `_relate must be an object mapping a relation (name or inverse) to "pattern/id" or a list of them, e.g. _relate: {"references": "papers/3"}.` };
+  const pairs: [string, unknown][] = [];
+  for (const [label, refs] of Object.entries(rel)) for (const r of Array.isArray(refs) ? refs : [refs]) pairs.push([label, r]);
+  return { pairs };
+}
+
+function mutateOne(ctx: DataContext, patternName: string, operation: string, data: any, touched: Touched): any {
   if (!ctx.patternExists(patternName))
     return { error: true, message: `Pattern "${patternName}" does not exist.${suggestPattern(patternName, ctx)}` };
 
@@ -669,6 +803,11 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
   delete (data as any).created_by;
   delete (data as any).updated_by;
 
+  // `_relate` is not a facet (facet names start with a letter): take it out before
+  // any facet validation; its links are written after the entry exists.
+  const relate = takeRelate(data, operation);
+  if (relate && "error" in relate) return relate;
+
   // unlink names a link by its endpoints (+ optional relation) instead of by id.
   // relations.ts resolves that selector to exactly one active link (normalizing an
   // inverse label, refusing an ambiguous or malformed one); the write itself is an
@@ -677,7 +816,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
     if (patternName !== "_links") return { error: true, message: `unlink applies to links only — use mutate(pattern: "unlink", data: {source, target, label?}).` };
     const sel = resolveUnlink(ctx.db, data);
     if ("error" in sel) return sel;
-    const archived = executeMutate(ctx, "_links", "archive", { id: sel.id });
+    const archived = mutateOne(ctx, "_links", "archive", { id: sel.id }, touched);
     if (archived.error) return archived;
     return { operation: "unlink", pattern: "_links", id: sel.id, source: sel.source, target: sel.target };
   }
@@ -755,13 +894,15 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
           return { error: true, message: `Invalid value "${val}" for "${key}". Options: ${meta.options.join(", ")}` };
 
         // Dataset patterns enforce types: coerce to canonical form or reject.
-        // Knowledge patterns leave the value untouched (types stay advisory).
-        if (isDataset && val != null) {
+        // Knowledge patterns leave the value untouched (types stay advisory) —
+        // except `datetime`, canonical in every user pattern so dates compare and
+        // sort soundly in SQL (kernel datetime columns are system-managed).
+        if (val != null && (isDataset || (meta.type === "datetime" && !isKernelPattern(patternName)))) {
           const validate = FACET_VALIDATORS[meta.type];
           if (validate) {
             const r = validate(val);
             if (!r.ok)
-              return { error: true, message: `Invalid value for "${key}" on dataset "${patternName}" (${meta.type}): ${r.error}` };
+              return { error: true, message: `Invalid value for "${key}" on ${isDataset ? "dataset " : ""}"${patternName}" (${meta.type}): ${r.error}` };
             data[key] = r.value;
           }
         }
@@ -819,6 +960,20 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         ctx.db.exec(`INSERT INTO ${quoteIdent(patternName)} (${cols}) VALUES (${placeholders})`, ...values);
         const row = ctx.db.exec(`SELECT * FROM ${quoteIdent(patternName)} WHERE id = last_insert_rowid()`).one();
         const result: any = { operation: "create", pattern: patternName, entry: row, uri: uri(`entry/${patternName}/${(row as any).id}`) };
+        touch(touched, patternName, (row as any).id, "created");
+
+        // The links this entry is born with, through the same `_links` chokepoint
+        // as any link write; one refusal rolls the entry back with them.
+        if (relate) {
+          const self = `${patternName}/${(row as any).id}`;
+          result.links = [];
+          for (const [label, target] of relate.pairs) {
+            const l = mutateOne(ctx, "_links", "create", { source: self, target, label }, touched);
+            if (l.error) return { ...l, message: `_relate ${JSON.stringify(label)} → ${JSON.stringify(target)}: ${l.message}` };
+            const e = l.entry;
+            result.links.push({ id: e.id, source: `${e.source_pattern}/${e.source_id}`, target: `${e.target_pattern}/${e.target_id}`, label: e.label });
+          }
+        }
         if (overlap?.length) {
           result.possible_overlap = overlap;
           result.overlap_guidance = `Advisory only — the entry was created. These facets are declared exclusive in this pattern's memory policy; if the new entry replaces one of them, link supersession: mutate(pattern: "link", data: {source: "${patternName}/${(row as any).id}", target: "${patternName}/{old_id}", label: "supersedes"}) (supersedes is the kernel relation with the supersession behavior; labels must name a declared relation — see ${uri("relations")}).`;
@@ -971,6 +1126,12 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
 
       case "archive": {
         if (!data.id) return { error: true, message: "id is required for archive" };
+        // Archiving a link removes it from its source: the end state re-judges that
+        // entry's required relations.
+        if (patternName === "_links") {
+          const l = ctx.db.exec(`SELECT source_pattern, source_id FROM "_links" WHERE id = ? AND archived_at IS NULL`, data.id).toArray()[0] as any;
+          if (l) touch(touched, l.source_pattern, l.source_id, "link-removed");
+        }
         ctx.db.exec(
           `UPDATE ${quoteIdent(patternName)} SET archived_at = datetime('now'), updated_at = datetime('now'), updated_by = ? WHERE id = ? AND archived_at IS NULL`,
           ctx.actor, data.id
@@ -980,6 +1141,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
         if (changes.c === 0)
           return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is already archived).` };
+        touch(touched, patternName, Number(data.id), "archived");
         return { operation: "archive", pattern: patternName, id: data.id, uri: uri(`entry/${patternName}/${data.id}`) };
       }
 
@@ -994,6 +1156,7 @@ export function executeMutate(ctx: DataContext, patternName: string, operation: 
         const changes = ctx.db.exec("SELECT changes() as c").one() as { c: number };
         if (changes.c === 0)
           return { error: true, message: `Entry ${data.id} not found in "${patternName}" (it does not exist or is not archived).` };
+        touch(touched, patternName, Number(data.id), "unarchived");
         // Reactivating a clipboard-bound row changes the derived completion tally —
         // surface the new progress (the row was already re-validated by the submission
         // gate above before the unarchive committed).

@@ -452,6 +452,13 @@ extra links first.
     non-existent patterns", and "linked facet validation";
   - `formats.test.ts`: the reference-format case;
   - `data-is-destiny.test.ts`: the reference-facet fixture.
+- **Web relation picker** (owner decision O5, 2026-10-18). For each required
+  relation where the pattern is the source, the create form gets a target
+  field. It is driven by the registry and built as declarative data against
+  the existing component palette, never per-pattern code. The form submits
+  the link through `_relate`.
+- **Swift client** (O5). Rebase it onto main. Creates go through `_relate`,
+  and `Portfolio.projectTasks` is renamed to `tasks`.
 
 ### Phase 4: this hive's data (agent-run, owner-ratified)
 
@@ -510,8 +517,12 @@ extra links first.
    | Catch-all | — | 3, 12 |
 
 5. **Move `project-tasks` into `tasks`** (§8), then archive `project-tasks`.
-6. **Flip `required` on** for `belongs-to` once the preview shows no
-   violators. `serves` stays optional; the *unaligned* view covers it.
+6. **Flip `required` on** for `belongs-to`. The gate (O5) needs all of:
+   - the web relation picker and the Swift `_relate` update are live (Phase 3),
+     so no client can be left unable to create a task;
+   - the required-relation preview shows zero violators.
+
+   `serves` stays optional; the *unaligned* view covers it.
 
 ### Clients
 
@@ -1075,3 +1086,356 @@ That is the same moment a fresh hive is born, so the nag is unaffected.
     test compares the two directly.
 14. **Legacy cycles: one warning line per cycle** (§F), naming the relation and
     each entry as `pattern/id`.
+
+## Interface (Phase 2)
+
+This appendix pins the shapes the Phase 2 acceptance tests assume. Those tests
+are the Phase 2 describes at the end of
+`mnemion-js/src/__tests__/relations.test.ts`:
+
+- `required relations`
+- `containment`
+- `inline _relate`
+- `link shortcuts in batches`
+- `derived relations`
+- `drop_facet`
+- `canonical datetime`
+- the legacy-debt cases in `relation vocabulary evolution`
+
+Where it changes the Phase 1 interface, that is said explicitly.
+
+### P2-A. Changes to `_relations` and the read surfaces
+
+- **`required`** is a column, INTEGER 0 or 1.
+- **`chain`** is TEXT: a JSON array of step names, or NULL for a stored
+  relation.
+- **The stored `legacy` column is removed** (it is dropped at boot). Legacy
+  status is derived at read time; see P2-G.
+- **Read surfaces.** Each item in `mnemion://relations` and in the index's
+  `relations` gains three fields:
+  - `required: boolean`;
+  - `derived: boolean`, true exactly when `chain` is set;
+  - `legacy_debt: string[]`, a subset of `["placeholder description",
+    "generated inverse"]` in that order.
+
+  `legacy` stays a boolean, equal to `legacy_debt.length > 0`. A derived item
+  also carries `chain: string[]`. Its `source` is the first step's source and
+  its `target` the last step's target.
+
+### P2-B. Required relations
+
+- **Declaring.** `declare_relation` and `amend_relation` accept
+  `required: boolean`. `required: true` is refused unless `source` is an
+  explicit list: no `*`, and the message mentions the source.
+- **Violations.** Declaring or amending to `required: true` previews
+  `preview.violations`, one item per active source entry with no active link
+  of the relation: `{ source: "pattern/id", … }`. Apply is refused while any
+  remain, re-checked at apply. `required: false` always applies.
+- **Create.** A create in a source pattern of a required relation without the
+  link in `_relate` is a clean refusal. The message names the relation, the
+  target pattern(s) and `_relate`.
+- **Removing the last link.** Archiving or unlinking the last active link of a
+  required relation from an active source entry is refused, and the message
+  says to move it. A move is an archive plus a create in one batch. Required
+  is judged on the batch's end state, so either order works.
+- **Archived source patterns** (df-00ac1d54). `required: true` (declare or
+  amend) is refused while any source pattern is archived; the message names
+  the pattern. Counting those entries as violations instead would deadlock:
+  no link can be created to or from an archived pattern's entries, so they
+  could never be backfilled. Unarchive, backfill, then flip.
+  `unarchive_pattern` of a required relation's source pattern lists its
+  entries lacking the link in `preview.violations` (`{ source, label, … }`),
+  and apply is refused while any remain. To resolve, amend `required: false`,
+  unarchive, backfill, then flip back.
+- **Inactive sources.** An archived source entry is exempt while archived.
+  Unarchiving it without an active link of the relation is refused, naming
+  the relation.
+- **Boot report.** At boot a pure findings function reports active entries
+  that lack a required link (pre-existing data). It emits one `console.warn`
+  line per entry, naming the relation and the entry as `pattern/id`. Nothing
+  is repaired.
+
+### P2-C. Containment
+
+- **The palette.** `BEHAVIOR_PALETTE` gains `containment`, and the Phase 2
+  palette is exactly supersession, acyclic and containment. The kernel default
+  `part-of` carries `["containment", "acyclic"]` after boot refresh. Palette
+  totality maps `containment` to the `containment` describe.
+- **Archiving a container pattern** (owner decision O2). `archive_pattern` on
+  a pattern that holds targets of a containment relation is refused while
+  active members in other patterns link into its active entries. Propose
+  succeeds and lists them in `preview.violations` as
+  `{ source: "member/id", target: "container/id", label }`. Apply is refused
+  while any remain, re-checked at apply. Neither archived members nor members
+  inside the same pattern count.
+- **Archiving a container.** Archiving an entry that is the target of a
+  containment link from an active member is a clean refusal. The message names
+  the relation and the members as `pattern/id`. Archived members don't count,
+  and non-containment relations never block.
+- **Unarchive** (df-6809fa29, df-f3e97410):
+  - Unarchiving a member whose container is archived (the entry, or its
+    pattern) is a clean refusal naming the relation and the container.
+    Unarchiving member and container in one batch is judged on the end state
+    and succeeds.
+  - `unarchive_pattern` of a member pattern lists every entry that would be
+    an active member under an archived container, as `preview.violations`
+    `{ source: member, target: container, label }`. Apply is refused while any
+    remain, re-checked at apply.
+  - `amend_relation` adding `containment` lists the existing archived
+    containers that have active members, in the same shape. Apply is refused
+    while any remain.
+- **Batches.** The check is deferred to the end of the batch, so a batch that
+  also archives or moves every member succeeds in any item order. A batch that
+  leaves an active member under an archived container is refused, and the
+  whole batch rolls back.
+- **Recall.** Prime's one-hop expansion follows a containment link only from
+  member to container, never from container to members. Other relations
+  expand as before. `resolve` of a container still lists its members, with
+  `direction: "in"` and the inverse name.
+
+### P2-D. Inline `_relate`
+
+```jsonc
+mutate(pattern, "create", { …facets, "_relate": { "<relation name or inverse>": "pattern/id" | ["pattern/id", …] } })
+→ { …, "entry": { … },                     // never contains _relate
+    "links": [ { "id": 7, "source": "notes/4", "target": "papers/1", "label": "references" } ] }  // canonical, exactly these keys
+```
+
+- **Validation.** `_relate` is stripped before insert. Every link crosses the
+  link chokepoint in the same transaction as the entry. Any refusal returns a
+  clean refusal and leaves neither the entry nor any of its links. That covers
+  an undeclared or derived label, a missing or inadmissible target,
+  cardinality, a malformed ref, a duplicate, and a `_relate` that is not an
+  object.
+- **Create only.** `_relate` is accepted only on create. On update it is a
+  clean refusal naming `_relate`.
+- **Broadcast.** Links created through `_relate`, single or batch, are
+  announced over `/ws`: `_links` is among the `patterns` of the write's
+  `changed` messages.
+- **Surfaces.** It works on single and batch creates (each batch result
+  carries its own `links`), through `POST /api/mutate/:pattern` (passed
+  through as data), and over MCP `mutate`.
+
+### P2-E. Link shortcuts in batches
+
+- **Expansion.** `batchMutate` expands `{pattern: "link"}` and
+  `{pattern: "unlink"}` the way `mutate()` does. A shortcut item's `operation`
+  may be omitted; when present, the shortcut decides it.
+- **Rollback.** A refused link anywhere rolls back the whole batch, and the
+  batch error carries the item's refusal message.
+- **MCP.** The MCP `mutate` batch schema accepts shortcut items without an
+  `operation`.
+- **The consent gate** (df-8e8a97fe). `findGatedBatchOp` judges each item
+  after shortcut expansion, through the same `expandShortcut` table `mutate()`
+  uses. A shortcut that expands to a consent-gated pattern is gated like that
+  pattern named directly.
+
+### P2-F. Derived relations
+
+```jsonc
+{ "type": "declare_relation", "name": "addresses", "inverse": "addressed-by", "description": "…", "chain": ["belongs-to", "serves"] }
+```
+
+- **Declaring a chain.** A chain has at least two steps. Each step is an
+  active, stored (not derived) relation. The steps must compose: step n's
+  target list and step n+1's source list intersect, and `*` matches any user
+  pattern. A chain declaration must omit `source`, `target`, `cardinality`,
+  `behaviors` and `required`; each is refused, naming the field.
+- **Writing.** Writing a derived name or inverse through `link`, raw
+  `_links` create or `_relate` is a clean refusal naming the chain's stored
+  steps. No `_links` row ever carries a derived name; the totality oracle
+  treats one as a violation.
+- **Reading.** `resolve` adds derived items to `linked`:
+  `{ pattern, id, uri, entry, direction, relation, derived: true }`. From the
+  source side the item has `direction: "out"` and the name; from the far end,
+  `"in"` and the inverse. Items are deduplicated per (relation, entry).
+  Derivation follows only active links between active entries. Stored items
+  carry no `derived: true`.
+- **Retiring.** A stored relation that an active chain uses cannot be retired;
+  the refusal names the chain. A chain itself can be retired at any time.
+
+### P2-G. Legacy debt (owner decision, 2026-10-18)
+
+The inverse stays required, and the migration keeps generating
+`<name>-inverse` (and `-N` when that is taken). Debt is two derived facts,
+never a stored flag:
+
+- **`placeholder description`:** the description equals the v17 migration's
+  placeholder text for that name. That template is frozen; changing it would
+  silently clear the debt on old rows.
+- **`generated inverse`:** the inverse matches `^<name>-inverse(-\d+)?$`, with
+  the name regex-escaped.
+
+The generated-inverse form is reserved. `declare_relation` and
+`amend_relation` refuse an inverse in that form, so an owner-chosen name can
+never look generated and a relation declared from scratch is never legacy.
+
+A relation is legacy while either debt remains. The two may be paid in one
+amend or across several. The boot warning names the remaining debt per
+relation, for example `refines: generated inverse`. Rows the v17 migration
+declared and Phase 1 since amended report correctly with no data migration,
+because both facts are read from current values.
+
+**Why derived, not stored:** the stored flag lied as soon as a description
+amend cleared it, leaving a generated inverse behind. Store truth once and
+derive its consequences: the facts are the current description and inverse
+against code-owned templates, so nothing can drift.
+
+### P2-H. `drop_facet`
+
+```jsonc
+{ "type": "drop_facet", "pattern_name": "notebook", "facet": "scratch" }
+// propose → preview.non_null_values: number   (active and archived rows whose value is non-NULL)
+```
+
+- **Apply.** Apply removes the column and its `_fields` row. The pattern
+  stays writable: creates and updates work, the dropped facet is unknown to
+  writes, and the schema no longer lists it.
+- **Logging and revert.** The change is logged as `drop_facet` with a PITR
+  bookmark, like every applied change, and reverts through the existing
+  `revertChange`.
+- **Refused at propose:**
+  - a kernel pattern;
+  - a kernel column (`id`, `created_at`, …);
+  - a missing facet or pattern;
+  - a pattern's only facet;
+  - a reference facet, meaning one with `links` / `references_object`
+    (owner decision O4). Its message names the reference and points to the
+    Phase 3 retirement and `declare_relation`.
+- **References** (owner decision O3). While anything names the facet,
+  propose succeeds and lists every reference in `preview.facet_references`.
+  It was `references` until the audit round; renamed because that key
+  collided with the kernel relation name. Each item is `{ kind, … }`, where
+  `kind` is one of:
+  - `memory_policy`: an `exclusive_facets` entry;
+  - `view`: a `_views` config;
+  - `publication`: a `_publications` filter or template;
+  - `clipboard`: a `_clipboards` rule;
+  - `input`: an `_inputs` `body_facet`, or a `facet_mapping` key, on the
+    facet's pattern (df-0b5f4311);
+  - `upload_token`: an active, unconsumed upload `_access_tokens` row whose
+    `constraints.target_facet` names the facet (df-0b5f4311). "Active" compares `expires_at`
+    as a date, not as text, so a live token stored as
+    `"YYYY-MM-DD HH:MM:SS"` (later today) still counts.
+
+  The blocker field in `CHANGE_TYPES` is renamed to match:
+  `blockers.facet_references`.
+  Apply is refused while any remain, and re-checks at apply, so a reference
+  planted after a clean propose blocks it. There is no cascade and no
+  dangling reference. Removing the reference lets the drop through.
+
+### P2-I. Canonical datetime (every pattern class)
+
+The rule covers facets typed `datetime` in every pattern class, knowledge and
+dataset alike (owner decision O1). Text facets stay advisory: a knowledge
+`text` facet is never coerced or refused. The `datetime` coercion stores ISO
+8601:
+
+- **Date-only input** is stored as `YYYY-MM-DD`. Date-only means no time of
+  day is present, whatever the written form ("2026-03-07", "March 7, 2026",
+  "7 March 2026").
+- **Any other parseable input** is stored as `new Date(t).toISOString()`, a
+  full UTC timestamp.
+- **Relative phrases** stay refused.
+
+This applies to create, update and batch create, and to the upload path. An
+upload token can't be minted against a `datetime` facet. A token whose facet
+became `datetime` after mint canonicalizes the uploaded text at
+`consumeUpload`, under the same rules, or refuses it, writing nothing and
+leaving the token unconsumed.
+
+**Partial, ambiguous and impossible dates are refused** (owner ruling,
+2026-10-19, df-79a5e65f; this resolves the earlier pending note). A
+`datetime` facet accepts only:
+
+- an unambiguous calendar day: `YYYY-MM-DD`, or anything `Date.parse`
+  resolves to a specific day, such as "March 7, 2026";
+- a full timestamp.
+
+Refused:
+
+- a year alone (`"2026"`);
+- a year and month (`"2026-03"`, `"2026/03"`, `"March 2026"`);
+- an impossible day (`"2026-02-30"`, `"2026-04-31"`, `"2026-13-01"`).
+  `Date.parse` silently rolls some of these into the next month, so the
+  stored day must be the day the writer wrote;
+- non-dates and the empty string.
+
+The refusal message says a full date is required. For a period, it also says
+that resolving the period to a day is the writer's job. The rule applies in
+every pattern class, on create, update, batch and the upload path, and a
+refused write leaves stored values and an upload token untouched. Existing non-canonical
+values are untouched until that facet is written: reads return them as
+stored, boot doesn't rewrite them, and an update of another facet leaves them
+alone.
+
+### P2-K. Change bookmarks (df-0b9d1865)
+
+`applyChange` captures the PITR bookmark **before** `handler.apply` and stores
+it with the change's `_schema_history` row. Reverting that row therefore
+restores the state before the change. This was a pre-existing bug affecting
+every change type: the capture came after apply, so a revert restored the
+post-change state. Pinned with the ordering harness for `set_doctrine`,
+`declare_relation` and `drop_facet`; the `drop_facet` revert test asserts the
+ordering itself. After this, the agent docs' claim that revert undoes
+`drop_facet` (`schema-evolution.md`) is true.
+
+### P2-J. Phase 1 cases that changed under Phase 2
+
+- **Kernel defaults:** `part-of` now carries `containment`.
+- **Declare refusal rows:**
+  - the "containment / required / chain not yet supported" rows are gone;
+  - `required` on a `*` source is refused, naming the source;
+  - a chain that also declares stored-relation fields is refused, naming the
+    field.
+- **Amend:** refusing `containment` became refusing an unknown behavior.
+- **Legacy:**
+  - the `legacy` SQL column assertions became read-surface `legacy` /
+    `legacy_debt` assertions;
+  - "description amend clears legacy" became the legacy-debt cases;
+  - the boot-warning test pays both debts.
+- **Palette totality:** it maps `containment`, and the palette set is exactly
+  the three behaviors.
+
+### Choices made by the test author (Phase 2)
+
+1. **Batches judge on their end state.** Required and containment are
+   checked at the end of a batch; label, ends, cardinality and acyclicity are
+   checked per item. A move is otherwise impossible under cardinality one.
+2. **Required exempts archived source entries,** and unarchive re-checks.
+3. **Required violations use `source`** for the lacking entry, matching the
+   `preview.violations` key in Phase 1.
+4. **A chain declares no ends or behaviors.** `source` and `target` are
+   derived from its steps, and derived items are deduplicated.
+5. **A chain cannot contain a derived step.**
+6. **`drop_facet` refuses a pattern's only facet,** mirroring
+   `create_pattern`'s one-facet minimum.
+7. *(Superseded by O1: datetime canonicalization covers every pattern
+   class.)*
+8. **Legacy debt is derived from current values, and the generated inverse
+   form is reserved** (P2-G).
+
+### Owner decisions (2026-10-18, each option A)
+
+O1 to O4 are pinned in P2-C, P2-H and P2-I. O5 is in the migration plan (Phase
+3 picker and Swift client; Phase 4 gate). The original questions follow for
+the record.
+
+- **O1. Knowledge patterns and datetime.** Should canonical datetime apply to
+  knowledge-class patterns? Knowledge facet types are advisory today; values
+  are stored as typed. Applying canonicalization would start refusing
+  unparseable values there. §8's `tasks.deadline` only benefits if `tasks` is
+  a dataset, or if this is extended. Only datasets are pinned.
+- **O2. Containment and `archive_pattern`.** Should archiving a whole
+  container pattern be refused while its entries have active members in other
+  patterns? Not pinned.
+- **O3. `drop_facet` and references to the facet.** What happens when the
+  facet is named by a memory policy's `exclusive_facets`, a view spec, a
+  publication's `facets` or a clipboard? Refuse, cascade, or leave it
+  dangling? Not pinned.
+- **O4. `drop_facet` on a reference (`links`) facet.** SQLite refuses
+  `DROP COLUMN` on a foreign-key column, so this needs a table rebuild. That
+  is Phase 3 (§7). Not pinned.
+- **O5. Required relations and the live `tasks`.** Once `belongs-to` is
+  required, `project-tasks` creates from the Swift client must use `_relate`.
+  That is the Phase 4 / client sequencing.
