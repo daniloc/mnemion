@@ -20,6 +20,8 @@ import { FACET_RESERVED_COLUMNS, USER_OVERRIDABLE_KERNEL_COLUMNS } from "./kerne
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
 import type { StoreIndex, IndexFacetEntry } from "./reports";
 import * as rel from "./relations";
+import { facetReferences, nonNullValues } from "./facet-references";
+import { KERNEL_COLUMN_SET } from "./kernel-columns";
 
 // === Types ===
 
@@ -128,9 +130,19 @@ interface ChangeType {
   apply:    (change: any, ctx: EvolutionContext) => void;
   /** What the propose/apply response shows (default: the touched pattern). */
   focus?:   (change: any, preview: StoreIndex) => Record<string, unknown>;
-  /** Existing data the change would strand. Listed in the propose preview; at
-   *  apply it is recomputed against current data and any violation refuses. */
-  violations?: (change: any, ctx: EvolutionContext) => rel.RelationViolation[];
+  /** What blocks the change, keyed by the preview field that lists it: existing
+   *  data it would strand (violations) or config that still names what it removes
+   *  (references). Listed in the propose preview; at apply each is recomputed
+   *  against CURRENT data and any item refuses — so a blocker that appears after
+   *  propose blocks too. */
+  blockers?: { violations?: BlockerFinder; references?: BlockerFinder };
+}
+
+type BlockerFinder = (change: any, ctx: EvolutionContext) => { reason: string }[];
+
+/** Every blocker a change type declares, evaluated now: [preview field, items]. */
+function findBlockers(handler: ChangeType, change: any, ctx: EvolutionContext): [string, { reason: string }[]][] {
+  return Object.entries(handler.blockers ?? {}).map(([field, find]) => [field, find!(change, ctx)]);
 }
 
 /** The relation-vocabulary focus: the relation as the change leaves it. */
@@ -446,11 +458,53 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     preview(change, preview) {
       preview.patterns = preview.patterns.filter((p) => p.name !== change.pattern_name);
     },
+    // Owner decision O2: a container pattern can't be archived out from under
+    // active members in other patterns (containment relations, relations.ts).
+    blockers: { violations: (change, ctx) => rel.containmentHolders(ctx.db, change.pattern_name) },
     apply(change, { db }) {
       db.exec(
         "UPDATE _objects SET archived_at = datetime('now') WHERE name = ?",
         change.pattern_name
       );
+    },
+  },
+
+  drop_facet: {
+    validate(change, ctx, preview) {
+      if (!change.pattern_name) return "pattern_name is required for drop_facet";
+      if (!change.facet) return "facet is required for drop_facet";
+      if (isKernelPattern(change.pattern_name))
+        return `Facets of kernel pattern "${change.pattern_name}" are owned by code and cannot be dropped.`;
+      if (!ctx.patternExists(change.pattern_name)) return `Pattern "${change.pattern_name}" does not exist`;
+      if (KERNEL_COLUMN_SET.has(change.facet))
+        return `"${change.facet}" is a kernel column (auto-provided on every pattern) and cannot be dropped.`;
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      const facet = pat?.facets.find((f) => f.name === change.facet);
+      if (!pat || !facet) return `Facet "${change.facet}" does not exist on "${change.pattern_name}"`;
+      // Owner decision O4: a reference (links) facet is a foreign-key column SQLite
+      // won't drop; it is retired by the Phase 3 migration to a relation.
+      if (facet.links)
+        return `"${change.facet}" is a reference facet (links → ${facet.links}); reference facets are retired in Phase 3 by migrating them to a relation, not dropped. Declare the relation with declare_relation and link the entries instead.`;
+      if (pat.facets.length <= 1)
+        return `"${change.facet}" is the only facet of "${change.pattern_name}" — a pattern needs at least one facet. Archive the pattern instead.`;
+      return null;
+    },
+    preview(change, preview) {
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      if (pat) pat.facets = pat.facets.filter((f) => f.name !== change.facet);
+    },
+    focus: (change, preview) => ({ pattern: preview.patterns.find((p) => p.name === change.pattern_name) ?? { name: change.pattern_name }, dropped_facet: change.facet }),
+    // Owner decision O3: refused while anything names the facet — no cascade, no
+    // dangling reference (facet-references.ts declares every kind).
+    blockers: { references: (change, ctx) => facetReferences(ctx.db, change.pattern_name, change.facet) },
+    apply(change, { db }) {
+      // The audit triggers name every column, so SQLite refuses DROP COLUMN while
+      // they exist: drop them, drop the column + its _fields row, rebuild them.
+      for (const op of ["insert", "update", "delete"])
+        db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${change.pattern_name}_${op}`)}`);
+      db.exec(`ALTER TABLE ${quoteIdent(change.pattern_name)} DROP COLUMN ${quoteIdent(change.facet)}`);
+      db.exec("DELETE FROM _fields WHERE object_name = ? AND name = ?", change.pattern_name, change.facet);
+      ensureAuditTriggers(db, change.pattern_name);
     },
   },
 
@@ -477,8 +531,9 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
 
   declare_relation: {
     validate: (change, ctx) => rel.validateDeclare(ctx, change),
-    preview(change, preview) { preview.relations.push(rel.declaredRelation(change)); },
+    preview(change, preview) { preview.relations.push(rel.declaredRelation(change, preview.relations)); },
     focus: relationFocus,
+    blockers: { violations: (change, ctx) => rel.declareViolations(ctx.db, change) },
     apply: (change, ctx) => rel.declareRelation(ctx, change),
   },
 
@@ -489,7 +544,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       if (i >= 0) preview.relations[i] = rel.amendedRelation(preview.relations[i], change);
     },
     focus: relationFocus,
-    violations: (change, ctx) => rel.amendViolations(ctx.db, change),
+    blockers: { violations: (change, ctx) => rel.amendViolations(ctx.db, change) },
     apply: (change, ctx) => rel.amendRelation(ctx, change),
   },
 
@@ -497,7 +552,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     validate: (change, ctx) => rel.validateRetire(ctx, change),
     preview(change, preview) { preview.relations = preview.relations.filter((r) => r.name !== change.name); },
     focus: (change) => ({ relation: change.name ?? null, retired: true }),
-    violations: (change, ctx) => rel.retireViolations(ctx.db, change),
+    blockers: { violations: (change, ctx) => rel.retireViolations(ctx.db, change) },
     apply: (change, ctx) => rel.retireRelation(ctx, change),
   },
 };
@@ -599,8 +654,11 @@ export function proposeChange(
   const err = handler.validate(change, ctx, preview);
   if (err) return errorJson(err);
 
+  // The data a drop_facet would lose — computed before the preview hides the facet.
+  const nonNull = change.type === "drop_facet" ? nonNullValues(ctx.db, change.pattern_name, change.facet) : undefined;
   handler.preview(change, preview);
-  const violations = handler.violations?.(change, ctx);
+  const blocked = findBlockers(handler, change, ctx);
+  const blocking = blocked.reduce((n, [, items]) => n + items.length, 0);
 
   const changeId = crypto.randomUUID();
   ctx.db.exec(
@@ -613,9 +671,13 @@ export function proposeChange(
     description,
     change_type: change.type,
     version: preview.version,
-    preview: { ...focusedPreview(change, preview, ctx), ...(violations ? { violations } : {}) },
-    message: violations?.length
-      ? `Change proposed, but ${violations.length} active link(s) would violate it (preview.violations). apply_change is refused until they are archived or moved.`
+    preview: {
+      ...focusedPreview(change, preview, ctx),
+      ...(nonNull !== undefined ? { non_null_values: nonNull } : {}),
+      ...Object.fromEntries(blocked),
+    },
+    message: blocking
+      ? `Change proposed, but ${blocking} item(s) block it (${blocked.filter(([, i]) => i.length).map(([f]) => `preview.${f}`).join(", ")}). apply_change is refused until they are resolved.`
       : "Change proposed. Call apply_change with this change_id to commit.",
   }, null, 2);
 }
@@ -635,14 +697,15 @@ export async function applyChange(
   const handler = CHANGE_TYPES[change.type];
   if (!handler) return errorJson(`Unknown change type: ${change.type}`);
 
-  // Re-check against CURRENT data: a violator written between propose and apply
+  // Re-check against CURRENT data: a blocker written between propose and apply
   // blocks the change just as one present at propose does. Nothing is written.
-  const violations = handler.violations?.(change, ctx) ?? [];
-  if (violations.length)
+  const blocked = findBlockers(handler, change, ctx);
+  const items = blocked.flatMap(([, i]) => i);
+  if (items.length)
     return JSON.stringify({
       error: true,
-      message: `Refused: ${violations.length} active link(s) would violate this change — ${violations.map((v) => `${v.source} → ${v.target} (${v.reason})`).join("; ")}. Archive or move them, then apply again.`,
-      violations,
+      message: `Refused: ${items.length} item(s) block this change — ${items.map((v) => v.reason).join("; ")}. Resolve them, then apply again.`,
+      ...Object.fromEntries(blocked),
     });
 
   try {
