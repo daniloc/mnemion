@@ -4,7 +4,6 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "postinstall": "node scripts/patch-coherence-scope.mjs",
     "build:pages": "vite build --config vite.fragment.ts",
     "build:web": "vite build --config vite.web.ts",
     "preview:render": "vite dev --config vite.preview.ts --open /render-preview.html",
@@ -49,7 +48,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.0",
     "@cloudflare/workers-types": "^4.20260615.1",
-    "@posthog/coherence": "^1.7.1",
+    "@posthog/coherence": "^1.7.2",
     "@types/node": "^25.9.3",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
