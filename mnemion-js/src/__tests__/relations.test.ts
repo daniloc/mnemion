@@ -2065,6 +2065,12 @@ function v17Effect(q: string): string | null {
   // A change's own data effects (applyChange's handler.apply), for bookmark ordering.
   if (/ALTER\s+TABLE\s+"?(?!_)[\w-]+"?\s+DROP\s+COLUMN/i.test(q)) return "change:drop-column";
   if (/UPDATE\s+_objects\s+SET\s+doctrine/i.test(q)) return "change:set-doctrine";
+  // v19 (Phase 3): reference facets become relations + links; tables are rebuilt.
+  if (/INSERT\s+INTO\s+"?_links"?/i.test(q)) return "v19:insert-link";
+  const v19dropped = q.match(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?["`]?([\w-]+)/i);
+  if (v19dropped && !v19dropped[1].startsWith("_")) return "v19:drop-table";
+  const v19renamed = q.match(/ALTER\s+TABLE\s+["`]?([\w-]+)["`]?\s+RENAME/i);
+  if (v19renamed && !v19renamed[1].startsWith("_")) return "v19:rename-table";
   // v18 (Phase 2): the stored legacy flag leaves _relations.
   if (/ALTER\s+TABLE\s+"?_relations"?\s+DROP\s+COLUMN\s+"?legacy"?/i.test(q)) return "v18:drop-legacy-column";
   if (/DROP\s+TABLE\s+(IF\s+EXISTS\s+)?"?_relations"?/i.test(q)) return "v18:rebuild-relations";
@@ -2150,6 +2156,7 @@ function declaredRestorePointMigrations(): string[] {
 const RESTORE_POINT_COVERED_BY: Record<string, string> = {
   v17: "the first v17 boot records exactly one restore_point row; later boots add none",
   v18: "a Phase 1-shaped hive records exactly one v18 restore point before the legacy column leaves; later boots add none",
+  v19: "a hive with reference facets records exactly one v19 restore point before any v19 step; later boots add none",
 };
 
 /** Give a booted (Phase 2) hive the Phase 1 shape v18 migrates: the stored legacy flag. */
@@ -2252,6 +2259,40 @@ describe("restore point", () => {
       const after = (db.exec(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = '_relations'`).toArray() as any[]).map((r) => r.sql).join("\n");
       expect(after, "audit triggers exist again").toMatch(/_audit__relations_/);
       expect(after, "and no longer name legacy").not.toMatch(/legacy/);
+    });
+  });
+
+  // Phase 3: the reference-facet retirement (v19) is a MIGRATION_RESTORE_POINTS
+  // entry. First run: a boot that finds any _fields row with references_object set.
+  it("a hive with reference facets records exactly one v19 restore point before any v19 step; later boots add none", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPattern(store, "tasks");
+    const g = await entry(store, "goals", "g");
+    const t = await entry(store, "tasks", "t");
+    await runInDurableObject(store, (_i, state) => {
+      const db = state.storage.sql;
+      db.exec(`ALTER TABLE "tasks" ADD COLUMN "goal_id" INTEGER REFERENCES "goals"("id")`);
+      db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES ('tasks', 'goal_id', 'integer', 0, 'goals')`);
+      db.exec(`UPDATE tasks SET goal_id = ? WHERE id = ?`, g, t);
+    });
+    await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      await booted(state, () => "bm-before-v19", async (_hive, trace) => {
+        const v19 = (e: string) => e.startsWith("v19:") || e === "change:drop-column";
+        const first = trace.events.findIndex(v19);
+        expect(first, `a v19 step ran: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), "the bookmark was captured").toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), `capture precedes every v19 effect: ${trace.events.join(", ")}`).toBeLessThan(first);
+      });
+      const rows = restorePoints(db).filter((r) => /v19/.test(r.description));
+      expect(rows.length, "one v19 restore point").toBe(1);
+      expect(rows[0].description).toMatch(/restore point/i);
+      expect(rows[0].description).toMatch(/reference/i);
+      expect(rows[0].bookmark).toBe("bm-before-v19");
+      expect((db.exec(`PRAGMA table_info("tasks")`).toArray() as any[]).map((c) => c.name), "the migration ran").not.toContain("goal_id");
+      await booted(state, () => "bm-later", async () => {});
+      expect(restorePoints(db).filter((r) => /v19/.test(r.description)).length).toBe(1);
     });
   });
 

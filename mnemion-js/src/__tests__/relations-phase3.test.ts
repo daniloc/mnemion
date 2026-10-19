@@ -14,7 +14,7 @@
 // behavioral tests fail on assertions) before it exists.
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, vi } from "vitest";
-import { HiveDO } from "../../entities/Hive/hive";
+import type { HiveDO } from "../../entities/Hive/hive";
 import { initializeSchema } from "../../entities/Hive/schema";
 import { FORMAT_IDS, isFormat, resolveFormat, validateFormatsMap } from "../../shared/core/format-palette";
 
@@ -138,55 +138,6 @@ async function amendP3(store: Store, change: Record<string, unknown>) {
   return apply(store, p.change_id);
 }
 
-// --- The restore-point harness (same technique as relations.test.ts "restore point") ---
-
-interface BootTrace { events: string[]; restored: string[]; unpatch?: () => void }
-
-/** Classify a SQL statement as a v18 (reference-facet retirement) effect, or null. */
-function v18Effect(q: string): string | null {
-  if (/INSERT\s+INTO\s+"?_relations"?/i.test(q)) return "v18:declare-relation";
-  if (/INSERT\s+INTO\s+"?_links"?/i.test(q)) return "v18:insert-link";
-  // A user table (no leading underscore) dropped or renamed: the rebuild.
-  const dropped = q.match(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?["`]?([\w-]+)/i);
-  if (dropped && !dropped[1].startsWith("_")) return "v18:drop-table";
-  const renamed = q.match(/ALTER\s+TABLE\s+["`]?([\w-]+)["`]?\s+RENAME/i);
-  if (renamed && !renamed[1].startsWith("_")) return "v18:rename-table";
-  if (/ALTER\s+TABLE[^;]*DROP\s+COLUMN/i.test(q)) return "v18:drop-column";
-  return null;
-}
-
-async function bootWith(state: DurableObjectState, bookmark: () => string, trace: BootTrace): Promise<HiveDO> {
-  const storage = state.storage as any;
-  const sqlReal = storage.sql;
-  const sqlProxy = new Proxy(sqlReal, {
-    get(t, k) {
-      if (k === "exec") return (q: string, ...p: unknown[]) => { const e = v18Effect(q); if (e) trace.events.push(e); return t.exec(q, ...p); };
-      const v = t[k];
-      return typeof v === "function" ? v.bind(t) : v;
-    },
-  });
-  const pending: Promise<unknown>[] = [];
-  const saved: [any, string, PropertyDescriptor | undefined][] = [];
-  const patch = (o: any, k: string, d: PropertyDescriptor) => {
-    saved.push([o, k, Object.getOwnPropertyDescriptor(o, k)]);
-    Object.defineProperty(o, k, { configurable: true, ...d });
-  };
-  patch(storage, "sql", { get: () => sqlProxy });
-  patch(storage, "getCurrentBookmark", { value: async () => { trace.events.push("bookmark"); return bookmark(); } });
-  patch(storage, "onNextSessionRestoreBookmark", { value: async (b: string) => { trace.restored.push(b); return b; } });
-  patch(state, "blockConcurrencyWhile", { value: (fn: () => Promise<unknown>) => { const p = Promise.resolve().then(fn); pending.push(p); return p; } });
-  patch(state, "abort", { value: () => { trace.events.push("abort"); } });
-  trace.unpatch = () => { for (const [o, k, d] of saved.reverse()) { if (d) Object.defineProperty(o, k, d); else delete o[k]; } };
-  const hive = new HiveDO(state, env);
-  await Promise.all(pending);
-  return hive;
-}
-
-async function booted<T>(state: DurableObjectState, bookmark: () => string, body: (hive: HiveDO, trace: BootTrace) => Promise<T>): Promise<T> {
-  const trace: BootTrace = { events: [], restored: [] };
-  try { return await body(await bootWith(state, bookmark, trace), trace); } finally { trace.unpatch?.(); }
-}
-
 /** A hive with a pre-Phase-3 reference facet tasks.goal_id → goals, values set. */
 async function legacyFkHive() {
   const store = getStore();
@@ -294,7 +245,7 @@ describe("reference facets retired", () => {
 });
 
 // =====================================================================
-// 1b. The fork migration (v18)
+// 1b. The fork migration (v19)
 // =====================================================================
 
 describe("reference facet migration", () => {
@@ -420,27 +371,14 @@ describe("reference facet migration", () => {
     }
   });
 
-  it("records one restore point before any v18 step, and none on later boots or hives without reference facets", async () => {
-    const { store } = await legacyFkHive();
-    await runInDurableObject(store, async (_i, state) => {
-      await booted(state, () => "bm-before-v18", async (_hive, trace) => {
-        const first = trace.events.findIndex((e) => e.startsWith("v18:"));
-        expect(trace.events, "the v18 steps ran").toEqual(expect.arrayContaining(["v18:declare-relation", "v18:insert-link"]));
-        expect(trace.events.indexOf("bookmark"), "the bookmark was captured").toBeGreaterThanOrEqual(0);
-        expect(trace.events.indexOf("bookmark"), `capture precedes every v18 effect: ${trace.events.join(", ")}`).toBeLessThan(first);
-      });
-      const points = state.storage.sql.exec(`SELECT * FROM _schema_history WHERE change_type = 'restore_point' AND description LIKE '%reference%'`).toArray() as any[];
-      expect(points.length).toBe(1);
-      expect(points[0].description).toMatch(/restore point/i);
-      expect(points[0].bookmark).toBe("bm-before-v18");
-      await booted(state, () => "bm-later", async () => {});
-      expect(state.storage.sql.exec(`SELECT COUNT(*) AS n FROM _schema_history WHERE change_type = 'restore_point' AND description LIKE '%reference%'`).one()).toEqual({ n: 1 });
-    });
-
+  // The v19 restore point (a MIGRATION_RESTORE_POINTS entry) is covered in
+  // relations.test.ts's "restore point" describe, where the structural check
+  // requires every entry's covering test to live. Here: none on a clean hive.
+  it("a hive without reference facets records no v19 restore point", async () => {
     const clean = getStore();
     await createPattern(clean, "tasks");
     await boot(clean);
-    expect(await sql(clean, `SELECT id FROM _schema_history WHERE change_type = 'restore_point' AND description LIKE '%reference%'`)).toEqual([]);
+    expect(await sql(clean, `SELECT id FROM _schema_history WHERE change_type = 'restore_point' AND description LIKE '%v19%'`)).toEqual([]);
   });
 
   it("is idempotent: a second boot changes nothing", async () => {

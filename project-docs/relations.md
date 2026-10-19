@@ -1449,8 +1449,9 @@ the record.
 This appendix pins the shapes the Phase 3 acceptance tests assume. The tests
 are in `mnemion-js/src/__tests__/relations-phase3.test.ts`, plus the rewritten
 Phase 1-era cases in `hive.test.ts`, `formats.test.ts` and
-`data-is-destiny.test.ts`. The branch inherits the Phase 2 contract, so its 74
-Phase 2 reds are not Phase 3's.
+`data-is-destiny.test.ts`, plus the v19 covering test in `relations.test.ts`'s
+`restore point` describe. The branch is rebased onto the implemented Phase 2
+(main at 461065d), so every red on it is Phase 3's.
 
 ### P3-A. Reference facets retired
 
@@ -1472,21 +1473,21 @@ Phase 2 reds are not Phase 3's.
 
   Non-containment relations and `references_object` never count.
 
-### P3-B. The fork migration (v18)
+### P3-B. The fork migration (v19)
 
 **When.** At boot, when `_fields` holds any row with a non-null
 `references_object`. Hives without one record and change nothing.
 
 **Order.**
 
-1. Capture `ctx.storage.getCurrentBookmark()` before any v18 statement: before
+1. Capture `ctx.storage.getCurrentBookmark()` before any v19 statement: before
    any `INSERT INTO "_relations"` or `INSERT INTO "_links"`, and before any user
    table is dropped, renamed, or loses a column.
 2. Record one `_schema_history` row:
 
    ```jsonc
    { "change_type": "restore_point",
-     "description": "Restore point before the reference-facet retirement (v18)",  // must mention "restore point" and "reference"
+     "description": "Restore point before the reference-facet retirement (v19)",  // must mention "restore point", "reference" and "v19"
      "bookmark": "<captured or NULL>" }
    ```
 
@@ -1624,9 +1625,12 @@ interface RelationGroup { relation: string; direction: "out" | "in"; derived: bo
    same-named facets are never merged.
 2. **Migrated relations carry both legacy debts.** The migration reuses the
    frozen legacy placeholder template, so P2-G detects them with no new flag.
-3. **The v18 restore point is pinned in the v17 style.** Whether to generalize
-   it into a "table-rewriting migrations record a restore point" registry is
-   left to the implementer; the test pins only v18.
+3. **The restore point is a `MIGRATION_RESTORE_POINTS` entry** (rebased onto
+   the implemented Phase 2, which took v18 for the legacy-column drop, so this
+   migration is v19). Entry `v19`: `firstRun` holds when `_fields` has any row
+   with a non-null `references_object`. Its covering test lives in
+   `relations.test.ts`'s `restore point` describe, as the structural check
+   requires.
 4. **Archived sources and targets still get their links** (dormant), so
    unarchiving restores the connection.
 5. **Dangling FK values are not tested,** because the runtime enforces foreign
