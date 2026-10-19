@@ -624,11 +624,32 @@ function activeMembers(db: DB, rels: Relation[], pattern: string, id: number): {
     .map((l) => ({ member: ref(l.source_pattern, l.source_id), label: l.label }));
 }
 
+/** The containers (`pattern/id`) an active member links into through a
+ *  containment relation while they are inactive — the entry archived or its
+ *  pattern archived. `selfActive` names a pattern to treat as active (an
+ *  unarchive_pattern being judged before it applies). */
+function inactiveContainers(db: DB, rels: Relation[], pattern: string, id: number, selfActive?: string): { container: string; label: string }[] {
+  const containment = rels.filter((r) => r.behaviors.includes("containment")).map((r) => r.name);
+  if (!containment.length) return [];
+  return (db.exec(
+    `SELECT target_pattern, target_id, label FROM "_links" WHERE archived_at IS NULL AND source_pattern = ? AND source_id = ? AND label IN (${containment.map(() => "?").join(",")}) ORDER BY id`,
+    pattern, id, ...containment,
+  ).toArray() as any[])
+    .filter((l) => l.target_pattern === selfActive ? !rowActive(db, l.target_pattern, l.target_id) : !entryActive(db, l.target_pattern, l.target_id))
+    .map((l) => ({ container: ref(l.target_pattern, l.target_id), label: l.label }));
+}
+
+function rowActive(db: DB, pattern: string, id: number): boolean {
+  try { return db.exec(`SELECT 1 FROM ${quoteIdent(pattern)} WHERE id = ? AND archived_at IS NULL`, id).toArray().length > 0; } catch { return false; }
+}
+
 /** The first end-state violation among the touched entries, as an engine-authored
  *  refusal message — or null when the end state is sound.
  *  - required: an ACTIVE entry of a required relation's source pattern holds at
  *    least one active link of it (an archived entry is exempt while archived);
- *  - containment: an ARCHIVED entry is not the container of any active member. */
+ *  - containment: an ARCHIVED entry is not the container of any active member,
+ *    and an entry brought back (unarchived) is not a member of an inactive
+ *    container. */
 export function endStateViolations(db: DB, touched: Touched): string | null {
   if (!touched.size) return null;
   const rels = activeRelations(db);
@@ -646,6 +667,13 @@ export function endStateViolations(db: DB, touched: Touched): string | null {
             return `${key} cannot be unarchived without a "${r.name}" link to ${targets} (the relation is required). Unarchive it and link it in the same batch.`;
           default:
             return `"${r.name}" is required for "${at.pattern}": every entry must hold one, to ${targets}. Create it with the link inline — _relate: {"${r.name}": "<${r.target[0] ?? "pattern"}>/<id>"} — or in the same batch.`;
+        }
+      }
+      if (cause === "unarchived") {
+        const under = inactiveContainers(db, rels, at.pattern, at.id);
+        if (under.length) {
+          const by = [...new Set(under.map((u) => u.label))].join(", ");
+          return `"${by}" is a containment relation: ${key} can't be active while its container ${under.map((u) => u.container).join(", ")} is archived. Unarchive the container too (the same batch is fine), or move the member first.`;
         }
       }
     } else {
@@ -676,12 +704,31 @@ export function containmentHolders(db: DB, pattern: string): RelationViolation[]
     }));
 }
 
-/** Active source entries lacking a link of `relation` (if it were required). */
-function lacking(db: DB, relation: Pick<Relation, "name" | "source">): RelationViolation[] {
+/** unarchive_pattern: what the pattern's active entries would violate once the
+ *  pattern is live again — members under an archived container (containment), and
+ *  entries lacking the link of a required relation it is a source of. */
+export function unarchivePatternViolations(db: DB, pattern: string): RelationViolation[] {
+  if (typeof pattern !== "string") return [];
+  const rels = activeRelations(db);
+  const out: RelationViolation[] = [];
+  let ids: number[] = [];
+  try { ids = (db.exec(`SELECT id FROM ${quoteIdent(pattern)} WHERE archived_at IS NULL ORDER BY id`).toArray() as any[]).map((r) => r.id); } catch { return []; }
+  for (const id of ids)
+    for (const u of inactiveContainers(db, rels, pattern, id, pattern))
+      out.push({ source: ref(pattern, id), target: u.container, label: u.label,
+        reason: `"${u.label}" is a containment relation: ${ref(pattern, id)} would be active under its archived container ${u.container} — unarchive the container or move the member first` });
+  for (const r of requiredFor(rels, pattern)) out.push(...lacking(db, { name: r.name, source: [pattern] }, pattern));
+  return out;
+}
+
+/** Active source entries lacking a link of `relation` (if it were required).
+ *  `includeArchived` judges a pattern that is archived now (an unarchive_pattern
+ *  being judged before it applies). */
+function lacking(db: DB, relation: Pick<Relation, "name" | "source">, includeArchived?: string): RelationViolation[] {
   const out: RelationViolation[] = [];
   for (const p of relation.source) {
     if (p === ANY) continue;
-    if (db.exec(`SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NULL`, p).toArray().length === 0) continue;
+    if (p !== includeArchived && db.exec(`SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NULL`, p).toArray().length === 0) continue;
     let rows: { id: number }[];
     try { rows = db.exec(`SELECT id FROM ${quoteIdent(p)} WHERE archived_at IS NULL ORDER BY id`).toArray() as any[]; } catch { continue; }
     for (const { id } of rows)
@@ -1023,7 +1070,10 @@ function checkEnd(ctx: RelationsContext, end: "source" | "target", value: unknow
       return end === "source"
         ? `${end} names kernel pattern "${p}" — a relation's source must be a user pattern.`
         : `${end} names kernel pattern "${p}" — the only kernel link targets are ${[...KERNEL_LINK_TARGETS].join(" and ")}.`;
-    if (!ctx.patternExists(p)) return `${end} names pattern "${p}", which does not exist.`;
+    if (!ctx.patternExists(p)) {
+      const archived = ctx.db.exec(`SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NOT NULL`, p).toArray().length > 0;
+      return `${end} names pattern "${p}", which ${archived ? "is archived — unarchive it first" : "does not exist"}.`;
+    }
   }
   return null;
 }
@@ -1053,9 +1103,15 @@ function checkShape(change: any): string | null {
 
 /** A required relation needs an explicit source list: "every entry of a listed
  *  source pattern holds one" means nothing over `*`. */
-function checkRequired(required: unknown, source: string[]): string | null {
-  return required === true && (source.includes(ANY) || !source.length)
-    ? `A required relation needs an explicit source list (not "*"): name the source patterns whose every entry must hold one.`
+function checkRequired(db: DB, required: unknown, source: string[]): string | null {
+  if (required !== true) return null;
+  if (source.includes(ANY) || !source.length)
+    return `A required relation needs an explicit source list (not "*"): name the source patterns whose every entry must hold one.`;
+  // An archived source pattern's entries can't be linked, so they could never be
+  // backfilled: refuse rather than deadlock. Unarchive, backfill, then flip.
+  const archived = source.filter((p) => db.exec(`SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NOT NULL`, p).toArray().length > 0);
+  return archived.length
+    ? `required can't be set while source pattern ${archived.map((p) => `"${p}"`).join(", ")} is archived — its entries can't be linked to backfill. Unarchive it, backfill the links, then make the relation required.`
     : null;
 }
 
@@ -1142,7 +1198,7 @@ export function validateDeclare(ctx: RelationsContext, change: any): string | nu
   return checkEnd(ctx, "source", change.source)
     ?? checkEnd(ctx, "target", change.target)
     ?? checkShape(change)
-    ?? checkRequired(change.required, normList(change.source) ?? []);
+    ?? checkRequired(ctx.db, change.required, normList(change.source) ?? []);
 }
 
 const AMENDABLE = ["description", "inverse", "behaviors", "cardinality", "required"] as const;
@@ -1170,7 +1226,7 @@ export function validateAmend(ctx: RelationsContext, change: any): string | null
     const err = checkDescription(change.description, [next.name, next.inverse]);
     if (err) return err;
   }
-  return checkShape(change) ?? checkRequired(change.required, current.source);
+  return checkShape(change) ?? checkRequired(ctx.db, change.required, current.source);
 }
 
 export function validateRetire(ctx: RelationsContext, change: any): string | null {
@@ -1220,6 +1276,11 @@ export function amendViolations(db: DB, change: any): RelationViolation[] {
       if (closesCycle(db, next.name, l, l.id)) out.push(v(l, `link lies on a "${next.name}" cycle`));
   }
   if (next.required && !next.source.includes(ANY)) out.push(...lacking(db, next));
+  if (next.behaviors.includes("containment") && !current.behaviors.includes("containment")) {
+    for (const l of links)
+      if (entryActive(db, l.source_pattern, l.source_id) && !entryActive(db, l.target_pattern, l.target_id))
+        out.push(v(l, `${ref(l.source_pattern, l.source_id)} is an active member of the archived container ${ref(l.target_pattern, l.target_id)}`));
+  }
   return out;
 }
 

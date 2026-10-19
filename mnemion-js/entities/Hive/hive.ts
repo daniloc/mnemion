@@ -526,7 +526,8 @@ export class HiveDO extends DurableObject {
       }
       // Granular delta so the UI can patch one element instead of refetching the
       // whole pattern — the heart of "only the element the agent changed redraws".
-      this.broadcastChange([patternName], { op: operation, id: result.entry?.id ?? parsed.id, entry: result.entry ?? null });
+      // Links born through _relate are announced too (_links among the patterns).
+      this.broadcastChange(result.links?.length ? [patternName, "_links"] : [patternName], { op: operation, id: result.entry?.id ?? parsed.id, entry: result.entry ?? null });
       this.embedAfterMutate(patternName, operation, result.entry?.id ?? result.id, conflictCheck?.vector ?? undefined);
       // The raw preimage exists ONLY here — placed on the response AFTER the
       // (sealed) broadcast above, so the one-time mint value reaches the caller
@@ -621,7 +622,10 @@ export class HiveDO extends DurableObject {
     // Attach each one-time raw preimage to its result (DB holds only the digest).
     results.forEach((r, i) => { const o = onces[i]; if (o && r.entry) { for (const [c, raw] of Object.entries(o)) r.entry[c] = raw; r._once = o; } });
 
-    const affectedPatterns = [...new Set(operations.map(op => op.pattern))];
+    const affectedPatterns = [...new Set([
+      ...operations.map(op => op.pattern),
+      ...(results.some((r) => r.links?.length) ? ["_links"] : []), // links born through _relate
+    ])];
     this.broadcastChange(affectedPatterns);
     for (const r of results) {
       this.embedAfterMutate(r.pattern, r.operation, r.entry?.id ?? r.id);
@@ -672,6 +676,18 @@ export class HiveDO extends DurableObject {
     const contentBytes = new TextEncoder().encode(content).length;
     if (contentBytes > data.LIMITS.ENTRY_BYTES)
       return this.errorJson(`Content too large: ${Math.round(contentBytes / 1024)}KB exceeds the 1MB limit`);
+
+    // A token minted against a text facet can outlive that facet's type: if it is
+    // datetime now, the upload is coerced exactly as a mutate would be (canonical
+    // ISO 8601, relative phrases refused) — refused uploads write nothing and
+    // leave the token unconsumed.
+    const facetType = (this.db.exec(`SELECT type FROM _fields WHERE object_name = ? AND name = ?`, constraints.target_pattern, constraints.target_facet).toArray()[0] as any)?.type;
+    if (facetType === "datetime") {
+      if (constraints.mode === "append") return this.errorJson(`Upload target "${constraints.target_facet}" is a datetime facet — it can only be replaced, not appended to. Nothing was written; the token was not consumed.`);
+      const coerced = data.coerceFacetValue("datetime", content.trim());
+      if (!coerced.ok) return this.errorJson(`Upload refused for datetime facet "${constraints.target_facet}": ${coerced.error}. Nothing was written; the token was not consumed.`);
+      content = coerced.value as string;
+    }
 
     try {
       if (constraints.mode === "append") {

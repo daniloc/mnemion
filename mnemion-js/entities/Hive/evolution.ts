@@ -132,10 +132,10 @@ interface ChangeType {
   focus?:   (change: any, preview: StoreIndex) => Record<string, unknown>;
   /** What blocks the change, keyed by the preview field that lists it: existing
    *  data it would strand (violations) or config that still names what it removes
-   *  (references). Listed in the propose preview; at apply each is recomputed
+   *  (facet_references). Listed in the propose preview; at apply each is recomputed
    *  against CURRENT data and any item refuses — so a blocker that appears after
    *  propose blocks too. */
-  blockers?: { violations?: BlockerFinder; references?: BlockerFinder };
+  blockers?: { violations?: BlockerFinder; facet_references?: BlockerFinder };
 }
 
 type BlockerFinder = (change: any, ctx: EvolutionContext) => { reason: string }[];
@@ -496,7 +496,7 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     focus: (change, preview) => ({ pattern: preview.patterns.find((p) => p.name === change.pattern_name) ?? { name: change.pattern_name }, dropped_facet: change.facet }),
     // Owner decision O3: refused while anything names the facet — no cascade, no
     // dangling reference (facet-references.ts declares every kind).
-    blockers: { references: (change, ctx) => facetReferences(ctx.db, change.pattern_name, change.facet) },
+    blockers: { facet_references: (change, ctx) => facetReferences(ctx.db, change.pattern_name, change.facet) },
     apply(change, { db }) {
       // The audit triggers name every column, so SQLite refuses DROP COLUMN while
       // they exist: drop them, drop the column + its _fields row, rebuild them.
@@ -519,6 +519,9 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       return null;
     },
     preview() { /* pattern reappears after apply — preview unchanged */ },
+    // Back-to-live entries are judged like any unarchive: no member under an
+    // archived container, no entry lacking a required relation's link.
+    blockers: { violations: (change, ctx) => rel.unarchivePatternViolations(ctx.db, change.pattern_name) },
     apply(change, { db }) {
       db.exec(
         "UPDATE _objects SET archived_at = NULL WHERE name = ?",
@@ -708,6 +711,10 @@ export async function applyChange(
       ...Object.fromEntries(blocked),
     });
 
+  // PITR bookmark BEFORE the change's first data effect, so reverting this
+  // history row restores the state before the change (as bootSchema does).
+  const bookmark = await getBookmark();
+
   try {
     handler.apply(change, ctx);
 
@@ -724,8 +731,7 @@ export async function applyChange(
       }
     }
 
-    // Log to history with PITR bookmark
-    const bookmark = await getBookmark();
+    // Log to history with the PITR bookmark captured before apply
     ctx.db.exec(
       "INSERT INTO _schema_history (description, change_type, change_detail, bookmark) VALUES (?, ?, ?, ?)",
       pending.description, change.type, pending.change_spec, bookmark

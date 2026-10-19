@@ -161,7 +161,7 @@ function parseFilterJson(filterJson: string): string[] | null {
 // memory on semantic grounds, so it sits cleanly beside the never-blocks doctrine.
 // Each validator coerces to the canonical stored form or reports why it can't.
 
-type Coerce = { ok: true; value: unknown } | { ok: false; error: string };
+export type Coerce = { ok: true; value: unknown } | { ok: false; error: string };
 
 // A finite number from a number, or from a NON-EMPTY numeric string — never via
 // Number("")/Number("  ")/Number([]) which all coerce to 0 and would silently write 0
@@ -204,6 +204,14 @@ const FACET_VALIDATORS: Record<string, (v: unknown) => Coerce> = {
   },
   select: (v) => ({ ok: true, value: v }), // option membership is checked separately
 };
+
+/** Coerce one value to a facet type's canonical stored form, or say why it can't
+ *  be — the single coercion every write path uses (mutate here; the upload path
+ *  in hive.consumeUpload). Types without a validator pass through unchanged. */
+export function coerceFacetValue(type: string, value: unknown): Coerce {
+  const coerce = FACET_VALIDATORS[type];
+  return coerce ? coerce(value) : { ok: true, value };
+}
 
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_OF_DAY_RE = /\d{1,2}:\d{2}|T\d/;

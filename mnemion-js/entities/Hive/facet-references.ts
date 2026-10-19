@@ -59,6 +59,26 @@ export const FACET_REFERENCE_FINDERS: Record<string, (db: DB, pattern: string, f
       })
       .map((p) => ({ kind: "publication", id: p.id, path: p.path, reason: `publication "/p/${p.path}" (_publications/${p.id}) names "${facet}" (filters, facets, sort or template) — edit or archive it first` }));
   },
+  input(db, pattern, facet) {
+    return rows(db, `SELECT id, path, body_facet, facet_mapping FROM "_inputs" WHERE target_pattern = ? AND archived_at IS NULL ORDER BY id`, pattern)
+      .filter((i) => {
+        const mapping = parse(i.facet_mapping);
+        return i.body_facet === facet || (!!mapping && typeof mapping === "object" && !Array.isArray(mapping) && Object.prototype.hasOwnProperty.call(mapping, facet));
+      })
+      .map((i) => ({ kind: "input", id: i.id, path: i.path, reason: `ingress endpoint "/i/${i.path}" (_inputs/${i.id}) writes "${facet}" (body_facet or facet_mapping) — edit or archive it first` }));
+  },
+  upload_token(db, pattern, facet) {
+    // A live (unarchived, unconsumed, unexpired) upload token still targets the
+    // facet; the token value is never echoed.
+    return rows(db, `SELECT id, constraints FROM "_access_tokens"
+        WHERE (scope = 'upload' OR scope LIKE 'upload:%') AND archived_at IS NULL AND consumed_at IS NULL
+          AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ORDER BY id`)
+      .filter((t) => {
+        const c = parse(t.constraints) as any;
+        return c?.target_pattern === pattern && c?.target_facet === facet;
+      })
+      .map((t) => ({ kind: "upload_token", id: t.id, reason: `upload token _access_tokens/${t.id} targets "${facet}" — let it be consumed or archive it first` }));
+  },
   clipboard(db, pattern, facet) {
     return rows(db, `SELECT id, name, fields, unique_on, cross_field, completion FROM "_clipboards" WHERE target_pattern = ? AND archived_at IS NULL ORDER BY id`, pattern)
       .filter((c) => ["fields", "unique_on", "cross_field", "completion"].some((col) => names(parse(c[col]), facet)))
