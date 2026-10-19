@@ -1138,6 +1138,15 @@ Where it changes the Phase 1 interface, that is said explicitly.
   required relation from an active source entry is refused, and the message
   says to move it. A move is an archive plus a create in one batch. Required
   is judged on the batch's end state, so either order works.
+- **Archived source patterns** (df-00ac1d54). `required: true` (declare or
+  amend) is refused while any source pattern is archived; the message names
+  the pattern. Counting those entries as violations instead would deadlock:
+  no link can be created to or from an archived pattern's entries, so they
+  could never be backfilled. Unarchive, backfill, then flip.
+  `unarchive_pattern` of a required relation's source pattern lists its
+  entries lacking the link in `preview.violations` (`{ source, label, … }`),
+  and apply is refused while any remain. To resolve, amend `required: false`,
+  unarchive, backfill, then flip back.
 - **Inactive sources.** An archived source entry is exempt while archived.
   Unarchiving it without an active link of the relation is refused, naming
   the relation.
@@ -1163,6 +1172,18 @@ Where it changes the Phase 1 interface, that is said explicitly.
   containment link from an active member is a clean refusal. The message names
   the relation and the members as `pattern/id`. Archived members don't count,
   and non-containment relations never block.
+- **Unarchive** (df-6809fa29, df-f3e97410):
+  - Unarchiving a member whose container is archived (the entry, or its
+    pattern) is a clean refusal naming the relation and the container.
+    Unarchiving member and container in one batch is judged on the end state
+    and succeeds.
+  - `unarchive_pattern` of a member pattern lists every entry that would be
+    an active member under an archived container, as `preview.violations`
+    `{ source: member, target: container, label }`. Apply is refused while any
+    remain, re-checked at apply.
+  - `amend_relation` adding `containment` lists the existing archived
+    containers that have active members, in the same shape. Apply is refused
+    while any remain.
 - **Batches.** The check is deferred to the end of the batch, so a batch that
   also archives or moves every member succeeds in any item order. A batch that
   leaves an active member under an archived container is refused, and the
@@ -1188,6 +1209,9 @@ mutate(pattern, "create", { …facets, "_relate": { "<relation name or inverse>"
   object.
 - **Create only.** `_relate` is accepted only on create. On update it is a
   clean refusal naming `_relate`.
+- **Broadcast.** Links created through `_relate`, single or batch, are
+  announced over `/ws`: `_links` is among the `patterns` of the write's
+  `changed` messages.
 - **Surfaces.** It works on single and batch creates (each batch result
   carries its own `links`), through `POST /api/mutate/:pattern` (passed
   through as data), and over MCP `mutate`.
@@ -1201,6 +1225,10 @@ mutate(pattern, "create", { …facets, "_relate": { "<relation name or inverse>"
   batch error carries the item's refusal message.
 - **MCP.** The MCP `mutate` batch schema accepts shortcut items without an
   `operation`.
+- **The consent gate** (df-8e8a97fe). `findGatedBatchOp` judges each item
+  after shortcut expansion, through the same `expandShortcut` table `mutate()`
+  uses. A shortcut that expands to a consent-gated pattern is gated like that
+  pattern named directly.
 
 ### P2-F. Derived relations
 
@@ -1275,10 +1303,21 @@ against code-owned templates, so nothing can drift.
     (owner decision O4). Its message names the reference and points to the
     Phase 3 retirement and `declare_relation`.
 - **References** (owner decision O3). While anything names the facet,
-  propose succeeds and lists every reference in `preview.references`. Each
-  item is `{ kind, … }`, where `kind` is one of `memory_policy` (an
-  `exclusive_facets` entry), `view` (a `_views` config), `publication` (a
-  `_publications` filter or template) or `clipboard` (a `_clipboards` rule).
+  propose succeeds and lists every reference in `preview.facet_references`.
+  It was `references` until the audit round; renamed because that key
+  collided with the kernel relation name. Each item is `{ kind, … }`, where
+  `kind` is one of:
+  - `memory_policy`: an `exclusive_facets` entry;
+  - `view`: a `_views` config;
+  - `publication`: a `_publications` filter or template;
+  - `clipboard`: a `_clipboards` rule;
+  - `input`: an `_inputs` `body_facet`, or a `facet_mapping` key, on the
+    facet's pattern (df-0b5f4311);
+  - `upload_token`: an active, unconsumed upload `_access_tokens` row whose
+    `constraints.target_facet` names the facet (df-0b5f4311).
+
+  The blocker field in `CHANGE_TYPES` is renamed to match:
+  `blockers.facet_references`.
   Apply is refused while any remain, and re-checks at apply, so a reference
   planted after a clean propose blocks it. There is no cascade and no
   dangling reference. Removing the reference lets the drop through.
@@ -1297,10 +1336,26 @@ dataset alike (owner decision O1). Text facets stay advisory: a knowledge
   full UTC timestamp.
 - **Relative phrases** stay refused.
 
-This applies to create, update and batch create. Existing non-canonical
+This applies to create, update and batch create, and to the upload path. An
+upload token can't be minted against a `datetime` facet. A token whose facet
+became `datetime` after mint canonicalizes the uploaded text at
+`consumeUpload`, under the same rules, or refuses it, writing nothing and
+leaving the token unconsumed. Partial dates (`"2026-03"`, `"2026"`) are left
+unpinned until the owner rules. Existing non-canonical
 values are untouched until that facet is written: reads return them as
 stored, boot doesn't rewrite them, and an update of another facet leaves them
 alone.
+
+### P2-K. Change bookmarks (df-0b9d1865)
+
+`applyChange` captures the PITR bookmark **before** `handler.apply` and stores
+it with the change's `_schema_history` row. Reverting that row therefore
+restores the state before the change. This was a pre-existing bug affecting
+every change type: the capture came after apply, so a revert restored the
+post-change state. Pinned with the ordering harness for `set_doctrine`,
+`declare_relation` and `drop_facet`; the `drop_facet` revert test asserts the
+ordering itself. After this, the agent docs' claim that revert undoes
+`drop_facet` (`schema-evolution.md`) is true.
 
 ### P2-J. Phase 1 cases that changed under Phase 2
 

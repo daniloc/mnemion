@@ -370,7 +370,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage dismissed: one migration, one restore point
   checklist: completion-evidence dismissed: the row is written synchronously during boot
 - required relations: Every active entry of a required relation's source pattern holds at least one active link of it: creates must carry it inline, the last link cannot be removed except by a move in one batch, and declaring or amending to required is refused while any entry lacks it.
-  over: creates with and without _relate, unlink and archive of the last link, one-batch moves, cardinality-many removals, archived and unarchived source entries, declare and amend previews with violators, explicit-list sources only, and the boot report over pre-existing data
+  over: creates with and without _relate, unlink and archive of the last link, one-batch moves, cardinality-many removals, archived and unarchived source entries, declare and amend previews with violators, explicit-list sources only, and the boot report over pre-existing data; required refused while any source pattern is archived, and unarchive_pattern of a source pattern previewing entries that lack the link
   via: required relations
   because: Compositional identity (a task belongs to exactly one project) is only true if no write path can leave a task without its project.
   crossing: agent-mcp -> storage
@@ -386,7 +386,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage dismissed: the rule is over one relation's source entries, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - containment: A container with active members cannot be archived, as an entry or by archive_pattern, unless the same batch archives or moves them, and recall follows containment upward only.
-  over: archive of containers under kernel part-of and hive containment relations, archived members, non-containment relations, batches in any order that archive or move members or leave one stranded, archive_pattern previews and apply re-checks with members in other patterns (same-pattern and archived members exempt), resolve of a container, and prime from member and from container
+  over: archive of containers under kernel part-of and hive containment relations, archived members, non-containment relations, batches in any order that archive or move members or leave one stranded, archive_pattern previews and apply re-checks with members in other patterns (same-pattern and archived members exempt), resolve of a container, and prime from member and from container; unarchiving a member under an archived container entry or pattern (alone refused, together in a batch allowed), unarchive_pattern of a member pattern (preview, apply re-check), and amend_relation adding containment over existing archived containers with active members
   via: containment
   because: An archived container with live members strands a required relation's target, and fanning out from a container to all its members floods recall.
   crossing: agent-mcp -> storage
@@ -402,7 +402,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage dismissed: the rule is over one relation's members, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - atomic relation writes: An entry created with _relate is stored together with all its links through the link chokepoint, or not at all.
-  over: _relate on single and batch creates, names and inverses, one or many targets, every link refusal (undeclared, missing, inadmissible, cardinality, malformed, duplicate, derived), updates, and the RPC, /api/mutate and MCP surfaces
+  over: _relate on single and batch creates, names and inverses, one or many targets, every link refusal (undeclared, missing, inadmissible, cardinality, malformed, duplicate, derived), updates, and the RPC, /api/mutate and MCP surfaces; and the /ws announcement of the links it creates, single and batch
   via: inline _relate
   because: A create-then-link sequence leaves an entry without the link it requires whenever the second write fails.
   crossing: agent-mcp -> storage
@@ -418,7 +418,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage declared as atomic relation writes
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - batch link shortcuts: Inside a batch, the link and unlink shortcuts expand exactly as they do in a single mutate, and any refusal rolls the whole batch back.
-  over: link and unlink items with and without an operation, mixed with entry writes, a refused link anywhere in the batch, and the MCP batch surface
+  over: link and unlink items with and without an operation, mixed with entry writes, a refused link anywhere in the batch, and the MCP batch surface; and the batch consent gate judging items after shortcut expansion
   via: link shortcuts in batches
   because: A move (archive one link, create another) is only safe as one atomic batch, and today a batch rejects the link shortcut outright.
   crossing: agent-mcp -> storage
@@ -450,7 +450,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage declared as derived relations are never stored
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - drop_facet: A user-pattern facet is dropped only through the drop_facet change type, which previews the values lost and every reference to the facet, refuses while any reference remains or the facet is a reference facet, removes the column and its metadata together, keeps the pattern writable, and stays revertible.
-  over: drop_facet over user facets with values, kernel patterns, kernel columns, missing facets and patterns, a pattern's only facet, reference facets, references from memory-policy exclusive_facets, _views configs, _publications filters and templates and _clipboards rules (listed at propose, re-checked at apply), later writes to the pattern, and revert of the logged change
+  over: drop_facet over user facets with values, kernel patterns, kernel columns, missing facets and patterns, a pattern's only facet, reference facets, references from memory-policy exclusive_facets, _views configs, _publications filters and templates and _clipboards rules (listed at propose, re-checked at apply), later writes to the pattern, and revert of the logged change; references from _inputs (body_facet and facet_mapping keys) and active unconsumed upload tokens' target_facet, under preview.facet_references; and revert restoring the state before the drop
   via: drop_facet
   because: Retiring text-facet stand-ins for relations must not lose data silently or leave _fields describing a column that no longer exists.
   kinds: storage
@@ -464,7 +464,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage dismissed: one facet of one pattern
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - canonical datetime: A datetime facet in any pattern class stores ISO 8601: YYYY-MM-DD for date-only input, a full UTC timestamp otherwise; relative phrases are refused, text facets stay advisory, and existing values change only when that facet is written.
-  over: dataset and knowledge patterns, date-only and timed inputs in several written forms, offsets, relative phrases, knowledge text facets, creates, updates and batch creates, and pre-existing non-canonical rows across boot and unrelated updates
+  over: dataset and knowledge patterns, date-only and timed inputs in several written forms, offsets, relative phrases, knowledge text facets, creates, updates and batch creates, and pre-existing non-canonical rows across boot and unrelated updates; the upload path (mint refuses a datetime target; a facet that became datetime canonicalizes or refuses at consume)
   via: canonical datetime
   because: Strings stored as typed sort and compare inconsistently, so overdue and staleness cannot be derived from them.
   kinds: storage
@@ -477,3 +477,17 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: one facet type's coercion
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- change bookmarks: The PITR bookmark stored with a schema-history row is captured before the change applies, so reverting it restores the state before the change.
+  over: applyChange for set_doctrine, declare_relation and drop_facet, the order of the bookmark capture against each change's first data effect, and revert of the recorded row
+  via: change bookmarks
+  because: A bookmark captured after the change makes revert restore the changed state, so every revert silently undid nothing.
+  kinds: storage
+  checklist: scoped-reads dismissed: the rule orders a capture inside a change application, not a read path
+  checklist: encrypted-storage dismissed: a bookmark is an opaque position, not confidential data
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation dismissed: the rule concerns ordering, not a payload
+  checklist: revision-preservation declared as change bookmarks
+  checklist: commit-ordered-effects declared as change bookmarks
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: one capture per applied change
+  checklist: completion-evidence dismissed: the capture and the history row are written synchronously with the change

@@ -2054,7 +2054,7 @@ describe("linked targets survive GC", () => {
 // =====================================================================
 
 /** What a constructed HiveDO did while booting on a wrapped state. */
-interface BootTrace { events: string[]; restored: string[]; unpatch?: () => void }
+interface BootTrace { events: string[]; restored: string[]; sent?: string[]; unpatch?: () => void }
 
 /** Classify a SQL statement as a v17 (relations migration) effect, or null. */
 function v17Effect(q: string): string | null {
@@ -2062,6 +2062,9 @@ function v17Effect(q: string): string | null {
   if (/CREATE\s+TABLE[^(]*"?_relations"?\s*\(/i.test(q)) return "v17:create-relations";
   if (/INSERT\s+INTO\s+"?_relations"?/i.test(q)) return "v17:write-relations";
   if (/UPDATE\s+"?_links"?\s+SET/i.test(q)) return "v17:update-links";
+  // A change's own data effects (applyChange's handler.apply), for bookmark ordering.
+  if (/ALTER\s+TABLE\s+"?(?!_)[\w-]+"?\s+DROP\s+COLUMN/i.test(q)) return "change:drop-column";
+  if (/UPDATE\s+_objects\s+SET\s+doctrine/i.test(q)) return "change:set-doctrine";
   // v18 (Phase 2): the stored legacy flag leaves _relations.
   if (/ALTER\s+TABLE\s+"?_relations"?\s+DROP\s+COLUMN\s+"?legacy"?/i.test(q)) return "v18:drop-legacy-column";
   if (/DROP\s+TABLE\s+(IF\s+EXISTS\s+)?"?_relations"?/i.test(q)) return "v18:rebuild-relations";
@@ -2100,6 +2103,8 @@ async function bootWith(state: DurableObjectState, bookmark: () => string, trace
   patch(storage, "onNextSessionRestoreBookmark", { value: async (b: string) => { trace.restored.push(b); return b; } });
   patch(state, "blockConcurrencyWhile", { value: (fn: () => Promise<unknown>) => { const p = Promise.resolve().then(fn); pending.push(p); return p; } });
   patch(state, "abort", { value: () => { trace.events.push("abort"); } });
+  // /ws broadcasts: one fake socket records every message the instance sends.
+  patch(state, "getWebSockets", { value: () => [{ send: (m: string) => { (trace.sent ??= []).push(m); } }] });
   trace.unpatch = () => {
     for (const [o, k, d] of saved.reverse()) {
       if (d) Object.defineProperty(o, k, d); else delete o[k];
@@ -2612,6 +2617,43 @@ describe("required relations", () => {
     expect((await sql(store, `SELECT archived_at FROM tasks WHERE id = ?`, raw))[0].archived_at).toBeNull();
   });
 
+  // df-00ac1d54. Choice: required is REFUSED while any source pattern is archived.
+  // Counting those entries as violations would deadlock: links can't be created
+  // to or from an archived pattern's entries, so they could never be backfilled.
+  it("required is refused while a source pattern is archived (declare and amend)", async () => {
+    const store = getStore();
+    await portfolio(store);
+    await entry(store, "tasks", "would lack the link");
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: "tasks" });
+    expect((await apply(store, ap.change_id)).error).toBeUndefined();
+    const a = (await amend(store, { name: "belongs-to", required: true })).proposed;
+    expect(a.error).toBe(true);
+    expect(a.message).toContain("tasks");
+    expect(a.message).toMatch(/archived/i);
+    const d = await propose(store, declareChange({ name: "pinned-to", inverse: "pins", source: ["tasks"], target: ["projects"], required: true }));
+    expect(d.error).toBe(true);
+    expect(d.message).toMatch(/archived/i);
+    expect((await relationRow(store, "belongs-to")).required).toBe(0);
+  });
+
+  it("unarchive_pattern of a required relation's source pattern previews entries lacking the link and refuses at apply", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { required: true });
+    const t1 = await task(store, "keeps its link", p1);
+    const t2 = await task(store, "loses its link", p1);
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: "tasks" });
+    expect((await apply(store, ap.change_id)).error).toBeUndefined();
+    // While the pattern is archived, t2's link goes (simulated directly).
+    await sql(store, `UPDATE "_links" SET archived_at = datetime('now') WHERE source_pattern = 'tasks' AND source_id = ?`, t2);
+    const up = await propose(store, { type: "unarchive_pattern", pattern_name: "tasks" });
+    expect(up.error).toBeUndefined();
+    const sources = (up.preview?.violations ?? []).map((v: any) => v.source);
+    expect(sources).toContain(`tasks/${t2}`);
+    expect(sources).not.toContain(`tasks/${t1}`);
+    expect((await apply(store, up.change_id)).error).toBe(true);
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'tasks'`))[0].archived_at).not.toBeNull();
+  });
+
   it("the read surfaces carry `required`", async () => {
     const store = getStore();
     await portfolio(store, { required: true });
@@ -2736,6 +2778,78 @@ describe("containment", () => {
     await task(store, "late member", p1);
     expect((await apply(store, p.change_id)).error).toBe(true);
     expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'projects'`))[0].archived_at).toBeNull();
+  });
+
+  // df-6809fa29 / df-f3e97410: containment is judged on unarchive too.
+  it("unarchiving a member whose container is archived is refused; doing both in one batch is fine", async () => {
+    const store = getStore();
+    const { n1, n2 } = await world(store);
+    await mustLink(store, `notes/${n1}`, `notes/${n2}`, "part-of");
+    await mut(store, "notes", "archive", { id: n1 });
+    expect((await mut(store, "notes", "archive", { id: n2 })).error).toBeUndefined(); // the member is inactive
+    const r = await mut(store, "notes", "unarchive", { id: n1 });
+    expectCleanRefusal(r);
+    expect(r.message).toContain("part-of");
+    expect(r.message).toMatch(new RegExp(`notes/${n2}(?!\\d)`));
+    expect((await sql(store, `SELECT archived_at FROM notes WHERE id = ?`, n1))[0].archived_at).not.toBeNull();
+    // Container and member back together: judged on the batch's end state.
+    const both = await batch(store, [
+      { pattern: "notes", operation: "unarchive", data: { id: n1 } },
+      { pattern: "notes", operation: "unarchive", data: { id: n2 } },
+    ]);
+    expect(both.error, both.message).toBeUndefined();
+  });
+
+  it("unarchiving a member whose container's PATTERN is archived is refused", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { containment: true });
+    const t = await task(store, "member", p1);
+    await mut(store, "tasks", "archive", { id: t });
+    const ap = await propose(store, { type: "archive_pattern", pattern_name: "projects" });
+    expect((await apply(store, ap.change_id)).error).toBeUndefined();
+    const r = await mut(store, "tasks", "unarchive", { id: t });
+    expectCleanRefusal(r);
+    expect(r.message).toContain("belongs-to");
+  });
+
+  it("unarchive_pattern of a member pattern previews members that would sit under an archived container, and apply re-checks", async () => {
+    const store = getStore();
+    const { p1, p2 } = await portfolio(store, { containment: true });
+    const t1 = await task(store, "member one", p1);
+    const t2 = await task(store, "member two", p2);
+    const archiveTasks = await propose(store, { type: "archive_pattern", pattern_name: "tasks" });
+    expect((await apply(store, archiveTasks.change_id)).error).toBeUndefined();
+    expect((await mut(store, "projects", "archive", { id: p1 })).error).toBeUndefined(); // members are inactive now
+
+    const up = await propose(store, { type: "unarchive_pattern", pattern_name: "tasks" });
+    expect(up.error).toBeUndefined();
+    expect(up.preview.violations).toEqual([expect.objectContaining({ source: `tasks/${t1}`, target: `projects/${p1}`, label: "belongs-to" })]);
+    expect((await apply(store, up.change_id)).error).toBe(true);
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'tasks'`))[0].archived_at).not.toBeNull();
+
+    // Clear it, propose clean, then archive the other container before apply: re-checked.
+    await mut(store, "projects", "unarchive", { id: p1 });
+    const clean = await propose(store, { type: "unarchive_pattern", pattern_name: "tasks" });
+    expect(clean.preview?.violations ?? []).toEqual([]);
+    expect((await mut(store, "projects", "archive", { id: p2 })).error).toBeUndefined();
+    expect((await apply(store, clean.change_id)).error, "apply re-checks").toBe(true);
+    expect(t2).toBeGreaterThan(0);
+  });
+
+  it("amend_relation adding containment previews archived containers with active members and refuses at apply", async () => {
+    const store = getStore();
+    const { n1, n2, p1, p2 } = await world(store);
+    await declare(store, { name: "filed-in", inverse: "files", source: ["notes"], target: ["papers"] });
+    await mustLink(store, `notes/${n1}`, `papers/${p1}`, "filed-in");
+    await mustLink(store, `notes/${n2}`, `papers/${p2}`, "filed-in");
+    await mut(store, "papers", "archive", { id: p1 });      // archived container, active member n1
+    await mut(store, "notes", "archive", { id: n2 });
+    await mut(store, "papers", "archive", { id: p2 });      // archived container, archived member: fine
+    const { proposed, applied } = await amend(store, { name: "filed-in", behaviors: ["containment"] });
+    expect(proposed.error).toBeUndefined();
+    expect(proposed.preview.violations).toEqual([expect.objectContaining({ source: `notes/${n1}`, target: `papers/${p1}`, label: "filed-in" })]);
+    expect(applied.error).toBe(true);
+    expect(list((await relationRow(store, "filed-in")).behaviors)).toEqual([]);
   });
 
   it("resolve still lists members, under the inverse name", async () => {
@@ -2873,6 +2987,27 @@ describe("inline _relate", () => {
     expect((await activeLinks(store)).length).toBe(linksBefore);
   });
 
+  it("announces the links it creates over /ws, single and batch", async () => {
+    const store = getStore();
+    const { p1, p2 } = await world(store);
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm", async (hive, trace) => {
+        const patterns = () => new Set((trace.sent ?? []).flatMap((m) => { try { return JSON.parse(m).patterns ?? []; } catch { return []; } }));
+        trace.sent = [];
+        const r = JSON.parse(await hive.mutate("notes", "create", JSON.stringify({ title: "single", _relate: { references: `papers/${p1}` } })));
+        expect(r.error, r.message).toBeUndefined();
+        expect(patterns(), "single create").toContain("_links");
+        expect(patterns()).toContain("notes");
+        trace.sent = [];
+        const b = JSON.parse(await hive.batchMutate(JSON.stringify([
+          { pattern: "notes", operation: "create", data: { title: "batched", _relate: { references: `papers/${p2}` } } },
+        ])));
+        expect(b.error, b.message).toBeUndefined();
+        expect(patterns(), "batch create").toContain("_links");
+      });
+    });
+  });
+
   it("passes through POST /api/mutate/:pattern", async () => {
     const { mutateEntry } = await import("../../shared/Routing/routes/pages");
     const store = getStore();
@@ -2938,6 +3073,29 @@ describe("link shortcuts in batches", () => {
     expect(r.message).toContain("declare_relation");
     expect(await activeLinks(store)).toEqual([]);
     expect((await sql(store, `SELECT title FROM notes WHERE id = ?`, n1))[0].title).toBe("note one");
+  });
+
+  // df-8e8a97fe: the MCP batch consent gate judges EXPANDED items.
+  it("the batch consent gate judges items after shortcut expansion", async () => {
+    const gate = await import("../../entities/Hive/mutate-gate");
+    const kernel = await import("../../entities/Hive/kernel");
+    const shortcuts = kernel.SHORTCUTS as Record<string, { pattern: string; operation: string }>;
+    // Control: the gate refuses the consent-gated pattern named directly.
+    expect(gate.findGatedBatchOp([{ pattern: "_members", operation: "create", data: { label: "eve", display_name: "Eve" } }] as any)).not.toBeNull();
+    // A shortcut that expands to it must be judged the same.
+    shortcuts.zz_invite = { pattern: "_members", operation: "create" };
+    try {
+      const op = gate.findGatedBatchOp([
+        { pattern: "notes", operation: "create", data: { title: "harmless" } },
+        { pattern: "zz_invite", data: { label: "eve", display_name: "Eve" } },
+      ] as any);
+      expect(op, "an expanded consent-gated item is flagged").not.toBeNull();
+      // And the real shortcuts stay ungated (links and fragments are Open).
+      expect(gate.findGatedBatchOp([
+        { pattern: "link", data: { source: "notes/1", target: "notes/2", label: "references" } },
+        { pattern: "fragment", data: { content: "x" } },
+      ] as any)).toBeNull();
+    } finally { delete shortcuts.zz_invite; }
   });
 
   it("works over MCP batch, shortcut items without an operation", async () => {
@@ -3139,6 +3297,22 @@ describe("drop_facet", () => {
       expect(pub.error, pub.message).toBeUndefined();
       return async () => { await mut(store, "_publications", "archive", { id: pub.entry.id }); };
     }],
+    ["input", "an _inputs body_facet", async (store) => {
+      const i = await mut(store, "_inputs", "create", { path: "nb-in", target_pattern: "notebook", body_facet: "scratch", visibility: "private" });
+      expect(i.error, i.message).toBeFalsy();
+      return async () => { await mut(store, "_inputs", "archive", { id: i.entry.id }); };
+    }],
+    ["input", "an _inputs facet_mapping key", async (store) => {
+      const i = await mut(store, "_inputs", "create", { path: "nb-map", target_pattern: "notebook", facet_mapping: JSON.stringify({ title: "body.title", scratch: "body.note" }), visibility: "private" });
+      expect(i.error, i.message).toBeFalsy();
+      return async () => { await mut(store, "_inputs", "archive", { id: i.entry.id }); };
+    }],
+    ["upload_token", "an active, unconsumed upload token's target_facet", async (store) => {
+      const id = (await sql(store, `SELECT id FROM notebook ORDER BY id LIMIT 1`))[0].id;
+      const t = await mut(store, "_access_tokens", "create", { scope: "upload", constraints: JSON.stringify({ target_pattern: "notebook", target_id: id, target_facet: "scratch" }) });
+      expect(t.error, t.message).toBeFalsy();
+      return async () => { await mut(store, "_access_tokens", "archive", { id: t.entry.id }); };
+    }],
     ["clipboard", "a _clipboards rule", async (store) => {
       const c = await mut(store, "_clipboards", "create", { name: "nb", target_pattern: "notebook", fields: [{ facet: "scratch", min_length: 1 }] });
       expect(c.error, c.message).toBeFalsy();
@@ -3152,13 +3326,13 @@ describe("drop_facet", () => {
     const remove = await plant(store);
     const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
     expect(p.error).toBeUndefined();
-    expect(p.preview.references).toEqual(expect.arrayContaining([expect.objectContaining({ kind })]));
+    expect(p.preview.facet_references).toEqual(expect.arrayContaining([expect.objectContaining({ kind })]));
     const a = await apply(store, p.change_id);
     expect(a.error).toBe(true);
     expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).toContain("scratch");
     await remove();
     const again = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
-    expect(again.preview?.references ?? []).toEqual([]);
+    expect(again.preview?.facet_references ?? []).toEqual([]);
     expect((await apply(store, again.change_id)).error).toBeUndefined();
   });
 
@@ -3167,7 +3341,7 @@ describe("drop_facet", () => {
     await notebook(store);
     const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
     expect(p.error, "control: the clean drop is proposable").toBeUndefined();
-    expect(p.preview.references).toEqual([]);
+    expect(p.preview.facet_references).toEqual([]);
     await mut(store, "_views", "create", { pattern: "notebook", name: "late", view_type: "table", config: JSON.stringify({ columns: ["scratch"] }) });
     expect((await apply(store, p.change_id)).error).toBe(true);
     expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).toContain("scratch");
@@ -3192,18 +3366,67 @@ describe("drop_facet", () => {
     expect(p.message).toMatch(/only facet|last facet|at least one/i);
   });
 
-  it("reverting the drop hands its bookmark to the existing restore path", async () => {
+  it("reverting the drop restores the state BEFORE it: the bookmark is captured before the column goes", async () => {
     const store = getStore();
     await notebook(store);
-    const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
-    expect((await apply(store, p.change_id)).error).toBeUndefined();
-    const row = (await sql(store, `SELECT id, bookmark FROM _schema_history WHERE change_type = 'drop_facet'`))[0];
-    expect(row?.bookmark).toBeTruthy();
     await runInDurableObject(store, async (_i, state) => {
-      await booted(state, () => "unused", async (hive, trace) => {
+      await booted(state, () => "bm-before-drop", async (hive, trace) => {
+        const p = JSON.parse(await hive.proposeChange("drop", JSON.stringify({ type: "drop_facet", pattern_name: "notebook", facet: "scratch" })));
+        expect(p.error, p.message).toBeUndefined();
+        trace.events.length = 0;
+        expect(JSON.parse(await hive.applyChange(p.change_id)).error).toBeUndefined();
+        const drop = trace.events.indexOf("change:drop-column");
+        expect(drop, `the drop ran: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        const bm = trace.events.indexOf("bookmark");
+        expect(bm, "a bookmark was captured").toBeGreaterThanOrEqual(0);
+        expect(bm, `captured before the column was dropped: ${trace.events.join(", ")}`).toBeLessThan(drop);
+        const row = state.storage.sql.exec(`SELECT id, bookmark FROM _schema_history WHERE change_type = 'drop_facet'`).toArray()[0] as any;
+        expect(row.bookmark).toBe("bm-before-drop");
         const r = JSON.parse(await hive.revertChange(row.id));
         expect(r.reverted).toBe(true);
-        expect(trace.restored).toEqual([row.bookmark]);
+        expect(trace.restored).toEqual(["bm-before-drop"]);
+      });
+    });
+  });
+});
+
+// =====================================================================
+// Change bookmarks: a schema-history bookmark is the state BEFORE the change
+// =====================================================================
+
+describe("change bookmarks", () => {
+  it("applyChange captures the PITR bookmark before the change's first data effect (set_doctrine)", async () => {
+    const store = getStore();
+    await createPattern(store, "notes");
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm-before-doctrine", async (hive, trace) => {
+        const p = JSON.parse(await hive.proposeChange("doctrine", JSON.stringify({ type: "set_doctrine", pattern_name: "notes", doctrine: "a new doctrine" })));
+        expect(p.error, p.message).toBeUndefined();
+        trace.events.length = 0;
+        expect(JSON.parse(await hive.applyChange(p.change_id)).error).toBeUndefined();
+        const effect = trace.events.indexOf("change:set-doctrine");
+        expect(effect, `the change ran: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), `captured before the change: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark")).toBeLessThan(effect);
+        const row = state.storage.sql.exec(`SELECT bookmark FROM _schema_history WHERE change_type = 'set_doctrine'`).toArray()[0] as any;
+        expect(row.bookmark).toBe("bm-before-doctrine");
+      });
+    });
+  });
+
+  it("the same holds for declare_relation", async () => {
+    const store = getStore();
+    await createPattern(store, "notes");
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm-before-declare", async (hive, trace) => {
+        const p = JSON.parse(await hive.proposeChange("declare", JSON.stringify(declareChange({ name: "echoes", inverse: "echoed-by", source: ["notes"], target: ["notes"] }))));
+        expect(p.error, p.message).toBeUndefined();
+        trace.events.length = 0;
+        expect(JSON.parse(await hive.applyChange(p.change_id)).error).toBeUndefined();
+        const effect = trace.events.indexOf("v17:write-relations"); // INSERT INTO _relations
+        expect(effect, `the change ran: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), `captured before the change: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark")).toBeLessThan(effect);
       });
     });
   });
@@ -3306,6 +3529,26 @@ describe("canonical datetime", () => {
     await boot(store);
     expect((await mut(store, "journal", "update", { id, title: "legacy, retitled" })).error).toBeUndefined();
     expect(await storedK(store, id), "an unrelated write leaves the stored value alone").toBe("sometime in spring");
+  });
+
+  it("an upload token can't target a datetime facet; one whose facet became datetime canonicalizes or refuses at consume", async () => {
+    const store = getStore();
+    await createPatternWith(store, "logbook", [{ name: "title", type: "text" }, { name: "when", type: "text" }], "knowledge");
+    const r = await mut(store, "logbook", "create", { title: "x" });
+    const id = r.entry.id;
+    const mint = (facet: string) => mut(store, "_access_tokens", "create", { scope: "upload", constraints: JSON.stringify({ target_pattern: "logbook", target_id: id, target_facet: facet }) });
+    const ok = await mint("when");          // a text facet today
+    const bad = await mint("when");
+    expect(ok.error, ok.message).toBeFalsy();
+    // The facet's type drifts to datetime after mint (as no change type does today):
+    await sql(store, `UPDATE _fields SET type = 'datetime' WHERE object_name = 'logbook' AND name = 'when'`);
+    expect((await mint("when")).error, "minting against a datetime facet is refused").toBe(true);
+    const up = JSON.parse(await store.consumeUpload(ok.entry.token, "March 7, 2026"));
+    expect(up.error, up.message).toBeUndefined();
+    expect((await sql(store, `SELECT "when" FROM logbook WHERE id = ?`, id))[0].when).toBe("2026-03-07");
+    const rel = JSON.parse(await store.consumeUpload(bad.entry.token, "next week"));
+    expect(rel.error).toBe(true);
+    expect((await sql(store, `SELECT "when" FROM logbook WHERE id = ?`, id))[0].when, "a refused upload writes nothing").toBe("2026-03-07");
   });
 
   it("existing non-canonical values are left untouched until that facet is written", async () => {
