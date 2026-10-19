@@ -18,7 +18,7 @@
 import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { isKernelPattern } from "./policy";
-import { dropColumn } from "./audit-triggers";
+import { dropColumn, rebuildTableWithout, recoverInterruptedRebuilds, rebuildLeftover, nullColumns } from "./audit-triggers";
 
 type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one: () => any } };
 
@@ -176,12 +176,19 @@ function isGeneratedInverse(name: string, inverse: string): boolean {
   return new RegExp(`^${escapeRe(name)}-inverse(-\\d+)?$`).test(inverse);
 }
 
-export const LEGACY_DEBTS = ["placeholder description", "generated inverse"] as const;
+export const LEGACY_DEBTS = ["placeholder description", "generated inverse", "was mandatory"] as const;
 
-function legacyDebt(r: { name: string; description: string; inverse: string }): string[] {
+/** The debts, in LEGACY_DEBTS order. The first two are derived from current
+ *  values; "was mandatory" is derived from `_relations.required_review`, the one
+ *  RECORDED fact (v19, D-P3-2): a mandatory reference facet migrated as optional,
+ *  and the NOT NULL it came from is destroyed by the rebuild — so it is recorded
+ *  at the only moment it is knowable, and cleared only by an owner decision (an
+ *  amend that carries `required` explicitly). */
+function legacyDebt(r: { name: string; description: string; inverse: string; required_review?: unknown }): string[] {
   const debt: string[] = [];
   if (r.description === legacyPlaceholder(r.name)) debt.push(LEGACY_DEBTS[0]);
   if (isGeneratedInverse(r.name, r.inverse)) debt.push(LEGACY_DEBTS[1]);
+  if (r.required_review) debt.push(LEGACY_DEBTS[2]);
   return debt;
 }
 
@@ -211,8 +218,7 @@ export function activeRelations(db: DB): Relation[] {
   let rels: Relation[];
   try {
     rels = (db.exec(
-      `SELECT name, inverse, description, source, target, cardinality, behaviors, required, chain, kernel
-       FROM "_relations" WHERE archived_at IS NULL ORDER BY kernel DESC, name`,
+      `SELECT * FROM "_relations" WHERE archived_at IS NULL ORDER BY kernel DESC, name`,
     ).toArray() as any[]).map(toRelation);
   } catch {
     return [];
@@ -688,6 +694,28 @@ export function endStateViolations(db: DB, touched: Touched): string | null {
   return null;
 }
 
+/** parent pattern → the child patterns it CONTAINS: an active containment relation
+ *  listing the child as an explicit source and the parent as an explicit target,
+ *  or an active link of a containment relation (incl. the kernel `*` part-of)
+ *  from a child entry to a parent entry. Read by the data-is-destiny aggregate
+ *  check (schema.ts findStoredDerivedAggregates). */
+export function containmentChildren(db: DB): Map<string, string[]> {
+  const out = new Map<string, Set<string>>();
+  const add = (parent: string, child: string) => {
+    if (parent === ANY || child === ANY || parent === child) return;
+    (out.get(parent) ?? out.set(parent, new Set()).get(parent)!).add(child);
+  };
+  const containing = stored(activeRelations(db)).filter((r) => r.behaviors.includes("containment"));
+  for (const r of containing) for (const p of r.target) for (const c of r.source) add(p, c);
+  if (containing.length) {
+    for (const l of db.exec(
+      `SELECT DISTINCT source_pattern, target_pattern FROM "_links" WHERE archived_at IS NULL AND label IN (${containing.map(() => "?").join(",")})`,
+      ...containing.map((r) => r.name),
+    ).toArray() as any[]) add(l.target_pattern, l.source_pattern);
+  }
+  return new Map([...out].map(([p, kids]) => [p, [...kids].sort()]));
+}
+
 /** archive_pattern on a container: the active members in OTHER patterns that
  *  hold a containment link into the pattern's active entries. */
 export function containmentHolders(db: DB, pattern: string): RelationViolation[] {
@@ -939,8 +967,9 @@ export function declareLegacyRelations(db: DB): void {
  *  (e.g. `refines: generated inverse`). Pure, so the boot warning and any test
  *  read the same rule. */
 export function findLegacyRelations(relations: Pick<Relation, "name" | "legacy_debt">[]): string[] {
+  const say = (d: string) => d === LEGACY_DEBTS[2] ? "was mandatory, consider required" : d;
   return relations.filter((r) => r.legacy_debt.length).map((r) =>
-    `legacy relation ${r.name}: ${r.legacy_debt.join(", ")} — pay it with amend_relation (a real description; an owner-chosen inverse)`);
+    `legacy relation ${r.name}: ${r.legacy_debt.map(say).join(", ")} — pay it with amend_relation (a real description; an owner-chosen inverse; an explicit required: true or false)`);
 }
 
 /** v18: legacy status became two derived facts (legacyDebt); the stored flag,
@@ -1006,7 +1035,220 @@ export function findCycles(graphs: RelationGraph[]): string[] {
 
 /** The relations migration, in boot order. Each step is idempotent: a second
  *  boot changes nothing. */
+/** v19 adds `_relations.required_review` (the "was mandatory" record); an
+ *  existing table gains it before anything reads or writes it. Idempotent. */
+function ensureRequiredReviewColumn(db: DB): void {
+  const cols = (db.exec(`PRAGMA table_info("_relations")`).toArray() as { name: string }[]).map((c) => c.name);
+  if (!cols.includes("required_review")) db.exec(`ALTER TABLE "_relations" ADD COLUMN "required_review" INTEGER NOT NULL DEFAULT 0`);
+}
+
+const kebab = (s: string) => s.toLowerCase().replace(/_/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+
+/** The name a migrated reference facet `P.f` takes (D-P3-1): `f` in kebab-case;
+ *  when that is not a valid relation name or is already in the vocabulary,
+ *  `<P>-<f>` kebab-cased, then with a numeric suffix. `reuse` accepts a candidate
+ *  already holding this facet's own migrated relation (a boot interrupted midway). */
+function migratedName(pattern: string, facet: string, taken: Set<string>, reuse: (name: string) => boolean): string {
+  const base = kebab(facet);
+  const fallback = kebab(`${pattern}-${facet}`);
+  const candidates = [base, fallback, ...Array.from({ length: 50 }, (_, i) => `${fallback}-${i + 2}`)];
+  for (const c of candidates) {
+    if (!NAME_RE.test(c)) continue;
+    if (reuse(c)) return c;
+    if (!taken.has(c)) return c;
+  }
+  throw new Error(`no free relation name for reference facet ${pattern}.${facet}`);
+}
+
+/** One reference facet v19 can migrate: every non-null value resolved to a row
+ *  id of an admissible target. `column` is the actual column (matched to the
+ *  `_fields` name case-insensitively, as SQLite does). */
+export interface MigratableFacet {
+  pattern: string; facet: string; column: string; target: string; mandatory: boolean;
+  links: { source: number; target: number }[];
+}
+/** One reference facet v19 must keep, with why (reported every boot). */
+export interface KeptFacet { pattern: string; facet: string; reason: string }
+/** One step of v19's rebuild, in order: clear a nullable FK column to break a
+ *  reference cycle, or rebuild a table without its migrated columns. */
+export type RebuildStep = { kind: "clear"; table: string; column: string } | { kind: "rebuild"; table: string; columns: string[] };
+
+/** The table that holds `name`'s rows now: the table itself, or — after a swap
+ *  interrupted between its drop and its rename — its unregistered `__rebuild`
+ *  leftover (a registered pattern by that name is never one). */
+function liveTable(db: DB, name: string): string | null {
+  const has = db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name).toArray().length > 0;
+  return has ? name : rebuildLeftover(db, name);
+}
+
+/**
+ * The rebuild order for the migratable facets, or the tables that can't be
+ * rebuilt. Dropping a table's old copy is blocked while another table's rows
+ * still reference it through an FK column that stays: a kept facet's column
+ * (never touched), or a migrated column of a table not yet rebuilt and not
+ * cleared. Tables with no blocker go first; a cycle is broken by clearing ONE
+ * nullable migrated column on it (its values are links by then) — so the side
+ * holding a NOT NULL column is rebuilt first. A cycle with no nullable edge, or a
+ * table a kept facet references, can't be rebuilt: those tables are `stuck`.
+ */
+function rebuildPlan(migrate: MigratableFacet[], kept: { pattern: string; target: string }[], nullable: (f: MigratableFacet) => boolean): { steps: RebuildStep[]; stuck: Set<string> } {
+  const pending = new Set(migrate.map((f) => f.pattern));
+  const cleared = new Set<MigratableFacet>();
+  const steps: RebuildStep[] = [];
+  const blockers = (t: string) => [
+    ...kept.filter((k) => k.target === t && k.pattern !== t),
+    ...migrate.filter((f) => f.target === t && f.pattern !== t && pending.has(f.pattern) && !cleared.has(f)),
+  ];
+  while (pending.size) {
+    const ready = [...pending].filter((t) => !blockers(t).length);
+    if (ready.length) {
+      for (const t of ready) {
+        pending.delete(t);
+        steps.push({ kind: "rebuild", table: t, columns: migrate.filter((f) => f.pattern === t).map((f) => f.column) });
+      }
+      continue;
+    }
+    const breaker = migrate.find((f) => pending.has(f.pattern) && pending.has(f.target) && f.pattern !== f.target && !cleared.has(f) && nullable(f));
+    if (!breaker) return { steps, stuck: pending };
+    cleared.add(breaker);
+    steps.push({ kind: "clear", table: breaker.pattern, column: breaker.column });
+  }
+  return { steps, stuck: new Set() };
+}
+
+/**
+ * Plan v19 without writing anything (it also decides v19's restore-point
+ * firstRun): for each `_fields` row with a `references_object`, either every
+ * non-null value resolves to exactly one row of an admissible target — through
+ * the foreign key's target column (`PRAGMA foreign_key_list` `to`, the id by
+ * default) — and the facet is MIGRATABLE, or the facet is KEPT with a reason.
+ * A migratable facet whose table can't be rebuilt (a reference cycle with no
+ * nullable column, or a table a kept facet references) is kept too. `orphans`
+ * are `_fields` rows with no column of that name in any case (metadata only).
+ *
+ * @why The governing rule (P3-B): v19 never drops a column whose values did not
+ * ALL become links. A dangling value (a hive that ran without FK enforcement), a
+ * non-id key that doesn't resolve, or a kernel target no link admits keeps the
+ * whole facet — column, data, `_fields` row — and nothing is declared for it.
+ */
+export function planReferenceFacets(db: DB): { migrate: MigratableFacet[]; keep: KeptFacet[]; orphans: { pattern: string; facet: string }[]; steps: RebuildStep[] } {
+  let migrate: MigratableFacet[] = [];
+  const keep: KeptFacet[] = [], orphans: { pattern: string; facet: string }[] = [];
+  const keptTargets: { pattern: string; target: string }[] = [];
+  const nullableCols = new Set<string>();
+  const rows = db.exec(
+    `SELECT object_name AS pattern, name AS facet, required, references_object AS target FROM _fields WHERE references_object IS NOT NULL ORDER BY object_name, id`,
+  ).toArray() as { pattern: string; facet: string; required: number; target: string }[];
+  for (const f of rows) {
+    const table = liveTable(db, f.pattern);
+    const info = table ? db.exec(`PRAGMA table_info(${quoteIdent(table)})`).toArray() as { name: string; notnull: number }[] : [];
+    const col = info.find((c) => c.name.toLowerCase() === f.facet.toLowerCase());
+    if (!col) { orphans.push({ pattern: f.pattern, facet: f.facet }); continue; }
+    const kept = (reason: string) => { keep.push({ pattern: f.pattern, facet: f.facet, reason }); keptTargets.push({ pattern: f.pattern, target: f.target }); };
+    if (!endpointAdmissible(f.target, "target")) {
+      kept(`it references kernel pattern "${f.target}", which no link may target, so the reference can't become a link`);
+      continue;
+    }
+    const targetTable = liveTable(db, f.target);
+    if (!targetTable) { kept(`its target pattern "${f.target}" no longer exists`); continue; }
+    const fk = (db.exec(`PRAGMA foreign_key_list(${quoteIdent(table!)})`).toArray() as { from: string; to: string | null }[])
+      .find((k) => k.from.toLowerCase() === col.name.toLowerCase());
+    const via = fk?.to ?? "id";
+    const links: { source: number; target: number }[] = [];
+    let unresolved: string | null = null;
+    for (const row of db.exec(`SELECT id, ${quoteIdent(col.name)} AS v FROM ${quoteIdent(table!)} WHERE ${quoteIdent(col.name)} IS NOT NULL ORDER BY id`).toArray() as { id: number; v: unknown }[]) {
+      let hits: { id: number }[] = [];
+      try { hits = db.exec(`SELECT id FROM ${quoteIdent(targetTable)} WHERE ${quoteIdent(via)} = ? LIMIT 2`, row.v).toArray() as { id: number }[]; } catch { /* no such column */ }
+      if (hits.length !== 1) { unresolved = `${ref(f.pattern, row.id)} holds ${JSON.stringify(row.v)}, which doesn't resolve to exactly one "${f.target}" row (by ${via})`; break; }
+      links.push({ source: row.id, target: hits[0].id });
+    }
+    if (unresolved) { kept(`a value doesn't resolve: ${unresolved}`); continue; }
+    if (!col.notnull) nullableCols.add(`${f.pattern}\u0000${col.name}`);
+    migrate.push({ pattern: f.pattern, facet: f.facet, column: col.name, target: f.target, mandatory: !!(col.notnull || f.required), links });
+  }
+
+  // A table that can't be rebuilt keeps all its facets; that may block others,
+  // so re-plan until the kept set is stable.
+  for (;;) {
+    const { steps, stuck } = rebuildPlan(migrate, keptTargets, (f) => nullableCols.has(`${f.pattern}\u0000${f.column}`));
+    if (!stuck.size) return { migrate, keep, orphans, steps };
+    for (const f of migrate.filter((m) => stuck.has(m.pattern))) {
+      keep.push({ pattern: f.pattern, facet: f.facet, reason: `its table can't be rebuilt without the column: it is in a reference cycle with no nullable column to break it, or a kept reference points into it` });
+      keptTargets.push({ pattern: f.pattern, target: f.target });
+    }
+    migrate = migrate.filter((m) => !stuck.has(m.pattern));
+  }
+}
+
+/**
+ * v19 — retire reference facets (Phase 3, P3-B). Recovery first: any swap a
+ * previous boot interrupted is finished before a column is read. Then, per
+ * planReferenceFacets:
+ * - a KEPT facet is reported (every boot: `<pattern>.<facet> kept`, and why) and
+ *   left exactly as it is;
+ * - a MIGRATABLE facet `P.f` → `T` gets a legacy relation (D-P3-1 name, P → T,
+ *   cardinality one, optional; placeholder description and generated inverse —
+ *   both legacy debts; "was mandatory" recorded when it was NOT NULL or required,
+ *   D-P3-2) and one link per value (archived rows included: dormant);
+ * - then the plan's steps run in order, once every link is written: clear the
+ *   nullable column chosen to break each reference cycle (nullColumns), and
+ *   rebuild each table without its migrated columns (rebuildTableWithout), its
+ *   `_fields` rows removed.
+ * Every stored `reference` format clears. Idempotent: a finished pass leaves
+ * nothing migratable; an interrupted one resumes (its relations are reused, its
+ * links not duplicated).
+ */
+export function migrateReferenceFacets(db: DB): void {
+  recoverInterruptedRebuilds(db);
+  db.exec(`UPDATE _fields SET format = NULL WHERE format = 'reference'`); // the format retired with them
+  const plan = planReferenceFacets(db);
+  for (const k of plan.keep)
+    console.warn(`[schema] v19: ${k.pattern}.${k.facet} kept — ${k.reason}. Its column, data and _fields row stay; nothing was declared. Resolve it (or drop the facet) and a later boot migrates it.`);
+  for (const o of plan.orphans) db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, o.pattern, o.facet);
+  if (!plan.migrate.length) return;
+
+  const rels = activeRelations(db);
+  const taken = new Set(rels.flatMap((r) => [r.name, r.inverse]));
+  for (const f of plan.migrate) {
+    const own = (n: string) => {
+      const r = rels.find((x) => x.name === n);
+      return !!r && r.description === legacyPlaceholder(n) && r.source.length === 1 && r.source[0] === f.pattern && r.target.length === 1 && r.target[0] === f.target;
+    };
+    const name = migratedName(f.pattern, f.facet, taken, own);
+    if (own(name)) {
+      if (f.mandatory) db.exec(`UPDATE "_relations" SET required_review = 1 WHERE name = ? AND archived_at IS NULL`, name);
+    } else {
+      let inverse = `${name}-inverse`;
+      for (let n = 2; taken.has(inverse); n++) inverse = `${name}-inverse-${n}`;
+      db.exec(
+        `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, required, required_review, kernel) VALUES (?, ?, ?, ?, ?, 'one', '[]', 0, ?, 0)`,
+        name, inverse, legacyPlaceholder(name), JSON.stringify([f.pattern]), JSON.stringify([f.target]), f.mandatory ? 1 : 0,
+      );
+      taken.add(name); taken.add(inverse);
+    }
+    for (const l of f.links) {
+      const dup = db.exec(
+        `SELECT 1 FROM "_links" WHERE archived_at IS NULL AND source_pattern = ? AND source_id = ? AND target_pattern = ? AND target_id = ? AND label = ?`,
+        f.pattern, l.source, f.target, l.target, name,
+      ).toArray().length > 0;
+      if (!dup) db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES (?, ?, ?, ?, ?)`, f.pattern, l.source, f.target, l.target, name);
+    }
+  }
+
+  for (const step of plan.steps) {
+    try {
+      if (step.kind === "clear") { nullColumns(db, step.table, [step.column]); continue; }
+      rebuildTableWithout(db, step.table, step.columns);
+      for (const f of plan.migrate.filter((m) => m.pattern === step.table))
+        db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, f.pattern, f.facet);
+    } catch (err) {
+      console.warn(`[schema] relations v19 migration failed at ${step.kind} "${step.table}" — its relations and links are in place; the next boot retries`, err);
+    }
+  }
+}
+
 export function migrateRelations(db: DB): void {
+  ensureRequiredReviewColumn(db);
   db.exec(`DROP INDEX IF EXISTS "_links_pair_active"`); // one pair may now carry several relations
   // v18 is isolated: no later step reads or writes the stored flag (legacy is
   // derived, and every INSERT omits the column, which defaults), so a failed drop
@@ -1016,6 +1258,10 @@ export function migrateRelations(db: DB): void {
   try { dropStoredLegacyFlag(db); }
   catch (err) { console.warn("[schema] relations v18 (drop the stored legacy flag) failed — the other relation steps still run", err); }
   seedKernelRelations(db);    // 1. kernel defaults (so supersedes etc. resolve below)
+  // v19 is isolated like v18: its relations carry their own names, so the later
+  // steps never depend on it, and a failure must not skip them. Fails LOUD.
+  try { migrateReferenceFacets(db); }
+  catch (err) { console.warn("[schema] relations v19 migration failed (reference facets) — the other relation steps still run", err); }
   rewriteLegacyLabels(db);    // 2. NULL → references; inverse wording → canonical
   sweepDanglingLinks(db);     // 3. gone or inadmissible endpoints (incl. ones the rewrite exposed)
   declareLegacyRelations(db); // 4. what remains undeclared becomes a legacy relation
@@ -1188,7 +1434,9 @@ export function amendedRelation(current: Relation, change: any): Relation {
     ...(change.behaviors !== undefined ? { behaviors: [...new Set<string>(change.behaviors)] } : {}),
     ...(change.required !== undefined ? { required: change.required === true } : {}),
   };
-  next.legacy_debt = legacyDebt(next);
+  // "was mandatory" clears only on a decision: an amend that carries `required`.
+  const stillReviewing = current.legacy_debt.includes(LEGACY_DEBTS[2]) && change.required === undefined;
+  next.legacy_debt = legacyDebt({ ...next, required_review: stillReviewing });
   next.legacy = next.legacy_debt.length > 0;
   return next;
 }
@@ -1326,9 +1574,11 @@ export function amendRelation(ctx: RelationsContext, change: any): void {
   if (err) throw new Error(err);
   const next = amendedRelation(activeRelation(ctx.db, change.name)!, change);
   ctx.db.exec(
-    `UPDATE "_relations" SET inverse = ?, description = ?, cardinality = ?, behaviors = ?, required = ?, version = version + 1, updated_at = datetime('now')
+    `UPDATE "_relations" SET inverse = ?, description = ?, cardinality = ?, behaviors = ?, required = ?,
+       required_review = CASE WHEN ? THEN 0 ELSE required_review END, version = version + 1, updated_at = datetime('now')
      WHERE name = ? AND archived_at IS NULL`,
-    next.inverse, next.description, next.cardinality, JSON.stringify(next.behaviors), next.required ? 1 : 0, next.name,
+    next.inverse, next.description, next.cardinality, JSON.stringify(next.behaviors), next.required ? 1 : 0,
+    change.required !== undefined ? 1 : 0, next.name,
   );
 }
 

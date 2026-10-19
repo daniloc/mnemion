@@ -528,7 +528,6 @@ export const exportPattern: RouteHandler = async (ctx) => {
     + meta.facets.map((f: any) => {
       let line = `  - name: ${f.name}\n    type: ${f.type}\n    required: ${f.required}`;
       if (f.default != null) line += `\n    default: ${JSON.stringify(f.default)}`;
-      if (f.links) line += `\n    links: ${f.links}`;
       if (f.options) line += `\n    options: [${f.options.join(", ")}]`;
       return line;
     }).join("\n")

@@ -47,6 +47,8 @@ Always export before archiving — there is no undo after GC. The export is the 
 
 ## Links between entries
 
+Facets hold values, never connections. Reference (foreign-key) facets are retired: `create_pattern` and `add_facet` refuse a facet with `links`. Hives that had them were migrated at boot (v19): each became a legacy relation named after the facet, its values became links, and the column was removed. A facet whose values couldn't all become links (a value naming no row, a reference to a kernel pattern no link may target, or a reference cycle with no optional column to break it) was kept as it was and is reported at every boot — fix or clear the values (or drop the facet once it's no longer a reference) and a later boot migrates it.
+
 Use the `_links` pattern instead of storing IDs in text fields. A link's label names a **declared relation**, and relations are schema: declared, evolved and enforced like patterns and facets. The vocabulary is `{{uri:relations}}` (also the index's `relations` key) — each relation's name, inverse, description, the patterns it joins, its cardinality and behaviors.
 
 - **Link**: `mutate(pattern: "link", data: {source: "tasks/6", target: "goals/9", label: "references"})`
@@ -105,7 +107,7 @@ Explicit `null` is refused for every field — omit a field to leave it out; `nu
 
 If existing data would violate a declare or amend (an entry lacking a now-required link, a second link from one source under cardinality `one`, a cycle under `acyclic`) or a retire, the proposal lists it in `preview.violations` and `apply_change` is refused until it is fixed — it re-checks against the data at apply time.
 
-**Legacy relations.** Labels in use before the registry were declared automatically, with a placeholder description and a generated `<name>-inverse`; their patterns were inferred from usage. Legacy status is derived, never stored: `legacy_debt` lists what remains (`placeholder description`, `generated inverse`) and `legacy` is true while either does. Pay both with `amend_relation` — a real description and an owner-chosen inverse, in one amend or two. Cycles that pre-registry data already holds across an acyclic relation are reported at boot and left in place; propose which link to archive and let the owner ratify.
+**Legacy relations.** Labels in use before the registry were declared automatically, with a placeholder description and a generated `<name>-inverse`; their patterns were inferred from usage. Relations migrated from reference facets carry the same two debts. Legacy status is derived from current values, never a stored flag: `legacy_debt` lists what remains (`placeholder description`, `generated inverse`, and `was mandatory` for a relation migrated from a required reference facet) and `legacy` is true while any does. Pay the first two with `amend_relation` — a real description and an owner-chosen inverse. `was mandatory` is an open decision: amend with `required: true` (make it required, with the usual violations preview) or `required: false` (decline); either clears it, and an amend that doesn't mention `required` decides nothing. Cycles that pre-registry data already holds across an acyclic relation are reported at boot and left in place; propose which link to archive and let the owner ratify.
 
 ## Dropping a facet
 

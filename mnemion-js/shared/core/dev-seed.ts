@@ -11,12 +11,11 @@ type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one
 
 // === Helpers ===
 
-function pat(db: DB, name: string, desc: string, doctrine: string, facets: { name: string; type: string; required?: boolean; ref?: string; format?: string }[]) {
+function pat(db: DB, name: string, desc: string, doctrine: string, facets: { name: string; type: string; required?: boolean; format?: string }[]) {
   const sqlTypes: Record<string, string> = { text: "TEXT", integer: "INTEGER", number: "REAL", boolean: "INTEGER", datetime: "TEXT", select: "TEXT" };
   const colDefs = facets.map(f => {
     let col = `${quoteIdent(f.name)} ${sqlTypes[f.type] || "TEXT"}`;
     if (f.required) col += " NOT NULL";
-    if (f.ref) col += ` REFERENCES ${quoteIdent(f.ref)}("id")`;
     return col;
   });
   db.exec(`CREATE TABLE ${quoteIdent(name)} (
@@ -30,8 +29,8 @@ function pat(db: DB, name: string, desc: string, doctrine: string, facets: { nam
   db.exec("INSERT INTO _objects (name, description, doctrine) VALUES (?, ?, ?)", name, desc, doctrine);
   for (const f of facets) {
     db.exec(
-      "INSERT INTO _fields (object_name, name, type, required, references_object, format) VALUES (?, ?, ?, ?, ?, ?)",
-      name, f.name, f.type, f.required ? 1 : 0, f.ref ?? null, f.format ?? null
+      "INSERT INTO _fields (object_name, name, type, required, format) VALUES (?, ?, ?, ?, ?)",
+      name, f.name, f.type, f.required ? 1 : 0, f.format ?? null
     );
   }
   ensureAuditTriggers(db, name);
@@ -60,10 +59,9 @@ export function seedDevData(db: DB): void {
     { name: "notes", type: "text" },
   ]);
 
-  pat(db, "tasks", "Concrete work items that advance goals", "Create tasks for specific actionable work. Link to the goal they serve.", [
+  pat(db, "tasks", "Concrete work items that advance goals", "Create tasks for specific actionable work. Every task advances a goal: create it with _relate: {\"advances\": \"goals/<id>\"} (the relation is required).", [
     { name: "title", type: "text", required: true },
     { name: "status", type: "text" },
-    { name: "goal_id", type: "integer", ref: "goals" },
     { name: "notes", type: "text" },
   ]);
 
@@ -109,14 +107,18 @@ export function seedDevData(db: DB): void {
   const g2 = ins(db, "goals", { title: "Improve local dev experience", status: "active", notes: "Make wrangler dev useful without deploying. Seed data, remote bindings, fast iteration." });
   const g3 = ins(db, "goals", { title: "Federation protocol", status: "planning", notes: "Cross-hive data sharing. Sovereign hives, voluntary connections, HTTP as protocol." });
 
-  ins(db, "tasks", { title: "Build the notebook UI in React", status: "done", goal_id: g1, notes: "Normalized store, useSyncExternalStore, granular /ws deltas" });
-  ins(db, "tasks", { title: "Add optimistic-locking conflict UI", status: "in-progress", goal_id: g1, notes: "Surface version-mismatch on concurrent edits and offer a merge/reload choice" });
-  ins(db, "tasks", { title: "Render charts with recharts", status: "in-progress", goal_id: g1 });
-  ins(db, "tasks", { title: "Wire the SPA shell fallback in the worker", status: "done", goal_id: g1 });
-  ins(db, "tasks", { title: "Seed realistic dev data on local startup", status: "in-progress", goal_id: g2 });
-  ins(db, "tasks", { title: "Document dev workflow in CLAUDE.md", status: "todo", goal_id: g2 });
-  ins(db, "tasks", { title: "Design federation URI resolution for foreign hives", status: "todo", goal_id: g3 });
-  ins(db, "tasks", { title: "Implement auth code exchange for private federation", status: "todo", goal_id: g3 });
+  // Each task advances one goal — a declared, required relation (below), never a
+  // foreign-key facet (reference facets are retired, Phase 3).
+  const taskGoals: [number, number][] = [];
+  const task = (goal: number, data: Record<string, unknown>) => { taskGoals.push([ins(db, "tasks", data), goal]); };
+  task(g1, { title: "Build the notebook UI in React", status: "done", notes: "Normalized store, useSyncExternalStore, granular /ws deltas" });
+  task(g1, { title: "Add optimistic-locking conflict UI", status: "in-progress", notes: "Surface version-mismatch on concurrent edits and offer a merge/reload choice" });
+  task(g1, { title: "Render charts with recharts", status: "in-progress" });
+  task(g1, { title: "Wire the SPA shell fallback in the worker", status: "done" });
+  task(g2, { title: "Seed realistic dev data on local startup", status: "in-progress" });
+  task(g2, { title: "Document dev workflow in CLAUDE.md", status: "todo" });
+  task(g3, { title: "Design federation URI resolution for foreign hives", status: "todo" });
+  task(g3, { title: "Implement auth code exchange for private federation", status: "todo" });
 
   ins(db, "notes", { title: "Architecture insight: code as schematic", body: "The route table in index.ts is the reference example. Method, pattern, auth gate, handler — one line per route. The full surface is visible in 15 lines. The CHANGE_TYPES table follows the same pattern. Structure as declarative, scannable tables.", tags: "architecture, design" });
   ins(db, "notes", { title: "Vocabulary matters", body: "Renamed everything from database terms to biological vocabulary. Pattern, entry, facet, link, hive. It reshapes how agents think about the data — not rows in a table, but living structures in an organism.", tags: "naming, philosophy" });
@@ -243,11 +245,21 @@ export function seedDevData(db: DB): void {
   ins(db, "tweets", { summary: "shipping notes from a long week of migrations", faves: 412, retweets: 55, engagement: 1800, year: 2026, platform: "bluesky" });
   ins(db, "tweets", { summary: "threads keeps suggesting i post and i keep obliging", faves: 520, retweets: 30, engagement: 2400, year: 2026, platform: "threads" });
 
-  // --- Links ---
+  // --- Relations + links ---
   //
-  // Labels are kernel-default relations (relations.ts KERNEL_RELATIONS), so a
-  // fresh dev hive carries no legacy-relation debt: the seed runs after the
-  // relations migration and never passes through the link chokepoint.
+  // Every label the seed writes names a declared relation on this very boot: the
+  // kernel defaults (seeded by the relations migration, which runs first) plus
+  // `advances`, declared here with a real description and an owner-style inverse,
+  // so a fresh dev hive carries no legacy-relation debt. It is required, so the
+  // web create form for tasks shows its relation picker. The seed writes raw rows
+  // (it never passes through the link chokepoint), so every task gets its link.
+
+  ins(db, "_relations", {
+    name: "advances", inverse: "advanced-by",
+    description: "The task moves the goal forward: finishing it is part of reaching that goal. Use it for the goal a piece of work exists to serve; use references when a task merely mentions a goal. Example: tasks/1 advances goals/1.",
+    source: JSON.stringify(["tasks"]), target: JSON.stringify(["goals"]), cardinality: "one", behaviors: "[]", required: 1, kernel: 0,
+  });
+  for (const [t, g] of taskGoals) ins(db, "_links", { source_pattern: "tasks", source_id: t, target_pattern: "goals", target_id: g, label: "advances" });
 
   ins(db, "_links", { source_pattern: "tasks", source_id: 1, target_pattern: "notes", target_id: 3, label: "derived-from" });
   ins(db, "_links", { source_pattern: "goals", source_id: 1, target_pattern: "goals", target_id: 2, label: "depends-on" });

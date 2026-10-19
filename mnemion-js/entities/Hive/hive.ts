@@ -221,7 +221,7 @@ export class HiveDO extends DurableObject {
     ).one() as { name: string; description: string; pattern_class: string };
 
     const fields = this.db.exec(
-      "SELECT name, type, required, default_value, references_object FROM _fields WHERE object_name = ? ORDER BY id",
+      "SELECT name, type, required, default_value, format FROM _fields WHERE object_name = ? ORDER BY id",
       patternName
     ).toArray() as any[];
 
@@ -240,7 +240,6 @@ export class HiveDO extends DurableObject {
           required: !!f.required,
           default: f.default_value != null ? JSON.parse(f.default_value) : null,
         };
-        if (f.references_object) facet.links = f.references_object;
         if (f.format) facet.format = f.format;
         return facet;
       }),
@@ -904,8 +903,8 @@ export class HiveDO extends DurableObject {
     return JSON.stringify({ pattern, id, revisions, count: revisions.length }, null, 2);
   }
 
-  /** The display label for one entry — what a reference to it should show
-   *  (deriveLabel: title-ish facet, else #id). Used by reference-format chips. */
+  /** The display label for one entry — what a chip pointing at it should show
+   *  (deriveLabel: title-ish facet, else #id). Used by the web's relation chips. */
   async getEntryLabel(pattern: string, id: number): Promise<string> {
     if (!this.patternExists(pattern)) return JSON.stringify({ label: `#${id}` });
     try {
@@ -1341,7 +1340,7 @@ export class HiveDO extends DurableObject {
       "SELECT name, description, doctrine FROM _objects WHERE name = ?", patternName
     ).one() as any;
     const facets = this.db.exec(
-      "SELECT name, type, required, default_value, references_object, options FROM _fields WHERE object_name = ? ORDER BY id", patternName
+      "SELECT name, type, required, default_value, options FROM _fields WHERE object_name = ? ORDER BY id", patternName
     ).toArray() as any[];
 
     const meta = {
@@ -1351,7 +1350,6 @@ export class HiveDO extends DurableObject {
       facets: facets.map((f: any) => {
         const facet: any = { name: f.name, type: f.type, required: !!f.required };
         if (f.default_value != null) facet.default = JSON.parse(f.default_value);
-        if (f.references_object) facet.links = f.references_object;
         if (f.options) facet.options = JSON.parse(f.options);
         return facet;
       }),

@@ -1,4 +1,4 @@
-import { type FC, useState, useEffect } from 'react';
+import { type FC } from 'react';
 import * as Select from '@radix-ui/react-select';
 import { resolveFormat, type FormatId } from '../../shared/core/format-palette';
 import { store, usePatternEntries } from './store';
@@ -16,7 +16,6 @@ export interface FormatProps {
   id?: number;
   facet?: string;
   options?: string[]; // declared facet options (select-typed facets), if any
-  linksTo?: string;   // foreign-key target pattern (facet.links), if any
 }
 
 function relDate(v: string): string {
@@ -73,35 +72,6 @@ const NumberValue: FC<FormatProps> = ({ value }) => {
   return <span className="fv-num">{numberFmt.format(n)}</span>;
 };
 
-// A reference shows the target entry's label (fetched + cached) and opens it on
-// click via a window event the app listens for — so any view, anywhere, makes a
-// foreign key navigable.
-const labelCache = new Map<string, string>();
-const ReferenceValue: FC<FormatProps> = ({ value, linksTo }) => {
-  const key = `${linksTo}/${value}`;
-  const [label, setLabel] = useState<string>(() => labelCache.get(key) ?? '');
-  useEffect(() => {
-    if (!linksTo || value === '' || value == null) return;
-    if (labelCache.has(key)) { setLabel(labelCache.get(key)!); return; }
-    let live = true;
-    fetch(`/api/label/${encodeURIComponent(linksTo)}/${encodeURIComponent(value)}`)
-      .then((r) => r.json())
-      .then((d) => { const l = d.label || `#${value}`; labelCache.set(key, l); if (live) setLabel(l); })
-      .catch(() => { if (live) setLabel(`#${value}`); });
-    return () => { live = false; };
-  }, [linksTo, value, key]);
-  if (!linksTo) return <>{value}</>;
-  const open = (e: { stopPropagation: () => void }) => {
-    e.stopPropagation();
-    window.dispatchEvent(new CustomEvent('mnemion:open-entry', { detail: { pattern: linksTo, id: value } }));
-  };
-  return (
-    <button className="fv-ref" onClick={open} title={`open ${linksTo} #${value}`}>
-      {label || `#${value}`}<span className="fv-ref-arrow">↗</span>
-    </button>
-  );
-};
-
 // Interactive: an inline dropdown that changes the value (optimistic patch +
 // mutate, the live socket echoes it back). Options = declared facet options
 // unioned with the values already in use, so a plain text facet (e.g. status)
@@ -139,18 +109,16 @@ const FORMAT_COMPONENTS: Record<FormatId, FC<FormatProps>> = {
   boolean: BoolValue,
   select: SelectValue,
   number: NumberValue,
-  reference: ReferenceValue,
 };
 
-export function FacetValue({ value, type, facetFormat, viewFormat, pattern, id, facet, options, linksTo }: FormatProps & {
+export function FacetValue({ value, type, facetFormat, viewFormat, pattern, id, facet, options }: FormatProps & {
   type?: string;
   facetFormat?: string | null;
   viewFormat?: string | null;
 }) {
-  // A facet that declares a foreign key (links) is a reference by nature — unless
-  // an explicit format overrides it (resolveFormat folds that precedence in).
-  const fmt = resolveFormat(viewFormat, facetFormat, type, !!linksTo);
+  // Connections between entries are relations (relations.tsx), never a facet value.
+  const fmt = resolveFormat(viewFormat, facetFormat, type);
   if ((value === '' || value == null) && fmt !== 'select') return null;
   const Renderer = FORMAT_COMPONENTS[fmt];
-  return <Renderer value={value} pattern={pattern} id={id} facet={facet} options={options} linksTo={linksTo} />;
+  return <Renderer value={value} pattern={pattern} id={id} facet={facet} options={options} />;
 }

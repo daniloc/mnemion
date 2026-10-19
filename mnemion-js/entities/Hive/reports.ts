@@ -63,7 +63,6 @@ export interface IndexFacetEntry {
   type: string;
   required: boolean;
   default?: string | number | boolean | null;
-  links?: string | null;
   options?: string[];
   readonly?: boolean;
   format?: string;
@@ -92,7 +91,6 @@ export function getCurrentIndex(ctx: ReportsContext): StoreIndex {
       required: !!f.required,
       default: f.default_value != null ? JSON.parse(f.default_value) : null,
     };
-    if (f.references_object) facet.links = f.references_object;
     if (f.options) facet.options = JSON.parse(f.options);
     if (f.format) facet.format = f.format;
     if (IMMUTABLE[f.object_name]?.fields.includes(f.name)) facet.readonly = true;

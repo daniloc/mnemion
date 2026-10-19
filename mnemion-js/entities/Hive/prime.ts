@@ -37,7 +37,7 @@ export interface PrimeResult {
   linked?: LinkedItem[];
 }
 
-/** One hop from an entry: a reference-facet target, or one active link. A link
+/** One hop from an entry: one active link, or a derived (chain) connection. A link
  *  item carries its `direction` ("out": the reader is the source; "in": the
  *  target) and `relation`, the relation's name read from the reader's side (the
  *  name out, the inverse in); `label` keeps the canonical name. */
@@ -405,8 +405,8 @@ export function parseDbDate(s: string | undefined): number | null {
  *  members. `resolve`: every link in both directions, plus derived (chain) items. */
 export type FollowMode = "recall" | "resolve";
 
-/** Follow an entry's connections one hop: reference facets, then every active
- *  link in both directions — one item per link, so a pair carrying two relations
+/** Follow an entry's connections one hop: every active link in both directions
+ *  (only _links connect entries — reference facets are retired) — one item per link, so a pair carrying two relations
  *  yields two items. */
 export function followLinks(
   ctx: PrimeContext,
@@ -415,40 +415,8 @@ export function followLinks(
   mode: FollowMode = "recall",
 ): LinkedItem[] {
   const linked: LinkedItem[] = [];
-  const seen = new Set<string>();
 
-  // 1. Schema-level foreign key references (single-value facets)
-  const refs = ctx.db.exec(
-    "SELECT name, references_object FROM _fields WHERE object_name = ? AND references_object IS NOT NULL",
-    pattern
-  ).toArray() as { name: string; references_object: string }[];
-
-  for (const ref of refs) {
-    const targetId = entry[ref.name];
-    if (targetId == null) continue;
-    const targetPattern = ref.references_object;
-    if (!ctx.patternExists(targetPattern)) continue;
-    const key = `${targetPattern}:${targetId}`;
-    if (seen.has(key)) continue;
-
-    try {
-      const rows = ctx.db.exec(
-        `SELECT * FROM ${quoteIdent(targetPattern)} WHERE id = ? AND archived_at IS NULL`,
-        Number(targetId)
-      ).toArray();
-      if (rows.length > 0) {
-        seen.add(key);
-        linked.push({
-          pattern: targetPattern,
-          id: Number(targetId),
-          entry: rows[0] as Record<string, unknown>,
-          uri: uri(`entry/${targetPattern}/${targetId}`),
-        });
-      }
-    } catch { /* target table may not exist */ }
-  }
-
-  // 2. _links (typed, directed): read from this entry's side via relations.ts
+  // 1. _links (typed, directed): read from this entry's side via relations.ts
   const entryId = entry.id as number;
   if (entryId != null) {
     try {
@@ -479,7 +447,7 @@ export function followLinks(
       }
     } catch { /* _links table may not exist yet */ }
 
-    // 3. Derived (chain) relations — resolve only, computed from active links
+    // 2. Derived (chain) relations — resolve only, computed from active links
     //    between active entries, never stored.
     if (mode === "resolve") {
       try {

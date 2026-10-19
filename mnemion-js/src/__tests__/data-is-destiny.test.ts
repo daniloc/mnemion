@@ -41,10 +41,19 @@ describe("data-is-destiny no-hybrid totality", () => {
 
   it("fires on a stored aggregate beside retained rows; silent on a bare counter", async () => {
     const store = getStore();
-    // HYBRID: `lists.item_count` stored, while `items` rows reference `lists` —
-    // the source rows are retained, so the count is derivable → a denormalization.
+    // HYBRID: `lists.item_count` stored, while `items` rows are contained in `lists`
+    // (a containment relation, Phase 3: reference facets are retired) — the source
+    // rows are retained, so the count is derivable → a denormalization.
     await createPattern(store, "lists", [{ name: "title", type: "text" }, { name: "item_count", type: "number" }]);
-    await createPattern(store, "items", [{ name: "list", type: "number", links: { pattern: "lists" } }]);
+    await createPattern(store, "items", [{ name: "title", type: "text" }]);
+    const d = JSON.parse(await store.proposeChange("declare", JSON.stringify({
+      type: "declare_relation", name: "listed-in", inverse: "lists-item", source: ["items"], target: ["lists"],
+      behaviors: ["containment"], cardinality: "many",
+      description: "An item is listed in a list: the list contains the item as one of its members. Use it for list membership rather than references. Example: items/1 listed-in lists/2.",
+    })));
+    if (d.error) throw new Error(d.message);
+    const da = JSON.parse(await store.applyChange(d.change_id));
+    if (da.error) throw new Error(da.message);
     // LEGITIMATE fork: a bare counter, no retained instances — the stored truth.
     await createPattern(store, "likes", [{ name: "like_count", type: "number" }]);
     const violations = await runInDurableObject(store, (_i, state) =>

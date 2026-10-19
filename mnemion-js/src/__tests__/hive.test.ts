@@ -138,17 +138,20 @@ describe("Schema Evolution", () => {
     expect(index.charter).toEqual({ owner: "test-user", purpose: "testing" });
   });
 
-  it("supports foreign key links", async () => {
+  // Phase 3 (relations.md §7): reference facets are retired; connections between
+  // entries are declared relations + links.
+  it("refuses foreign key links, pointing to declare_relation", async () => {
     const store = getStore();
     await createPattern(store, "projects", [{ name: "name", type: "text", required: true }]);
-    await createPattern(store, "milestones", [
-      { name: "title", type: "text", required: true },
-      { name: "project_id", type: "integer", required: true, links: { pattern: "projects" } },
-    ]);
-
-    const schema = JSON.parse(await store.getSchema("milestones"));
-    const projectFacet = schema.facets.find((f: any) => f.name === "project_id");
-    expect(projectFacet.links).toBe("projects");
+    const result = JSON.parse(await store.proposeChange("FK facet", JSON.stringify({
+      type: "create_pattern", pattern_name: "milestones", doctrine: "test",
+      facets: [
+        { name: "title", type: "text", required: true },
+        { name: "project_id", type: "integer", required: true, links: { pattern: "projects" } },
+      ],
+    })));
+    expect(result.error).toBe(true);
+    expect(result.message).toContain("declare_relation");
   });
 
   it("rejects links to non-existent patterns", async () => {
@@ -163,6 +166,7 @@ describe("Schema Evolution", () => {
       })
     );
     expect(JSON.parse(result).error).toBe(true);
+    expect(JSON.parse(result).message).toContain("declare_relation"); // Phase 3: links are refused outright
   });
 
   it("records schema history", async () => {
@@ -1476,10 +1480,10 @@ describe("linked facet validation", () => {
       })
     ));
     expect(result.error).toBe(true);
-    expect(result.message).toMatch(/Linked facet/);
+    expect(result.message).toContain("declare_relation"); // Phase 3: any `links` option is refused
   });
 
-  it("accepts a valid linked facet", async () => {
+  it("refuses even a well-formed linked facet (Phase 3: reference facets are retired)", async () => {
     const store = getStore();
     await createPattern(store, "goals3", [{ name: "title", type: "text", required: true }]);
     const result = JSON.parse(await store.proposeChange(
@@ -1495,7 +1499,8 @@ describe("linked facet validation", () => {
         ],
       })
     ));
-    expect(result.error).toBeUndefined();
+    expect(result.error).toBe(true);
+    expect(result.message).toContain("declare_relation");
   });
 });
 

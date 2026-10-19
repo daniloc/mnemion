@@ -582,3 +582,31 @@ body { background: var(--paper); font-family: var(--sans); color: var(--ink); -w
   .pattern-head h1 { font-size: 26px; }
   .block { padding: 20px 18px 14px; }
 }
+
+/* === Relations (Phase 3): an entry's relation groups, and the create form === */
+.new-entry {
+  margin-left: 14px; vertical-align: middle;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-tint);
+  border: 1px solid transparent; border-radius: 999px; padding: 4px 10px; cursor: pointer;
+}
+.new-entry:hover { border-color: var(--accent); }
+.relations { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.relations-head { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+.rel-dir { color: var(--accent); }
+.rel-derived {
+  margin-left: 6px; font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-2); border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 6px;
+}
+.rel-items { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.rel-chip-pattern { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+.create-form { display: flex; flex-direction: column; gap: 14px; }
+.form-row { display: flex; flex-direction: column; gap: 6px; }
+.form-req { color: var(--accent); }
+.form-input {
+  font: inherit; font-size: 14px; color: var(--ink); background: var(--card);
+  border: 1px solid var(--line-strong); border-radius: 6px; padding: 7px 9px;
+}
+.form-input:focus { outline: none; border-color: var(--accent); }
+select.form-input[multiple] { min-height: 96px; }
+.form-error { white-space: pre-wrap; }

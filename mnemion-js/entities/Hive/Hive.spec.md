@@ -356,7 +356,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage dismissed: the rule is over one pair's links, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write
 - migration restore point: The first boot that runs the relations migration records exactly one restore_point history row whose bookmark was captured before any migration step touched data, and reverting it hands exactly that bookmark to the existing restore path.
-  over: a pre-migration hive booted through the HiveDO constructor with the bookmark available and unavailable, repeated boots, the order of the capture against every migration effect (relations table creation, pair-index drop, relations writes, link rewrites), and revert of the recorded row; and every entry of MIGRATION_RESTORE_POINTS (v17 first run on a fresh or pre-registry hive, v18 first run on a Phase 1-shaped _relations), each covered by a named test the structural check enforces
+  over: a pre-migration hive booted through the HiveDO constructor with the bookmark available and unavailable, repeated boots, the order of the capture against every migration effect (relations table creation, pair-index drop, relations writes, link rewrites), and revert of the recorded row; and every entry of MIGRATION_RESTORE_POINTS (v17 first run on a fresh or pre-registry hive, v18 first run on a Phase 1-shaped _relations, v19 first run only on a hive with a migratable reference facet, never for kept-only facets, a reference cycle recording once), each covered by a named test the structural check enforces
   via: restore point
   because: Deploying Phase 1 rewrites links and drops an index; without a bookmark taken before that boot there is no exact way to undo the deploy.
   kinds: storage
@@ -491,3 +491,33 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: one capture per applied change
   checklist: completion-evidence dismissed: the capture and the history row are written synchronously with the change
+- reference facets retired: No pattern gains a reference facet, and no reader treats references_object as a connection: entries connect only through declared relations and links.
+  over: create_pattern and add_facet with links, getSchema, the index, export metadata, followLinks, archive_pattern impact, and findStoredDerivedAggregates (now read from containment relations, declared or by active links) against stale references_object rows
+  via: reference facets retired
+  because: Two edge stores drift: a foreign-key column and a _links row can say different things about the same connection, and readers that consult both disagree.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: the rule removes a connection path from reads; it does not change who may read
+  checklist: encrypted-storage dismissed: facet values and links here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation declared as reference facets retired
+  checklist: revision-preservation dismissed: no published revision is involved
+  checklist: commit-ordered-effects dismissed: refusals happen at propose, before any change commits
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule is over the readers of one metadata column
+  checklist: completion-evidence dismissed: the check is synchronous with the change or boot pass
+- reference facet migration: At boot each migratable reference facet becomes a legacy relation with one link per non-null value, its table is rebuilt without the column through the trigger-safe helpers, and a restore point is recorded before any of it runs; a column whose values did not all become links is never dropped, but kept and reported.
+  over: reference facets with values, nulls, archived sources and targets, several facets in one pass (one pointing at a table also rebuilt), kebab-case names and their fallbacks (collisions, names a kebab rule rejects), mandatory facets migrating optional with the recorded `was mandatory` debt and its clearing by an explicit required decision, stored reference formats, repeated boots, hives without reference facets, the restore-point ordering, and the dev seed; production-shaped audit triggers naming the column, and every column drop or table rebuild in worker source going through the trigger-safe helpers of audit-triggers.ts (trigger-safe drops); dangling id and non-id values, non-id foreign keys resolved through their target column, reference cycles finished on one boot, self-references, kernel targets kept and reported (_documents and _web_cache migrating), interrupted swaps recovered before any facet is read, and v19 restore points recorded only for migratable work; registered patterns named x__rebuild (beside x or alone) untouched by every-boot recovery while unregistered leftovers are recovered, the __rebuild suffix reserved at create_pattern, reference cycles with a NOT NULL side, and _fields names matching columns case-insensitively
+  via: reference facet migration
+  because: A boot that rewrites tables can't be undone without a bookmark taken first, and a half-migrated facet leaves two edge stores disagreeing.
+  kinds: storage
+  checklist: scoped-reads dismissed: schema evolution and boot migration, not a read path
+  checklist: encrypted-storage dismissed: facet values and links here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation dismissed: the migration reads stored schema, not a request payload
+  checklist: revision-preservation declared as reference facet migration
+  checklist: commit-ordered-effects declared as reference facet migration
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: one migration over the reference facets present at boot
+  checklist: completion-evidence dismissed: the check is synchronous with the change or boot pass
