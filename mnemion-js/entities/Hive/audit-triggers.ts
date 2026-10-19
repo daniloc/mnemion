@@ -3,11 +3,14 @@
 //
 // @why A leaf (policy.ts + sql.ts only) so every module that alters a table's
 // columns — schema.ts boot, evolution.ts change types, relations.ts's boot
-// migration — reaches the same two functions without an import cycle. SQLite
+// migrations — reaches the same functions without an import cycle. SQLite
 // refuses DROP COLUMN on a column a trigger names, and every audited table's
 // triggers name every column: dropColumn is the only sanctioned way to drop one,
-// so the next migration that drops a column can't repeat the v18 failure (a plain
-// DROP COLUMN on a live, audited `_relations`).
+// and rebuildTableWithout (its sibling) the only way to remove a column SQLite
+// can't DROP at all (a foreign key). So the next migration that drops a column
+// can't repeat the v18 failure (a plain DROP COLUMN on a live, audited
+// `_relations`); the "trigger-safe drops" structural test holds every other
+// worker file to that.
 
 import { quoteIdent } from "../../shared/core/sql";
 import { isAuditExempt, sensitiveColumns } from "./policy";
@@ -76,5 +79,66 @@ export function dropColumn(db: any, table: string, column: string): void {
     if (cols.includes(column)) db.exec(`ALTER TABLE ${quoteIdent(table)} DROP COLUMN ${quoteIdent(column)}`);
   } finally {
     ensureAuditTriggers(db, table); // never leave the table unaudited, even on a refusal
+  }
+}
+
+/**
+ * Rebuild `table` without `columns` — the trigger-safe way to remove a column
+ * SQLite refuses to DROP (a FOREIGN KEY column, which v19 retires). The 12-step
+ * rebuild, under the audit triggers: drop the triggers, create
+ * `<table>__rebuild` from PRAGMA (types, NOT NULL, defaults, the INTEGER PRIMARY
+ * KEY with its AUTOINCREMENT, and every foreign key not being removed), copy
+ * every row and every kept column (ids, version, timestamps, archived state),
+ * drop the old table, rename the new one into place, restore its indexes and
+ * AUTOINCREMENT high-water mark, rebuild the triggers.
+ *
+ * Foreign keys stay enforced, so a table still referenced by another table's
+ * foreign key can't be dropped: callers rebuild referencing tables first
+ * (relations.ts orders v19 that way). Crash-safe across boots (boot isn't one
+ * transaction): a leftover `<table>__rebuild` beside the original is an
+ * unfinished copy and is discarded; one WITHOUT the original means the swap was
+ * interrupted after the drop, and is renamed into place.
+ */
+export function rebuildTableWithout(db: any, table: string, columns: string[]): void {
+  const t = quoteIdent(table);
+  const tmpName = `${table}__rebuild`;
+  const tmp = quoteIdent(tmpName);
+  const exists = (name: string) => db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name).toArray().length > 0;
+  if (exists(tmpName)) {
+    if (exists(table)) db.exec(`DROP TABLE ${tmp}`);
+    else db.exec(`ALTER TABLE ${tmp} RENAME TO ${t}`);
+  }
+
+  const info = db.exec(`PRAGMA table_info(${t})`).toArray() as { name: string; type: string; notnull: number; dflt_value: string | null; pk: number }[];
+  const drop = new Set(columns.filter((c) => info.some((i) => i.name === c)));
+  if (!drop.size) { ensureAuditTriggers(db, table); return; }
+
+  const ddl = (db.exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).toArray()[0] as any)?.sql ?? "";
+  const fks = db.exec(`PRAGMA foreign_key_list(${t})`).toArray() as { table: string; from: string; to: string | null }[];
+  const kept = info.filter((c) => !drop.has(c.name));
+  const defs = kept.map((c) => {
+    let d = `${quoteIdent(c.name)} ${c.type}`.trim();
+    if (c.pk) d += ` PRIMARY KEY${/AUTOINCREMENT/i.test(ddl) ? " AUTOINCREMENT" : ""}`;
+    if (c.notnull && !c.pk) d += " NOT NULL";
+    if (c.dflt_value != null) d += ` DEFAULT (${c.dflt_value})`;
+    const fk = fks.find((f) => f.from === c.name);
+    if (fk) d += ` REFERENCES ${quoteIdent(fk.table)}(${quoteIdent(fk.to ?? "id")})`;
+    return d;
+  });
+  const indexes = (db.exec(`SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`, table).toArray() as { sql: string }[])
+    .map((r) => r.sql).filter((sql) => ![...drop].some((c) => sql.includes(`"${c}"`)));
+  const seq = (() => { try { return (db.exec(`SELECT seq FROM sqlite_sequence WHERE name = ?`, table).toArray()[0] as any)?.seq ?? null; } catch { return null; } })();
+  const cols = kept.map((c) => quoteIdent(c.name)).join(", ");
+
+  for (const op of ["insert", "update", "delete"]) db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${table}_${op}`)}`);
+  try {
+    db.exec(`CREATE TABLE ${tmp} (\n  ${defs.join(",\n  ")}\n)`);
+    db.exec(`INSERT INTO ${tmp} (${cols}) SELECT ${cols} FROM ${t}`);
+    db.exec(`DROP TABLE ${t}`);
+    db.exec(`ALTER TABLE ${tmp} RENAME TO ${t}`);
+    for (const sql of indexes) db.exec(sql);
+    if (seq != null) { try { db.exec(`UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?`, seq, table); } catch { /* best-effort */ } }
+  } finally {
+    if (exists(table)) ensureAuditTriggers(db, table); // never leave the table unaudited
   }
 }

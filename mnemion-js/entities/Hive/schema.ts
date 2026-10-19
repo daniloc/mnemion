@@ -23,7 +23,7 @@ import { KERNEL_WRITE_POLICY, sensitiveColumns, findUnclassifiedSensitiveColumns
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
 import { ensureAuditTriggers, dropColumn } from "./audit-triggers";
-import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, findRequiredGaps, requiredGaps, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL } from "./relations";
+import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, findRequiredGaps, requiredGaps, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL, containmentChildren } from "./relations";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
 
@@ -360,6 +360,7 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       "behaviors" TEXT NOT NULL DEFAULT '[]',
       "chain" TEXT,
       "kernel" INTEGER NOT NULL DEFAULT 0,
+      "required_review" INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       archived_at TEXT,
@@ -379,6 +380,7 @@ Adding a member is a two-step invite: (1) create the member here with label + di
       { name: "behaviors", type: "text", required: false },
       { name: "chain", type: "text", required: false },
       { name: "kernel", type: "boolean", required: false },
+      { name: "required_review", type: "boolean", required: false },
     ],
   },
   {
@@ -621,14 +623,18 @@ export const KERNEL_TABLES: KernelTable[] = [
 
 /** Boot migrations that rewrite data in a way the previous worker can't read
  * back, each recorded with a PITR restore point on its first run. `firstRun` is
- * evaluated BEFORE initializeSchema touches anything; the conditions are disjoint
- * by construction, so one boot records at most one point.
+ * evaluated BEFORE initializeSchema touches anything. v17 and v18 are disjoint
+ * (v17 needs no `_relations`, v18 needs one); v19 can coincide with v18 on a hive
+ * that skipped Phase 2, and then each records a row with the same bookmark.
  *
  * - v17 (relations registry): rewrites/archives links, drops the pair-only index.
  *   First run: no `_relations` table yet (a pre-Phase-1 hive, or a brand-new one).
  * - v18 (relations Phase 2): drops the stored `_relations.legacy` flag, now
  *   derived. Phase 1 code SELECTs and INSERTs that column, so a worker rollback
  *   without a DO restore would break the registry. First run: the column is there.
+ * - v19 (relations Phase 3): turns reference facets into relations + links and
+ *   rebuilds their tables without the foreign-key column. First run: a `_fields`
+ *   row still carries `references_object`.
  */
 const MIGRATION_RESTORE_POINTS: { migration: string; description: string; firstRun: (db: any) => boolean }[] = [
   {
@@ -640,6 +646,11 @@ const MIGRATION_RESTORE_POINTS: { migration: string; description: string; firstR
     migration: "v18",
     description: "Restore point before the relations Phase 2 migration (v18: the stored legacy flag becomes derived legacy debt)",
     firstRun: (db) => (db.exec(`PRAGMA table_info("_relations")`).toArray() as { name: string }[]).some((c) => c.name === "legacy"),
+  },
+  {
+    migration: "v19",
+    description: "Restore point before the reference-facet retirement (v19: reference facets become relations and links; their tables are rebuilt)",
+    firstRun: (db) => db.exec(`SELECT 1 FROM _fields WHERE references_object IS NOT NULL LIMIT 1`).toArray().length > 0,
   },
 ];
 
@@ -1373,8 +1384,8 @@ function verifyFieldsIntegrity(db: any): void {
 // a DECIDABLE core: a pattern must not STORE an aggregate of rows it also RETAINS.
 // That IS decidable from `_fields` alone — it fires only when BOTH halves are
 // present: a facet named like an aggregate (count/total/tally/sum/num) AND a child
-// pattern whose rows reference this one (so the aggregate is COUNT(*)/SUM over
-// retained rows). It stays SILENT on the legitimate fork the convergence
+// pattern whose rows are CONTAINED in this one (so the aggregate is COUNT(*)/SUM
+// over retained rows). It stays SILENT on the legitimate fork the convergence
 // experiment surfaced — a bare counter with no retained instances is the stored
 // truth, not a denormalization (you chose not to keep the events) — and on stored
 // measurements that aren't aggregates of anything (no children to derive from).
@@ -1382,13 +1393,12 @@ function verifyFieldsIntegrity(db: any): void {
 // `label` IS its primitive value, so naming alone false-positives; only the
 // aggregate-beside-retained-source relationship is unambiguous.
 //
-// KNOWN COVERAGE GAP (decidable-core only): "retained source" is read from FK facets
-// (`references_object`) — a schema-static signal. It does NOT cover rows related via
-// `_links` (the idiomatic Mnemion join), because link-children are a DATA property
-// (are there `_links` rows targeting P right now?), not a schema one, and almost any
-// pattern can be link-targeted — so checking it would over-flag (a false smell, the
-// thing we refuse to ship). The FK case is the unambiguous, decidable slice; the
-// `_links` hybrid stays the author's judgment.
+// "Retained source" is read from CONTAINMENT relations (relations.ts
+// containmentChildren): a containment relation whose explicit source/target lists
+// name the child/parent patterns, or active links of a containment relation (incl.
+// the kernel `*` part-of) between them. Containment is the unambiguous "these rows
+// belong to that one" signal; a plain reference relation would over-flag (almost
+// anything can be referenced), and reference facets are retired (Phase 3).
 //
 // This iterates the LIVE `_fields` schema, so a feature that adds the hybrid is
 // caught with no hand-list to maintain. Advisory at boot (warn, never throw — a
@@ -1397,15 +1407,8 @@ function verifyFieldsIntegrity(db: any): void {
 const AGGREGATE_FACET_RE = /(^|_)(count|total|tally|sum|num)(_|$)/i;
 
 export function findStoredDerivedAggregates(db: any): string[] {
-  // parent pattern -> the child patterns whose rows reference it (retained source).
-  const childrenOf = new Map<string, string[]>();
-  const refs = db.exec(
-    "SELECT object_name, references_object FROM _fields WHERE references_object IS NOT NULL"
-  ).toArray() as { object_name: string; references_object: string }[];
-  for (const r of refs) {
-    if (!childrenOf.has(r.references_object)) childrenOf.set(r.references_object, []);
-    childrenOf.get(r.references_object)!.push(r.object_name);
-  }
+  // parent pattern -> the child patterns whose rows it contains (retained source).
+  const childrenOf = containmentChildren(db);
   const out: string[] = [];
   const facets = db.exec("SELECT object_name, name FROM _fields").toArray() as { object_name: string; name: string }[];
   for (const f of facets) {

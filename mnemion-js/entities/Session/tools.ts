@@ -105,7 +105,7 @@ Federation: use this to help the user access content on other hives.
     description: `Use this to help the user evolve the structure of their hive. Propose a structural change — validates and returns a preview without committing.
 
 Supports: create_pattern (with facets), add_facet (to existing pattern), drop_facet (remove a facet and its data), set_sharing (entry-level HTTP visibility), set_options, set_doctrine, set_memory_policy, set_class, set_facet_format (how a facet's value renders in the web app — pass facet + format), archive_pattern (refused while a containment relation's members in other patterns still link in), unarchive_pattern, declare_relation, amend_relation, retire_relation (the link vocabulary).
-Facets can declare foreign key links to other patterns via the links parameter.
+Facets hold values, never connections: connect entries with relations (declare_relation, then link, or _relate on create) — reference/foreign-key facets are retired.
 Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 facets per pattern.
 
 pattern_class (create_pattern / set_class): "knowledge" is the default — prose recalled by meaning, the texture prime, decay, and supersession are built for. Choose "dataset" for structured records meant to be aggregated by query (measurements, logs, expenses, survey responses, time-series). Dataset patterns enforce facet types and required fields on write (a number facet rejects "banana"), and opt out of the memory machinery: they're not embedded, never surface in prime, and never appear in the stale view. Use set_class to convert an existing pattern (affects future writes and recall; existing rows are untouched).

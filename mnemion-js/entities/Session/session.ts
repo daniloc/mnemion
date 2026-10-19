@@ -402,10 +402,9 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
             required: z.boolean().default(false),
             default_value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
             options: z.array(z.string()).optional().describe("Allowed values (required for select type)"),
-            links: z.object({
-              pattern: z.string().describe("Linked pattern name"),
-              facet: z.string().default("id").describe("Linked facet (default: id)"),
-            }).optional().describe("Foreign key link to another pattern"),
+            // Carried through (not stripped) only so the engine refuses it with its
+            // guidance: a silently dropped `links` would make a reference facet look created.
+            links: z.unknown().optional().describe("Retired: reference (foreign-key) facets are refused — connect entries with a relation (declare_relation, then link or _relate)"),
           })).optional().describe("Facets to create (for create_pattern or add_facet)"),
           facet_name: z.string().optional().describe("Target facet name (for set_options)"),
           facet: z.string().optional().describe("Target facet name (for set_facet_format / drop_facet)"),

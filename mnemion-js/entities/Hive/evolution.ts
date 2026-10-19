@@ -70,14 +70,10 @@ function validateFacets(
       return `Facet "${a.name}" is a kernel-provided column (auto-added to every pattern) and cannot be defined by the user`;
     if (existingFacets?.some((e) => e.name === a.name))
       return `Facet "${a.name}" already exists on the pattern`;
-    if (a.links && !ctx.patternExists(a.links.pattern))
-      return `Linked pattern "${a.links.pattern}" does not exist`;
-    // links.facet is interpolated into REFERENCES "..."("...") DDL — validate it
-    // the same as any other identifier so it can't break out of the quoting.
-    if (a.links?.facet) {
-      const facetErr = validateName("Linked facet", a.links.facet);
-      if (facetErr) return facetErr;
-    }
+    // Reference facets are retired (Phase 3): a connection between entries is a
+    // declared relation plus links, never a foreign-key column.
+    if (a.links !== undefined)
+      return `Facet "${a.name}" declares "links" — reference facets are retired. Connect entries with a relation instead: declare it with propose_change type "declare_relation" (or use a kernel default such as references or part-of), then link entries (or pass _relate on create).`;
     if (a.type === "select" && (!Array.isArray(a.options) || a.options.length === 0))
       return `Facet "${a.name}" is type select but has no options`;
     if (a.type !== "select" && a.options)
@@ -91,7 +87,6 @@ function facetToIndexEntry(a: any): IndexFacetEntry {
     name: a.name, type: a.type, required: a.required ?? false,
     default: a.default_value ?? null,
   };
-  if (a.links) facet.links = a.links.pattern;
   if (a.options) facet.options = a.options;
   return facet;
 }
@@ -106,17 +101,15 @@ function facetToDDL(a: any): string {
       ? ` DEFAULT '${a.default_value.replace(/'/g, "''")}'`
       : ` DEFAULT ${Number(a.default_value)}`;
   }
-  if (a.links) col += ` REFERENCES ${quoteIdent(a.links.pattern)}(${quoteIdent(a.links.facet || 'id')})`;
   return col;
 }
 
 function registerFacets(db: DB, patternName: string, facets: any[]): void {
   for (const a of facets) {
     db.exec(
-      "INSERT INTO _fields (object_name, name, type, required, default_value, references_object, options) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO _fields (object_name, name, type, required, default_value, options) VALUES (?, ?, ?, ?, ?, ?)",
       patternName, a.name, a.type, a.required ? 1 : 0,
       a.default_value != null ? JSON.stringify(a.default_value) : null,
-      a.links?.pattern ?? null,
       a.options ? JSON.stringify(a.options) : null
     );
   }
@@ -481,10 +474,13 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       const pat = preview.patterns.find((p) => p.name === change.pattern_name);
       const facet = pat?.facets.find((f) => f.name === change.facet);
       if (!pat || !facet) return `Facet "${change.facet}" does not exist on "${change.pattern_name}"`;
-      // Owner decision O4: a reference (links) facet is a foreign-key column SQLite
-      // won't drop; it is retired by the Phase 3 migration to a relation.
-      if (facet.links)
-        return `"${change.facet}" is a reference facet (links → ${facet.links}); reference facets are retired in Phase 3 by migrating them to a relation, not dropped. Declare the relation with declare_relation and link the entries instead.`;
+      // Owner decision O4: a not-yet-migrated reference facet (a foreign-key
+      // column SQLite won't drop) is retired by the v19 boot migration to a
+      // relation, never dropped here. Read straight from _fields: no read surface
+      // reports references_object any more.
+      const ref = ctx.db.exec(`SELECT references_object FROM _fields WHERE object_name = ? AND name = ?`, change.pattern_name, change.facet).toArray()[0] as any;
+      if (ref?.references_object)
+        return `"${change.facet}" is a reference facet (→ ${ref.references_object}); reference facets are retired in Phase 3 by migrating them to a relation (the next boot does it), not dropped. Declare a relation with declare_relation and link the entries instead.`;
       if (pat.facets.length <= 1)
         return `"${change.facet}" is the only facet of "${change.pattern_name}" — a pattern needs at least one facet. Archive the pattern instead.`;
       return null;
@@ -596,16 +592,14 @@ function focusedPreview(change: any, index: StoreIndex, ctx: EvolutionContext): 
   }
 }
 
-// References from elsewhere that point INTO `patternName` — active `_links` whose
-// target is one of its entries, and foreign-key facets on other patterns that
-// reference it. After the pattern is archived these dangle (the entries become
-// unreachable), so the propose/apply return flags them. Self-references are
-// excluded: they're archived together with the pattern, not orphaned.
+// Links from elsewhere that point INTO `patternName` — active `_links` whose
+// target is one of its entries. After the pattern is archived they go dormant
+// (the entries become unreachable), so the propose/apply return flags them.
+// Self-references are excluded: they're archived together with the pattern.
 function referenceImpact(ctx: EvolutionContext, patternName: string): Record<string, unknown> | null {
   if (!patternName) return null;
   const CAP = 25;
   let links: { source_pattern: string; source_id: number; label: string | null }[] = [];
-  let facets: { object_name: string; name: string }[] = [];
   try {
     links = ctx.db.exec(
       `SELECT source_pattern, source_id, label FROM "_links"
@@ -614,27 +608,18 @@ function referenceImpact(ctx: EvolutionContext, patternName: string): Record<str
       patternName, patternName
     ).toArray() as any[];
   } catch { /* _links may not exist yet */ }
-  try {
-    facets = ctx.db.exec(
-      `SELECT object_name, name FROM _fields WHERE references_object = ? AND object_name != ?`,
-      patternName, patternName
-    ).toArray() as any[];
-  } catch { /* best-effort */ }
 
-  if (links.length === 0 && facets.length === 0) return null;
+  if (links.length === 0) return null;
 
   return {
     dangling_reference_count: links.length,
-    ...(links.length ? {
-      dangling_references: links.slice(0, CAP).map((l) => ({
-        from: `${l.source_pattern}/${l.source_id}`,
-        uri: uri(`entry/${l.source_pattern}/${l.source_id}`),
-        ...(l.label ? { label: l.label } : {}),
-      })),
-    } : {}),
+    dangling_references: links.slice(0, CAP).map((l) => ({
+      from: `${l.source_pattern}/${l.source_id}`,
+      uri: uri(`entry/${l.source_pattern}/${l.source_id}`),
+      ...(l.label ? { label: l.label } : {}),
+    })),
     ...(links.length > CAP ? { dangling_references_truncated: links.length - CAP } : {}),
-    ...(facets.length ? { referencing_facets: facets.map((f) => `${f.object_name}.${f.name}`) } : {}),
-    warning: `Archiving "${patternName}" leaves ${links.length} reference(s) from other entries pointing at now-unreachable entries${facets.length ? ` and ${facets.length} foreign-key facet(s) referencing it` : ""}. Re-point or archive those, or reconsider the archive.`,
+    warning: `Archiving "${patternName}" leaves ${links.length} link(s) from other entries pointing at now-archived entries (they stay, dormant, until unarchive). Re-point or archive those, or reconsider the archive.`,
   };
 }
 

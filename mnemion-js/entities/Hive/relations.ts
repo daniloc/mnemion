@@ -18,7 +18,7 @@
 import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { isKernelPattern } from "./policy";
-import { dropColumn } from "./audit-triggers";
+import { dropColumn, rebuildTableWithout } from "./audit-triggers";
 
 type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one: () => any } };
 
@@ -176,12 +176,19 @@ function isGeneratedInverse(name: string, inverse: string): boolean {
   return new RegExp(`^${escapeRe(name)}-inverse(-\\d+)?$`).test(inverse);
 }
 
-export const LEGACY_DEBTS = ["placeholder description", "generated inverse"] as const;
+export const LEGACY_DEBTS = ["placeholder description", "generated inverse", "was mandatory"] as const;
 
-function legacyDebt(r: { name: string; description: string; inverse: string }): string[] {
+/** The debts, in LEGACY_DEBTS order. The first two are derived from current
+ *  values; "was mandatory" is derived from `_relations.required_review`, the one
+ *  RECORDED fact (v19, D-P3-2): a mandatory reference facet migrated as optional,
+ *  and the NOT NULL it came from is destroyed by the rebuild — so it is recorded
+ *  at the only moment it is knowable, and cleared only by an owner decision (an
+ *  amend that carries `required` explicitly). */
+function legacyDebt(r: { name: string; description: string; inverse: string; required_review?: unknown }): string[] {
   const debt: string[] = [];
   if (r.description === legacyPlaceholder(r.name)) debt.push(LEGACY_DEBTS[0]);
   if (isGeneratedInverse(r.name, r.inverse)) debt.push(LEGACY_DEBTS[1]);
+  if (r.required_review) debt.push(LEGACY_DEBTS[2]);
   return debt;
 }
 
@@ -211,8 +218,7 @@ export function activeRelations(db: DB): Relation[] {
   let rels: Relation[];
   try {
     rels = (db.exec(
-      `SELECT name, inverse, description, source, target, cardinality, behaviors, required, chain, kernel
-       FROM "_relations" WHERE archived_at IS NULL ORDER BY kernel DESC, name`,
+      `SELECT * FROM "_relations" WHERE archived_at IS NULL ORDER BY kernel DESC, name`,
     ).toArray() as any[]).map(toRelation);
   } catch {
     return [];
@@ -688,6 +694,28 @@ export function endStateViolations(db: DB, touched: Touched): string | null {
   return null;
 }
 
+/** parent pattern → the child patterns it CONTAINS: an active containment relation
+ *  listing the child as an explicit source and the parent as an explicit target,
+ *  or an active link of a containment relation (incl. the kernel `*` part-of)
+ *  from a child entry to a parent entry. Read by the data-is-destiny aggregate
+ *  check (schema.ts findStoredDerivedAggregates). */
+export function containmentChildren(db: DB): Map<string, string[]> {
+  const out = new Map<string, Set<string>>();
+  const add = (parent: string, child: string) => {
+    if (parent === ANY || child === ANY || parent === child) return;
+    (out.get(parent) ?? out.set(parent, new Set()).get(parent)!).add(child);
+  };
+  const containing = stored(activeRelations(db)).filter((r) => r.behaviors.includes("containment"));
+  for (const r of containing) for (const p of r.target) for (const c of r.source) add(p, c);
+  if (containing.length) {
+    for (const l of db.exec(
+      `SELECT DISTINCT source_pattern, target_pattern FROM "_links" WHERE archived_at IS NULL AND label IN (${containing.map(() => "?").join(",")})`,
+      ...containing.map((r) => r.name),
+    ).toArray() as any[]) add(l.target_pattern, l.source_pattern);
+  }
+  return new Map([...out].map(([p, kids]) => [p, [...kids].sort()]));
+}
+
 /** archive_pattern on a container: the active members in OTHER patterns that
  *  hold a containment link into the pattern's active entries. */
 export function containmentHolders(db: DB, pattern: string): RelationViolation[] {
@@ -939,8 +967,9 @@ export function declareLegacyRelations(db: DB): void {
  *  (e.g. `refines: generated inverse`). Pure, so the boot warning and any test
  *  read the same rule. */
 export function findLegacyRelations(relations: Pick<Relation, "name" | "legacy_debt">[]): string[] {
+  const say = (d: string) => d === LEGACY_DEBTS[2] ? "was mandatory, consider required" : d;
   return relations.filter((r) => r.legacy_debt.length).map((r) =>
-    `legacy relation ${r.name}: ${r.legacy_debt.join(", ")} — pay it with amend_relation (a real description; an owner-chosen inverse)`);
+    `legacy relation ${r.name}: ${r.legacy_debt.map(say).join(", ")} — pay it with amend_relation (a real description; an owner-chosen inverse; an explicit required: true or false)`);
 }
 
 /** v18: legacy status became two derived facts (legacyDebt); the stored flag,
@@ -1006,7 +1035,118 @@ export function findCycles(graphs: RelationGraph[]): string[] {
 
 /** The relations migration, in boot order. Each step is idempotent: a second
  *  boot changes nothing. */
+/** v19 adds `_relations.required_review` (the "was mandatory" record); an
+ *  existing table gains it before anything reads or writes it. Idempotent. */
+function ensureRequiredReviewColumn(db: DB): void {
+  const cols = (db.exec(`PRAGMA table_info("_relations")`).toArray() as { name: string }[]).map((c) => c.name);
+  if (!cols.includes("required_review")) db.exec(`ALTER TABLE "_relations" ADD COLUMN "required_review" INTEGER NOT NULL DEFAULT 0`);
+}
+
+const kebab = (s: string) => s.toLowerCase().replace(/_/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+
+/** The name a migrated reference facet `P.f` takes (D-P3-1): `f` in kebab-case;
+ *  when that is not a valid relation name or is already in the vocabulary,
+ *  `<P>-<f>` kebab-cased, then with a numeric suffix. `reuse` accepts a candidate
+ *  already holding this facet's own migrated relation (a boot interrupted midway). */
+function migratedName(pattern: string, facet: string, taken: Set<string>, reuse: (name: string) => boolean): string {
+  const base = kebab(facet);
+  const fallback = kebab(`${pattern}-${facet}`);
+  const candidates = [base, fallback, ...Array.from({ length: 50 }, (_, i) => `${fallback}-${i + 2}`)];
+  for (const c of candidates) {
+    if (!NAME_RE.test(c)) continue;
+    if (reuse(c)) return c;
+    if (!taken.has(c)) return c;
+  }
+  throw new Error(`no free relation name for reference facet ${pattern}.${facet}`);
+}
+
+/**
+ * v19 — retire reference facets (Phase 3, P3-B). For each `_fields` row with a
+ * `references_object` (`P.f` → `T`):
+ * 1. declare a legacy relation (D-P3-1 name, P → T, cardinality one, optional,
+ *    the frozen placeholder description and a generated inverse — both legacy
+ *    debts), recording "was mandatory" (`required_review`) when the facet was
+ *    NOT NULL or required (D-P3-2);
+ * 2. write one link per non-null value, archived rows included (dormant);
+ * 3. rebuild the table without the column through audit-triggers.ts (SQLite
+ *    won't DROP a foreign-key column, and the audit triggers name it), and
+ *    remove its `_fields` row.
+ * Tables referenced by another migrated facet are rebuilt after the tables
+ * referencing them (a referenced parent can't be dropped while child rows point
+ * at it). Then every stored `reference` format clears. Idempotent: a finished
+ * pass leaves no `references_object`, so a later boot does nothing; an
+ * interrupted one resumes (its relations are reused, its links not duplicated).
+ */
+export function migrateReferenceFacets(db: DB): void {
+  db.exec(`UPDATE _fields SET format = NULL WHERE format = 'reference'`); // the format retired with them
+  const facets = db.exec(
+    `SELECT object_name AS pattern, name AS facet, required, references_object AS target FROM _fields WHERE references_object IS NOT NULL ORDER BY object_name, id`,
+  ).toArray() as { pattern: string; facet: string; required: number; target: string }[];
+  if (!facets.length) return;
+
+  const rels = activeRelations(db);
+  const taken = new Set(rels.flatMap((r) => [r.name, r.inverse]));
+  const byTable = new Map<string, string[]>();
+  for (const f of facets) {
+    const info = db.exec(`PRAGMA table_info(${quoteIdent(f.pattern)})`).toArray() as { name: string; notnull: number }[];
+    const col = info.find((c) => c.name === f.facet);
+    if (col) {
+      const own = (n: string) => {
+        const r = rels.find((x) => x.name === n);
+        return !!r && r.description === legacyPlaceholder(n) && r.source.length === 1 && r.source[0] === f.pattern && r.target.length === 1 && r.target[0] === f.target;
+      };
+      const name = migratedName(f.pattern, f.facet, taken, own);
+      const mandatory = col.notnull || f.required ? 1 : 0;
+      if (own(name)) {
+        if (mandatory) db.exec(`UPDATE "_relations" SET required_review = 1 WHERE name = ? AND archived_at IS NULL`, name);
+      } else {
+        let inverse = `${name}-inverse`;
+        for (let n = 2; taken.has(inverse); n++) inverse = `${name}-inverse-${n}`;
+        db.exec(
+          `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, required, required_review, kernel) VALUES (?, ?, ?, ?, ?, 'one', '[]', 0, ?, 0)`,
+          name, inverse, legacyPlaceholder(name), JSON.stringify([f.pattern]), JSON.stringify([f.target]), mandatory,
+        );
+        taken.add(name); taken.add(inverse);
+      }
+      for (const row of db.exec(`SELECT id, ${quoteIdent(f.facet)} AS v FROM ${quoteIdent(f.pattern)} WHERE ${quoteIdent(f.facet)} IS NOT NULL ORDER BY id`).toArray() as { id: number; v: unknown }[]) {
+        const target = Number(row.v);
+        let present = false;
+        try { present = db.exec(`SELECT 1 FROM ${quoteIdent(f.target)} WHERE id = ?`, target).toArray().length > 0; } catch { /* target table gone */ }
+        if (!present) { console.warn(`[schema] v19: ${ref(f.pattern, row.id)}.${f.facet} names ${ref(f.target, target)}, which does not exist — skipped`); continue; }
+        const dup = db.exec(
+          `SELECT 1 FROM "_links" WHERE archived_at IS NULL AND source_pattern = ? AND source_id = ? AND target_pattern = ? AND target_id = ? AND label = ?`,
+          f.pattern, row.id, f.target, target, name,
+        ).toArray().length > 0;
+        if (!dup) db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES (?, ?, ?, ?, ?)`, f.pattern, row.id, f.target, target, name);
+      }
+      byTable.set(f.pattern, [...(byTable.get(f.pattern) ?? []), f.facet]);
+    } else {
+      db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, f.pattern, f.facet); // metadata without a column
+    }
+  }
+
+  // Rebuild referencing tables before the tables they reference.
+  const order: string[] = [];
+  const pending = new Set(byTable.keys());
+  const refsInto = (t: string) => facets.filter((f) => f.target === t && f.pattern !== t && pending.has(f.pattern));
+  while (pending.size) {
+    const ready = [...pending].filter((t) => !refsInto(t).length);
+    const next = ready.length ? ready : [...pending]; // a cycle: try anyway, warned on failure
+    for (const t of next) { order.push(t); pending.delete(t); }
+  }
+  for (const table of order) {
+    const cols = byTable.get(table)!;
+    try {
+      rebuildTableWithout(db, table, cols);
+      for (const c of cols) db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, table, c);
+    } catch (err) {
+      console.warn(`[schema] relations v19 migration failed to rebuild "${table}" without ${cols.join(", ")} — its relations and links are in place; the next boot retries`, err);
+    }
+  }
+}
+
 export function migrateRelations(db: DB): void {
+  ensureRequiredReviewColumn(db);
   db.exec(`DROP INDEX IF EXISTS "_links_pair_active"`); // one pair may now carry several relations
   // v18 is isolated: no later step reads or writes the stored flag (legacy is
   // derived, and every INSERT omits the column, which defaults), so a failed drop
@@ -1016,6 +1156,10 @@ export function migrateRelations(db: DB): void {
   try { dropStoredLegacyFlag(db); }
   catch (err) { console.warn("[schema] relations v18 (drop the stored legacy flag) failed — the other relation steps still run", err); }
   seedKernelRelations(db);    // 1. kernel defaults (so supersedes etc. resolve below)
+  // v19 is isolated like v18: its relations carry their own names, so the later
+  // steps never depend on it, and a failure must not skip them. Fails LOUD.
+  try { migrateReferenceFacets(db); }
+  catch (err) { console.warn("[schema] relations v19 migration failed (reference facets) — the other relation steps still run", err); }
   rewriteLegacyLabels(db);    // 2. NULL → references; inverse wording → canonical
   sweepDanglingLinks(db);     // 3. gone or inadmissible endpoints (incl. ones the rewrite exposed)
   declareLegacyRelations(db); // 4. what remains undeclared becomes a legacy relation
@@ -1188,7 +1332,9 @@ export function amendedRelation(current: Relation, change: any): Relation {
     ...(change.behaviors !== undefined ? { behaviors: [...new Set<string>(change.behaviors)] } : {}),
     ...(change.required !== undefined ? { required: change.required === true } : {}),
   };
-  next.legacy_debt = legacyDebt(next);
+  // "was mandatory" clears only on a decision: an amend that carries `required`.
+  const stillReviewing = current.legacy_debt.includes(LEGACY_DEBTS[2]) && change.required === undefined;
+  next.legacy_debt = legacyDebt({ ...next, required_review: stillReviewing });
   next.legacy = next.legacy_debt.length > 0;
   return next;
 }
@@ -1326,9 +1472,11 @@ export function amendRelation(ctx: RelationsContext, change: any): void {
   if (err) throw new Error(err);
   const next = amendedRelation(activeRelation(ctx.db, change.name)!, change);
   ctx.db.exec(
-    `UPDATE "_relations" SET inverse = ?, description = ?, cardinality = ?, behaviors = ?, required = ?, version = version + 1, updated_at = datetime('now')
+    `UPDATE "_relations" SET inverse = ?, description = ?, cardinality = ?, behaviors = ?, required = ?,
+       required_review = CASE WHEN ? THEN 0 ELSE required_review END, version = version + 1, updated_at = datetime('now')
      WHERE name = ? AND archived_at IS NULL`,
-    next.inverse, next.description, next.cardinality, JSON.stringify(next.behaviors), next.required ? 1 : 0, next.name,
+    next.inverse, next.description, next.cardinality, JSON.stringify(next.behaviors), next.required ? 1 : 0,
+    change.required !== undefined ? 1 : 0, next.name,
   );
 }
 

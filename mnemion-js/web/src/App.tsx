@@ -3,6 +3,8 @@ import './notebook.css';
 import { store } from './store';
 import { COMPONENTS, StackView, PeekDialog, type Facet, type ViewSpec } from './views';
 import { PageView, type Page } from './PageView';
+import { CreateEntryDialog } from './relations';
+import type { RelationItem } from '../../shared/core/relation-view';
 import { isViewType } from '../../shared/core/view-palette';
 
 interface Pattern {
@@ -42,7 +44,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<string | null>(null); // which named view is showing
-  const [peek, setPeek] = useState<{ pattern: string; id: number } | null>(null); // referenced-entry popup
+  const [peek, setPeek] = useState<{ pattern: string; id: number } | null>(null); // related-entry popup
+  const [relations, setRelations] = useState<RelationItem[]>([]); // the registry (index `relations`)
+  const [creating, setCreating] = useState(false); // the new-entry form for the open pattern
 
   const selRef = useRef<Pattern | null>(null);
   selRef.current = selected;
@@ -91,6 +95,7 @@ export default function App() {
       setGuidance(idx.guidance || '');
       setViews(idx.views || []);
       setPages(idx.pages || []);
+      setRelations(idx.relations || []);
       return idx.patterns || [];
     }
 
@@ -142,8 +147,8 @@ export default function App() {
     return () => { closed = true; clearTimeout(reconnect); ws?.close(); };
   }, []);
 
-  // A reference (foreign-key facet) fires this event to open the target entry as
-  // a read-only peek — wherever the reference is rendered, in any view.
+  // A relation chip fires this event to open the related entry as a read-only
+  // peek — wherever the chip is rendered, in any view.
   useEffect(() => {
     const handler = (e: Event) => {
       const d = (e as CustomEvent).detail || {};
@@ -246,7 +251,7 @@ export default function App() {
         ) : (
           <section className="pattern-view">
             <header className="pattern-head">
-              <h1>{selected.name}</h1>
+              <h1>{selected.name}{!selected.name.startsWith('_') && <button className="new-entry" onClick={() => setCreating(true)}>+ new</button>}</h1>
               <div className="pattern-sub">
                 <span className="ct">
                   {selected.entry_count} {selected.entry_count === 1 ? 'entry' : 'entries'}
@@ -277,6 +282,10 @@ export default function App() {
           </section>
         )}
       </main>
+      {creating && selected && (
+        <CreateEntryDialog pattern={selected.name} facets={selected.facets} relations={relations}
+          onClose={() => setCreating(false)} onCreated={() => { void selectRef.current(selected); }} />
+      )}
       {peek && <PeekDialog pattern={peek.pattern} id={peek.id} facets={patterns.find((p) => p.name === peek.pattern)?.facets || []} onClose={() => setPeek(null)} />}
     </div>
   );
