@@ -491,3 +491,33 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: one capture per applied change
   checklist: completion-evidence dismissed: the capture and the history row are written synchronously with the change
+- reference facets retired: No pattern gains a reference facet, and no reader treats references_object as a connection: entries connect only through declared relations and links.
+  over: create_pattern and add_facet with links, getSchema, the index, export metadata, followLinks, archive_pattern impact, and findStoredDerivedAggregates (now read from containment relations, declared or by active links) against stale references_object rows
+  via: reference facets retired
+  because: Two edge stores drift: a foreign-key column and a _links row can say different things about the same connection, and readers that consult both disagree.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: the rule removes a connection path from reads; it does not change who may read
+  checklist: encrypted-storage dismissed: facet values and links here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation declared as reference facets retired
+  checklist: revision-preservation dismissed: no published revision is involved
+  checklist: commit-ordered-effects dismissed: refusals happen at propose, before any change commits
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule is over the readers of one metadata column
+  checklist: completion-evidence dismissed: the check is synchronous with the change or boot pass
+- reference facet migration: At boot each existing reference facet becomes a legacy relation with one link per non-null value, its table is rebuilt without the column, and a restore point is recorded before any of it runs.
+  over: reference facets with values, nulls, archived sources and targets, several facets in one pass (one pointing at a table also rebuilt), vocabulary collisions, stored reference formats, repeated boots, hives without reference facets, the restore-point ordering, and the dev seed
+  via: reference facet migration
+  because: A boot that rewrites tables can't be undone without a bookmark taken first, and a half-migrated facet leaves two edge stores disagreeing.
+  kinds: storage
+  checklist: scoped-reads dismissed: schema evolution and boot migration, not a read path
+  checklist: encrypted-storage dismissed: facet values and links here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation dismissed: the migration reads stored schema, not a request payload
+  checklist: revision-preservation declared as reference facet migration
+  checklist: commit-ordered-effects declared as reference facet migration
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: one migration over the reference facets present at boot
+  checklist: completion-evidence dismissed: the check is synchronous with the change or boot pass

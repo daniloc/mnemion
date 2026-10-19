@@ -3410,7 +3410,12 @@ describe("drop_facet", () => {
   it("refuses a reference facet, pointing to the Phase 3 retirement", async () => {
     const store = getStore();
     await createPattern(store, "goals");
-    await createPatternWith(store, "plans", [{ name: "title", type: "text" }, { name: "goal_id", type: "integer", links: { pattern: "goals" } }]);
+    await createPatternWith(store, "plans", [{ name: "title", type: "text" }]);
+    // Phase 3 refuses `links` at create_pattern; plant a pre-Phase-3 reference facet directly.
+    await runInDurableObject(store, (_i, state) => {
+      state.storage.sql.exec(`ALTER TABLE "plans" ADD COLUMN "goal_id" INTEGER REFERENCES "goals"("id")`);
+      state.storage.sql.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES ('plans', 'goal_id', 'integer', 0, 'goals')`);
+    });
     const p = await propose(store, { type: "drop_facet", pattern_name: "plans", facet: "goal_id" });
     expect(p.error).toBe(true);
     expect(p.message).toMatch(/reference/i);

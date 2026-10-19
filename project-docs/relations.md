@@ -457,8 +457,12 @@ extra links first.
   field. It is driven by the registry and built as declarative data against
   the existing component palette, never per-pattern code. The form submits
   the link through `_relate`.
-- **Swift client** (O5). Rebase it onto main. Creates go through `_relate`,
-  and `Portfolio.projectTasks` is renamed to `tasks`.
+- **Swift client** (O5). Rebase it onto main. Creates go through `_relate`.
+  The client must not hard-code `project-tasks` or `tasks`. It reads the
+  registry (`mnemion://relations`) and creates in whichever pattern is the
+  source of the required `belongs-to`, so the same build works before and
+  after the Phase 4 merge. This is a separate stream: it starts once Phase 2
+  is deployed, because it needs `_relate` live.
 
 ### Phase 4: this hive's data (agent-run, owner-ratified)
 
@@ -1439,3 +1443,175 @@ the record.
 - **O5. Required relations and the live `tasks`.** Once `belongs-to` is
   required, `project-tasks` creates from the Swift client must use `_relate`.
   That is the Phase 4 / client sequencing.
+
+## Interface (Phase 3)
+
+This appendix pins the shapes the Phase 3 acceptance tests assume. The tests
+are in `mnemion-js/src/__tests__/relations-phase3.test.ts`, plus the rewritten
+Phase 1-era cases in `hive.test.ts`, `formats.test.ts` and
+`data-is-destiny.test.ts`. The branch inherits the Phase 2 contract, so its 74
+Phase 2 reds are not Phase 3's.
+
+### P3-A. Reference facets retired
+
+- **No new reference facets.** `create_pattern` and `add_facet` refuse any
+  facet carrying `links`, with a message containing `declare_relation`.
+  Nothing is created.
+- **No reader treats `references_object` as a connection.** A stale value in
+  `_fields.references_object` produces nothing:
+  - no `links` key on a facet in `getSchema`, the index or `exportPattern`
+    meta (nor in the markdown export);
+  - no `followLinks` expansion through a facet value;
+  - no `referencing_facets` in `archive_pattern`'s `impact`.
+- **`findStoredDerivedAggregates`.** A pattern P counts as retaining child
+  pattern C when either:
+  - an active containment relation lists C as an explicit source and P as an
+    explicit target; or
+  - an active link of a containment relation (including the kernel `*`
+    `part-of`) runs from a C entry to a P entry.
+
+  Non-containment relations and `references_object` never count.
+
+### P3-B. The fork migration (v18)
+
+**When.** At boot, when `_fields` holds any row with a non-null
+`references_object`. Hives without one record and change nothing.
+
+**Order.**
+
+1. Capture `ctx.storage.getCurrentBookmark()` before any v18 statement: before
+   any `INSERT INTO "_relations"` or `INSERT INTO "_links"`, and before any user
+   table is dropped, renamed, or loses a column.
+2. Record one `_schema_history` row:
+
+   ```jsonc
+   { "change_type": "restore_point",
+     "description": "Restore point before the reference-facet retirement (v18)",  // must mention "restore point" and "reference"
+     "bookmark": "<captured or NULL>" }
+   ```
+
+3. For each reference facet `P.f` → `T`:
+   - **Declare the relation.** Its name is `f` verbatim. If `f` is already an
+     active name or inverse, the name is `P-f`, with a numeric suffix if that
+     is taken too. It has `source: [P]`, `target: [T]`, `cardinality: "one"`
+     and no behaviors. Its description is the frozen legacy placeholder
+     template and its inverse the generated form, so it carries both
+     legacy-debt facts (P2-G).
+   - **Write the links.** Each row with a non-null value gets one `_links` row
+     `P/id → T/value`. Archived sources and archived targets are included;
+     those links are dormant.
+   - **Rebuild the table** without the column. Every other column value, `id`,
+     `version`, timestamps and archived state are preserved. Audit triggers
+     are recreated, so writes are logged in `_mutation_log`. The `_fields`
+     row is removed.
+
+All reference facets go in one pass, including one pointing at a table that
+is itself rebuilt. Afterwards no user table's DDL contains `REFERENCES`.
+
+4. Clear every `_fields.format = 'reference'` to NULL, since the format no
+   longer exists.
+
+**Idempotent.** A second boot changes no `_links`, `_relations`, user-table
+or `_fields` row, and records no second restore point. Later boots record
+nothing.
+
+**Dangling values.** Durable Object SQLite enforces foreign keys, so a value
+naming a missing row can't be planted, and the tests don't pin it. An
+implementation that meets one should skip it and warn, naming `P/id` and the
+facet.
+
+**The dev seed** has no reference facet. It declares every relation its links
+use on the seeding boot itself, with real descriptions, so none is legacy
+after the next boot. Tasks still connect to goals, through links.
+
+### P3-C. `shared/core/relation-view.ts` (pure, no imports from `web/`)
+
+```ts
+createRelationFields(pattern: string, relations: RelationItem[]): RelationField[]
+// RelationItem = an item of mnemion://relations (Phase 2 shape).
+// One field per relation with required && !derived && source includes `pattern`,
+// sorted by relation name:
+interface RelationField { relation: string; target_patterns: string[]; cardinality: "one" | "many"; label: string }
+// label = relation name with hyphens as spaces ("belongs to").
+
+buildRelatePayload(values: Record<string, string | string[] | null | undefined>): Record<string, string | string[]>
+// Exactly the Phase 2 _relate value. Strings pass through; arrays are deduped
+// and kept as arrays; "", null, undefined and [] are omitted; nothing → {}.
+
+entryRelationsView(linked: LinkedItem[] | undefined): RelationGroup[]
+interface RelationGroup { relation: string; direction: "out" | "in"; derived: boolean;
+                          items: { pattern: string; id: number; uri: string }[] }
+// Grouped by (relation as read from the reader's side, direction, derived).
+// Groups: "out" before "in", then by relation name. Items keep resolve's order.
+// Absent or empty input → [].
+```
+
+### P3-D. The `reference` format retires
+
+- **Gone from the palette.** `FORMAT_PALETTE` has no `reference`, so
+  `FORMAT_IDS` lacks it and `isFormat("reference")` is false.
+- **Never resolved.** `resolveFormat` never returns it. The former fourth
+  argument (the foreign-key flag) is gone or ignored. A stale `reference` in a
+  view or facet degrades like any unknown id.
+- **Refused on write.** `validateFormatsMap` and `set_facet_format` refuse it.
+
+### P3-E. React wiring (verified in the browser, not in vitest)
+
+- **Create forms.** The create form for pattern P calls
+  `createRelationFields(P, relations)`, with `relations` from
+  `GET /api/resolve?uri=mnemion://relations` (or the index's `relations`). It
+  renders one target picker per field using the existing component palette:
+  - a single-select for `cardinality: "one"`;
+  - a multi-select for `"many"`;
+  - candidates are the active entries of `target_patterns`, labelled via
+    `/api/label`.
+
+  On submit it posts `{ …facets, _relate: buildRelatePayload(values) }` to
+  `POST /api/mutate/P`.
+- **Entry detail.** The entry detail and peek views call
+  `entryRelationsView(resolved.linked)` and render one section per group: the
+  relation name, an arrow for direction, and a "derived" badge. Each item is a
+  navigable entry chip. This replaces `ReferenceValue` in `FacetValue.tsx` and
+  the reference-facet paths in `views.tsx`.
+- **No per-pattern code.** All of it is driven by the registry.
+
+### P3-F. Phase 1-era tests rewritten
+
+- **`hive.test.ts`:**
+  - "supports foreign key links" became "refuses foreign key links, pointing
+    to declare_relation";
+  - "rejects links to non-existent patterns" now also expects
+    `declare_relation`;
+  - "linked facet validation": both cases are now refusals naming
+    `declare_relation`.
+- **`formats.test.ts`:** the reference case now asserts the type default.
+- **`data-is-destiny.test.ts`:** the hybrid fixture is a declared containment
+  relation.
+- **`relations.test.ts` (Phase 2 O4):** the reference-facet fixture is planted
+  directly, since `create_pattern` can no longer make one.
+
+### Choices made by the test author (Phase 3)
+
+1. **One relation per reference facet,** named verbatim. A collision becomes
+   `P-f`; two patterns' same-named facets are never merged.
+2. **Migrated relations carry both legacy debts.** The migration reuses the
+   frozen legacy placeholder template, so P2-G detects them with no new flag.
+3. **The v18 restore point is pinned in the v17 style.** Whether to generalize
+   it into a "table-rewriting migrations record a restore point" registry is
+   left to the implementer; the test pins only v18.
+4. **Archived sources and targets still get their links** (dormant), so
+   unarchiving restores the connection.
+5. **Dangling FK values are not tested,** because the runtime enforces foreign
+   keys (P3-B).
+6. **`relation-view.ts` lives in `shared/core`,** beside `format-palette.ts`, so
+   the worker suite tests it and the SPA bundles it.
+
+### Owner decisions to confirm
+
+- **D-P3-1. Naming.** Is a migrated relation's name the facet name verbatim
+  (`goal_id`, non-kebab, as legacy labels are), or kebab-cased (`goal-id`)?
+  Verbatim is pinned.
+- **D-P3-2. Required.** Should a migrated reference facet that was NOT NULL
+  in DDL (`required: true` in `_fields`) become a `required` relation? It is
+  not pinned: migrated relations are optional, and flipping one to required
+  is a Phase 4-style, owner-ratified step.

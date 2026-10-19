@@ -41,11 +41,13 @@ describe("resolveFormat", () => {
     expect(resolveFormat("bogus", "nope", "boolean")).toBe("boolean");
   });
 
-  it("a foreign key resolves to reference — over the type default, under an explicit format", () => {
-    expect(resolveFormat(undefined, undefined, "integer", true)).toBe("reference"); // FK beats integer→number
-    expect(resolveFormat(undefined, "number", "integer", true)).toBe("number");     // explicit facet format wins
-    expect(resolveFormat("link", undefined, "text", true)).toBe("link");            // explicit view format wins
-    expect(resolveFormat(undefined, undefined, "text", false)).toBe("text");        // no link → type default
+  // Phase 3: the `reference` format retired with reference facets; a former FK
+  // flag no longer selects anything (relations-phase3.test "reference format retired").
+  it("never resolves to reference: the type default applies", () => {
+    expect((resolveFormat as any)(undefined, undefined, "integer", true)).toBe("number");
+    expect((resolveFormat as any)(undefined, "number", "integer", true)).toBe("number");
+    expect((resolveFormat as any)("link", undefined, "text", true)).toBe("link");
+    expect(resolveFormat(undefined, undefined, "text")).toBe("text");
   });
 
   it("defaultFormatForType maps type → format", () => {

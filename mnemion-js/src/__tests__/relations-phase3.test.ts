@@ -1,0 +1,504 @@
+// Relations Phase 3 — acceptance tests (project-docs/relations.md, "Migration →
+// Phase 3", §7, owner decision O5; shapes pinned in "Interface (Phase 3)").
+//
+//   1. Reference facets retire: create_pattern/add_facet refuse `links`; every
+//      reader of `references_object` drops it; the fork migration turns each
+//      existing reference facet into a legacy relation plus links, rebuilds the
+//      table without the column, and records a restore point first.
+//   2. Web relation surfaces as pure, worker-tested modules
+//      (shared/core/relation-view.ts): create-form relation fields, the `_relate`
+//      payload builder, and the grouped entry-relations view.
+//   3. The `reference` format retires from the format palette.
+//
+// The new module is reached through import.meta.glob so this file loads (and the
+// behavioral tests fail on assertions) before it exists.
+import { env, runInDurableObject } from "cloudflare:test";
+import { describe, it, expect, vi } from "vitest";
+import { HiveDO } from "../../entities/Hive/hive";
+import { initializeSchema } from "../../entities/Hive/schema";
+import { FORMAT_IDS, isFormat, resolveFormat, validateFormatsMap } from "../../shared/core/format-palette";
+
+type Store = DurableObjectStub<HiveDO>;
+
+const RELATION_VIEW_PATH = "../../shared/core/relation-view.ts";
+const RELATION_VIEW = import.meta.glob("../../shared/core/relation-view.ts", { eager: true }) as Record<string, any>;
+const rv = () => {
+  const mod = RELATION_VIEW[RELATION_VIEW_PATH];
+  if (!mod) throw new Error("shared/core/relation-view.ts must exist and export createRelationFields, buildRelatePayload, entryRelationsView");
+  return mod;
+};
+
+// === Helpers ===
+
+function getStore(): Store {
+  return env.MNEMION_HIVE.get(env.MNEMION_HIVE.idFromName(`relations-p3:${crypto.randomUUID()}`));
+}
+
+async function createPattern(store: Store, name: string, facets: Record<string, unknown>[] = [{ name: "title", type: "text" }], patternClass: "dataset" | "knowledge" = "dataset") {
+  const p = JSON.parse(await store.proposeChange(`Create ${name}`, JSON.stringify({
+    type: "create_pattern", pattern_name: name, pattern_description: `Test pattern ${name}`,
+    doctrine: `Test doctrine for ${name}`, pattern_class: patternClass, facets,
+  })));
+  if (p.error) throw new Error(p.message);
+  const a = JSON.parse(await store.applyChange(p.change_id));
+  if (a.error) throw new Error(a.message);
+}
+
+const mut = (store: Store, pattern: string, op: string, data: Record<string, unknown>) =>
+  store.mutate(pattern, op, JSON.stringify(data)).then(JSON.parse);
+
+async function entry(store: Store, pattern: string, data: Record<string, unknown>): Promise<number> {
+  const r = await mut(store, pattern, "create", data);
+  if (r.error) throw new Error(r.message);
+  return r.entry.id as number;
+}
+
+async function sql(store: Store, q: string, ...params: unknown[]): Promise<any[]> {
+  return runInDurableObject(store, (_i, state) => state.storage.sql.exec(q, ...params).toArray() as any[]);
+}
+
+async function boot(store: Store): Promise<void> {
+  await runInDurableObject(store, (_i, state) => { initializeSchema(state.storage.sql, env); });
+}
+
+const propose = async (store: Store, change: Record<string, unknown>) =>
+  JSON.parse(await store.proposeChange(`test ${change.type}`, JSON.stringify(change)));
+const apply = async (store: Store, id: string) => JSON.parse(await store.applyChange(id));
+
+const DESC = (name: string) =>
+  `Test relation "${name}": the source entry stands in a specific, documented relationship to the target entry. ` +
+  `Use it when no kernel default fits the connection. Example, in canonical direction: notes/1 ${name} papers/2.`;
+
+async function declare(store: Store, spec: Record<string, unknown>) {
+  const p = await propose(store, { type: "declare_relation", description: DESC(String(spec.name)), cardinality: "many", behaviors: [], ...spec });
+  if (p.error) throw new Error(`declare refused: ${p.message}`);
+  const a = await apply(store, p.change_id);
+  if (a.error) throw new Error(`declare apply refused: ${a.message}`);
+}
+
+const columns = async (store: Store, table: string) => (await sql(store, `PRAGMA table_info("${table}")`)).map((c) => c.name as string);
+const relationOf = async (store: Store, name: string) =>
+  JSON.parse(await store.resolve("mnemion://relations")).relations.find((r: any) => r.name === name);
+
+async function warnLines(fn: () => void | Promise<void>): Promise<string[]> {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await fn();
+    return warn.mock.calls.map((c) => c.map(String).join(" ")).join("\n").split("\n");
+  } finally { warn.mockRestore(); }
+}
+
+/**
+ * Plant a pre-Phase-3 reference facet the way an old create_pattern left it: an
+ * INTEGER column with a REFERENCES clause plus a `_fields` row carrying
+ * `references_object`. Runs inside the live DO without re-booting, so the facet
+ * exists until the next boot migrates it.
+ */
+async function plantReferenceFacet(store: Store, pattern: string, facet: string, target: string, values: Record<number, number | null> = {}) {
+  await runInDurableObject(store, (_i, state) => {
+    const db = state.storage.sql;
+    db.exec(`ALTER TABLE "${pattern}" ADD COLUMN "${facet}" INTEGER REFERENCES "${target}"("id")`);
+    db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES (?, ?, 'integer', 0, ?)`, pattern, facet, target);
+    for (const [id, v] of Object.entries(values)) db.exec(`UPDATE "${pattern}" SET "${facet}" = ? WHERE id = ?`, v, Number(id));
+  });
+}
+
+// --- The restore-point harness (same technique as relations.test.ts "restore point") ---
+
+interface BootTrace { events: string[]; restored: string[]; unpatch?: () => void }
+
+/** Classify a SQL statement as a v18 (reference-facet retirement) effect, or null. */
+function v18Effect(q: string): string | null {
+  if (/INSERT\s+INTO\s+"?_relations"?/i.test(q)) return "v18:declare-relation";
+  if (/INSERT\s+INTO\s+"?_links"?/i.test(q)) return "v18:insert-link";
+  // A user table (no leading underscore) dropped or renamed: the rebuild.
+  const dropped = q.match(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?["`]?([\w-]+)/i);
+  if (dropped && !dropped[1].startsWith("_")) return "v18:drop-table";
+  const renamed = q.match(/ALTER\s+TABLE\s+["`]?([\w-]+)["`]?\s+RENAME/i);
+  if (renamed && !renamed[1].startsWith("_")) return "v18:rename-table";
+  if (/ALTER\s+TABLE[^;]*DROP\s+COLUMN/i.test(q)) return "v18:drop-column";
+  return null;
+}
+
+async function bootWith(state: DurableObjectState, bookmark: () => string, trace: BootTrace): Promise<HiveDO> {
+  const storage = state.storage as any;
+  const sqlReal = storage.sql;
+  const sqlProxy = new Proxy(sqlReal, {
+    get(t, k) {
+      if (k === "exec") return (q: string, ...p: unknown[]) => { const e = v18Effect(q); if (e) trace.events.push(e); return t.exec(q, ...p); };
+      const v = t[k];
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  const pending: Promise<unknown>[] = [];
+  const saved: [any, string, PropertyDescriptor | undefined][] = [];
+  const patch = (o: any, k: string, d: PropertyDescriptor) => {
+    saved.push([o, k, Object.getOwnPropertyDescriptor(o, k)]);
+    Object.defineProperty(o, k, { configurable: true, ...d });
+  };
+  patch(storage, "sql", { get: () => sqlProxy });
+  patch(storage, "getCurrentBookmark", { value: async () => { trace.events.push("bookmark"); return bookmark(); } });
+  patch(storage, "onNextSessionRestoreBookmark", { value: async (b: string) => { trace.restored.push(b); return b; } });
+  patch(state, "blockConcurrencyWhile", { value: (fn: () => Promise<unknown>) => { const p = Promise.resolve().then(fn); pending.push(p); return p; } });
+  patch(state, "abort", { value: () => { trace.events.push("abort"); } });
+  trace.unpatch = () => { for (const [o, k, d] of saved.reverse()) { if (d) Object.defineProperty(o, k, d); else delete o[k]; } };
+  const hive = new HiveDO(state, env);
+  await Promise.all(pending);
+  return hive;
+}
+
+async function booted<T>(state: DurableObjectState, bookmark: () => string, body: (hive: HiveDO, trace: BootTrace) => Promise<T>): Promise<T> {
+  const trace: BootTrace = { events: [], restored: [] };
+  try { return await body(await bootWith(state, bookmark, trace), trace); } finally { trace.unpatch?.(); }
+}
+
+/** A hive with a pre-Phase-3 reference facet tasks.goal_id → goals, values set. */
+async function legacyFkHive() {
+  const store = getStore();
+  await createPattern(store, "goals");
+  await createPattern(store, "tasks");
+  const g1 = await entry(store, "goals", { title: "g1" });
+  const g2 = await entry(store, "goals", { title: "g2" });
+  const t1 = await entry(store, "tasks", { title: "t1" });
+  const t2 = await entry(store, "tasks", { title: "t2" });
+  const t3 = await entry(store, "tasks", { title: "t3 (no goal)" });
+  const t4 = await entry(store, "tasks", { title: "t4 (archived)" });
+  await plantReferenceFacet(store, "tasks", "goal_id", "goals", { [t1]: g1, [t2]: g2, [t3]: null, [t4]: g1 });
+  await mut(store, "tasks", "archive", { id: t4 });   // an archived source…
+  await mut(store, "goals", "archive", { id: g2 });   // …and an archived target: both links come over, dormant
+  return { store, g1, g2, t1, t2, t3, t4 };
+}
+
+// =====================================================================
+// 1. Reference facets retire
+// =====================================================================
+
+describe("reference facets retired", () => {
+  it("create_pattern and add_facet refuse the `links` option, pointing to declare_relation", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    const c = await propose(store, {
+      type: "create_pattern", pattern_name: "plans", pattern_description: "x", doctrine: "x",
+      facets: [{ name: "title", type: "text" }, { name: "goal_id", type: "integer", links: { pattern: "goals" } }],
+    });
+    expect(c.error).toBe(true);
+    expect(c.message).toContain("declare_relation");
+    expect(await sql(store, `SELECT name FROM _objects WHERE name = 'plans'`)).toEqual([]);
+
+    await createPattern(store, "plans");
+    const f = await propose(store, { type: "add_facet", pattern_name: "plans", facets: [{ name: "goal_id", type: "integer", links: { pattern: "goals" } }] });
+    expect(f.error).toBe(true);
+    expect(f.message).toContain("declare_relation");
+    expect(await columns(store, "plans")).not.toContain("goal_id");
+  });
+
+  it("no reader reports `links` for a facet: schema, index and export ignore references_object", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPattern(store, "tasks", [{ name: "title", type: "text" }, { name: "goal_ref", type: "integer" }]);
+    // A stale references_object row, planted without a boot: no reader may surface it.
+    await sql(store, `UPDATE _fields SET references_object = 'goals' WHERE object_name = 'tasks' AND name = 'goal_ref'`);
+    const schema = JSON.parse(await store.getSchema("tasks"));
+    expect(schema.facets.find((f: any) => f.name === "goal_ref")).not.toHaveProperty("links");
+    const index = JSON.parse(await store.getIndex());
+    expect(index.patterns.find((p: any) => p.name === "tasks").facets.find((f: any) => f.name === "goal_ref")).not.toHaveProperty("links");
+    const exported = await store.exportPattern("tasks");
+    expect(exported.meta.facets.find((f: any) => f.name === "goal_ref")).not.toHaveProperty("links");
+  });
+
+  it("followLinks no longer follows a facet value: only _links connect entries", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPattern(store, "tasks", [{ name: "title", type: "text" }, { name: "goal_ref", type: "integer" }]);
+    const g = await entry(store, "goals", { title: "g" });
+    const t = await entry(store, "tasks", { title: "t", goal_ref: g });
+    await sql(store, `UPDATE _fields SET references_object = 'goals' WHERE object_name = 'tasks' AND name = 'goal_ref'`);
+    const r = JSON.parse(await store.resolve(`mnemion://entry/tasks/${t}`));
+    expect((r.linked ?? []).some((l: any) => l.pattern === "goals" && l.id === g)).toBe(false);
+  });
+
+  it("archive_pattern's impact no longer reports referencing facets", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPattern(store, "tasks", [{ name: "title", type: "text" }, { name: "goal_ref", type: "integer" }]);
+    await sql(store, `UPDATE _fields SET references_object = 'goals' WHERE object_name = 'tasks' AND name = 'goal_ref'`);
+    const p = await propose(store, { type: "archive_pattern", pattern_name: "goals" });
+    expect(p.error).toBeUndefined();
+    expect(p.preview.impact?.referencing_facets).toBeUndefined();
+  });
+
+  it("findStoredDerivedAggregates reads containment relations, not references_object", async () => {
+    const { findStoredDerivedAggregates } = await import("../../entities/Hive/schema");
+    // Declared explicit containment: lists retains items.
+    const s1 = getStore();
+    await createPattern(s1, "lists", [{ name: "title", type: "text" }, { name: "item_count", type: "number" }]);
+    await createPattern(s1, "items");
+    await declare(s1, { name: "listed-in", inverse: "lists-item", source: ["items"], target: ["lists"], behaviors: ["containment"] });
+    const v1 = await runInDurableObject(s1, (_i, state) => findStoredDerivedAggregates(state.storage.sql));
+    expect(v1.some((v) => v.includes(`"lists".item_count`)), "declared containment flags the stored count").toBe(true);
+
+    // A `*` containment relation (kernel part-of) counts where active links show it.
+    const s2 = getStore();
+    await createPattern(s2, "lists", [{ name: "title", type: "text" }, { name: "item_count", type: "number" }]);
+    await createPattern(s2, "items");
+    const l = await entry(s2, "lists", { title: "l" });
+    const i = await entry(s2, "items", { title: "i" });
+    expect((await mut(s2, "link", "create", { source: `items/${i}`, target: `lists/${l}`, label: "part-of" })).error).toBeUndefined();
+    const v2 = await runInDurableObject(s2, (_i, state) => findStoredDerivedAggregates(state.storage.sql));
+    expect(v2.some((v) => v.includes(`"lists".item_count`)), "active part-of links flag it").toBe(true);
+
+    // A non-containment relation, or a stale references_object, never does.
+    const s3 = getStore();
+    await createPattern(s3, "lists", [{ name: "title", type: "text" }, { name: "item_count", type: "number" }]);
+    await createPattern(s3, "items", [{ name: "title", type: "text" }, { name: "list_ref", type: "integer" }]);
+    await declare(s3, { name: "mentions-list", inverse: "list-mentioned-by", source: ["items"], target: ["lists"] });
+    await sql(s3, `UPDATE _fields SET references_object = 'lists' WHERE object_name = 'items' AND name = 'list_ref'`);
+    const v3 = await runInDurableObject(s3, (_i, state) => findStoredDerivedAggregates(state.storage.sql));
+    expect(v3.some((v) => v.includes("lists")), "no containment → silent").toBe(false);
+  });
+});
+
+// =====================================================================
+// 1b. The fork migration (v18)
+// =====================================================================
+
+describe("reference facet migration", () => {
+  it("turns each reference facet into a legacy relation plus links, and rebuilds the table without the column", async () => {
+    const { store, g1, g2, t1, t2, t3, t4 } = await legacyFkHive();
+    const before = await sql(store, `SELECT id, title, created_at, archived_at, version FROM tasks ORDER BY id`);
+    await boot(store);
+
+    // The relation: named after the facet, tasks → goals, cardinality one, legacy debt.
+    const rel = await relationOf(store, "goal_id");
+    expect(rel).toMatchObject({ name: "goal_id", source: ["tasks"], target: ["goals"], cardinality: "one", kernel: false, legacy: true });
+    expect(rel.legacy_debt).toEqual(["placeholder description", "generated inverse"]);
+
+    // The links: one per non-null value, archived sources and targets included (dormant).
+    const links = await sql(store, `SELECT source_id, target_pattern, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'goal_id' ORDER BY source_id`);
+    expect(links.map((l) => `${l.source_id}->${l.target_pattern}/${l.target_id}`)).toEqual([`${t1}->goals/${g1}`, `${t2}->goals/${g2}`, `${t4}->goals/${g1}`]);
+    expect(links.some((l) => l.source_id === t3)).toBe(false);
+
+    // The table: rebuilt without the column, every other value intact.
+    expect(await columns(store, "tasks")).not.toContain("goal_id");
+    expect(await sql(store, `SELECT id, title, created_at, archived_at, version FROM tasks ORDER BY id`)).toEqual(before);
+    expect(await sql(store, `SELECT name FROM _fields WHERE references_object IS NOT NULL`)).toEqual([]);
+    expect(await sql(store, `SELECT name FROM _fields WHERE object_name = 'tasks' AND name = 'goal_id'`)).toEqual([]);
+    const fkTables = (await sql(store, `SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_%' ESCAPE '\\'`))
+      .filter((t) => /REFERENCES/i.test(String(t.sql))).map((t) => t.name);
+    expect(fkTables).toEqual([]);
+
+    // The pattern stays fully writable, and audit triggers still fire.
+    const t5 = await entry(store, "tasks", { title: "after" });
+    expect((await mut(store, "tasks", "update", { id: t5, title: "after, edited" })).error).toBeUndefined();
+    expect((await sql(store, `SELECT COUNT(*) AS n FROM _mutation_log WHERE table_name = 'tasks'`))[0].n).toBeGreaterThan(0);
+    expect((await mut(store, "tasks", "create", { title: "x", goal_id: g1 })).error).toBe(true);
+  });
+
+  it("migrates every reference facet in one pass, including one pointing at a table it also rebuilds", async () => {
+    const { store, t1 } = await legacyFkHive();
+    await createPattern(store, "notes");
+    const n = await entry(store, "notes", { title: "n" });
+    await plantReferenceFacet(store, "notes", "task_id", "tasks", { [n]: t1 });
+    await boot(store);
+    expect(await columns(store, "tasks")).not.toContain("goal_id");
+    expect(await columns(store, "notes")).not.toContain("task_id");
+    expect(await sql(store, `SELECT source_id, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'task_id'`)).toEqual([{ source_id: n, target_id: t1 }]);
+  });
+
+  it("a facet name already taken in the vocabulary becomes <pattern>-<facet>", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPattern(store, "tasks");
+    const g = await entry(store, "goals", { title: "g" });
+    const t = await entry(store, "tasks", { title: "t" });
+    await plantReferenceFacet(store, "tasks", "references", "goals", { [t]: g }); // collides with the kernel default
+    await boot(store);
+    const rel = await relationOf(store, "tasks-references");
+    expect(rel).toMatchObject({ source: ["tasks"], target: ["goals"], cardinality: "one", legacy: true });
+    expect(await sql(store, `SELECT label FROM "_links" WHERE archived_at IS NULL AND source_id = ? AND target_id = ?`, t, g)).toEqual([{ label: "tasks-references" }]);
+  });
+
+  it("records one restore point before any v18 step, and none on later boots or hives without reference facets", async () => {
+    const { store } = await legacyFkHive();
+    await runInDurableObject(store, async (_i, state) => {
+      await booted(state, () => "bm-before-v18", async (_hive, trace) => {
+        const first = trace.events.findIndex((e) => e.startsWith("v18:"));
+        expect(trace.events, "the v18 steps ran").toEqual(expect.arrayContaining(["v18:declare-relation", "v18:insert-link"]));
+        expect(trace.events.indexOf("bookmark"), "the bookmark was captured").toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), `capture precedes every v18 effect: ${trace.events.join(", ")}`).toBeLessThan(first);
+      });
+      const points = state.storage.sql.exec(`SELECT * FROM _schema_history WHERE change_type = 'restore_point' AND description LIKE '%reference%'`).toArray() as any[];
+      expect(points.length).toBe(1);
+      expect(points[0].description).toMatch(/restore point/i);
+      expect(points[0].bookmark).toBe("bm-before-v18");
+      await booted(state, () => "bm-later", async () => {});
+      expect(state.storage.sql.exec(`SELECT COUNT(*) AS n FROM _schema_history WHERE change_type = 'restore_point' AND description LIKE '%reference%'`).one()).toEqual({ n: 1 });
+    });
+
+    const clean = getStore();
+    await createPattern(clean, "tasks");
+    await boot(clean);
+    expect(await sql(clean, `SELECT id FROM _schema_history WHERE change_type = 'restore_point' AND description LIKE '%reference%'`)).toEqual([]);
+  });
+
+  it("is idempotent: a second boot changes nothing", async () => {
+    const { store } = await legacyFkHive();
+    await boot(store);
+    expect(await columns(store, "tasks"), "the first boot migrated").not.toContain("goal_id");
+    const snap = async () => ({
+      links: await sql(store, `SELECT * FROM "_links" ORDER BY id`),
+      relations: await sql(store, `SELECT * FROM "_relations" ORDER BY id`),
+      tasks: await sql(store, `SELECT * FROM tasks ORDER BY id`),
+      fields: await sql(store, `SELECT * FROM _fields WHERE object_name = 'tasks' ORDER BY id`),
+    });
+    const first = await snap();
+    await boot(store);
+    expect(await snap()).toEqual(first);
+  });
+
+  it("clears stored `reference` facet formats, which no longer exist", async () => {
+    const store = getStore();
+    await createPattern(store, "tasks", [{ name: "title", type: "text" }, { name: "owner_ref", type: "integer" }]);
+    await sql(store, `UPDATE _fields SET format = 'reference' WHERE object_name = 'tasks' AND name = 'owner_ref'`);
+    await boot(store);
+    expect(await sql(store, `SELECT name FROM _fields WHERE format = 'reference'`)).toEqual([]);
+  });
+
+  it("the dev seed declares relations instead of a reference facet", async () => {
+    const store = getStore();
+    await runInDurableObject(store, (_i, state) => { initializeSchema(state.storage.sql, { DEV_SEED: "true" } as any); });
+    expect(await sql(store, `SELECT object_name, name FROM _fields WHERE references_object IS NOT NULL`)).toEqual([]);
+    expect(await columns(store, "tasks")).not.toContain("goal_id");
+    const toGoals = await sql(store, `SELECT label FROM "_links" WHERE archived_at IS NULL AND source_pattern = 'tasks' AND target_pattern = 'goals'`);
+    expect(toGoals.length, "tasks still connect to goals, through links").toBeGreaterThan(0);
+    // Every label the seed writes names a declared relation on the seeding boot itself…
+    const names = new Set((await sql(store, `SELECT name FROM "_relations" WHERE archived_at IS NULL`)).map((r) => r.name));
+    const labels = (await sql(store, `SELECT DISTINCT label FROM "_links" WHERE archived_at IS NULL`)).map((r) => r.label);
+    for (const l of labels) expect(names.has(l), `seed label ${l} is declared`).toBe(true);
+    // …and none of them is legacy debt.
+    await boot(store);
+    const rels = JSON.parse(await store.resolve("mnemion://relations")).relations;
+    expect(rels.filter((r: any) => r.legacy).map((r: any) => r.name)).toEqual([]);
+  });
+});
+
+// =====================================================================
+// 2a. Create-form relation fields and the _relate payload
+// =====================================================================
+
+const REL = (over: Record<string, unknown>) => ({
+  name: "x", inverse: "x-of", description: "d", source: ["*"], target: ["*"], cardinality: "many",
+  behaviors: [], kernel: false, legacy: false, legacy_debt: [], required: false, derived: false, ...over,
+});
+
+describe("create relation fields", () => {
+  it("returns one field per REQUIRED stored relation the pattern is a source of, sorted by name", () => {
+    const relations = [
+      REL({ name: "belongs-to", inverse: "contains", source: ["tasks"], target: ["projects"], cardinality: "one", required: true }),
+      REL({ name: "assigned-to", inverse: "assigns", source: ["tasks", "bugs"], target: ["people", "teams"], required: true }),
+      REL({ name: "serves", inverse: "served-by", source: ["projects"], target: ["goals"], required: true }), // other source
+      REL({ name: "references", inverse: "referenced-by", kernel: true }),                                   // not required
+      REL({ name: "cites", inverse: "cited-by", source: ["tasks"], target: ["papers"] }),                     // not required
+      REL({ name: "addresses", inverse: "addressed-by", source: ["tasks"], target: ["goals"], derived: true, chain: ["belongs-to", "serves"] }),
+      REL({ name: "owned-by", inverse: "owns", source: ["notes"], target: ["tasks"], required: true }),       // tasks only as target
+    ];
+    expect(rv().createRelationFields("tasks", relations)).toEqual([
+      { relation: "assigned-to", target_patterns: ["people", "teams"], cardinality: "many", label: "assigned to" },
+      { relation: "belongs-to", target_patterns: ["projects"], cardinality: "one", label: "belongs to" },
+    ]);
+    expect(rv().createRelationFields("goals", relations)).toEqual([]);
+  });
+
+  it("buildRelatePayload produces exactly the Phase 2 _relate shape", () => {
+    const { buildRelatePayload } = rv();
+    expect(buildRelatePayload({ "belongs-to": "projects/3" })).toEqual({ "belongs-to": "projects/3" });
+    expect(buildRelatePayload({ "assigned-to": ["people/1", "teams/2"] })).toEqual({ "assigned-to": ["people/1", "teams/2"] });
+    // Empty values are omitted; duplicates collapse; nothing to relate → {}.
+    expect(buildRelatePayload({ a: "", b: null, c: [], d: undefined, e: ["x/1", "x/1"] } as any)).toEqual({ e: ["x/1"] });
+    expect(buildRelatePayload({})).toEqual({});
+  });
+
+  it("a form built from the fields creates the entry and its links in one write", async () => {
+    const store = getStore();
+    await createPattern(store, "projects");
+    await createPattern(store, "tasks");
+    const p = await entry(store, "projects", { title: "p" });
+    await declare(store, { name: "belongs-to", inverse: "contains", source: ["tasks"], target: ["projects"], cardinality: "one", required: true });
+    const relations = JSON.parse(await store.resolve("mnemion://relations")).relations;
+    const fields = rv().createRelationFields("tasks", relations);
+    expect(fields.map((f: any) => f.relation)).toEqual(["belongs-to"]);
+    const values = Object.fromEntries(fields.map((f: any) => [f.relation, `${f.target_patterns[0]}/${p}`]));
+    const r = await mut(store, "tasks", "create", { title: "from the form", _relate: rv().buildRelatePayload(values) });
+    expect(r.error, r.message).toBeUndefined();
+    expect(r.links).toEqual([expect.objectContaining({ source: `tasks/${r.entry.id}`, target: `projects/${p}`, label: "belongs-to" })]);
+  });
+});
+
+// =====================================================================
+// 2b. Entry relations view (replaces reference-facet rendering)
+// =====================================================================
+
+describe("entry relations view", () => {
+  const item = (o: Record<string, unknown>) => ({ uri: `mnemion://entry/${o.pattern}/${o.id}`, entry: {}, ...o });
+
+  it("groups linked items by reader-side relation and direction, outgoing first, derived flagged", () => {
+    const linked = [
+      item({ pattern: "notes", id: 4, label: "part-of", direction: "in", relation: "has-part" }),
+      item({ pattern: "projects", id: 1, label: "belongs-to", direction: "out", relation: "belongs-to" }),
+      item({ pattern: "goals", id: 9, direction: "out", relation: "addresses", derived: true }),
+      item({ pattern: "notes", id: 5, label: "part-of", direction: "in", relation: "has-part" }),
+      item({ pattern: "goals", id: 8, direction: "out", relation: "addresses", derived: true }),
+      item({ pattern: "papers", id: 2, label: "references", direction: "out", relation: "references" }),
+    ];
+    expect(rv().entryRelationsView(linked)).toEqual([
+      { relation: "addresses", direction: "out", derived: true, items: [
+        { pattern: "goals", id: 9, uri: "mnemion://entry/goals/9" },
+        { pattern: "goals", id: 8, uri: "mnemion://entry/goals/8" },
+      ] },
+      { relation: "belongs-to", direction: "out", derived: false, items: [{ pattern: "projects", id: 1, uri: "mnemion://entry/projects/1" }] },
+      { relation: "references", direction: "out", derived: false, items: [{ pattern: "papers", id: 2, uri: "mnemion://entry/papers/2" }] },
+      { relation: "has-part", direction: "in", derived: false, items: [
+        { pattern: "notes", id: 4, uri: "mnemion://entry/notes/4" },
+        { pattern: "notes", id: 5, uri: "mnemion://entry/notes/5" },
+      ] },
+    ]);
+  });
+
+  it("is empty for no links, and accepts resolve's real output", async () => {
+    expect(rv().entryRelationsView([])).toEqual([]);
+    expect(rv().entryRelationsView(undefined)).toEqual([]);
+    const store = getStore();
+    await createPattern(store, "notes");
+    const a = await entry(store, "notes", { title: "a" });
+    const b = await entry(store, "notes", { title: "b" });
+    await mut(store, "link", "create", { source: `notes/${a}`, target: `notes/${b}`, label: "references" });
+    const linked = JSON.parse(await store.resolve(`mnemion://entry/notes/${b}`)).linked;
+    expect(rv().entryRelationsView(linked)).toEqual([
+      { relation: "referenced-by", direction: "in", derived: false, items: [{ pattern: "notes", id: a, uri: `mnemion://entry/notes/${a}` }] },
+    ]);
+  });
+});
+
+// =====================================================================
+// 2c. The `reference` format retires
+// =====================================================================
+
+describe("reference format retired", () => {
+  it("is gone from the palette and resolveFormat never returns it", () => {
+    expect(FORMAT_IDS).not.toContain("reference");
+    expect(isFormat("reference")).toBe(false);
+    // The old foreign-key flag no longer selects it: the type default applies.
+    expect((resolveFormat as any)(undefined, undefined, "integer", true)).toBe("number");
+    // A stale stored or view-level `reference` degrades like any unknown id.
+    expect(resolveFormat("reference", undefined, "integer")).toBe("number");
+    expect(resolveFormat(undefined, "reference", "text")).toBe("text");
+    expect(validateFormatsMap({ owner: "reference" }, null).join()).toContain("must be one of");
+  });
+
+  it("set_facet_format refuses it", async () => {
+    const store = getStore();
+    await createPattern(store, "tasks", [{ name: "title", type: "text" }, { name: "owner_ref", type: "integer" }]);
+    const p = await propose(store, { type: "set_facet_format", pattern_name: "tasks", facet: "owner_ref", format: "reference" });
+    expect(p.error).toBe(true);
+  });
+});
