@@ -128,7 +128,7 @@ Relations (the vocabulary of link labels, ${uri("relations")}): prefer a kernel 
 - retire_relation: name. Refused while active links use it, or while a chain uses it as a step.
 If existing data would violate a declare or amend (an entry lacking a now-required link, a second link under cardinality one, a cycle under acyclic) or a retire, the preview lists it in preview.violations and apply is refused until it is fixed.
 
-drop_facet: pattern_name + facet. preview.non_null_values is the data the drop loses. Refused while anything names the facet (a memory policy, a view, a publication, a clipboard — preview.references lists them), for kernel columns, a pattern's only facet, and reference (links) facets.`,
+drop_facet: pattern_name + facet. preview.non_null_values counts the rows (active and archived) holding a value — the data the drop loses. Refused while anything names the facet (a memory policy, a view, a publication, a clipboard, an ingress endpoint, a live upload token — preview.facet_references lists them; apply re-checks), for kernel patterns and kernel columns, a pattern's only facet, and reference (links) facets. Reverting it (apply_change revert_history_id) restores the whole hive to just before the drop.`,
     when: "Before any structural change. Returns a preview diff without committing.",
   },
   {

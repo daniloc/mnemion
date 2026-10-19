@@ -75,6 +75,7 @@ A relation declared `required: true` (its `source` must be an explicit pattern l
 - A create in a source pattern must carry the link in `_relate`, or it is refused, naming the relation and target.
 - Removing an entry's last link of it (archive or unlink) is refused. To change it, **move** it: archive the old link and create the new one in one batch — required is judged on the batch's end state, so either order works.
 - An archived entry is exempt while archived; unarchiving it without the link is refused (unarchive and link in one batch).
+- `required: true` can't be set while a source pattern is archived (its entries couldn't be backfilled): unarchive, backfill, then flip. `unarchive_pattern` of a required relation's source lists the entries lacking the link in `preview.violations` and is refused at apply until they're resolved.
 - Declaring or amending to `required: true` lists every entry lacking the link in `preview.violations`; apply is refused until they are backfilled. Entries that lack one anyway (older data) are reported at boot, never repaired.
 
 ### Containment
@@ -83,6 +84,7 @@ A relation with the `containment` behavior says the source is part of the target
 
 - Archiving a container with active members is refused, naming the members. Archive or move the members first — or in the same batch, in any order. Archived members don't count, and other relations never block.
 - `archive_pattern` on a pattern whose entries contain active members from other patterns lists them in `preview.violations` and is refused at apply.
+- Unarchiving a member whose container is archived (the entry or its pattern) is refused; unarchive both in one batch. `unarchive_pattern` of a member pattern lists members that would sit under an archived container in `preview.violations`, and `amend_relation` adding `containment` lists existing archived containers with active members — apply is refused while any remain.
 - Recall goes upward only: prime follows member → container, never container → members. `resolve` of a container still lists its members, under the inverse name.
 
 ### Derived relations
@@ -107,9 +109,9 @@ If existing data would violate a declare or amend (an entry lacking a now-requir
 
 ## Dropping a facet
 
-`propose_change(type: "drop_facet", pattern_name, facet)` removes a facet's column and its data. The preview's `non_null_values` counts the rows (active and archived) that hold a value — what the drop loses. It is logged with a PITR bookmark like every change, so `apply_change` with `revert_history_id` undoes it.
+`propose_change(type: "drop_facet", pattern_name, facet)` removes a facet's column and its data. The preview's `non_null_values` counts the rows (active and archived) that hold a value — what the drop loses. Like every applied change it is logged in `{{uri:history}}` with a PITR bookmark captured just *before* it ran. Reverting that row (`apply_change` with `revert_history_id`, a confirmation round-trip) restores the whole hive — data and schema — to the moment before the drop, so anything written since is rolled back too. Where no bookmark could be captured (local dev), revert reports rollback unavailable.
 
-It is refused while anything still names the facet — a memory policy's `exclusive_facets`, a view spec, a publication's filters/facets/sort/template, a clipboard rule. The preview lists them in `preview.references`; remove them first (apply re-checks). It is also refused for kernel patterns and kernel columns, for a pattern's only facet, and for a reference (`links`) facet, which is retired by migrating it to a relation instead.
+It is refused while anything still names the facet — a memory policy's `exclusive_facets`, a view spec, a publication's filters/facets/sort/template, a clipboard rule, an ingress endpoint's `body_facet` or `facet_mapping`, or a live (unconsumed, unexpired) upload token targeting it. The preview lists them in `preview.facet_references`; remove them first (apply re-checks). It is also refused for kernel patterns and kernel columns, for a pattern's only facet, and for a reference (`links`) facet, which is retired by migrating it to a relation instead.
 
 ## Dates
 
