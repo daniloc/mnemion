@@ -19,9 +19,10 @@ import { PRODUCT_NAME, URI_SCHEME, URI_PREFIX, uri } from "../../shared/core/con
 import { TOOLS } from "../Session/tools";
 import { seedDevData } from "../../shared/core/dev-seed";
 import { VIEW_TYPES, DEFAULT_VIEW_TYPE, describeViewPalette } from "../../shared/core/view-palette";
-import { KERNEL_WRITE_POLICY, isAuditExempt, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints, PLATFORM_RESERVED_TABLES } from "./policy";
+import { KERNEL_WRITE_POLICY, sensitiveColumns, findUnclassifiedSensitiveColumns, findUngatedCredentialMints, PLATFORM_RESERVED_TABLES } from "./policy";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
+import { ensureAuditTriggers, dropColumn } from "./audit-triggers";
 import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, findRequiredGaps, requiredGaps, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL } from "./relations";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
@@ -1439,55 +1440,8 @@ export function verifyWritePolicyTotality(): string[] {
 }
 
 // === Audit triggers ===
-
-// Audit exemption (high-frequency append-only logs whose change history is the
-// data itself — auditing them would just churn the bounded _mutation_log) is a
-// per-pattern behavior declared in the policy registry (policy.ts), alongside
-// write class, so it's covered by the same boot-time totality check.
-export function ensureAuditTriggers(db: any, tableName: string): void {
-  if (isAuditExempt(tableName)) return;
-  let columns: string[];
-  try {
-    const info = db.exec(`PRAGMA table_info(${quoteIdent(tableName)})`).toArray() as any[];
-    columns = info.map((c: any) => c.name as string);
-  } catch {
-    return;
-  }
-  if (columns.length === 0) return;
-
-  // Sensitive columns are recorded as NULL in the audit log — the change history
-  // must never become a side channel for a secret/redacted value (born-hashed
-  // already keeps the raw out of the row, this keeps even the digest/value out of
-  // _mutation_log). Derived from the one SENSITIVE_COLUMNS registry.
-  const sensitive = new Set(sensitiveColumns(tableName).map((s) => s.column));
-  const col = (side: "NEW" | "OLD", c: string) => sensitive.has(c) ? `'${c}', NULL` : `'${c}', ${side}.${quoteIdent(c)}`;
-  const newJson = columns.map((c) => col("NEW", c)).join(", ");
-  const oldJson = columns.map((c) => col("OLD", c)).join(", ");
-
-  // ALWAYS drop + recreate, so the trigger's captured column list tracks the current
-  // schema on an already-deployed hive. `CREATE TRIGGER IF NOT EXISTS` is a no-op against
-  // a pre-existing trigger, so a trigger built before a column was added (e.g. the
-  // created_by/updated_by attribution backfill, or a sensitive-column reclassification)
-  // would permanently omit that column from _mutation_log until an unrelated rebuild. The
-  // prior code only force-rebuilt for SENSITIVE tables, silently freezing every other
-  // pattern's audit trigger. Recreating a trigger is cheap metadata (no table rewrite).
-  for (const op of ["insert", "update", "delete"]) db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${tableName}_${op}`)}`);
-
-  db.exec(`CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_audit_${tableName}_insert`)}
-    AFTER INSERT ON ${quoteIdent(tableName)} BEGIN
-      INSERT INTO _mutation_log (table_name, record_id, operation, new_data)
-      VALUES ('${tableName}', NEW.id, 'INSERT', json_object(${newJson}));
-    END`);
-
-  db.exec(`CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_audit_${tableName}_update`)}
-    AFTER UPDATE ON ${quoteIdent(tableName)} BEGIN
-      INSERT INTO _mutation_log (table_name, record_id, operation, old_data, new_data)
-      VALUES ('${tableName}', NEW.id, 'UPDATE', json_object(${oldJson}), json_object(${newJson}));
-    END`);
-
-  db.exec(`CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_audit_${tableName}_delete`)}
-    AFTER DELETE ON ${quoteIdent(tableName)} BEGIN
-      INSERT INTO _mutation_log (table_name, record_id, operation, old_data)
-      VALUES ('${tableName}', OLD.id, 'DELETE', json_object(${oldJson}));
-    END`);
-}
+//
+// ensureAuditTriggers and the trigger-safe dropColumn live in the audit-triggers.ts
+// leaf (relations.ts's boot migration needs them without importing this module);
+// re-exported here for the existing importers.
+export { ensureAuditTriggers, dropColumn };

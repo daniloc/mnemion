@@ -18,6 +18,7 @@
 import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { isKernelPattern } from "./policy";
+import { dropColumn } from "./audit-triggers";
 
 type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one: () => any } };
 
@@ -945,8 +946,9 @@ export function findLegacyRelations(relations: Pick<Relation, "name" | "legacy_d
 /** v18: legacy status became two derived facts (legacyDebt); the stored flag,
  *  which lied once a description amend cleared it, is dropped. Idempotent. */
 function dropStoredLegacyFlag(db: DB): void {
-  const cols = db.exec(`PRAGMA table_info("_relations")`).toArray() as { name: string }[];
-  if (cols.some((c) => c.name === "legacy")) db.exec(`ALTER TABLE "_relations" DROP COLUMN "legacy"`);
+  // Trigger-safe: a Phase 1 boot built _relations' audit triggers over `legacy`,
+  // and SQLite refuses DROP COLUMN on a column a trigger names (the v18 failure).
+  dropColumn(db, "_relations", "legacy");
   db.exec(`DELETE FROM _fields WHERE object_name = '_relations' AND name = 'legacy'`);
 }
 
@@ -1006,7 +1008,13 @@ export function findCycles(graphs: RelationGraph[]): string[] {
  *  boot changes nothing. */
 export function migrateRelations(db: DB): void {
   db.exec(`DROP INDEX IF EXISTS "_links_pair_active"`); // one pair may now carry several relations
-  dropStoredLegacyFlag(db);   // v18: legacy is derived, never stored
+  // v18 is isolated: no later step reads or writes the stored flag (legacy is
+  // derived, and every INSERT omits the column, which defaults), so a failed drop
+  // must never skip the code-owned refresh, rewrite, sweep and declarations. It
+  // fails LOUD instead — and, the column surviving, its restore point and this
+  // warning recur on every boot until it succeeds.
+  try { dropStoredLegacyFlag(db); }
+  catch (err) { console.warn("[schema] relations v18 (drop the stored legacy flag) failed — the other relation steps still run", err); }
   seedKernelRelations(db);    // 1. kernel defaults (so supersedes etc. resolve below)
   rewriteLegacyLabels(db);    // 2. NULL → references; inverse wording → canonical
   sweepDanglingLinks(db);     // 3. gone or inadmissible endpoints (incl. ones the rewrite exposed)

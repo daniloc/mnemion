@@ -14,7 +14,7 @@
 
 import { PRODUCT_NAME, uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
-import { ensureAuditTriggers } from "./schema";
+import { ensureAuditTriggers, dropColumn } from "./audit-triggers";
 import { isKernelPattern } from "./policy";
 import { FACET_RESERVED_COLUMNS, USER_OVERRIDABLE_KERNEL_COLUMNS } from "./kernel-columns";
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
@@ -498,13 +498,10 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
     // dangling reference (facet-references.ts declares every kind).
     blockers: { facet_references: (change, ctx) => facetReferences(ctx.db, change.pattern_name, change.facet) },
     apply(change, { db }) {
-      // The audit triggers name every column, so SQLite refuses DROP COLUMN while
-      // they exist: drop them, drop the column + its _fields row, rebuild them.
-      for (const op of ["insert", "update", "delete"])
-        db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${change.pattern_name}_${op}`)}`);
-      db.exec(`ALTER TABLE ${quoteIdent(change.pattern_name)} DROP COLUMN ${quoteIdent(change.facet)}`);
+      // dropColumn is trigger-safe (the audit triggers name every column, so a
+      // plain DROP COLUMN is refused): it drops, alters and rebuilds them.
+      dropColumn(db, change.pattern_name, change.facet);
       db.exec("DELETE FROM _fields WHERE object_name = ? AND name = ?", change.pattern_name, change.facet);
-      ensureAuditTriggers(db, change.pattern_name);
     },
   },
 
