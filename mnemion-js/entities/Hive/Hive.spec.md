@@ -356,7 +356,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage dismissed: the rule is over one pair's links, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write
 - migration restore point: The first boot that runs the relations migration records exactly one restore_point history row whose bookmark was captured before any migration step touched data, and reverting it hands exactly that bookmark to the existing restore path.
-  over: a pre-migration hive booted through the HiveDO constructor with the bookmark available and unavailable, repeated boots, the order of the capture against every migration effect (relations table creation, pair-index drop, relations writes, link rewrites), and revert of the recorded row
+  over: a pre-migration hive booted through the HiveDO constructor with the bookmark available and unavailable, repeated boots, the order of the capture against every migration effect (relations table creation, pair-index drop, relations writes, link rewrites), and revert of the recorded row; and every entry of MIGRATION_RESTORE_POINTS (v17 first run on a fresh or pre-registry hive, v18 first run on a Phase 1-shaped _relations), each covered by a named test the structural check enforces
   via: restore point
   because: Deploying Phase 1 rewrites links and drops an index; without a bookmark taken before that boot there is no exact way to undo the deploy.
   kinds: storage

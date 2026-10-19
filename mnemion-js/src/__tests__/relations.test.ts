@@ -23,6 +23,7 @@ import { prime, type PrimeContext } from "../../entities/Hive/prime";
 // exists. A ?raw default import, not import.meta.glob: Vite drops the importing file
 // from its own glob results, so a self-glob is always empty.
 import THIS_FILE_SRC from "./relations.test.ts?raw";
+import SCHEMA_SRC from "../../entities/Hive/schema.ts?raw";
 import { getAgentByName } from "agents";
 
 type Store = DurableObjectStub<HiveDO>;
@@ -2061,6 +2062,9 @@ function v17Effect(q: string): string | null {
   if (/CREATE\s+TABLE[^(]*"?_relations"?\s*\(/i.test(q)) return "v17:create-relations";
   if (/INSERT\s+INTO\s+"?_relations"?/i.test(q)) return "v17:write-relations";
   if (/UPDATE\s+"?_links"?\s+SET/i.test(q)) return "v17:update-links";
+  // v18 (Phase 2): the stored legacy flag leaves _relations.
+  if (/ALTER\s+TABLE\s+"?_relations"?\s+DROP\s+COLUMN\s+"?legacy"?/i.test(q)) return "v18:drop-legacy-column";
+  if (/DROP\s+TABLE\s+(IF\s+EXISTS\s+)?"?_relations"?/i.test(q)) return "v18:rebuild-relations";
   return null;
 }
 
@@ -2129,6 +2133,26 @@ function makePreV17(db: any) {
 const restorePoints = (db: any) =>
   db.exec(`SELECT * FROM _schema_history WHERE change_type = 'restore_point' ORDER BY id`).toArray() as any[];
 
+/** Every migration declared in schema.ts MIGRATION_RESTORE_POINTS, read from the
+ *  source (the list is module-private). */
+function declaredRestorePointMigrations(): string[] {
+  const block = SCHEMA_SRC.match(/\bMIGRATION_RESTORE_POINTS\b[^\n]*\]\s*=\s*\[([\s\S]*?)\n\];/);
+  if (!block) throw new Error("MIGRATION_RESTORE_POINTS not found in entities/Hive/schema.ts");
+  return [...block[1].matchAll(/migration:\s*"([^"]+)"/g)].map((m) => m[1]);
+}
+
+/** Each declared restore point → the `it` in the "restore point" describe that covers it. */
+const RESTORE_POINT_COVERED_BY: Record<string, string> = {
+  v17: "the first v17 boot records exactly one restore_point row; later boots add none",
+  v18: "a Phase 1-shaped hive records exactly one v18 restore point before the legacy column leaves; later boots add none",
+};
+
+/** Give a booted (Phase 2) hive the Phase 1 shape v18 migrates: the stored legacy flag. */
+function makePhase1Relations(db: any) {
+  db.exec(`DELETE FROM _schema_history WHERE change_type = 'restore_point'`);
+  db.exec(`ALTER TABLE "_relations" ADD COLUMN "legacy" INTEGER NOT NULL DEFAULT 0`);
+}
+
 describe("restore point", () => {
   async function preV17Store() {
     const store = getStore();
@@ -2155,6 +2179,53 @@ describe("restore point", () => {
       expect(restorePoints(state.storage.sql).length).toBe(1);
       expect(restorePoints(state.storage.sql)[0].bookmark).toBe("bm-before-v17");
     });
+  });
+
+  it("a Phase 1-shaped hive records exactly one v18 restore point before the legacy column leaves; later boots add none", async () => {
+    const store = getStore();
+    await seedLegacyLinks(store);
+    await boot(store);
+    await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      makePhase1Relations(db);
+      await booted(state, () => "bm-before-v18", async (_hive, trace) => {
+        const first = trace.events.findIndex((e) => e.startsWith("v18:"));
+        expect(first, `a v18 step ran: ${trace.events.join(", ")}`).toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), "the bookmark was captured").toBeGreaterThanOrEqual(0);
+        expect(trace.events.indexOf("bookmark"), `capture precedes every v18 effect: ${trace.events.join(", ")}`).toBeLessThan(first);
+      });
+      const rows = restorePoints(db);
+      expect(rows.length, "one restore point, v18 only").toBe(1);
+      expect(rows[0].description).toMatch(/restore point/i);
+      expect(rows[0].description).toMatch(/v18/);
+      expect(rows[0].bookmark).toBe("bm-before-v18");
+      expect((db.exec(`PRAGMA table_info("_relations")`).toArray() as any[]).map((c) => c.name)).not.toContain("legacy");
+
+      await booted(state, () => "bm-later", async () => {});
+      await booted(state, () => "bm-later-still", async () => {});
+      expect(restorePoints(db).length).toBe(1);
+    });
+  });
+
+  it("a fresh hive's first boot records the v17 restore point only, never v18 too", async () => {
+    const store = getStore();
+    await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      makePreV17(db); // as close to empty as a constructed DO gets: no _relations at all
+      await booted(state, () => "bm-fresh", async () => {});
+      const rows = restorePoints(db);
+      expect(rows.map((r) => r.description).join(" | ")).toMatch(/v17/);
+      expect(rows.length, rows.map((r) => r.description).join(" | ")).toBe(1);
+      expect(rows[0].description).not.toMatch(/v18/);
+    });
+  });
+
+  it("every MIGRATION_RESTORE_POINTS entry has a covering test in this describe", () => {
+    const declared = declaredRestorePointMigrations();
+    expect(declared.length, "the list is read from schema.ts").toBeGreaterThan(0);
+    expect(new Set(declared)).toEqual(new Set(Object.keys(RESTORE_POINT_COVERED_BY)));
+    for (const [migration, title] of Object.entries(RESTORE_POINT_COVERED_BY))
+      expect(THIS_FILE_SRC, `${migration} → it("${title}")`).toContain(`it(${JSON.stringify(title)}`);
   });
 
   it("captures the bookmark before any v17 step touches data", async () => {
