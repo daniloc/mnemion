@@ -306,7 +306,7 @@ describe("reference facet migration", () => {
     await triggersAfter(store, "tasks", "goal_id");
 
     // (b) The audit trail still works: updating a MIGRATED row writes a _mutation_log entry.
-    const logged = async () => (await sql(store, `SELECT id, new_data FROM _mutation_log WHERE table_name = 'tasks' AND record_id = ? AND operation = 'update' ORDER BY id`, t1));
+    const logged = async () => (await sql(store, `SELECT id, new_data FROM _mutation_log WHERE table_name = 'tasks' AND record_id = ? AND operation = 'UPDATE' ORDER BY id`, t1));
     const beforeLog = (await logged()).length;
     expect((await mut(store, "tasks", "update", { id: t1, title: "t1, edited after the rebuild" })).error).toBeUndefined();
     const afterLog = await logged();
