@@ -17,7 +17,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, vi } from "vitest";
 import { HiveDO } from "../../entities/Hive/hive";
-import { initializeSchema, KERNEL_TABLES } from "../../entities/Hive/schema";
+import { initializeSchema, KERNEL_TABLES, ensureAuditTriggers } from "../../entities/Hive/schema";
 import { prime, type PrimeContext } from "../../entities/Hive/prime";
 // This file reads its own source to prove each palette behavior names a describe that
 // exists. A ?raw default import, not import.meta.glob: Vite drops the importing file
@@ -2209,6 +2209,49 @@ describe("restore point", () => {
       await booted(state, () => "bm-later", async () => {});
       await booted(state, () => "bm-later-still", async () => {});
       expect(restorePoints(db).length).toBe(1);
+    });
+  });
+
+  // Production shape (hotfix, 2026-10-19): on a deployed Phase 1 hive the boot had
+  // already built _relations' audit triggers, and they list EVERY column, including
+  // `legacy`. SQLite refuses `DROP COLUMN` on a column a trigger references, so a plain
+  // drop threw, migrateRelations aborted before the kernel refresh (part-of never
+  // gained containment), and the column's survival made v18's restore point re-record
+  // on every cold start. The fixture above adds `legacy` AFTER the triggers exist, so
+  // no trigger names it; this one rebuilds the triggers so they do, as production had.
+  it("a production Phase 1 hive, whose audit triggers name the legacy column, completes v18 on one boot", async () => {
+    const store = getStore();
+    await seedLegacyLinks(store);
+    await boot(store);
+    await runInDurableObject(store, async (_i, state) => {
+      const db = state.storage.sql;
+      makePhase1Relations(db);
+      ensureAuditTriggers(db, "_relations"); // triggers now reference `legacy`, as on production
+      db.exec(`UPDATE "_relations" SET behaviors = '["acyclic"]' WHERE name = 'part-of'`); // Phase 1's part-of
+      const triggerSql = (db.exec(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = '_relations'`).toArray() as any[]).map((r) => r.sql).join("\n");
+      expect(triggerSql, "the fixture really reproduces production: a trigger names legacy").toMatch(/legacy/);
+
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await booted(state, () => "bm-prod-v18", async () => {});
+        await booted(state, () => "bm-prod-later", async () => {});
+        await booted(state, () => "bm-prod-later-still", async () => {});
+        const warned = warn.mock.calls.map((c) => c.map(String).join(" ")).join("\n");
+        expect(warned, "the relations migration must not fail").not.toMatch(/relations migration failed/i);
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect((db.exec(`PRAGMA table_info("_relations")`).toArray() as any[]).map((c) => c.name), "the legacy column left").not.toContain("legacy");
+      const partOf = db.exec(`SELECT behaviors FROM "_relations" WHERE name = 'part-of' AND archived_at IS NULL`).toArray()[0] as any;
+      expect(JSON.parse(partOf.behaviors), "the kernel refresh ran: part-of gained containment").toContain("containment");
+      const rows = restorePoints(db);
+      expect(rows.length, `exactly one restore point across three boots: ${rows.map((r) => r.bookmark).join(", ")}`).toBe(1);
+      expect(rows[0].bookmark).toBe("bm-prod-v18");
+      // The audit trail still works on _relations after the column left.
+      const after = (db.exec(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = '_relations'`).toArray() as any[]).map((r) => r.sql).join("\n");
+      expect(after, "audit triggers exist again").toMatch(/_audit__relations_/);
+      expect(after, "and no longer name legacy").not.toMatch(/legacy/);
     });
   });
 
