@@ -1314,7 +1314,9 @@ against code-owned templates, so nothing can drift.
   - `input`: an `_inputs` `body_facet`, or a `facet_mapping` key, on the
     facet's pattern (df-0b5f4311);
   - `upload_token`: an active, unconsumed upload `_access_tokens` row whose
-    `constraints.target_facet` names the facet (df-0b5f4311).
+    `constraints.target_facet` names the facet (df-0b5f4311). "Active" compares `expires_at`
+    as a date, not as text, so a live token stored as
+    `"YYYY-MM-DD HH:MM:SS"` (later today) still counts.
 
   The blocker field in `CHANGE_TYPES` is renamed to match:
   `blockers.facet_references`.
@@ -1340,8 +1342,29 @@ This applies to create, update and batch create, and to the upload path. An
 upload token can't be minted against a `datetime` facet. A token whose facet
 became `datetime` after mint canonicalizes the uploaded text at
 `consumeUpload`, under the same rules, or refuses it, writing nothing and
-leaving the token unconsumed. Partial dates (`"2026-03"`, `"2026"`) are left
-unpinned until the owner rules. Existing non-canonical
+leaving the token unconsumed.
+
+**Partial, ambiguous and impossible dates are refused** (owner ruling,
+2026-10-19, df-79a5e65f; this resolves the earlier pending note). A
+`datetime` facet accepts only:
+
+- an unambiguous calendar day: `YYYY-MM-DD`, or anything `Date.parse`
+  resolves to a specific day, such as "March 7, 2026";
+- a full timestamp.
+
+Refused:
+
+- a year alone (`"2026"`);
+- a year and month (`"2026-03"`, `"2026/03"`, `"March 2026"`);
+- an impossible day (`"2026-02-30"`, `"2026-04-31"`, `"2026-13-01"`).
+  `Date.parse` silently rolls some of these into the next month, so the
+  stored day must be the day the writer wrote;
+- non-dates and the empty string.
+
+The refusal message says a full date is required. For a period, it also says
+that resolving the period to a day is the writer's job. The rule applies in
+every pattern class, on create, update, batch and the upload path, and a
+refused write leaves stored values and an upload token untouched. Existing non-canonical
 values are untouched until that facet is written: reads return them as
 stored, boot doesn't rewrite them, and an update of another facet leaves them
 alone.

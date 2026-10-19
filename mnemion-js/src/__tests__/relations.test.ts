@@ -3336,6 +3336,22 @@ describe("drop_facet", () => {
     expect((await apply(store, again.change_id)).error).toBeUndefined();
   });
 
+  it("an upload token whose expires_at is stored in a non-ISO form, later today, still counts as live", async () => {
+    const store = getStore();
+    await notebook(store);
+    const id = (await sql(store, `SELECT id FROM notebook ORDER BY id LIMIT 1`))[0].id;
+    const t = await mut(store, "_access_tokens", "create", { scope: "upload", constraints: JSON.stringify({ target_pattern: "notebook", target_id: id, target_facet: "scratch" }) });
+    expect(t.error, t.message).toBeFalsy();
+    // "YYYY-MM-DD HH:MM:SS", the last second of today: compared as text against an
+    // ISO "…T…Z" now, the space sorts before "T" and the token would look expired.
+    await sql(store, `UPDATE "_access_tokens" SET expires_at = strftime('%Y-%m-%d 23:59:59', 'now') WHERE id = ?`, t.entry.id);
+    const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
+    expect(p.error, p.message).toBeUndefined();
+    expect(p.preview.facet_references).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "upload_token" })]));
+    expect((await apply(store, p.change_id)).error).toBe(true);
+    expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).toContain("scratch");
+  });
+
   it("re-checks references at apply: one planted after a clean propose blocks the drop", async () => {
     const store = getStore();
     await notebook(store);
@@ -3446,6 +3462,55 @@ describe("canonical datetime", () => {
   }
   const storedK = async (store: Store, id: number) => (await sql(store, `SELECT "when" FROM journal WHERE id = ?`, id))[0].when;
   const stored = async (store: Store, id: number) => (await sql(store, `SELECT "when" FROM events WHERE id = ?`, id))[0].when;
+
+  // Owner ruling 2026-10-19 (df-79a5e65f): only an unambiguous calendar day or a
+  // full timestamp is a date. Periods and impossible dates are refused, never
+  // resolved or rolled over: resolving a period is the writer's job.
+  const NOT_A_DAY: [string, string, boolean][] = [
+    ["year only", "2026", true],
+    ["year-month", "2026-03", true],
+    ["year/month", "2026/03", true],
+    ["month and year", "March 2026", true],
+    ["Feb 30 (Date.parse rolls it to March)", "2026-02-30", false],
+    ["month 13", "2026-13-01", false],
+    ["April 31", "2026-04-31", false],
+    ["not a date", "soonish", false],
+    ["empty", "", false],
+  ];
+
+  it.each(NOT_A_DAY)("refuses %s in every pattern class, writing nothing", async (_label, input, period) => {
+    const store = getStore();
+    await events(store);
+    await journal(store);
+    for (const pattern of ["events", "journal"]) {
+      const before = (await sql(store, `SELECT COUNT(*) AS n FROM "${pattern}"`))[0].n;
+      const r = await mut(store, pattern, "create", { title: input, when: input });
+      expect(r.error, `${pattern}: ${JSON.stringify(input)}`).toBe(true);
+      expect(r.message, pattern).toMatch(/full date|calendar date|valid date/i);
+      if (period) expect(r.message, pattern).toMatch(/writer/i);
+      expect((await sql(store, `SELECT COUNT(*) AS n FROM "${pattern}"`))[0].n, `${pattern}: nothing written`).toBe(before);
+      // An update is held to the same rule and leaves the stored value alone.
+      const ok = await mut(store, pattern, "create", { title: "anchor", when: "2026-03-07" });
+      expect(ok.error, ok.message).toBeUndefined();
+      expect((await mut(store, pattern, "update", { id: ok.entry.id, when: input })).error, `${pattern} update`).toBe(true);
+      expect((await sql(store, `SELECT "when" FROM "${pattern}" WHERE id = ?`, ok.entry.id))[0].when).toBe("2026-03-07");
+    }
+  });
+
+  it("the upload path refuses a partial date too, writing nothing and leaving the token usable", async () => {
+    const store = getStore();
+    await createPatternWith(store, "logbook", [{ name: "title", type: "text" }, { name: "when", type: "text" }], "knowledge");
+    const id = (await mut(store, "logbook", "create", { title: "x", when: "kept" })).entry.id;
+    const tok = await mut(store, "_access_tokens", "create", { scope: "upload", constraints: JSON.stringify({ target_pattern: "logbook", target_id: id, target_facet: "when" }) });
+    expect(tok.error, tok.message).toBeFalsy();
+    await sql(store, `UPDATE _fields SET type = 'datetime' WHERE object_name = 'logbook' AND name = 'when'`);
+    const r = JSON.parse(await store.consumeUpload(tok.entry.token, "2026-03"));
+    expect(r.error).toBe(true);
+    expect((await sql(store, `SELECT "when" FROM logbook WHERE id = ?`, id))[0].when).toBe("kept");
+    const ok = JSON.parse(await store.consumeUpload(tok.entry.token, "2026-03-07"));
+    expect(ok.error, "the refused upload did not consume the token").toBeUndefined();
+    expect((await sql(store, `SELECT "when" FROM logbook WHERE id = ?`, id))[0].when).toBe("2026-03-07");
+  });
 
   it("a date-only input is stored as YYYY-MM-DD", async () => {
     const store = getStore();
