@@ -15,7 +15,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, vi } from "vitest";
 import type { HiveDO } from "../../entities/Hive/hive";
-import { initializeSchema } from "../../entities/Hive/schema";
+import { initializeSchema, ensureAuditTriggers } from "../../entities/Hive/schema";
 import { FORMAT_IDS, isFormat, resolveFormat, validateFormatsMap } from "../../shared/core/format-palette";
 
 type Store = DurableObjectStub<HiveDO>;
@@ -100,7 +100,34 @@ async function plantReferenceFacet(store: Store, pattern: string, facet: string,
     db.exec(`ALTER TABLE "${pattern}" ADD COLUMN "${facet}" INTEGER REFERENCES "${target}"("id")`);
     db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES (?, ?, 'integer', 0, ?)`, pattern, facet, target);
     for (const [id, v] of Object.entries(values)) db.exec(`UPDATE "${pattern}" SET "${facet}" = ? WHERE id = ?`, v, Number(id));
+    productionTriggers(db, pattern, facet);
   });
+}
+
+/** Production shape (lesson of the v18 incident, 2026-10-19): on a deployed hive
+ *  every boot rebuilt the pattern's audit triggers over ALL its columns, so they
+ *  name the reference-facet column, and SQLite refuses DROP COLUMN on a column a
+ *  trigger references. Build them as production had, and prove the fixture
+ *  reproduces it. */
+function productionTriggers(db: any, pattern: string, facet: string) {
+  ensureAuditTriggers(db, pattern);
+  const triggerSql = (db.exec(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?`, pattern).toArray() as any[]).map((r) => r.sql).join("\n");
+  expect(triggerSql, `fixture reproduces production: a ${pattern} audit trigger names ${facet}`).toContain(`"${facet}"`);
+}
+
+/** Triggers on `pattern` after a boot: they must exist and must not name `facet`. */
+async function triggersAfter(store: Store, pattern: string, facet: string) {
+  const triggerSql = (await sql(store, `SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?`, pattern)).map((r) => r.sql).join("\n");
+  expect(triggerSql, `${pattern}'s audit triggers exist again`).toMatch(new RegExp(`_audit_${pattern}_`));
+  expect(triggerSql, `${pattern}'s audit triggers no longer name ${facet}`).not.toContain(`"${facet}"`);
+}
+
+/** Boot, and require that no migration reported failure (a failed migration warns
+ *  and boot carries on, which is how the v18 incident hid). */
+async function bootMigrating(store: Store): Promise<string[]> {
+  const lines = await warnLines(() => boot(store));
+  expect(lines.filter((l) => /migration failed/i.test(l)), "no migration failed").toEqual([]);
+  return lines;
 }
 
 /** A whole pre-Phase-3 pattern whose reference facet is NOT NULL (an old
@@ -128,6 +155,7 @@ async function plantMandatoryFkPattern(store: Store, pattern: string, facet: str
       db.exec(`INSERT INTO "${pattern}" (title, "${facet}") VALUES ('row', ?)`, v);
       ids.push((db.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id);
     }
+    productionTriggers(db, pattern, facet);
     return ids;
   });
 }
@@ -252,7 +280,7 @@ describe("reference facet migration", () => {
   it("turns each reference facet into a legacy relation plus links, and rebuilds the table without the column", async () => {
     const { store, g1, g2, t1, t2, t3, t4 } = await legacyFkHive();
     const before = await sql(store, `SELECT id, title, created_at, archived_at, version FROM tasks ORDER BY id`);
-    await boot(store);
+    await bootMigrating(store); // (a) v19 completes on a production-shaped hive
 
     // The relation: named after the facet, tasks → goals, cardinality one, legacy debt.
     // D-P3-1: named after the facet in kebab-case (goal_id → goal-id).
@@ -274,10 +302,21 @@ describe("reference facet migration", () => {
       .filter((t) => /REFERENCES/i.test(String(t.sql))).map((t) => t.name);
     expect(fkTables).toEqual([]);
 
-    // The pattern stays fully writable, and audit triggers still fire.
+    // Audit triggers exist again and no longer name the dropped column.
+    await triggersAfter(store, "tasks", "goal_id");
+
+    // (b) The audit trail still works: updating a MIGRATED row writes a _mutation_log entry.
+    const logged = async () => (await sql(store, `SELECT id, new_data FROM _mutation_log WHERE table_name = 'tasks' AND record_id = ? AND operation = 'update' ORDER BY id`, t1));
+    const beforeLog = (await logged()).length;
+    expect((await mut(store, "tasks", "update", { id: t1, title: "t1, edited after the rebuild" })).error).toBeUndefined();
+    const afterLog = await logged();
+    expect(afterLog.length, "the update was audited").toBe(beforeLog + 1);
+    expect(String(afterLog[afterLog.length - 1].new_data)).toContain("t1, edited after the rebuild");
+    expect(String(afterLog[afterLog.length - 1].new_data)).not.toContain("goal_id");
+
+    // The pattern stays fully writable.
     const t5 = await entry(store, "tasks", { title: "after" });
     expect((await mut(store, "tasks", "update", { id: t5, title: "after, edited" })).error).toBeUndefined();
-    expect((await sql(store, `SELECT COUNT(*) AS n FROM _mutation_log WHERE table_name = 'tasks'`))[0].n).toBeGreaterThan(0);
     expect((await mut(store, "tasks", "create", { title: "x", goal_id: g1 })).error).toBe(true);
   });
 
@@ -286,9 +325,11 @@ describe("reference facet migration", () => {
     await createPattern(store, "notes");
     const n = await entry(store, "notes", { title: "n" });
     await plantReferenceFacet(store, "notes", "task_id", "tasks", { [n]: t1 });
-    await boot(store);
+    await bootMigrating(store); // (c) both tables carry production-shaped triggers
     expect(await columns(store, "tasks")).not.toContain("goal_id");
     expect(await columns(store, "notes")).not.toContain("task_id");
+    await triggersAfter(store, "tasks", "goal_id");
+    await triggersAfter(store, "notes", "task_id");
     expect(await sql(store, `SELECT source_id, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'task-id'`)).toEqual([{ source_id: n, target_id: t1 }]);
   });
 
@@ -299,7 +340,7 @@ describe("reference facet migration", () => {
     const g = await entry(store, "goals", { title: "g" });
     const t = await entry(store, "tasks", { title: "t" });
     await plantReferenceFacet(store, "tasks", "references", "goals", { [t]: g }); // collides with the kernel default
-    await boot(store);
+    await bootMigrating(store);
     const rel = await relationOf(store, "tasks-references");
     expect(rel).toMatchObject({ source: ["tasks"], target: ["goals"], cardinality: "one", legacy: true });
     expect(await sql(store, `SELECT label FROM "_links" WHERE archived_at IS NULL AND source_id = ? AND target_id = ?`, t, g)).toEqual([{ label: "tasks-references" }]);
@@ -316,7 +357,7 @@ describe("reference facet migration", () => {
     const t = await entry(store, "tasks", { title: "t" });
     await plantReferenceFacet(store, "tasks", "parent__goal_", "goals", { [t]: g }); // doubled and trailing underscores
     await plantReferenceFacet(store, "tasks", "_2nd_goal", "goals", { [t]: g });     // kebab form would start with a digit
-    await boot(store);
+    await bootMigrating(store);
     const migrated = (await sql(store, `SELECT label FROM "_links" WHERE archived_at IS NULL AND source_pattern = 'tasks' AND source_id = ?`, t)).map((r) => r.label).sort();
     expect(migrated).toEqual(["parent-goal", "tasks-2nd-goal"]);
     for (const name of migrated) {
@@ -334,6 +375,8 @@ describe("reference facet migration", () => {
     const g = await entry(store, "goals", { title: "g" });
     const ids = await plantMandatoryFkPattern(store, "plans", "goal_id", "goals", [g, g]);
     const lines = await warnLines(() => boot(store));
+    expect(lines.filter((l) => /migration failed/i.test(l)), "no migration failed").toEqual([]);
+    await triggersAfter(store, "plans", "goal_id");
 
     const rel = await relationOf(store, "goal-id");
     expect(rel).toMatchObject({ required: false, legacy: true });
@@ -383,7 +426,7 @@ describe("reference facet migration", () => {
 
   it("is idempotent: a second boot changes nothing", async () => {
     const { store } = await legacyFkHive();
-    await boot(store);
+    await bootMigrating(store);
     expect(await columns(store, "tasks"), "the first boot migrated").not.toContain("goal_id");
     const snap = async () => ({
       links: await sql(store, `SELECT * FROM "_links" ORDER BY id`),

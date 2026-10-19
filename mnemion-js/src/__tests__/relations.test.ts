@@ -2275,9 +2275,15 @@ describe("restore point", () => {
       db.exec(`ALTER TABLE "tasks" ADD COLUMN "goal_id" INTEGER REFERENCES "goals"("id")`);
       db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES ('tasks', 'goal_id', 'integer', 0, 'goals')`);
       db.exec(`UPDATE tasks SET goal_id = ? WHERE id = ?`, g, t);
+      // Production shape: the audit triggers name the reference column (v18 incident).
+      ensureAuditTriggers(db, "tasks");
+      const triggerSql = (db.exec(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'tasks'`).toArray() as any[]).map((r) => r.sql).join("\n");
+      expect(triggerSql, "the fixture reproduces production: a trigger names goal_id").toContain(`"goal_id"`);
     });
     await runInDurableObject(store, async (_i, state) => {
       const db = state.storage.sql;
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
       await booted(state, () => "bm-before-v19", async (_hive, trace) => {
         const v19 = (e: string) => e.startsWith("v19:") || e === "change:drop-column";
         const first = trace.events.findIndex(v19);
@@ -2285,6 +2291,9 @@ describe("restore point", () => {
         expect(trace.events.indexOf("bookmark"), "the bookmark was captured").toBeGreaterThanOrEqual(0);
         expect(trace.events.indexOf("bookmark"), `capture precedes every v19 effect: ${trace.events.join(", ")}`).toBeLessThan(first);
       });
+        const warned = warn.mock.calls.map((c) => c.map(String).join(" ")).join("\n");
+        expect(warned, "no migration failed").not.toMatch(/migration failed/i);
+      } finally { warn.mockRestore(); }
       const rows = restorePoints(db).filter((r) => /v19/.test(r.description));
       expect(rows.length, "one v19 restore point").toBe(1);
       expect(rows[0].description).toMatch(/restore point/i);
