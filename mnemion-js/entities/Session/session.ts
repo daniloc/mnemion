@@ -408,7 +408,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
             }).optional().describe("Foreign key link to another pattern"),
           })).optional().describe("Facets to create (for create_pattern or add_facet)"),
           facet_name: z.string().optional().describe("Target facet name (for set_options)"),
-          facet: z.string().optional().describe("Target facet name (for set_facet_format)"),
+          facet: z.string().optional().describe("Target facet name (for set_facet_format / drop_facet)"),
           format: z.enum(FORMAT_IDS as [string, ...string[]]).nullable().optional().describe("Value render format for set_facet_format (null clears → render by type)"),
           options: z.array(z.string()).optional().describe("Allowed values (for set_options)"),
           entry_id: z.number().optional().describe("Entry ID (for set_sharing)"),
@@ -430,9 +430,9 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           source: z.array(z.string()).nullable().optional().describe('Patterns a link of this relation may start from, or ["*"] for any user pattern (for declare_relation)'),
           target: z.array(z.string()).nullable().optional().describe('Patterns it may point to, or ["*"] for any user pattern; _documents and _web_cache are allowed targets (for declare_relation)'),
           cardinality: z.string().nullable().optional().describe('"one" or "many": most active links of this relation one source entry may hold (default "many")'),
-          behaviors: z.array(z.string()).nullable().optional().describe('Subset of the behavior palette: "supersession" (target demoted as replaced), "acyclic" (no cycles)'),
-          required: z.boolean().nullable().optional().describe("Phase 2 — not yet supported (refused)"),
-          chain: z.array(z.string()).nullable().optional().describe("Phase 2 — derived relations are not yet supported (refused)"),
+          behaviors: z.array(z.string()).nullable().optional().describe('Subset of the behavior palette: "supersession" (target demoted as replaced), "acyclic" (no cycles), "containment" (source is part of target: a container with active members can\'t be archived; recall goes member → container only)'),
+          required: z.boolean().nullable().optional().describe("Every active entry of the (explicitly listed) source patterns must hold one; creates then carry it in _relate. Declaring/amending to true is refused while entries lack it (preview.violations)"),
+          chain: z.array(z.string()).nullable().optional().describe('A derived relation: ≥2 stored relation names composed in order, e.g. ["belongs-to", "serves"]. Computed at read time, never written; declare it without source/target/cardinality/behaviors/required'),
         }),
       },
       async ({ description, change }) => {
@@ -662,12 +662,12 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         pattern: z.string().optional().describe("Pattern name (for single operation; ignored for batch)"),
         operation: z.enum(["create", "update", "archive", "unarchive", "patch", "batch"]).optional().describe("create, update, archive, unarchive, patch, or batch. Optional for shortcuts (e.g. pattern: \"fragment\" implies create)."),
         data: z.union([
-          z.record(z.string(), z.unknown()).describe("For single ops: {facet: value, ...}. For update: include version for optimistic locking. For patch: {id, facet, match, replacement}."),
+          z.record(z.string(), z.unknown()).describe("For single ops: {facet: value, ...}. On create, _relate: {\"<relation or inverse>\": \"pattern/id\" | [\"pattern/id\", …]} writes the entry's links in the same transaction (required relations must be given this way). For update: include version for optimistic locking. For patch: {id, facet, match, replacement}."),
           z.array(z.object({
-            pattern: z.string(),
-            operation: z.enum(["create", "update", "archive", "unarchive", "patch"]),
+            pattern: z.string().describe('Pattern name, or a shortcut: "link" / "unlink" (the shortcut decides the operation)'),
+            operation: z.enum(["create", "update", "archive", "unarchive", "patch", "unlink"]).optional().describe("Omit for a shortcut item (link, unlink, fragment)."),
             data: z.record(z.string(), z.unknown()),
-          })).describe("For batch: array of {pattern, operation, data} items."),
+          })).describe("For batch: array of {pattern, operation, data} items — atomic, and required/containment rules are judged on the batch's end state (so a move = archive the old link + link the new one)."),
         ]),
       },
       async ({ pattern, operation, data }) => {
