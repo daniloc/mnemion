@@ -310,7 +310,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: declared-target-coverage declared as palette totality
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
 - relation vocabulary evolution: Relations are declared, amended and retired only through validated change types, each previewed and logged, and never so that existing active links violate the result.
-  over: declare_relation, amend_relation and retire_relation across every validation rule including explicit nulls, kernel defaults, legacy relations, violators that exist at propose or appear before apply, and the same payloads sent through the MCP propose_change tool
+  over: declare_relation, amend_relation and retire_relation across every validation rule including explicit nulls, kernel defaults, legacy relations, violators that exist at propose or appear before apply, and the same payloads sent through the MCP propose_change tool, plus legacy debt (placeholder description and generated inverse, paid separately, derived not stored)
   via: relation vocabulary evolution
   because: Refusing an undeclared label is fair only when declaring one is possible, and an amend or retire must not strand links already written.
   crossing: agent-mcp -> storage
@@ -369,3 +369,111 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: one migration, one restore point
   checklist: completion-evidence dismissed: the row is written synchronously during boot
+- required relations: Every active entry of a required relation's source pattern holds at least one active link of it: creates must carry it inline, the last link cannot be removed except by a move in one batch, and declaring or amending to required is refused while any entry lacks it.
+  over: creates with and without _relate, unlink and archive of the last link, one-batch moves, cardinality-many removals, archived and unarchived source entries, declare and amend previews with violators, explicit-list sources only, and the boot report over pre-existing data
+  via: required relations
+  because: Compositional identity (a task belongs to exactly one project) is only true if no write path can leave a task without its project.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link and entry writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows, links and facet values here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation declared as required relations
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule is over one relation's source entries, not a registry of targets
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- containment: A container with active members cannot be archived unless the same batch archives or moves them, and recall follows containment upward only.
+  over: archive of containers under kernel part-of and hive containment relations, archived members, non-containment relations, batches in any order that archive or move members or leave one stranded, resolve of a container, and prime from member and from container
+  via: containment
+  because: An archived container with live members strands a required relation's target, and fanning out from a container to all its members floods recall.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: recall direction shapes prime's expansion, not which rows a reader may see
+  checklist: encrypted-storage dismissed: relation rows, links and facet values here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation dismissed: the rule is over archive operations and recall direction, not payload shape
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule is over one relation's members, not a registry of targets
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- atomic relation writes: An entry created with _relate is stored together with all its links through the link chokepoint, or not at all.
+  over: _relate on single and batch creates, names and inverses, one or many targets, every link refusal (undeclared, missing, inadmissible, cardinality, malformed, duplicate, derived), updates, and the RPC, /api/mutate and MCP surfaces
+  via: inline _relate
+  because: A create-then-link sequence leaves an entry without the link it requires whenever the second write fails.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link and entry writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows, links and facet values here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation declared as atomic relation writes
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage declared as atomic relation writes
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- batch link shortcuts: Inside a batch, the link and unlink shortcuts expand exactly as they do in a single mutate, and any refusal rolls the whole batch back.
+  over: link and unlink items with and without an operation, mixed with entry writes, a refused link anywhere in the batch, and the MCP batch surface
+  via: link shortcuts in batches
+  because: A move (archive one link, create another) is only safe as one atomic batch, and today a batch rejects the link shortcut outright.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link and entry writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows, links and facet values here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation dismissed: each item crosses the same link chokepoint as a single write
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: the rule is over one batch's items, not a registry of targets
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- derived relations are never stored: A chained relation is computed at read time from its stored steps and no _links row ever carries its name.
+  over: chain declarations (unknown, non-composing, single or derived steps, and stored-relation fields), writes by name, inverse and _relate, resolve in both directions through active entries with deduplication, and retirement of a step a chain uses
+  via: derived relations
+  because: A stored copy of a composition drifts from the links it composes, the drift data-is-destiny forbids.
+  crossing: agent-mcp -> storage
+  entrances: none
+  kinds: storage
+  checklist: scoped-reads dismissed: this rule governs link and entry writes, not read scope
+  checklist: encrypted-storage dismissed: relation rows, links and facet values here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation declared as derived relations are never stored
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage declared as derived relations are never stored
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- drop_facet: A user-pattern facet is dropped only through the drop_facet change type, which previews the values lost, removes the column and its metadata together, keeps the pattern writable, and stays revertible.
+  over: drop_facet over user facets with values, kernel patterns, kernel columns, missing facets and patterns, a pattern's only facet, later writes to the pattern, and revert of the logged change
+  via: drop_facet
+  because: Retiring text-facet stand-ins for relations must not lose data silently or leave _fields describing a column that no longer exists.
+  kinds: storage
+  checklist: scoped-reads dismissed: schema evolution, not a read path
+  checklist: encrypted-storage dismissed: relation rows, links and facet values here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation declared as drop_facet
+  checklist: revision-preservation declared as drop_facet
+  checklist: commit-ordered-effects dismissed: the drop commits in one change application; revert uses the stored PITR bookmark
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: one facet of one pattern
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
+- canonical datetime: A datetime facet on a dataset pattern stores ISO 8601: YYYY-MM-DD for date-only input, a full UTC timestamp otherwise; relative phrases are refused and existing values change only when that facet is written.
+  over: date-only and timed inputs in several written forms, offsets, relative phrases, creates, updates and batch creates, and pre-existing non-canonical rows across boot and unrelated updates
+  via: canonical datetime
+  because: Strings stored as typed sort and compare inconsistently, so overdue and staleness cannot be derived from them.
+  kinds: storage
+  checklist: scoped-reads dismissed: the coercion shapes stored values, not read scope
+  checklist: encrypted-storage dismissed: relation rows, links and facet values here are not confidential at rest
+  checklist: key-rotation-compatibility dismissed: no key participates
+  checklist: input-validation declared as canonical datetime
+  checklist: revision-preservation dismissed: links and relations are not version-addressed publications; _schema_history is the audit record
+  checklist: commit-ordered-effects dismissed: the check runs before the write commits and issues no external effect
+  checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
+  checklist: declared-target-coverage dismissed: one facet type's coercion
+  checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
