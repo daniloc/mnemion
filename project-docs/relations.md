@@ -1514,6 +1514,27 @@ Phase 1-era cases in `hive.test.ts`, `formats.test.ts` and
      `version`, timestamps and archived state are preserved. Audit triggers
      are recreated, so writes are logged in `_mutation_log`. The `_fields`
      row is removed.
+   - **The mechanism goes through `entities/Hive/audit-triggers.ts`**, the
+     shared trigger-safe path, after the v18 incident (2026-10-19): a deployed
+     hive's audit triggers name every column, and SQLite refuses `DROP COLUMN`
+     on a column a trigger references. A column with no foreign key uses
+     `dropColumn(db, table, column)`. The FK-column rebuild uses a sibling
+     trigger-safe table-rebuild helper in the same module, needed because
+     SQLite also refuses `DROP COLUMN` on a foreign-key column. Never a
+     hand-rolled `ALTER TABLE … DROP COLUMN` or `DROP TABLE`.
+   - **Enforcement.** The structural test `trigger-safe drops` scans every
+     worker source outside `audit-triggers.ts` for `DROP COLUMN` or
+     `DROP TABLE` literals. Only the existing kernel retirements and the
+     archived-pattern GC are allowed, each listed by exact literal and
+     required to still exist:
+     - v10 `access_count`;
+     - v5 retired token tables;
+     - the `_passkeys` rebuild;
+     - v16 `_canvases`;
+     - the 30-day whole-table drop.
+   - **Fixtures.** Every v19 fixture is production-shaped: the pattern's audit
+     triggers are built after the FK column exists and are asserted to name
+     it.
 
 All reference facets go in one pass, including one pointing at a table that
 is itself rebuilt. Afterwards no user table's DDL contains `REFERENCES`.

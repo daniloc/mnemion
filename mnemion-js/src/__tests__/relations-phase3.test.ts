@@ -466,6 +466,81 @@ describe("reference facet migration", () => {
 });
 
 // =====================================================================
+// 1c. One trigger-safe path for column drops and table rebuilds
+// =====================================================================
+
+// The v18 incident: a hand-rolled DROP COLUMN under live audit triggers threw on
+// production. entities/Hive/audit-triggers.ts owns the only sanctioned mechanism
+// (dropColumn, plus a sibling trigger-safe table rebuild for v19's FK columns).
+const WORKER_SRC = import.meta.glob(
+  ["../../entities/**/*.ts", "../../shared/**/*.ts", "../../src/**/*.ts", "!../../src/__tests__/**"],
+  { query: "?raw", import: "default", eager: true },
+) as Record<string, string>;
+const AUDIT_TRIGGERS_PATH = "../../entities/Hive/audit-triggers.ts";
+
+/** Pre-existing kernel retirements and whole-table GC, each named by file and the
+ *  exact literal body. None is a column drop or rebuild of a user table under its
+ *  triggers. Each must still exist, so the list can't rot. */
+const SANCTIONED_DROPS: [string, string][] = [
+  ["../../entities/Hive/schema.ts", `ALTER TABLE "_short_term_fragments" DROP COLUMN "access_count"`], // v10, kernel
+  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS "\${old}"`],                                  // v5 retired token tables (kernel)
+  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS _passkeys_old`],                               // _passkeys rebuild (kernel)
+  ["../../entities/Hive/schema.ts", `DROP TABLE _passkeys_old`],                                         // _passkeys rebuild (kernel)
+  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS "_canvases"`],                                 // v16 Canvas retirement (kernel)
+  ["../../entities/Hive/schema.ts", `DROP TABLE IF EXISTS \${quoteIdent(obj.name)}`],                   // 30-day archived-pattern GC: whole table and its triggers
+];
+
+/** String and template literal bodies, comments skipped. */
+function literals(src: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i], d = src[i + 1];
+    if (c === "/" && d === "/") { const j = src.indexOf("\n", i); i = j < 0 ? n : j; continue; }
+    if (c === "/" && d === "*") { const j = src.indexOf("*/", i + 2); i = j < 0 ? n : j + 2; continue; }
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1, body = "", depth = 0;
+      while (j < n) {
+        const ch = src[j];
+        if (ch === "\\") { body += src.slice(j, j + 2); j += 2; continue; }
+        if (c === "`") {
+          if (depth === 0 && ch === "`") break;
+          if (ch === "$" && src[j + 1] === "{") { depth++; body += "${"; j += 2; continue; }
+          if (depth > 0 && ch === "{") depth++;
+          if (depth > 0 && ch === "}") depth--;
+        } else if (ch === c || ch === "\n") break;
+        body += ch; j++;
+      }
+      out.push(body); i = j + 1; continue;
+    }
+    i++;
+  }
+  return out;
+}
+
+describe("trigger-safe drops", () => {
+  it("no worker source outside audit-triggers.ts drops a column or a table, except the listed kernel retirements and GC", () => {
+    const paths = Object.keys(WORKER_SRC);
+    expect(paths, "the scan reads the worker tree").toContain(AUDIT_TRIGGERS_PATH);
+    expect(paths).toContain("../../entities/Hive/schema.ts");
+    const offenders: string[] = [];
+    const seen = new Set<string>();
+    for (const [path, src] of Object.entries(WORKER_SRC)) {
+      if (path === AUDIT_TRIGGERS_PATH) continue;
+      for (const lit of literals(src)) {
+        if (!/\bDROP\s+COLUMN\b|\bDROP\s+TABLE\b/i.test(lit)) continue;
+        const flat = lit.replace(/\s+/g, " ").trim();
+        const ok = SANCTIONED_DROPS.find(([p, body]) => p === path && flat === body);
+        if (ok) seen.add(ok[1]); else offenders.push(`${path}: ${flat.slice(0, 120)}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect([...seen].sort(), "every sanctioned exception still exists").toEqual(SANCTIONED_DROPS.map(([, b]) => b).sort());
+  });
+});
+
+// =====================================================================
 // 2a. Create-form relation fields and the _relate payload
 // =====================================================================
 
