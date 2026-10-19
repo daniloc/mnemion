@@ -5,7 +5,7 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
 ## invariants
 - kernel write boundary: Every agent write to a kernel pattern follows its declared write policy.
   protects: applyKernelRules in entities/Hive/kernel.ts
-  chokepoint: executeMutate in entities/Hive/data.ts
+  chokepoint: mutateOne in entities/Hive/data.ts
   over: every kernel pattern in KERNEL_TABLES
   via: write-policy totality
   because: An unclassified pattern must fail closed instead of becoming agent writable.
