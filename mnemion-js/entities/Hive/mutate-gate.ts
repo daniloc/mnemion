@@ -18,12 +18,14 @@
 // owner-implicit (a logged-in human IS the consent) and does not consult these
 // decisions today — it receives parsed, single-op JSON and is intentionally
 // ungated. The win is not that both transports call this, but that the gate
-// decisions now have ONE tested home (a pure leaf over policy.ts) instead of
+// decisions now have ONE tested home (a pure leaf over policy.ts and the
+// shortcuts.ts table) instead of
 // inline branches: an edit to the batch rule or consent condition is anchored by
 // a unit test, so an MCP-only regression can't slip past /api-based tests. If /api
 // ever needs the same validation, it adopts these — without a second copy existing.
 
 import { consentPolicy, patchRejected, consentRoundTripRequired, type ConsentPolicy } from "./policy";
+import { expandShortcut } from "./shortcuts";
 
 // === Loosely-typed input normalization ===
 //
@@ -61,10 +63,14 @@ export type MutateGate =
  *  MCP handler drives the round-trip mechanics off this; the engine independently
  *  enforces write-class, so this is the consent layer's single decision point. */
 export function mutateGate(
-  pattern: string,
-  operation: string,
+  named: string,
+  namedOperation: string,
   data: { visibility?: unknown } | null | undefined,
 ): MutateGate {
+  // Decide on the EXPANDED target, as the batch rule does (findGatedBatchOp).
+  const shortcut = expandShortcut(named);
+  const pattern = shortcut?.pattern ?? named;
+  const operation = shortcut?.operation ?? namedOperation;
   const policy = consentPolicy(pattern);
   if (!policy) return { kind: "pass" };
   if (operation === "patch") return { kind: "patch_rejected", pattern };
@@ -112,9 +118,13 @@ export interface BatchOp { pattern?: string; operation?: string; data?: { visibi
  *  archive (de-escalation) is allowed. Pure derivation of policy.ts — the batch
  *  rule has one home, not an inline `.find` in the handler. */
 export function findGatedBatchOp(batch: BatchOp[]): BatchOp | null {
-  return batch.find((op) =>
-    !!op && (
-      (op.operation === "patch" && patchRejected(op.pattern ?? "")) ||
-      consentRoundTripRequired(op.pattern ?? "", op.operation, op.data)
-    )) ?? null;
+  // Judge each item AFTER shortcut expansion (the same table mutate() expands
+  // through), so a shortcut naming a gated pattern is gated like that pattern.
+  return batch.find((raw) => {
+    if (!raw) return false;
+    const shortcut = expandShortcut(raw.pattern ?? "");
+    const op = shortcut ? { ...raw, pattern: shortcut.pattern, operation: shortcut.operation } : raw;
+    return (op.operation === "patch" && patchRejected(op.pattern ?? "")) ||
+      consentRoundTripRequired(op.pattern ?? "", op.operation, op.data);
+  }) ?? null;
 }
