@@ -2626,6 +2626,47 @@ describe("containment", () => {
     expect(archived).toEqual([]); // n3's archive rolled back too
   });
 
+  // Owner decision O2: archive_pattern on a containment target is refused while
+  // active members in OTHER patterns link into its active entries.
+  it("archive_pattern on a containment target previews the holding members and is refused at apply", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { containment: true });
+    const t = await task(store, "member", p1);
+    const p = await propose(store, { type: "archive_pattern", pattern_name: "projects" });
+    expect(p.error).toBeUndefined();
+    expect(p.preview.violations).toEqual(expect.arrayContaining([expect.objectContaining({ source: `tasks/${t}`, target: `projects/${p1}`, label: "belongs-to" })]));
+    const a = await apply(store, p.change_id);
+    expect(a.error).toBe(true);
+    expect(a.message).toContain("belongs-to");
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'projects'`))[0].archived_at).toBeNull();
+  });
+
+  it("archive_pattern: archived members and same-pattern members don't hold; non-containment links never do", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { containment: true });
+    const t = await task(store, "member", p1);
+    await mut(store, "tasks", "archive", { id: t });
+    await mustLink(store, `projects/${p1}`, `projects/${(await entry(store, "projects", "parent"))}`, "part-of"); // internal containment
+    await createPattern(store, "notes");
+    const n = await entry(store, "notes", "cites a project");
+    await mustLink(store, `notes/${n}`, `projects/${p1}`, "references"); // not containment
+    const p = await propose(store, { type: "archive_pattern", pattern_name: "projects" });
+    expect(p.preview?.violations ?? []).toEqual([]);
+    const a = await apply(store, p.change_id);
+    expect(a.error, a.message).toBeUndefined();
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'projects'`))[0].archived_at).not.toBeNull();
+  });
+
+  it("archive_pattern re-checks at apply: a member that arrives after a clean propose blocks it", async () => {
+    const store = getStore();
+    const { p1 } = await portfolio(store, { containment: true });
+    const p = await propose(store, { type: "archive_pattern", pattern_name: "projects" });
+    expect(p.preview?.violations ?? []).toEqual([]);
+    await task(store, "late member", p1);
+    expect((await apply(store, p.change_id)).error).toBe(true);
+    expect((await sql(store, `SELECT archived_at FROM _objects WHERE name = 'projects'`))[0].archived_at).toBeNull();
+  });
+
   it("resolve still lists members, under the inverse name", async () => {
     const store = getStore();
     const { n1, n2 } = await world(store);
@@ -3003,6 +3044,75 @@ describe("drop_facet", () => {
     expect(p.message).toMatch(pattern);
   });
 
+  // Owner decision O3: drop_facet is refused while anything names the facet.
+  // Each case plants one reference; the preview lists it, apply is refused, and
+  // removing the reference lets the drop through.
+  const FACET_REFERENCES: [string, string, (store: Store) => Promise<() => Promise<void>>][] = [
+    ["memory_policy", "memory-policy exclusive_facets", async (store) => {
+      const p = await propose(store, { type: "set_memory_policy", pattern_name: "notebook", policy: { exclusive_facets: ["scratch"] } });
+      expect((await apply(store, p.change_id)).error).toBeUndefined();
+      return async () => { const c = await propose(store, { type: "set_memory_policy", pattern_name: "notebook", policy: null }); await apply(store, c.change_id); };
+    }],
+    ["view", "a _views config", async (store) => {
+      const v = await mut(store, "_views", "create", { pattern: "notebook", name: "grid", view_type: "table", config: JSON.stringify({ columns: ["title", "scratch"] }) });
+      expect(v.error, v.message).toBeFalsy();
+      return async () => { await mut(store, "_views", "archive", { id: v.entry.id }); };
+    }],
+    ["publication", "a _publications filter", async (store) => {
+      const pub = await mut(store, "_publications", "create", { path: "nb", source_pattern: "notebook", format: "json", filters: JSON.stringify(["scratch=x"]) });
+      expect(pub.error, pub.message).toBeUndefined();
+      return async () => { await mut(store, "_publications", "archive", { id: pub.entry.id }); };
+    }],
+    ["publication", "a _publications template", async (store) => {
+      const pub = await mut(store, "_publications", "create", { path: "nbt", source_pattern: "notebook", format: "html", template: "<p>{{scratch}}</p>" });
+      expect(pub.error, pub.message).toBeUndefined();
+      return async () => { await mut(store, "_publications", "archive", { id: pub.entry.id }); };
+    }],
+    ["clipboard", "a _clipboards rule", async (store) => {
+      const c = await mut(store, "_clipboards", "create", { name: "nb", target_pattern: "notebook", fields: [{ facet: "scratch", min_length: 1 }] });
+      expect(c.error, c.message).toBeFalsy();
+      return async () => { await mut(store, "_clipboards", "archive", { id: c.entry.id }); };
+    }],
+  ];
+
+  it.each(FACET_REFERENCES)("is refused while %s (%s) names the facet; preview lists it, apply re-checks", async (kind, _label, plant) => {
+    const store = getStore();
+    await notebook(store);
+    const remove = await plant(store);
+    const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
+    expect(p.error).toBeUndefined();
+    expect(p.preview.references).toEqual(expect.arrayContaining([expect.objectContaining({ kind })]));
+    const a = await apply(store, p.change_id);
+    expect(a.error).toBe(true);
+    expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).toContain("scratch");
+    await remove();
+    const again = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
+    expect(again.preview?.references ?? []).toEqual([]);
+    expect((await apply(store, again.change_id)).error).toBeUndefined();
+  });
+
+  it("re-checks references at apply: one planted after a clean propose blocks the drop", async () => {
+    const store = getStore();
+    await notebook(store);
+    const p = await propose(store, { type: "drop_facet", pattern_name: "notebook", facet: "scratch" });
+    expect(p.error, "control: the clean drop is proposable").toBeUndefined();
+    expect(p.preview.references).toEqual([]);
+    await mut(store, "_views", "create", { pattern: "notebook", name: "late", view_type: "table", config: JSON.stringify({ columns: ["scratch"] }) });
+    expect((await apply(store, p.change_id)).error).toBe(true);
+    expect((await sql(store, `PRAGMA table_info(notebook)`)).map((c) => c.name)).toContain("scratch");
+  });
+
+  // Owner decision O4: a reference facet is retired in Phase 3, not dropped here.
+  it("refuses a reference facet, pointing to the Phase 3 retirement", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPatternWith(store, "plans", [{ name: "title", type: "text" }, { name: "goal_id", type: "integer", links: { pattern: "goals" } }]);
+    const p = await propose(store, { type: "drop_facet", pattern_name: "plans", facet: "goal_id" });
+    expect(p.error).toBe(true);
+    expect(p.message).toMatch(/reference/i);
+    expect(p.message).toMatch(/Phase 3|declare_relation|relation/i);
+  });
+
   it("refuses dropping a pattern's only facet", async () => {
     const store = getStore();
     await createPattern(store, "solo");
@@ -3036,6 +3146,11 @@ describe("canonical datetime", () => {
   async function events(store: Store) {
     await createPatternWith(store, "events", [{ name: "title", type: "text" }, { name: "when", type: "datetime" }], "dataset");
   }
+  // Owner decision O1: the rule covers `datetime` facets in every pattern class.
+  async function journal(store: Store) {
+    await createPatternWith(store, "journal", [{ name: "title", type: "text" }, { name: "note", type: "text" }, { name: "when", type: "datetime" }], "knowledge");
+  }
+  const storedK = async (store: Store, id: number) => (await sql(store, `SELECT "when" FROM journal WHERE id = ?`, id))[0].when;
   const stored = async (store: Store, id: number) => (await sql(store, `SELECT "when" FROM events WHERE id = ?`, id))[0].when;
 
   it("a date-only input is stored as YYYY-MM-DD", async () => {
@@ -3082,6 +3197,44 @@ describe("canonical datetime", () => {
     const b = await batch(store, [{ pattern: "events", operation: "create", data: { title: "b", when: "April 8, 2026" } }]);
     expect(b.error).toBeUndefined();
     expect(await stored(store, b.results[0].entry.id)).toBe("2026-04-08");
+  });
+
+  it("knowledge patterns too: datetime facets are canonicalized and relative phrases refused; text facets stay advisory", async () => {
+    const store = getStore();
+    await journal(store);
+    for (const [input, want] of [
+      ["March 7, 2026", "2026-03-07"],
+      ["2026-03-07", "2026-03-07"],
+      ["2026-03-07T14:30:00+02:00", "2026-03-07T12:30:00.000Z"],
+    ] as const) {
+      const r = await mut(store, "journal", "create", { title: input, when: input });
+      expect(r.error, input).toBeUndefined();
+      expect(await storedK(store, r.entry.id), input).toBe(want);
+    }
+    const before = await countRows(store, "journal");
+    for (const input of ["next week", "tomorrow", "Q2 2026"]) {
+      expect((await mut(store, "journal", "create", { title: input, when: input })).error, input).toBe(true);
+    }
+    expect(await countRows(store, "journal")).toBe(before);
+    // Prose stays prose: a text facet in a knowledge pattern is never coerced or refused.
+    const prose = await mut(store, "journal", "create", { title: "plans", note: "next week, probably" });
+    expect(prose.error).toBeUndefined();
+    expect((await sql(store, `SELECT note FROM journal WHERE id = ?`, prose.entry.id))[0].note).toBe("next week, probably");
+  });
+
+  it("knowledge patterns: updates canonicalize, and existing values stay untouched until written", async () => {
+    const store = getStore();
+    await journal(store);
+    const r = await mut(store, "journal", "create", { title: "a", when: "2026-01-01" });
+    expect((await mut(store, "journal", "update", { id: r.entry.id, when: "April 8, 2026" })).error).toBeUndefined();
+    expect(await storedK(store, r.entry.id)).toBe("2026-04-08");
+    const id = await runInDurableObject(store, (_i, state) => {
+      state.storage.sql.exec(`INSERT INTO journal (title, "when") VALUES ('legacy', 'sometime in spring')`);
+      return (state.storage.sql.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id;
+    });
+    await boot(store);
+    expect((await mut(store, "journal", "update", { id, title: "legacy, retitled" })).error).toBeUndefined();
+    expect(await storedK(store, id), "an unrelated write leaves the stored value alone").toBe("sometime in spring");
   });
 
   it("existing non-canonical values are left untouched until that facet is written", async () => {

@@ -452,6 +452,13 @@ extra links first.
     non-existent patterns", and "linked facet validation";
   - `formats.test.ts`: the reference-format case;
   - `data-is-destiny.test.ts`: the reference-facet fixture.
+- **Web relation picker** (owner decision O5, 2026-10-18). For each required
+  relation where the pattern is the source, the create form gets a target
+  field. It is driven by the registry and built as declarative data against
+  the existing component palette, never per-pattern code. The form submits
+  the link through `_relate`.
+- **Swift client** (O5). Rebase it onto main. Creates go through `_relate`,
+  and `Portfolio.projectTasks` is renamed to `tasks`.
 
 ### Phase 4: this hive's data (agent-run, owner-ratified)
 
@@ -510,8 +517,12 @@ extra links first.
    | Catch-all | — | 3, 12 |
 
 5. **Move `project-tasks` into `tasks`** (§8), then archive `project-tasks`.
-6. **Flip `required` on** for `belongs-to` once the preview shows no
-   violators. `serves` stays optional; the *unaligned* view covers it.
+6. **Flip `required` on** for `belongs-to`. The gate (O5) needs all of:
+   - the web relation picker and the Swift `_relate` update are live (Phase 3),
+     so no client can be left unable to create a task;
+   - the required-relation preview shows zero violators.
+
+   `serves` stays optional; the *unaligned* view covers it.
 
 ### Clients
 
@@ -1141,6 +1152,13 @@ Where it changes the Phase 1 interface, that is said explicitly.
   palette is exactly supersession, acyclic and containment. The kernel default
   `part-of` carries `["containment", "acyclic"]` after boot refresh. Palette
   totality maps `containment` to the `containment` describe.
+- **Archiving a container pattern** (owner decision O2). `archive_pattern` on
+  a pattern that holds targets of a containment relation is refused while
+  active members in other patterns link into its active entries. Propose
+  succeeds and lists them in `preview.violations` as
+  `{ source: "member/id", target: "container/id", label }`. Apply is refused
+  while any remain, re-checked at apply. Neither archived members nor members
+  inside the same pattern count.
 - **Archiving a container.** Archiving an entry that is the target of a
   containment link from an active member is a clean refusal. The message names
   the relation and the members as `pattern/id`. Archived members don't count,
@@ -1248,12 +1266,29 @@ against code-owned templates, so nothing can drift.
 - **Logging and revert.** The change is logged as `drop_facet` with a PITR
   bookmark, like every applied change, and reverts through the existing
   `revertChange`.
-- **Refused:** a kernel pattern; a kernel column (`id`, `created_at`, …); a
-  missing facet or pattern; a pattern's only facet.
+- **Refused at propose:**
+  - a kernel pattern;
+  - a kernel column (`id`, `created_at`, …);
+  - a missing facet or pattern;
+  - a pattern's only facet;
+  - a reference facet, meaning one with `links` / `references_object`
+    (owner decision O4). Its message names the reference and points to the
+    Phase 3 retirement and `declare_relation`.
+- **References** (owner decision O3). While anything names the facet,
+  propose succeeds and lists every reference in `preview.references`. Each
+  item is `{ kind, … }`, where `kind` is one of `memory_policy` (an
+  `exclusive_facets` entry), `view` (a `_views` config), `publication` (a
+  `_publications` filter or template) or `clipboard` (a `_clipboards` rule).
+  Apply is refused while any remain, and re-checks at apply, so a reference
+  planted after a clean propose blocks it. There is no cascade and no
+  dangling reference. Removing the reference lets the drop through.
 
-### P2-I. Canonical datetime (dataset patterns)
+### P2-I. Canonical datetime (every pattern class)
 
-The `datetime` coercion stores ISO 8601:
+The rule covers facets typed `datetime` in every pattern class, knowledge and
+dataset alike (owner decision O1). Text facets stay advisory: a knowledge
+`text` facet is never coerced or refused. The `datetime` coercion stores ISO
+8601:
 
 - **Date-only input** is stored as `YYYY-MM-DD`. Date-only means no time of
   day is present, whatever the written form ("2026-03-07", "March 7, 2026",
@@ -1297,12 +1332,16 @@ alone.
 5. **A chain cannot contain a derived step.**
 6. **`drop_facet` refuses a pattern's only facet,** mirroring
    `create_pattern`'s one-facet minimum.
-7. **Datetime canonicalization applies to dataset patterns only.** See owner
-   decision O1.
+7. *(Superseded by O1: datetime canonicalization covers every pattern
+   class.)*
 8. **Legacy debt is derived from current values, and the generated inverse
    form is reserved** (P2-G).
 
-### Owner decisions needed (not guessed)
+### Owner decisions (2026-10-18, each option A)
+
+O1 to O4 are pinned in P2-C, P2-H and P2-I. O5 is in the migration plan (Phase
+3 picker and Swift client; Phase 4 gate). The original questions follow for
+the record.
 
 - **O1. Knowledge patterns and datetime.** Should canonical datetime apply to
   knowledge-class patterns? Knowledge facet types are advisory today; values

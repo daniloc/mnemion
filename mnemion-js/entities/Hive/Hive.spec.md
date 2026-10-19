@@ -385,8 +385,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: the rule is over one relation's source entries, not a registry of targets
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
-- containment: A container with active members cannot be archived unless the same batch archives or moves them, and recall follows containment upward only.
-  over: archive of containers under kernel part-of and hive containment relations, archived members, non-containment relations, batches in any order that archive or move members or leave one stranded, resolve of a container, and prime from member and from container
+- containment: A container with active members cannot be archived, as an entry or by archive_pattern, unless the same batch archives or moves them, and recall follows containment upward only.
+  over: archive of containers under kernel part-of and hive containment relations, archived members, non-containment relations, batches in any order that archive or move members or leave one stranded, archive_pattern previews and apply re-checks with members in other patterns (same-pattern and archived members exempt), resolve of a container, and prime from member and from container
   via: containment
   because: An archived container with live members strands a required relation's target, and fanning out from a container to all its members floods recall.
   crossing: agent-mcp -> storage
@@ -449,8 +449,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage declared as derived relations are never stored
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
-- drop_facet: A user-pattern facet is dropped only through the drop_facet change type, which previews the values lost, removes the column and its metadata together, keeps the pattern writable, and stays revertible.
-  over: drop_facet over user facets with values, kernel patterns, kernel columns, missing facets and patterns, a pattern's only facet, later writes to the pattern, and revert of the logged change
+- drop_facet: A user-pattern facet is dropped only through the drop_facet change type, which previews the values lost and every reference to the facet, refuses while any reference remains or the facet is a reference facet, removes the column and its metadata together, keeps the pattern writable, and stays revertible.
+  over: drop_facet over user facets with values, kernel patterns, kernel columns, missing facets and patterns, a pattern's only facet, reference facets, references from memory-policy exclusive_facets, _views configs, _publications filters and templates and _clipboards rules (listed at propose, re-checked at apply), later writes to the pattern, and revert of the logged change
   via: drop_facet
   because: Retiring text-facet stand-ins for relations must not lose data silently or leave _fields describing a column that no longer exists.
   kinds: storage
@@ -463,8 +463,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: one facet of one pattern
   checklist: completion-evidence dismissed: the check is synchronous with the write or boot pass
-- canonical datetime: A datetime facet on a dataset pattern stores ISO 8601: YYYY-MM-DD for date-only input, a full UTC timestamp otherwise; relative phrases are refused and existing values change only when that facet is written.
-  over: date-only and timed inputs in several written forms, offsets, relative phrases, creates, updates and batch creates, and pre-existing non-canonical rows across boot and unrelated updates
+- canonical datetime: A datetime facet in any pattern class stores ISO 8601: YYYY-MM-DD for date-only input, a full UTC timestamp otherwise; relative phrases are refused, text facets stay advisory, and existing values change only when that facet is written.
+  over: dataset and knowledge patterns, date-only and timed inputs in several written forms, offsets, relative phrases, knowledge text facets, creates, updates and batch creates, and pre-existing non-canonical rows across boot and unrelated updates
   via: canonical datetime
   because: Strings stored as typed sort and compare inconsistently, so overdue and staleness cannot be derived from them.
   kinds: storage
