@@ -103,6 +103,41 @@ async function plantReferenceFacet(store: Store, pattern: string, facet: string,
   });
 }
 
+/** A whole pre-Phase-3 pattern whose reference facet is NOT NULL (an old
+ *  create_pattern with `required: true, links`). Built raw: SQLite can't ADD a
+ *  NOT NULL REFERENCES column to an existing table. Returns the row ids. */
+async function plantMandatoryFkPattern(store: Store, pattern: string, facet: string, target: string, values: number[]): Promise<number[]> {
+  return runInDurableObject(store, (_i, state) => {
+    const db = state.storage.sql;
+    db.exec(`CREATE TABLE "${pattern}" (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      "title" TEXT,
+      "${facet}" INTEGER NOT NULL REFERENCES "${target}"("id"),
+      version INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by TEXT,
+      updated_by TEXT,
+      archived_at TEXT
+    )`);
+    db.exec(`INSERT INTO _objects (name, description, doctrine, pattern_class) VALUES (?, 'planted', 'planted', 'dataset')`, pattern);
+    db.exec(`INSERT INTO _fields (object_name, name, type, required) VALUES (?, 'title', 'text', 0)`, pattern);
+    db.exec(`INSERT INTO _fields (object_name, name, type, required, references_object) VALUES (?, ?, 'integer', 1, ?)`, pattern, facet, target);
+    const ids: number[] = [];
+    for (const v of values) {
+      db.exec(`INSERT INTO "${pattern}" (title, "${facet}") VALUES ('row', ?)`, v);
+      ids.push((db.exec(`SELECT last_insert_rowid() AS id`).one() as { id: number }).id);
+    }
+    return ids;
+  });
+}
+
+async function amendP3(store: Store, change: Record<string, unknown>) {
+  const p = await propose(store, { type: "amend_relation", ...change });
+  if (p.error) return p;
+  return apply(store, p.change_id);
+}
+
 // --- The restore-point harness (same technique as relations.test.ts "restore point") ---
 
 interface BootTrace { events: string[]; restored: string[]; unpatch?: () => void }
@@ -269,12 +304,13 @@ describe("reference facet migration", () => {
     await boot(store);
 
     // The relation: named after the facet, tasks → goals, cardinality one, legacy debt.
-    const rel = await relationOf(store, "goal_id");
-    expect(rel).toMatchObject({ name: "goal_id", source: ["tasks"], target: ["goals"], cardinality: "one", kernel: false, legacy: true });
+    // D-P3-1: named after the facet in kebab-case (goal_id → goal-id).
+    const rel = await relationOf(store, "goal-id");
+    expect(rel).toMatchObject({ name: "goal-id", inverse: "goal-id-inverse", source: ["tasks"], target: ["goals"], cardinality: "one", required: false, kernel: false, legacy: true });
     expect(rel.legacy_debt).toEqual(["placeholder description", "generated inverse"]);
 
     // The links: one per non-null value, archived sources and targets included (dormant).
-    const links = await sql(store, `SELECT source_id, target_pattern, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'goal_id' ORDER BY source_id`);
+    const links = await sql(store, `SELECT source_id, target_pattern, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'goal-id' ORDER BY source_id`);
     expect(links.map((l) => `${l.source_id}->${l.target_pattern}/${l.target_id}`)).toEqual([`${t1}->goals/${g1}`, `${t2}->goals/${g2}`, `${t4}->goals/${g1}`]);
     expect(links.some((l) => l.source_id === t3)).toBe(false);
 
@@ -302,10 +338,10 @@ describe("reference facet migration", () => {
     await boot(store);
     expect(await columns(store, "tasks")).not.toContain("goal_id");
     expect(await columns(store, "notes")).not.toContain("task_id");
-    expect(await sql(store, `SELECT source_id, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'task_id'`)).toEqual([{ source_id: n, target_id: t1 }]);
+    expect(await sql(store, `SELECT source_id, target_id FROM "_links" WHERE archived_at IS NULL AND label = 'task-id'`)).toEqual([{ source_id: n, target_id: t1 }]);
   });
 
-  it("a facet name already taken in the vocabulary becomes <pattern>-<facet>", async () => {
+  it("a facet name already taken in the vocabulary becomes <pattern>-<facet>, kebab-cased", async () => {
     const store = getStore();
     await createPattern(store, "goals");
     await createPattern(store, "tasks");
@@ -316,6 +352,72 @@ describe("reference facet migration", () => {
     const rel = await relationOf(store, "tasks-references");
     expect(rel).toMatchObject({ source: ["tasks"], target: ["goals"], cardinality: "one", legacy: true });
     expect(await sql(store, `SELECT label FROM "_links" WHERE archived_at IS NULL AND source_id = ? AND target_id = ?`, t, g)).toEqual([{ label: "tasks-references" }]);
+  });
+
+  // D-P3-1: migrated names obey the same kebab rule declare_relation enforces
+  // (names are immutable, so they are born valid).
+  it("every migrated name satisfies declare_relation's kebab-case rule", async () => {
+    const KEBAB = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+    const store = getStore();
+    await createPattern(store, "goals");
+    await createPattern(store, "tasks");
+    const g = await entry(store, "goals", { title: "g" });
+    const t = await entry(store, "tasks", { title: "t" });
+    await plantReferenceFacet(store, "tasks", "parent__goal_", "goals", { [t]: g }); // doubled and trailing underscores
+    await plantReferenceFacet(store, "tasks", "_2nd_goal", "goals", { [t]: g });     // kebab form would start with a digit
+    await boot(store);
+    const migrated = (await sql(store, `SELECT label FROM "_links" WHERE archived_at IS NULL AND source_pattern = 'tasks' AND source_id = ?`, t)).map((r) => r.label).sort();
+    expect(migrated).toEqual(["parent-goal", "tasks-2nd-goal"]);
+    for (const name of migrated) {
+      expect(name, `${name} is kebab-case`).toMatch(KEBAB);
+      const rel = await relationOf(store, name);
+      expect(rel, `${name} is declared`).toBeDefined();
+      expect(rel.inverse, `${name}'s inverse is kebab-case too`).toMatch(KEBAB);
+    }
+  });
+
+  // D-P3-2: a NOT NULL reference facet migrates OPTIONAL, with a third debt fact.
+  it("a mandatory (NOT NULL) reference facet migrates as an optional relation carrying `was mandatory` debt", async () => {
+    const store = getStore();
+    await createPattern(store, "goals");
+    const g = await entry(store, "goals", { title: "g" });
+    const ids = await plantMandatoryFkPattern(store, "plans", "goal_id", "goals", [g, g]);
+    const lines = await warnLines(() => boot(store));
+
+    const rel = await relationOf(store, "goal-id");
+    expect(rel).toMatchObject({ required: false, legacy: true });
+    expect(rel.legacy_debt).toEqual(["placeholder description", "generated inverse", "was mandatory"]);
+    expect(lines.some((l) => /goal-id: .*was mandatory, consider required/.test(l)), lines.join(" | ")).toBe(true);
+    expect((await sql(store, `SELECT source_id FROM "_links" WHERE archived_at IS NULL AND label = 'goal-id' ORDER BY source_id`)).map((r) => r.source_id)).toEqual(ids);
+    expect(await columns(store, "plans")).not.toContain("goal_id");
+    // The fact survives later boots (it is recorded, the NOT NULL it came from is gone).
+    await boot(store);
+    expect((await relationOf(store, "goal-id")).legacy_debt).toContain("was mandatory");
+    // A nullable reference facet never carries it.
+    const { store: s2 } = await legacyFkHive();
+    await boot(s2);
+    expect((await relationOf(s2, "goal-id")).legacy_debt).not.toContain("was mandatory");
+  });
+
+  it("`was mandatory` clears when the owner decides: amend to required: true, or decline with required: false", async () => {
+    for (const decision of [true, false]) {
+      const store = getStore();
+      await createPattern(store, "goals");
+      const g = await entry(store, "goals", { title: "g" });
+      await plantMandatoryFkPattern(store, "plans", "goal_id", "goals", [g]);
+      await boot(store);
+      // An amend that does not mention `required` is no decision.
+      expect((await amendP3(store, { name: "goal-id", description: DESC("goal-id") })).error).toBeUndefined();
+      expect((await relationOf(store, "goal-id")).legacy_debt, "description alone decides nothing").toContain("was mandatory");
+      // An explicit required: true / false is the decision, either way.
+      const a = await amendP3(store, { name: "goal-id", required: decision });
+      expect(a.error, `required: ${decision}`).toBeUndefined();
+      const rel = await relationOf(store, "goal-id");
+      expect(rel.required).toBe(decision);
+      expect(rel.legacy_debt, `required: ${decision}`).not.toContain("was mandatory");
+      const lines = await warnLines(() => boot(store));
+      expect(lines.some((l) => /was mandatory/.test(l)), `required: ${decision}`).toBe(false);
+    }
   });
 
   it("records one restore point before any v18 step, and none on later boots or hives without reference facets", async () => {

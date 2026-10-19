@@ -1491,12 +1491,21 @@ Phase 2 reds are not Phase 3's.
    ```
 
 3. For each reference facet `P.f` → `T`:
-   - **Declare the relation.** Its name is `f` verbatim. If `f` is already an
-     active name or inverse, the name is `P-f`, with a numeric suffix if that
-     is taken too. It has `source: [P]`, `target: [T]`, `cardinality: "one"`
+   - **Declare the relation.** Its name is `f` in kebab-case (owner decision
+     D-P3-1): lowercased, `_` → `-`, runs of `-` collapsed, leading and
+     trailing `-` trimmed (`goal_id` → `goal-id`). It must satisfy
+     `declare_relation`'s name rule, `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, because
+     names are immutable. When the kebab form is invalid (for example, it
+     starts with a digit) or is already an active name or inverse, the name is
+     `<P>-<kebab f>`, with a numeric suffix if that is taken too. It has
+     `source: [P]`, `target: [T]`, `cardinality: "one"`, `required: false`
      and no behaviors. Its description is the frozen legacy placeholder
-     template and its inverse the generated form, so it carries both
-     legacy-debt facts (P2-G).
+     template and its inverse the generated form (`goal-id-inverse`), so it
+     carries both legacy-debt facts (P2-G).
+   - **Record "was mandatory"** (owner decision D-P3-2). If the facet was
+     mandatory (DDL `NOT NULL` or `_fields.required = 1`), the relation still
+     migrates as optional, and the migration sets the new `_relations` column
+     `required_review` (INTEGER NOT NULL DEFAULT 0) to 1.
    - **Write the links.** Each row with a non-null value gets one `_links` row
      `P/id → T/value`. Archived sources and archived targets are included;
      those links are dormant.
@@ -1523,6 +1532,24 @@ facet.
 **The dev seed** has no reference facet. It declares every relation its links
 use on the seeding boot itself, with real descriptions, so none is legacy
 after the next boot. Tasks still connect to goals, through links.
+
+**The third legacy-debt fact.** A relation with `required_review = 1`
+carries `"was mandatory"`, so `legacy_debt` is ordered `["placeholder
+description", "generated inverse", "was mandatory"]`, a subset each time. The
+boot warning names it per relation: `<relation>: was mandatory, consider
+required`. The fact clears only on an owner decision: an `amend_relation`
+whose payload carries `required` explicitly. `required: true` makes the
+relation required (with the usual violations preview). `required: false`
+records the decision to decline. Either way `required_review` drops to 0. An
+amend that doesn't mention `required` decides nothing.
+
+**Why this one is recorded, not derived.** Store truth once and derive its
+consequences. The description and inverse debts are derived from current
+values (P2-G). The mandatory fact has no current value to derive from, because
+the rebuild destroys the `NOT NULL` constraint. So it is recorded once, at the
+only moment it is knowable. The debt is derived from that record, and the
+record holds an open decision that nothing else stores, so it duplicates
+nothing.
 
 ### P3-C. `shared/core/relation-view.ts` (pure, no imports from `web/`)
 
@@ -1592,8 +1619,9 @@ interface RelationGroup { relation: string; direction: "out" | "in"; derived: bo
 
 ### Choices made by the test author (Phase 3)
 
-1. **One relation per reference facet,** named verbatim. A collision becomes
-   `P-f`; two patterns' same-named facets are never merged.
+1. **One relation per reference facet,** named in kebab-case (D-P3-1). A
+   collision or invalid name becomes `<P>-<kebab f>`; two patterns'
+   same-named facets are never merged.
 2. **Migrated relations carry both legacy debts.** The migration reuses the
    frozen legacy placeholder template, so P2-G detects them with no new flag.
 3. **The v18 restore point is pinned in the v17 style.** Whether to generalize
@@ -1606,12 +1634,11 @@ interface RelationGroup { relation: string; direction: "out" | "in"; derived: bo
 6. **`relation-view.ts` lives in `shared/core`,** beside `format-palette.ts`, so
    the worker suite tests it and the SPA bundles it.
 
-### Owner decisions to confirm
+### Owner decisions (2026-10-18)
 
-- **D-P3-1. Naming.** Is a migrated relation's name the facet name verbatim
-  (`goal_id`, non-kebab, as legacy labels are), or kebab-cased (`goal-id`)?
-  Verbatim is pinned.
-- **D-P3-2. Required.** Should a migrated reference facet that was NOT NULL
-  in DDL (`required: true` in `_fields`) become a `required` relation? It is
-  not pinned: migrated relations are optional, and flipping one to required
-  is a Phase 4-style, owner-ratified step.
+- **D-P3-1. Kebab-case names.** Pinned in P3-B. Names are immutable, so a
+  migrated name is born valid.
+- **D-P3-2. Optional, with a "was mandatory" debt.** A mandatory reference
+  facet migrates as an optional relation carrying the third debt fact, which
+  clears on an explicit `required: true` or `required: false` amend. Pinned in
+  P3-B.
