@@ -23,7 +23,7 @@ import { KERNEL_WRITE_POLICY, sensitiveColumns, findUnclassifiedSensitiveColumns
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
 import { quoteIdent } from "../../shared/core/sql";
 import { ensureAuditTriggers, dropColumn } from "./audit-triggers";
-import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, findRequiredGaps, requiredGaps, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL, containmentChildren } from "./relations";
+import { migrateRelations, findLegacyRelations, findCycles, acyclicGraphs, findRequiredGaps, requiredGaps, activeRelations, NOT_LINK_TARGET_SQL, notLinkTargetPatternSql, PAST_DROP_HORIZON_SQL, containmentChildren, planReferenceFacets } from "./relations";
 import { FEATURES } from "../features";
 import { composePatterns, composeMigrations } from "../features/compose";
 
@@ -633,8 +633,8 @@ export const KERNEL_TABLES: KernelTable[] = [
  *   derived. Phase 1 code SELECTs and INSERTs that column, so a worker rollback
  *   without a DO restore would break the registry. First run: the column is there.
  * - v19 (relations Phase 3): turns reference facets into relations + links and
- *   rebuilds their tables without the foreign-key column. First run: a `_fields`
- *   row still carries `references_object`.
+ *   rebuilds their tables without the foreign-key column. First run: some facet
+ *   is still MIGRATABLE (planReferenceFacets) — kept facets are not work.
  */
 const MIGRATION_RESTORE_POINTS: { migration: string; description: string; firstRun: (db: any) => boolean }[] = [
   {
@@ -650,7 +650,9 @@ const MIGRATION_RESTORE_POINTS: { migration: string; description: string; firstR
   {
     migration: "v19",
     description: "Restore point before the reference-facet retirement (v19: reference facets become relations and links; their tables are rebuilt)",
-    firstRun: (db) => db.exec(`SELECT 1 FROM _fields WHERE references_object IS NOT NULL LIMIT 1`).toArray().length > 0,
+    // MIGRATABLE work only: a facet v19 must keep (a value that doesn't resolve, a
+    // kernel target no link admits) never records a restore point.
+    firstRun: (db) => planReferenceFacets(db).migrate.length > 0,
   },
 ];
 

@@ -18,7 +18,7 @@
 import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { isKernelPattern } from "./policy";
-import { dropColumn, rebuildTableWithout } from "./audit-triggers";
+import { dropColumn, rebuildTableWithout, recoverInterruptedRebuilds, nullColumns } from "./audit-triggers";
 
 type DB = { exec: (sql: string, ...params: any[]) => { toArray: () => any[]; one: () => any } };
 
@@ -1060,87 +1060,148 @@ function migratedName(pattern: string, facet: string, taken: Set<string>, reuse:
   throw new Error(`no free relation name for reference facet ${pattern}.${facet}`);
 }
 
+/** One reference facet v19 can migrate: every non-null value resolved to a row
+ *  id of an admissible target. */
+export interface MigratableFacet {
+  pattern: string; facet: string; target: string; mandatory: boolean;
+  links: { source: number; target: number }[];
+}
+/** One reference facet v19 must keep, with why (reported every boot). */
+export interface KeptFacet { pattern: string; facet: string; reason: string }
+
+/** The table that holds `name`'s rows now: the table itself, or — after a swap
+ *  interrupted between its drop and its rename — `<name>__rebuild`. */
+function liveTable(db: DB, name: string): string | null {
+  const has = (t: string) => db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, t).toArray().length > 0;
+  return has(name) ? name : has(`${name}__rebuild`) ? `${name}__rebuild` : null;
+}
+
 /**
- * v19 — retire reference facets (Phase 3, P3-B). For each `_fields` row with a
- * `references_object` (`P.f` → `T`):
- * 1. declare a legacy relation (D-P3-1 name, P → T, cardinality one, optional,
- *    the frozen placeholder description and a generated inverse — both legacy
- *    debts), recording "was mandatory" (`required_review`) when the facet was
- *    NOT NULL or required (D-P3-2);
- * 2. write one link per non-null value, archived rows included (dormant);
- * 3. rebuild the table without the column through audit-triggers.ts (SQLite
- *    won't DROP a foreign-key column, and the audit triggers name it), and
- *    remove its `_fields` row.
- * Tables referenced by another migrated facet are rebuilt after the tables
- * referencing them (a referenced parent can't be dropped while child rows point
- * at it). Then every stored `reference` format clears. Idempotent: a finished
- * pass leaves no `references_object`, so a later boot does nothing; an
- * interrupted one resumes (its relations are reused, its links not duplicated).
+ * Plan v19 without writing anything (it also decides v19's restore-point
+ * firstRun): for each `_fields` row with a `references_object`, either every
+ * non-null value resolves to exactly one row of an admissible target — through
+ * the foreign key's target column (`PRAGMA foreign_key_list` `to`, the id by
+ * default) — and the facet is MIGRATABLE, or the facet is KEPT with a reason.
+ * `orphans` are `_fields` rows whose column no longer exists (metadata only).
+ *
+ * @why The governing rule (P3-B): v19 never drops a column whose values did not
+ * ALL become links. A dangling value (a hive that ran without FK enforcement), a
+ * non-id key that doesn't resolve, or a kernel target no link admits keeps the
+ * whole facet — column, data, `_fields` row — and nothing is declared for it.
  */
-export function migrateReferenceFacets(db: DB): void {
-  db.exec(`UPDATE _fields SET format = NULL WHERE format = 'reference'`); // the format retired with them
-  const facets = db.exec(
+export function planReferenceFacets(db: DB): { migrate: MigratableFacet[]; keep: KeptFacet[]; orphans: { pattern: string; facet: string }[] } {
+  const migrate: MigratableFacet[] = [], keep: KeptFacet[] = [], orphans: { pattern: string; facet: string }[] = [];
+  const rows = db.exec(
     `SELECT object_name AS pattern, name AS facet, required, references_object AS target FROM _fields WHERE references_object IS NOT NULL ORDER BY object_name, id`,
   ).toArray() as { pattern: string; facet: string; required: number; target: string }[];
-  if (!facets.length) return;
+  for (const f of rows) {
+    const table = liveTable(db, f.pattern);
+    const info = table ? db.exec(`PRAGMA table_info(${quoteIdent(table)})`).toArray() as { name: string; notnull: number }[] : [];
+    const col = info.find((c) => c.name === f.facet);
+    if (!col) { orphans.push({ pattern: f.pattern, facet: f.facet }); continue; }
+    const kept = (reason: string) => keep.push({ pattern: f.pattern, facet: f.facet, reason });
+    if (!endpointAdmissible(f.target, "target")) {
+      kept(`it references kernel pattern "${f.target}", which no link may target, so the reference can't become a link`);
+      continue;
+    }
+    const targetTable = liveTable(db, f.target);
+    if (!targetTable) { kept(`its target pattern "${f.target}" no longer exists`); continue; }
+    const fk = (db.exec(`PRAGMA foreign_key_list(${quoteIdent(table!)})`).toArray() as { from: string; to: string | null }[]).find((k) => k.from === f.facet);
+    const via = fk?.to ?? "id";
+    const links: { source: number; target: number }[] = [];
+    let unresolved: string | null = null;
+    for (const row of db.exec(`SELECT id, ${quoteIdent(f.facet)} AS v FROM ${quoteIdent(table!)} WHERE ${quoteIdent(f.facet)} IS NOT NULL ORDER BY id`).toArray() as { id: number; v: unknown }[]) {
+      let hits: { id: number }[] = [];
+      try { hits = db.exec(`SELECT id FROM ${quoteIdent(targetTable)} WHERE ${quoteIdent(via)} = ? LIMIT 2`, row.v).toArray() as { id: number }[]; } catch { /* no such column */ }
+      if (hits.length !== 1) { unresolved = `${ref(f.pattern, row.id)} holds ${JSON.stringify(row.v)}, which doesn't resolve to exactly one "${f.target}" row (by ${via})`; break; }
+      links.push({ source: row.id, target: hits[0].id });
+    }
+    if (unresolved) { kept(`a value doesn't resolve: ${unresolved}`); continue; }
+    migrate.push({ pattern: f.pattern, facet: f.facet, target: f.target, mandatory: !!(col.notnull || f.required), links });
+  }
+  return { migrate, keep, orphans };
+}
+
+/**
+ * v19 — retire reference facets (Phase 3, P3-B). Recovery first: any swap a
+ * previous boot interrupted is finished before a column is read. Then, per
+ * planReferenceFacets:
+ * - a KEPT facet is reported (every boot: `<pattern>.<facet> kept`, and why) and
+ *   left exactly as it is;
+ * - a MIGRATABLE facet `P.f` → `T` gets a legacy relation (D-P3-1 name, P → T,
+ *   cardinality one, optional; placeholder description and generated inverse —
+ *   both legacy debts; "was mandatory" recorded when it was NOT NULL or required,
+ *   D-P3-2), one link per value (archived rows included: dormant), then its table
+ *   is rebuilt without the column through audit-triggers.ts and the `_fields` row
+ *   goes.
+ * Rebuilds run referencing tables first (a referenced parent can't be dropped
+ * while child rows point at it). A cycle (`alpha.beta_id ↔ beta.alpha_id`) is
+ * broken once every link is written: the cycle's FK columns are cleared
+ * (nullColumns) so each drop is unobstructed. Every stored `reference` format
+ * clears. Idempotent: a finished pass leaves nothing migratable; an interrupted
+ * one resumes (its relations are reused, its links not duplicated).
+ */
+export function migrateReferenceFacets(db: DB): void {
+  recoverInterruptedRebuilds(db);
+  db.exec(`UPDATE _fields SET format = NULL WHERE format = 'reference'`); // the format retired with them
+  const plan = planReferenceFacets(db);
+  for (const k of plan.keep)
+    console.warn(`[schema] v19: ${k.pattern}.${k.facet} kept — ${k.reason}. Its column, data and _fields row stay; nothing was declared. Resolve it (or drop the facet) and a later boot migrates it.`);
+  for (const o of plan.orphans) db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, o.pattern, o.facet);
+  if (!plan.migrate.length) return;
 
   const rels = activeRelations(db);
   const taken = new Set(rels.flatMap((r) => [r.name, r.inverse]));
   const byTable = new Map<string, string[]>();
-  for (const f of facets) {
-    const info = db.exec(`PRAGMA table_info(${quoteIdent(f.pattern)})`).toArray() as { name: string; notnull: number }[];
-    const col = info.find((c) => c.name === f.facet);
-    if (col) {
-      const own = (n: string) => {
-        const r = rels.find((x) => x.name === n);
-        return !!r && r.description === legacyPlaceholder(n) && r.source.length === 1 && r.source[0] === f.pattern && r.target.length === 1 && r.target[0] === f.target;
-      };
-      const name = migratedName(f.pattern, f.facet, taken, own);
-      const mandatory = col.notnull || f.required ? 1 : 0;
-      if (own(name)) {
-        if (mandatory) db.exec(`UPDATE "_relations" SET required_review = 1 WHERE name = ? AND archived_at IS NULL`, name);
-      } else {
-        let inverse = `${name}-inverse`;
-        for (let n = 2; taken.has(inverse); n++) inverse = `${name}-inverse-${n}`;
-        db.exec(
-          `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, required, required_review, kernel) VALUES (?, ?, ?, ?, ?, 'one', '[]', 0, ?, 0)`,
-          name, inverse, legacyPlaceholder(name), JSON.stringify([f.pattern]), JSON.stringify([f.target]), mandatory,
-        );
-        taken.add(name); taken.add(inverse);
-      }
-      for (const row of db.exec(`SELECT id, ${quoteIdent(f.facet)} AS v FROM ${quoteIdent(f.pattern)} WHERE ${quoteIdent(f.facet)} IS NOT NULL ORDER BY id`).toArray() as { id: number; v: unknown }[]) {
-        const target = Number(row.v);
-        let present = false;
-        try { present = db.exec(`SELECT 1 FROM ${quoteIdent(f.target)} WHERE id = ?`, target).toArray().length > 0; } catch { /* target table gone */ }
-        if (!present) { console.warn(`[schema] v19: ${ref(f.pattern, row.id)}.${f.facet} names ${ref(f.target, target)}, which does not exist — skipped`); continue; }
-        const dup = db.exec(
-          `SELECT 1 FROM "_links" WHERE archived_at IS NULL AND source_pattern = ? AND source_id = ? AND target_pattern = ? AND target_id = ? AND label = ?`,
-          f.pattern, row.id, f.target, target, name,
-        ).toArray().length > 0;
-        if (!dup) db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES (?, ?, ?, ?, ?)`, f.pattern, row.id, f.target, target, name);
-      }
-      byTable.set(f.pattern, [...(byTable.get(f.pattern) ?? []), f.facet]);
+  for (const f of plan.migrate) {
+    const own = (n: string) => {
+      const r = rels.find((x) => x.name === n);
+      return !!r && r.description === legacyPlaceholder(n) && r.source.length === 1 && r.source[0] === f.pattern && r.target.length === 1 && r.target[0] === f.target;
+    };
+    const name = migratedName(f.pattern, f.facet, taken, own);
+    if (own(name)) {
+      if (f.mandatory) db.exec(`UPDATE "_relations" SET required_review = 1 WHERE name = ? AND archived_at IS NULL`, name);
     } else {
-      db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, f.pattern, f.facet); // metadata without a column
+      let inverse = `${name}-inverse`;
+      for (let n = 2; taken.has(inverse); n++) inverse = `${name}-inverse-${n}`;
+      db.exec(
+        `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, required, required_review, kernel) VALUES (?, ?, ?, ?, ?, 'one', '[]', 0, ?, 0)`,
+        name, inverse, legacyPlaceholder(name), JSON.stringify([f.pattern]), JSON.stringify([f.target]), f.mandatory ? 1 : 0,
+      );
+      taken.add(name); taken.add(inverse);
     }
+    for (const l of f.links) {
+      const dup = db.exec(
+        `SELECT 1 FROM "_links" WHERE archived_at IS NULL AND source_pattern = ? AND source_id = ? AND target_pattern = ? AND target_id = ? AND label = ?`,
+        f.pattern, l.source, f.target, l.target, name,
+      ).toArray().length > 0;
+      if (!dup) db.exec(`INSERT INTO "_links" (source_pattern, source_id, target_pattern, target_id, label) VALUES (?, ?, ?, ?, ?)`, f.pattern, l.source, f.target, l.target, name);
+    }
+    byTable.set(f.pattern, [...(byTable.get(f.pattern) ?? []), f.facet]);
   }
 
-  // Rebuild referencing tables before the tables they reference.
-  const order: string[] = [];
+  // Rebuild referencing tables before the tables they reference; break a cycle by
+  // clearing its FK columns (their values are links now).
   const pending = new Set(byTable.keys());
-  const refsInto = (t: string) => facets.filter((f) => f.target === t && f.pattern !== t && pending.has(f.pattern));
+  const refsInto = (t: string) => plan.migrate.filter((f) => f.target === t && f.pattern !== t && pending.has(f.pattern));
   while (pending.size) {
-    const ready = [...pending].filter((t) => !refsInto(t).length);
-    const next = ready.length ? ready : [...pending]; // a cycle: try anyway, warned on failure
-    for (const t of next) { order.push(t); pending.delete(t); }
-  }
-  for (const table of order) {
-    const cols = byTable.get(table)!;
-    try {
-      rebuildTableWithout(db, table, cols);
-      for (const c of cols) db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, table, c);
-    } catch (err) {
-      console.warn(`[schema] relations v19 migration failed to rebuild "${table}" without ${cols.join(", ")} — its relations and links are in place; the next boot retries`, err);
+    let ready = [...pending].filter((t) => !refsInto(t).length);
+    if (!ready.length) {
+      for (const t of pending) {
+        const cols = plan.migrate.filter((f) => f.pattern === t && f.target !== t && pending.has(f.target)).map((f) => f.facet);
+        if (cols.length) nullColumns(db, t, cols);
+      }
+      ready = [...pending];
+    }
+    for (const table of ready) {
+      pending.delete(table);
+      const cols = byTable.get(table)!;
+      try {
+        rebuildTableWithout(db, table, cols);
+        for (const c of cols) db.exec(`DELETE FROM _fields WHERE object_name = ? AND name = ?`, table, c);
+      } catch (err) {
+        console.warn(`[schema] relations v19 migration failed to rebuild "${table}" without ${cols.join(", ")} — its relations and links are in place; the next boot retries`, err);
+      }
     }
   }
 }

@@ -104,10 +104,7 @@ export function rebuildTableWithout(db: any, table: string, columns: string[]): 
   const tmpName = `${table}__rebuild`;
   const tmp = quoteIdent(tmpName);
   const exists = (name: string) => db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name).toArray().length > 0;
-  if (exists(tmpName)) {
-    if (exists(table)) db.exec(`DROP TABLE ${tmp}`);
-    else db.exec(`ALTER TABLE ${tmp} RENAME TO ${t}`);
-  }
+  recoverRebuild(db, table);
 
   const info = db.exec(`PRAGMA table_info(${t})`).toArray() as { name: string; type: string; notnull: number; dflt_value: string | null; pk: number }[];
   const drop = new Set(columns.filter((c) => info.some((i) => i.name === c)));
@@ -140,5 +137,38 @@ export function rebuildTableWithout(db: any, table: string, columns: string[]): 
     if (seq != null) { try { db.exec(`UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?`, seq, table); } catch { /* best-effort */ } }
   } finally {
     if (exists(table)) ensureAuditTriggers(db, table); // never leave the table unaudited
+  }
+}
+
+/** Finish or discard one interrupted swap of `table`: a `<table>__rebuild` beside
+ *  the original is an unfinished copy (discarded); one WITHOUT the original is a
+ *  swap interrupted after the drop (renamed into place, audit triggers rebuilt). */
+function recoverRebuild(db: any, table: string): void {
+  const exists = (name: string) => db.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name).toArray().length > 0;
+  const tmpName = `${table}__rebuild`;
+  if (!exists(tmpName)) return;
+  if (exists(table)) db.exec(`DROP TABLE ${quoteIdent(tmpName)}`);
+  else { db.exec(`ALTER TABLE ${quoteIdent(tmpName)} RENAME TO ${quoteIdent(table)}`); ensureAuditTriggers(db, table); }
+}
+
+/** Recover EVERY interrupted rebuild before anything reads a table's columns
+ *  (a boot that crashed mid-swap leaves only `<table>__rebuild`). */
+export function recoverInterruptedRebuilds(db: any): void {
+  const leftovers = (db.exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%\\_\\_rebuild' ESCAPE '\\'`).toArray() as { name: string }[])
+    .map((r) => r.name.slice(0, -"__rebuild".length));
+  for (const table of leftovers) recoverRebuild(db, table);
+}
+
+/** Clear `columns` on every row of `table` under its audit triggers (dropped and
+ *  rebuilt, so the clearing is not logged as N edits). Used by v19 to break a
+ *  reference cycle once the values are links: each table's drop is then
+ *  unobstructed by the other's foreign key. NOT NULL columns can't be cleared —
+ *  SQLite refuses, and the caller reports it. */
+export function nullColumns(db: any, table: string, columns: string[]): void {
+  for (const op of ["insert", "update", "delete"]) db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`_audit_${table}_${op}`)}`);
+  try {
+    db.exec(`UPDATE ${quoteIdent(table)} SET ${columns.map((c) => `${quoteIdent(c)} = NULL`).join(", ")}`);
+  } finally {
+    ensureAuditTriggers(db, table);
   }
 }
