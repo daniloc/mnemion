@@ -283,8 +283,9 @@ export class HiveDO extends DurableObject {
         if (by) result.superseded_by = by;
       } catch { /* _links may not exist */ }
 
-      // One-hop link following
-      const linked = priming.followLinks(this.primeCtx(), patternName, entry);
+      // One-hop link following — every relation in both directions, plus the
+      // derived (chain) connections, computed at read time.
+      const linked = priming.followLinks(this.primeCtx(), patternName, entry, "resolve");
       if (linked.length > 0) result.linked = linked;
 
       return JSON.stringify(result, null, 2);
@@ -328,6 +329,7 @@ export class HiveDO extends DurableObject {
       // missing spec). loadClipboard is one indexed SELECT on a tiny table — cheap enough
       // to run per write rather than risk intra-batch staleness.
       clipboardFor: (pattern) => this.loadClipboard(pattern),
+      atomic: (fn) => this.ctx.storage.transactionSync(fn),
     };
   }
 
@@ -572,7 +574,12 @@ export class HiveDO extends DurableObject {
   }
 
   async batchMutate(operationsJson: string, actor: string = OWNER_ACTOR): Promise<string> {
-    const operations = JSON.parse(operationsJson) as { pattern: string; operation: string; data: any }[];
+    // Shortcuts expand exactly as in mutate(): {pattern: "link"} → _links create,
+    // {pattern: "unlink"} → _links unlink; the shortcut decides the operation.
+    const operations = (JSON.parse(operationsJson) as { pattern: string; operation?: string; data: any }[]).map((op) => {
+      const shortcut = expandShortcut(op.pattern);
+      return shortcut ? { ...op, pattern: shortcut.pattern, operation: shortcut.operation } : op;
+    }) as { pattern: string; operation: string; data: any }[];
 
     if (operations.length > data.LIMITS.BATCH_OPS) {
       return this.errorJson(`Batch too large: ${operations.length} operations exceeds limit of ${data.LIMITS.BATCH_OPS}`);
@@ -599,21 +606,14 @@ export class HiveDO extends DurableObject {
     const scratches = operations.map((op, i) =>
       effectsPerOp[i]?.before ? (effectsPerOp[i]!.before!(op.data, op.operation, effectCtx) || {}) : {});
 
-    const ctx = this.ownerDataCtx(actor);
-    const results: any[] = [];
-    // transactionSync is atomic: any throw inside rolls the whole batch back.
-    // A per-op {error} (validation/kernel) is re-thrown to trigger that rollback;
-    // a raw DB write throw (constraint, disk) also unwinds it. Both must leave
-    // here as the SAME structured error a single mutate returns — not a raw throw
-    // across the RPC/MCP boundary — so the caught message is returned, not re-raised.
+    // executeBatch is atomic (one transaction; the end-state rules judged once over
+    // the whole batch): a refusal anywhere, or a raw DB throw, rolls every op back
+    // and leaves here as the SAME structured error a single mutate returns.
+    let results: any[];
     try {
-      this.ctx.storage.transactionSync(() => {
-        for (const op of operations) {
-          const result = data.executeMutate(ctx, op.pattern, op.operation, op.data);
-          if (result.error) throw new Error(result.message);
-          results.push(result);
-        }
-      });
+      const out = data.executeBatch(this.ownerDataCtx(actor), operations);
+      if ("error" in out) return this.errorJson(`Batch mutate failed: ${out.message}`);
+      results = out.results;
     } catch (err: any) {
       logError("mutate.write_failed", err, { batch: true, operations: operations.length });
       return this.errorJson(`Batch mutate failed: ${err.message}`);

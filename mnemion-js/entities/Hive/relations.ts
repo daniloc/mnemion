@@ -47,6 +47,10 @@ export const BEHAVIOR_PALETTE = {
     performs: "A link that would close a cycle across this relation (a self-link included) is refused.",
     where: "checkLinkWrite → closesCycle (recursive CTE) at the `_links` write chokepoint, on create and unarchive.",
   },
+  containment: {
+    performs: "The source is part of the target. Archiving a target that still has active members is refused unless the same batch archives or moves them; archive_pattern on a container pattern is refused while members in other patterns link in. Recall goes upward only: prime follows member → container, never container → members.",
+    where: "endStateViolations (the mutate/batch end state), containmentHolders (archive_pattern), and followLinks' recall mode.",
+  },
 } as const;
 
 export type Behavior = keyof typeof BEHAVIOR_PALETTE;
@@ -54,13 +58,6 @@ export type Behavior = keyof typeof BEHAVIOR_PALETTE;
 function isBehavior(b: unknown): b is Behavior {
   return typeof b === "string" && Object.prototype.hasOwnProperty.call(BEHAVIOR_PALETTE, b);
 }
-
-/** Parts of the design the engine does not perform yet (Phase 2). Declaring one
- *  is refused by name rather than stored as a promise the engine can't keep. */
-const NOT_YET_SUPPORTED = {
-  behaviors: new Set(["containment"]),
-  fields: ["required", "chain"] as const,
-};
 
 // === Vocabulary constants ===
 
@@ -116,7 +113,7 @@ export const KERNEL_RELATIONS: readonly KernelRelation[] = [
     description: "The source was made from the target: provenance. An idea triaged into a task, or a draft distilled into an axiom. Nothing is its own ancestor. Use it rather than references when the source would not exist without the target. Example: tasks/14 derived-from inbox/42.",
   },
   {
-    name: "part-of", inverse: "has-part", behaviors: ["acyclic"],
+    name: "part-of", inverse: "has-part", behaviors: ["containment", "acyclic"],
     description: "Generic hierarchy: the source is a component or member of the target, for hives without a domain-specific containment relation. Nothing contains itself. Use it rather than references when the source only makes sense inside the target. Example: chapters/3 part-of books/1.",
   },
 ];
@@ -129,12 +126,21 @@ export interface Relation {
   name: string;
   inverse: string;
   description: string;
+  /** A derived relation's ends are its first step's source and last step's target. */
   source: string[];
   target: string[];
   cardinality: Cardinality;
   behaviors: string[];
+  /** Every active entry of a listed source pattern must hold one. */
+  required: boolean;
+  /** True exactly when `chain` is set: computed at read time, never stored. */
+  derived: boolean;
+  chain?: string[];
   kernel: boolean;
+  /** `legacy_debt.length > 0`. */
   legacy: boolean;
+  /** Which legacy debts remain — derived from the current values (legacyDebt). */
+  legacy_debt: string[];
 }
 
 /** A JSON-array TEXT column. A corrupt value parses to [] — an end that admits
@@ -148,7 +154,39 @@ function parseList(v: unknown): string[] {
   }
 }
 
+// === Legacy debt (derived, never stored) ===
+//
+// A relation the v17 migration declared carries up to two debts, each read from
+// its CURRENT values against a code-owned template — so nothing can drift:
+// a placeholder description, and a migration-generated inverse. Paying both
+// (amend_relation) clears legacy. The generated-inverse form is reserved, so an
+// owner-chosen inverse never looks generated.
+
+/** The v17 migration's placeholder description. FROZEN: changing this text would
+ *  silently clear the debt on every old row that still carries it. */
+export function legacyPlaceholder(name: string): string {
+  return `Legacy relation "${name}", declared automatically from links written before the relations registry. Its meaning was never recorded. Amend it with amend_relation: say what it asserts, when to use it rather than its nearest neighbour, and give an example.`;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Does `inverse` have the migration's generated form for `name`? */
+function isGeneratedInverse(name: string, inverse: string): boolean {
+  return new RegExp(`^${escapeRe(name)}-inverse(-\\d+)?$`).test(inverse);
+}
+
+export const LEGACY_DEBTS = ["placeholder description", "generated inverse"] as const;
+
+function legacyDebt(r: { name: string; description: string; inverse: string }): string[] {
+  const debt: string[] = [];
+  if (r.description === legacyPlaceholder(r.name)) debt.push(LEGACY_DEBTS[0]);
+  if (isGeneratedInverse(r.name, r.inverse)) debt.push(LEGACY_DEBTS[1]);
+  return debt;
+}
+
 function toRelation(r: any): Relation {
+  const chain = r.chain != null ? parseList(r.chain) : null;
+  const debt = legacyDebt(r);
   return {
     name: r.name,
     inverse: r.inverse,
@@ -157,25 +195,41 @@ function toRelation(r: any): Relation {
     target: parseList(r.target),
     cardinality: r.cardinality === "one" ? "one" : "many",
     behaviors: parseList(r.behaviors),
+    required: !!r.required,
+    derived: chain != null,
+    ...(chain != null ? { chain } : {}),
     kernel: !!r.kernel,
-    legacy: !!r.legacy,
+    legacy: debt.length > 0,
+    legacy_debt: debt,
   };
 }
 
-/** Every active relation, kernel defaults first. Empty before the table exists. */
+/** Every active relation, kernel defaults first. Empty before the table exists.
+ *  A derived relation's ends are read off its steps here (never stored). */
 export function activeRelations(db: DB): Relation[] {
+  let rels: Relation[];
   try {
-    return (db.exec(
-      `SELECT name, inverse, description, source, target, cardinality, behaviors, kernel, legacy
+    rels = (db.exec(
+      `SELECT name, inverse, description, source, target, cardinality, behaviors, required, chain, kernel
        FROM "_relations" WHERE archived_at IS NULL ORDER BY kernel DESC, name`,
     ).toArray() as any[]).map(toRelation);
   } catch {
     return [];
   }
+  const byName = new Map(rels.map((r) => [r.name, r]));
+  for (const r of rels) {
+    if (!r.chain) continue;
+    r.source = [...(byName.get(r.chain[0])?.source ?? [])];
+    r.target = [...(byName.get(r.chain[r.chain.length - 1])?.target ?? [])];
+  }
+  return rels;
 }
 
 /** The read surface: index `relations` and `mnemion://relations`. */
 export const listRelations = activeRelations;
+
+/** Stored (writable) relations only — a derived relation never admits a write. */
+const stored = (rels: Relation[]) => rels.filter((r) => !r.derived);
 
 /** A written label → the relation it names. An inverse name resolves to its
  *  relation with `inverted` set: the endpoints swap and the canonical name is
@@ -211,7 +265,7 @@ function admits(list: string[], pattern: string, end: "source" | "target"): bool
 /** Canonical names of the active relations declared for a (source, target)
  *  pattern pair — what an undeclared-label refusal offers. */
 function availableFor(rels: Relation[], sourcePattern: string, targetPattern: string): string[] {
-  return rels
+  return stored(rels)
     .filter((r) => admits(r.source, sourcePattern, "source") && admits(r.target, targetPattern, "target"))
     .map((r) => r.name);
 }
@@ -280,7 +334,8 @@ function closesCycle(db: DB, label: string, link: LinkEnds, excludeId: number): 
  *
  * 1. No endpoint is a kernel pattern outside KERNEL_LINK_TARGETS (before label
  *    resolution, so a credential/roster/config endpoint is refused as such).
- * 2. The label names an active relation; an inverse name swaps the endpoints.
+ * 2. The label names an active STORED relation (a derived relation is refused,
+ *    naming its steps); an inverse name swaps the endpoints.
  * 3. The canonical source is not a kernel pattern.
  * 4. Both endpoints' patterns exist and their entries are active.
  * 5. The relation's source and target admit the endpoint patterns.
@@ -306,6 +361,8 @@ export function checkLinkWrite(
   const resolved = resolveLabel(rels, label);
   if (!resolved || (opts.storedLabel && resolved.inverted)) return undeclared(rels, ends, label);
   const { relation, inverted } = resolved;
+  if (relation.chain)
+    return refuse(`"${label}" names the derived relation "${relation.name}" (${relation.chain.join(" ∘ ")}), which is computed at read time and never stored. Write its stored steps instead: ${relation.chain.join(", ")}.`);
   const link: LinkEnds = inverted
     ? { source_pattern: ends.target_pattern, source_id: ends.target_id, target_pattern: ends.source_pattern, target_id: ends.source_id }
     : ends;
@@ -470,6 +527,182 @@ export function linksOf(db: DB, pattern: string, id: number): EntryLink[] {
   }));
 }
 
+/** Is `pattern/id` live — its pattern active and its row present and unarchived?
+ *  Dormant links (to an archived entry or pattern) never derive, contain or hold. */
+function entryActive(db: DB, pattern: string, id: number): boolean {
+  if (db.exec(`SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NULL`, pattern).toArray().length === 0) return false;
+  try {
+    return db.exec(`SELECT 1 FROM ${quoteIdent(pattern)} WHERE id = ? AND archived_at IS NULL`, id).toArray().length > 0;
+  } catch { return false; }
+}
+
+/** One derived (chain) connection of an entry, read from that entry's side. */
+export interface DerivedLink { pattern: string; id: number; direction: "out" | "in"; relation: string }
+
+/**
+ * The entries a derived relation reaches from `pattern/id`, computed at read time
+ * and never stored. Out: walk the chain's steps forward from the entry (the name);
+ * in: walk them backward (the inverse). Only active links between active entries
+ * count. Deduplicated per (relation, entry).
+ */
+export function derivedLinksOf(db: DB, pattern: string, id: number): DerivedLink[] {
+  const out: DerivedLink[] = [];
+  const seen = new Set<string>();
+  const step = (frontier: string[], label: string, forward: boolean): string[] => {
+    const next = new Set<string>();
+    for (const node of frontier) {
+      const at = parseEntryRef(node)!;
+      const rows = db.exec(
+        forward
+          ? `SELECT target_pattern AS p, target_id AS i FROM "_links" WHERE archived_at IS NULL AND label = ? AND source_pattern = ? AND source_id = ?`
+          : `SELECT source_pattern AS p, source_id AS i FROM "_links" WHERE archived_at IS NULL AND label = ? AND target_pattern = ? AND target_id = ?`,
+        label, at.pattern, at.id,
+      ).toArray() as { p: string; i: number }[];
+      for (const r of rows) if (entryActive(db, r.p, r.i)) next.add(ref(r.p, r.i));
+    }
+    return [...next];
+  };
+  if (!entryActive(db, pattern, id)) return out;
+  for (const rel of activeRelations(db)) {
+    if (!rel.chain) continue;
+    for (const direction of ["out", "in"] as const) {
+      const steps = direction === "out" ? rel.chain : [...rel.chain].reverse();
+      let frontier = [ref(pattern, id)];
+      for (const label of steps) frontier = step(frontier, label, direction === "out");
+      const relation = direction === "out" ? rel.name : rel.inverse;
+      for (const node of frontier) {
+        const key = `${relation}|${node}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const at = parseEntryRef(node)!;
+        out.push({ pattern: at.pattern, id: at.id, direction, relation });
+      }
+    }
+  }
+  return out;
+}
+
+// === End state: required relations and containment ===
+//
+// Both rules are judged on the END STATE of a write — a single mutate, or a whole
+// batch — so a move (archive the old link, create the new one) or archiving a
+// container together with its members succeeds in either order. The mutate
+// engine records what each write touched; endStateViolations judges it once, at
+// the end, inside the same transaction, and a violation rolls the write back.
+
+/** Why an entry is being judged at the end of a write — shapes the message. */
+export type TouchCause = "created" | "archived" | "unarchived" | "link-removed";
+/** Entries a write touched, keyed `pattern/id`, with the first cause seen. */
+export type Touched = Map<string, TouchCause>;
+
+export function touch(touched: Touched, pattern: string, id: number, cause: TouchCause): void {
+  const key = ref(pattern, id);
+  if (!touched.has(key)) touched.set(key, cause);
+}
+
+/** Active required relations whose source explicitly lists `pattern`. */
+function requiredFor(rels: Relation[], pattern: string): Relation[] {
+  return rels.filter((r) => r.required && !r.derived && r.source.includes(pattern));
+}
+
+function holdsLink(db: DB, pattern: string, id: number, label: string): boolean {
+  return db.exec(
+    `SELECT 1 FROM "_links" WHERE archived_at IS NULL AND source_pattern = ? AND source_id = ? AND label = ? LIMIT 1`,
+    pattern, id, label,
+  ).toArray().length > 0;
+}
+
+/** Active members (`pattern/id`) holding an active containment link into `pattern/id`. */
+function activeMembers(db: DB, rels: Relation[], pattern: string, id: number): { member: string; label: string }[] {
+  const containment = rels.filter((r) => r.behaviors.includes("containment")).map((r) => r.name);
+  if (!containment.length) return [];
+  return (db.exec(
+    `SELECT source_pattern, source_id, label FROM "_links" WHERE archived_at IS NULL AND target_pattern = ? AND target_id = ? AND label IN (${containment.map(() => "?").join(",")}) ORDER BY id`,
+    pattern, id, ...containment,
+  ).toArray() as any[])
+    .filter((l) => entryActive(db, l.source_pattern, l.source_id))
+    .map((l) => ({ member: ref(l.source_pattern, l.source_id), label: l.label }));
+}
+
+/** The first end-state violation among the touched entries, as an engine-authored
+ *  refusal message — or null when the end state is sound.
+ *  - required: an ACTIVE entry of a required relation's source pattern holds at
+ *    least one active link of it (an archived entry is exempt while archived);
+ *  - containment: an ARCHIVED entry is not the container of any active member. */
+export function endStateViolations(db: DB, touched: Touched): string | null {
+  if (!touched.size) return null;
+  const rels = activeRelations(db);
+  for (const [key, cause] of touched) {
+    const at = parseEntryRef(key);
+    if (!at || isKernelPattern(at.pattern)) continue;
+    if (entryActive(db, at.pattern, at.id)) {
+      for (const r of requiredFor(rels, at.pattern)) {
+        if (holdsLink(db, at.pattern, at.id, r.name)) continue;
+        const targets = r.target.join(", ");
+        switch (cause) {
+          case "link-removed":
+            return `${key} must keep its "${r.name}" link to ${targets} (the relation is required). To change it, move it: archive this link and create the new one in the same batch.`;
+          case "unarchived":
+            return `${key} cannot be unarchived without a "${r.name}" link to ${targets} (the relation is required). Unarchive it and link it in the same batch.`;
+          default:
+            return `"${r.name}" is required for "${at.pattern}": every entry must hold one, to ${targets}. Create it with the link inline — _relate: {"${r.name}": "<${r.target[0] ?? "pattern"}>/<id>"} — or in the same batch.`;
+        }
+      }
+    } else {
+      const members = activeMembers(db, rels, at.pattern, at.id);
+      if (members.length) {
+        const by = [...new Set(members.map((m) => m.label))].join(", ");
+        return `"${by}" is a containment relation: ${key} still contains active member(s) ${members.map((m) => m.member).join(", ")}. Archive or move the members first (the same batch is fine).`;
+      }
+    }
+  }
+  return null;
+}
+
+/** archive_pattern on a container: the active members in OTHER patterns that
+ *  hold a containment link into the pattern's active entries. */
+export function containmentHolders(db: DB, pattern: string): RelationViolation[] {
+  const containment = relationsWith(db, "containment");
+  if (!containment.length) return [];
+  return (db.exec(
+    `SELECT id, source_pattern, source_id, target_pattern, target_id, label FROM "_links"
+     WHERE archived_at IS NULL AND target_pattern = ? AND source_pattern != ? AND label IN (${containment.map(() => "?").join(",")}) ORDER BY id`,
+    pattern, pattern, ...containment,
+  ).toArray() as any[])
+    .filter((l) => entryActive(db, l.source_pattern, l.source_id) && entryActive(db, l.target_pattern, l.target_id))
+    .map((l) => ({
+      link_id: l.id, source: ref(l.source_pattern, l.source_id), target: ref(l.target_pattern, l.target_id), label: l.label,
+      reason: `"${l.label}" is a containment relation: ${ref(l.source_pattern, l.source_id)} is an active member of ${ref(l.target_pattern, l.target_id)} — archive or move it first`,
+    }));
+}
+
+/** Active source entries lacking a link of `relation` (if it were required). */
+function lacking(db: DB, relation: Pick<Relation, "name" | "source">): RelationViolation[] {
+  const out: RelationViolation[] = [];
+  for (const p of relation.source) {
+    if (p === ANY) continue;
+    if (db.exec(`SELECT 1 FROM _objects WHERE name = ? AND archived_at IS NULL`, p).toArray().length === 0) continue;
+    let rows: { id: number }[];
+    try { rows = db.exec(`SELECT id FROM ${quoteIdent(p)} WHERE archived_at IS NULL ORDER BY id`).toArray() as any[]; } catch { continue; }
+    for (const { id } of rows)
+      if (!holdsLink(db, p, id, relation.name))
+        out.push({ source: ref(p, id), label: relation.name, reason: `${ref(p, id)} holds no "${relation.name}" link — backfill it before making the relation required` });
+  }
+  return out;
+}
+
+/** Boot input: every active entry lacking a link of an active required relation. */
+export function requiredGaps(db: DB): { relation: string; entry: string }[] {
+  return stored(activeRelations(db)).filter((r) => r.required)
+    .flatMap((r) => lacking(db, r).map((v) => ({ relation: r.name, entry: v.source })));
+}
+
+/** Boot findings: one line per active entry missing a required link (pre-existing
+ *  data). Pure and report-only — nothing is repaired. */
+export function findRequiredGaps(gaps: { relation: string; entry: string }[]): string[] {
+  return gaps.map((g) => `${g.entry} lacks a link of required relation "${g.relation}" — pre-existing data, left in place; link it (or archive the entry)`);
+}
+
 /** SQL predicate (bind the table name as its one parameter): the row is not the
  *  target of an active link. Every GC pass over a link-targetable table ANDs this
  *  in — a link protects its target, derived from the link itself, no stored flag
@@ -541,14 +774,14 @@ export function seedKernelRelations(db: DB): void {
     if (row) {
       // Only touch a row that drifted, so a steady boot writes nothing (no audit churn).
       db.exec(
-        `UPDATE "_relations" SET inverse = ?, description = ?, source = ?, target = ?, cardinality = 'many', behaviors = ?, kernel = 1, legacy = 0, updated_at = datetime('now') WHERE id = ?
-         AND (inverse != ? OR description != ? OR source != ? OR target != ? OR cardinality != 'many' OR behaviors != ? OR kernel != 1 OR legacy != 0)`,
+        `UPDATE "_relations" SET inverse = ?, description = ?, source = ?, target = ?, cardinality = 'many', behaviors = ?, required = 0, chain = NULL, kernel = 1, updated_at = datetime('now') WHERE id = ?
+         AND (inverse != ? OR description != ? OR source != ? OR target != ? OR cardinality != 'many' OR behaviors != ? OR required != 0 OR chain IS NOT NULL OR kernel != 1)`,
         k.inverse, k.description, star, star, behaviors, row.id,
         k.inverse, k.description, star, star, behaviors,
       );
     } else {
       db.exec(
-        `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, kernel, legacy) VALUES (?, ?, ?, ?, ?, 'many', ?, 1, 0)`,
+        `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, kernel) VALUES (?, ?, ?, ?, ?, 'many', ?, 1)`,
         k.name, k.inverse, k.description, star, star, behaviors,
       );
     }
@@ -647,19 +880,27 @@ export function declareLegacyRelations(db: DB): void {
     for (let n = 2; taken.has(inverse); n++) inverse = `${name}-inverse-${n}`;
     taken.add(inverse);
     db.exec(
-      `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, kernel, legacy) VALUES (?, ?, ?, ?, ?, 'many', '[]', 0, 1)`,
-      name, inverse,
-      `Legacy relation "${name}", declared automatically from links written before the relations registry. Its meaning was never recorded. Amend it with amend_relation: say what it asserts, when to use it rather than its nearest neighbour, and give an example.`,
+      `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, kernel) VALUES (?, ?, ?, ?, ?, 'many', '[]', 0)`,
+      name, inverse, legacyPlaceholder(name),
       JSON.stringify([...ends.source].sort()), JSON.stringify([...ends.target].sort()),
     );
   }
 }
 
-/** Boot findings: one line per relation still carrying a legacy placeholder
- *  description. Pure, so the boot warning and any test read the same rule. */
-export function findLegacyRelations(relations: Pick<Relation, "name" | "legacy">[]): string[] {
-  return relations.filter((r) => r.legacy).map((r) =>
-    `relation "${r.name}" is legacy (placeholder description) — amend_relation with a real description to clear it`);
+/** Boot findings: one line per legacy relation, naming its remaining debt
+ *  (e.g. `refines: generated inverse`). Pure, so the boot warning and any test
+ *  read the same rule. */
+export function findLegacyRelations(relations: Pick<Relation, "name" | "legacy_debt">[]): string[] {
+  return relations.filter((r) => r.legacy_debt.length).map((r) =>
+    `legacy relation ${r.name}: ${r.legacy_debt.join(", ")} — pay it with amend_relation (a real description; an owner-chosen inverse)`);
+}
+
+/** v18: legacy status became two derived facts (legacyDebt); the stored flag,
+ *  which lied once a description amend cleared it, is dropped. Idempotent. */
+function dropStoredLegacyFlag(db: DB): void {
+  const cols = db.exec(`PRAGMA table_info("_relations")`).toArray() as { name: string }[];
+  if (cols.some((c) => c.name === "legacy")) db.exec(`ALTER TABLE "_relations" DROP COLUMN "legacy"`);
+  db.exec(`DELETE FROM _fields WHERE object_name = '_relations' AND name = 'legacy'`);
 }
 
 /** One acyclic relation's active edges, as `pattern/id` endpoints. */
@@ -718,6 +959,7 @@ export function findCycles(graphs: RelationGraph[]): string[] {
  *  boot changes nothing. */
 export function migrateRelations(db: DB): void {
   db.exec(`DROP INDEX IF EXISTS "_links_pair_active"`); // one pair may now carry several relations
+  dropStoredLegacyFlag(db);   // v18: legacy is derived, never stored
   seedKernelRelations(db);    // 1. kernel defaults (so supersedes etc. resolve below)
   rewriteLegacyLabels(db);    // 2. NULL → references; inverse wording → canonical
   sweepDanglingLinks(db);     // 3. gone or inadmissible endpoints (incl. ones the rewrite exposed)
@@ -727,7 +969,7 @@ export function migrateRelations(db: DB): void {
 // === Vocabulary evolution: declare / amend / retire ===
 
 /** One active link that an amend or retire would strand. */
-export interface RelationViolation { link_id: number; source: string; target: string; label: string; reason: string }
+export interface RelationViolation { link_id?: number; source: string; target?: string; label: string; reason: string }
 
 function activeRelation(db: DB, name: unknown): Relation | null {
   return typeof name === "string" ? (activeRelations(db).find((r) => r.name === name) ?? null) : null;
@@ -744,12 +986,16 @@ function vocabulary(rels: Relation[], except?: string): Map<string, string> {
   return m;
 }
 
-function checkHandle(kind: "name" | "inverse", value: unknown, taken: Map<string, string>): string | null {
+function checkHandle(kind: "name" | "inverse", value: unknown, taken: Map<string, string>, forName?: string): string | null {
   if (typeof value !== "string" || !value) return `${kind} is required for a relation`;
   if (value.startsWith("_")) return `Relation ${kind} "${value}" is reserved — names starting with "_" belong to the kernel.`;
   if (!NAME_RE.test(value)) return `Relation ${kind} "${value}" must be kebab-case: lowercase letters and digits joined by single hyphens (e.g. "cites", "cited-by").`;
   const owner = taken.get(value);
   if (owner) return `Relation ${kind} "${value}" is already taken by the active relation "${owner}" (names and inverses share one vocabulary).`;
+  // The migration's generated form is reserved, so an owner-chosen inverse never
+  // reads as legacy debt and a relation declared from scratch is never legacy.
+  if (kind === "inverse" && typeof forName === "string" && isGeneratedInverse(forName, value))
+    return `Inverse "${value}" is reserved: the form "${forName}-inverse" is what the legacy migration generates. Choose how the relation reads from the target's side (e.g. "cited-by").`;
   return null;
 }
 
@@ -793,60 +1039,113 @@ function checkNoNulls(change: any): string | null {
 }
 
 function checkShape(change: any): string | null {
-  for (const f of NOT_YET_SUPPORTED.fields)
-    if (change[f] !== undefined && change[f] !== false)
-      return `"${f}" relations are not yet supported (Phase 2). Declare the relation without it.`;
   if (change.cardinality !== undefined && !(CARDINALITIES as readonly string[]).includes(change.cardinality))
     return `cardinality must be "one" or "many", got ${JSON.stringify(change.cardinality)}.`;
   if (change.behaviors !== undefined) {
     if (!Array.isArray(change.behaviors)) return `behaviors must be an array, a subset of: ${Object.keys(BEHAVIOR_PALETTE).join(", ")}.`;
-    for (const b of change.behaviors) {
-      if (NOT_YET_SUPPORTED.behaviors.has(b)) return `Behavior "${b}" is not yet supported (Phase 2) — the engine does not perform it yet.`;
+    for (const b of change.behaviors)
       if (!isBehavior(b)) return `Unknown behavior "${b}". The palette: ${Object.keys(BEHAVIOR_PALETTE).join(", ")}.`;
-    }
   }
+  if (change.required !== undefined && typeof change.required !== "boolean")
+    return `required must be true or false, got ${JSON.stringify(change.required)}.`;
   return null;
 }
 
-/** The relation a declare_relation change would create. */
-export function declaredRelation(change: any): Relation {
+/** A required relation needs an explicit source list: "every entry of a listed
+ *  source pattern holds one" means nothing over `*`. */
+function checkRequired(required: unknown, source: string[]): string | null {
+  return required === true && (source.includes(ANY) || !source.length)
+    ? `A required relation needs an explicit source list (not "*"): name the source patterns whose every entry must hold one.`
+    : null;
+}
+
+/** Does a link that ENDS at `targets` compose with one that STARTS at `sources`?
+ *  `*` matches any user pattern. */
+function composes(targets: string[], sources: string[]): boolean {
+  const users = (l: string[]) => l.filter((p) => p !== ANY && !isKernelPattern(p));
+  if (targets.includes(ANY)) return sources.includes(ANY) || users(sources).length > 0;
+  if (sources.includes(ANY)) return users(targets).length > 0;
+  return targets.some((p) => sources.includes(p));
+}
+
+/** Fields a derived relation never declares: its ends come from its steps, and a
+ *  computed connection has no cardinality, behavior or requirement of its own. */
+const CHAIN_EXCLUDES = ["source", "target", "cardinality", "behaviors", "required"] as const;
+
+function checkChain(rels: Relation[], change: any): string | null {
+  for (const f of CHAIN_EXCLUDES)
+    if (change[f] !== undefined)
+      return `A derived relation (chain) declares no ${f}: its ends are its first step's source and its last step's target, and it is computed, never stored. Remove "${f}".`;
+  const chain = change.chain;
+  if (!Array.isArray(chain) || chain.length < 2 || !chain.every((x) => typeof x === "string"))
+    return `A chain is a list of at least two stored relation names, composed in order (e.g. ["belongs-to", "serves"]).`;
+  const steps: Relation[] = [];
+  for (const name of chain) {
+    const step = rels.find((r) => r.name === name);
+    if (!step) return `Chain step "${name}" is not an active relation (name it canonically, not by its inverse).`;
+    if (step.derived) return `Chain step "${name}" is itself derived — a chain composes stored relations only.`;
+    steps.push(step);
+  }
+  for (let i = 0; i + 1 < steps.length; i++)
+    if (!composes(steps[i].target, steps[i + 1].source))
+      return `Chain steps "${steps[i].name}" → "${steps[i + 1].name}" do not compose: "${steps[i].name}" ends at ${steps[i].target.join(", ")} but "${steps[i + 1].name}" starts at ${steps[i + 1].source.join(", ")}.`;
+  return null;
+}
+
+/** The relation a declare_relation change would create (ends of a chain read off
+ *  its steps in `rels`). */
+export function declaredRelation(change: any, rels: Relation[] = []): Relation {
+  const chain = Array.isArray(change.chain) ? (change.chain as string[]) : null;
+  const byName = new Map(rels.map((r) => [r.name, r]));
   return {
     name: change.name,
     inverse: change.inverse,
     description: change.description,
-    source: normList(change.source) ?? [],
-    target: normList(change.target) ?? [],
+    source: chain ? [...(byName.get(chain[0])?.source ?? [])] : normList(change.source) ?? [],
+    target: chain ? [...(byName.get(chain[chain.length - 1])?.target ?? [])] : normList(change.target) ?? [],
     cardinality: change.cardinality === "one" ? "one" : "many",
     behaviors: [...new Set<string>(change.behaviors ?? [])],
+    required: change.required === true,
+    derived: chain != null,
+    ...(chain ? { chain } : {}),
     kernel: false,
     legacy: false,
+    legacy_debt: [],
   };
 }
 
-/** The relation an amend_relation change would leave. */
+/** The relation an amend_relation change would leave (legacy debt re-derived). */
 export function amendedRelation(current: Relation, change: any): Relation {
-  return {
+  const next: Relation = {
     ...current,
     ...(change.inverse !== undefined ? { inverse: change.inverse } : {}),
-    ...(change.description !== undefined ? { description: change.description, legacy: false } : {}),
+    ...(change.description !== undefined ? { description: change.description } : {}),
     ...(change.cardinality !== undefined ? { cardinality: change.cardinality } : {}),
     ...(change.behaviors !== undefined ? { behaviors: [...new Set<string>(change.behaviors)] } : {}),
+    ...(change.required !== undefined ? { required: change.required === true } : {}),
   };
+  next.legacy_debt = legacyDebt(next);
+  next.legacy = next.legacy_debt.length > 0;
+  return next;
 }
 
 export function validateDeclare(ctx: RelationsContext, change: any): string | null {
-  const taken = vocabulary(activeRelations(ctx.db));
-  return checkNoNulls(change)
+  const rels = activeRelations(ctx.db);
+  const taken = vocabulary(rels);
+  const handles = checkNoNulls(change)
     ?? checkHandle("name", change.name, taken)
-    ?? checkHandle("inverse", change.inverse, taken)
+    ?? checkHandle("inverse", change.inverse, taken, change.name)
     ?? (change.inverse === change.name ? `The inverse must differ from the name "${change.name}".` : null)
-    ?? checkDescription(change.description, [change.name, change.inverse])
-    ?? checkEnd(ctx, "source", change.source)
+    ?? checkDescription(change.description, [change.name, change.inverse]);
+  if (handles) return handles;
+  if (change.chain !== undefined) return checkChain(rels, change);
+  return checkEnd(ctx, "source", change.source)
     ?? checkEnd(ctx, "target", change.target)
-    ?? checkShape(change);
+    ?? checkShape(change)
+    ?? checkRequired(change.required, normList(change.source) ?? []);
 }
 
-const AMENDABLE = ["description", "inverse", "behaviors", "cardinality"] as const;
+const AMENDABLE = ["description", "inverse", "behaviors", "cardinality", "required"] as const;
 
 export function validateAmend(ctx: RelationsContext, change: any): string | null {
   const current = activeRelation(ctx.db, change.name);
@@ -855,12 +1154,15 @@ export function validateAmend(ctx: RelationsContext, change: any): string | null
   const nulls = checkNoNulls(change);
   if (nulls) return nulls;
   if (change.new_name !== undefined) return `A relation's name is immutable ("${current.name}"). Declare a new relation and move the links to it instead.`;
-  for (const f of ["source", "target"] as const)
-    if (change[f] !== undefined) return `A relation's ${f} patterns are not amendable yet. Declare a new relation with the ends you need.`;
+  for (const f of ["source", "target", "chain"] as const)
+    if (change[f] !== undefined) return `A relation's ${f} is not amendable. Declare a new relation with the ${f} you need.`;
+  if (current.derived)
+    for (const f of ["behaviors", "cardinality", "required"] as const)
+      if (change[f] !== undefined) return `"${current.name}" is derived (a chain): it has no ${f} to amend — only description and inverse.`;
   if (!AMENDABLE.some((f) => change[f] !== undefined)) return `amend_relation changes at least one of: ${AMENDABLE.join(", ")}.`;
   const next = amendedRelation(current, change);
   if (change.inverse !== undefined) {
-    const err = checkHandle("inverse", change.inverse, vocabulary(activeRelations(ctx.db), current.name))
+    const err = checkHandle("inverse", change.inverse, vocabulary(activeRelations(ctx.db), current.name), current.name)
       ?? (change.inverse === current.name ? `The inverse must differ from the name "${current.name}".` : null);
     if (err) return err;
   }
@@ -868,21 +1170,34 @@ export function validateAmend(ctx: RelationsContext, change: any): string | null
     const err = checkDescription(change.description, [next.name, next.inverse]);
     if (err) return err;
   }
-  return checkShape(change);
+  return checkShape(change) ?? checkRequired(change.required, current.source);
 }
 
 export function validateRetire(ctx: RelationsContext, change: any): string | null {
-  const current = activeRelation(ctx.db, change.name);
+  const rels = activeRelations(ctx.db);
+  const current = rels.find((r) => r.name === change.name);
   if (!current) return `No active relation named ${JSON.stringify(change.name)} to retire.`;
   if (current.kernel) return `"${current.name}" is a kernel default and cannot be retired.`;
+  const chains = rels.filter((r) => r.chain?.includes(current.name)).map((r) => r.name);
+  if (chains.length) return `"${current.name}" is a step of the derived relation(s) ${chains.join(", ")} — retire ${chains.length > 1 ? "those chains" : "that chain"} first.`;
   return null;
 }
 
+/** A declare with `required: true` strands every active source entry with no link
+ *  (a new relation has none yet). */
+export function declareViolations(db: DB, change: any): RelationViolation[] {
+  if (change.required !== true || change.chain !== undefined) return [];
+  const source = normList(change.source) ?? [];
+  if (source.includes(ANY)) return [];
+  return lacking(db, { name: change.name, source });
+}
+
 /** Active links the amended relation would no longer admit: a second link from
- *  one source under cardinality one, or a link on a cycle under acyclic. */
+ *  one source under cardinality one, a link on a cycle under acyclic, or an
+ *  active source entry with no link once the relation is required. */
 export function amendViolations(db: DB, change: any): RelationViolation[] {
   const current = activeRelation(db, change.name);
-  if (!current) return [];
+  if (!current || current.derived) return [];
   const next = amendedRelation(current, change);
   const links = db.exec(
     `SELECT id, source_pattern, source_id, target_pattern, target_id FROM "_links" WHERE archived_at IS NULL AND label = ? ORDER BY id`,
@@ -904,6 +1219,7 @@ export function amendViolations(db: DB, change: any): RelationViolation[] {
     for (const l of links)
       if (closesCycle(db, next.name, l, l.id)) out.push(v(l, `link lies on a "${next.name}" cycle`));
   }
+  if (next.required && !next.source.includes(ANY)) out.push(...lacking(db, next));
   return out;
 }
 
@@ -927,9 +1243,12 @@ export function declareRelation(ctx: RelationsContext, change: any): void {
   const err = validateDeclare(ctx, change);
   if (err) throw new Error(err);
   const r = declaredRelation(change);
+  // A chain stores no ends (they are read off its steps); "[]" admits nothing.
   ctx.db.exec(
-    `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, kernel, legacy) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)`,
-    r.name, r.inverse, r.description, JSON.stringify(r.source), JSON.stringify(r.target), r.cardinality, JSON.stringify(r.behaviors),
+    `INSERT INTO "_relations" (name, inverse, description, source, target, cardinality, behaviors, required, chain, kernel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    r.name, r.inverse, r.description,
+    JSON.stringify(r.chain ? [] : r.source), JSON.stringify(r.chain ? [] : r.target),
+    r.cardinality, JSON.stringify(r.behaviors), r.required ? 1 : 0, r.chain ? JSON.stringify(r.chain) : null,
   );
 }
 
@@ -938,9 +1257,9 @@ export function amendRelation(ctx: RelationsContext, change: any): void {
   if (err) throw new Error(err);
   const next = amendedRelation(activeRelation(ctx.db, change.name)!, change);
   ctx.db.exec(
-    `UPDATE "_relations" SET inverse = ?, description = ?, cardinality = ?, behaviors = ?, legacy = ?, version = version + 1, updated_at = datetime('now')
+    `UPDATE "_relations" SET inverse = ?, description = ?, cardinality = ?, behaviors = ?, required = ?, version = version + 1, updated_at = datetime('now')
      WHERE name = ? AND archived_at IS NULL`,
-    next.inverse, next.description, next.cardinality, JSON.stringify(next.behaviors), next.legacy ? 1 : 0, next.name,
+    next.inverse, next.description, next.cardinality, JSON.stringify(next.behaviors), next.required ? 1 : 0, next.name,
   );
 }
 

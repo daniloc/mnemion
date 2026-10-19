@@ -16,7 +16,7 @@ import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { logWarn } from "../../shared/core/log";
 import { isKernelPattern, primeIncluded, seal } from "./policy";
-import { linksOf, supersededBy } from "./relations";
+import { linksOf, supersededBy, derivedLinksOf, relationsWith } from "./relations";
 
 // === Types ===
 
@@ -49,6 +49,8 @@ export interface LinkedItem {
   label?: string;
   direction?: "out" | "in";
   relation?: string;
+  /** Set on a derived (chain) item — computed at read time, never stored. */
+  derived?: true;
 }
 
 export interface MemoryPolicy {
@@ -398,6 +400,11 @@ export function parseDbDate(s: string | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
+/** How far a one-hop expansion reaches. `recall` (prime): containment is followed
+ *  upward only — a member recalls its container, a container never fans out to its
+ *  members. `resolve`: every link in both directions, plus derived (chain) items. */
+export type FollowMode = "recall" | "resolve";
+
 /** Follow an entry's connections one hop: reference facets, then every active
  *  link in both directions — one item per link, so a pair carrying two relations
  *  yields two items. */
@@ -405,6 +412,7 @@ export function followLinks(
   ctx: PrimeContext,
   pattern: string,
   entry: Record<string, unknown>,
+  mode: FollowMode = "recall",
 ): LinkedItem[] {
   const linked: LinkedItem[] = [];
   const seen = new Set<string>();
@@ -444,7 +452,9 @@ export function followLinks(
   const entryId = entry.id as number;
   if (entryId != null) {
     try {
+      const downward = mode === "recall" ? new Set(relationsWith(ctx.db, "containment")) : new Set<string>();
       for (const link of linksOf(ctx.db, pattern, entryId)) {
+        if (link.direction === "in" && downward.has(link.label)) continue; // container → member: never in recall
         if (!ctx.patternExists(link.pattern)) continue;
         try {
           const rows = ctx.db.exec(
@@ -468,6 +478,23 @@ export function followLinks(
         } catch { /* target table may not exist */ }
       }
     } catch { /* _links table may not exist yet */ }
+
+    // 3. Derived (chain) relations — resolve only, computed from active links
+    //    between active entries, never stored.
+    if (mode === "resolve") {
+      try {
+        for (const d of derivedLinksOf(ctx.db, pattern, entryId)) {
+          const rows = ctx.db.exec(`SELECT * FROM ${quoteIdent(d.pattern)} WHERE id = ? AND archived_at IS NULL`, d.id).toArray();
+          if (!rows.length) continue;
+          linked.push({
+            pattern: d.pattern, id: d.id,
+            entry: seal(d.pattern, rows[0] as Record<string, unknown>),
+            uri: uri(`entry/${d.pattern}/${d.id}`),
+            direction: d.direction, relation: d.relation, derived: true,
+          });
+        }
+      } catch { /* best-effort */ }
+    }
   }
 
   return linked;
