@@ -33,7 +33,7 @@ struct CaptureView: View {
                         }
                     }
             }
-            .frame(minWidth: 420, minHeight: 360)
+            .sheetSize(minWidth: 420, minHeight: 360)
         }
     }
 

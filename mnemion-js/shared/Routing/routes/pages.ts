@@ -50,6 +50,12 @@ export const batchMutate: RouteHandler = async (ctx) => {
   if (!body || !Array.isArray(body.operations) || body.operations.length === 0) {
     return Response.json({ error: true, message: "operations (a non-empty array) is required" }, { status: 400 });
   }
+  const malformed = body.operations.findIndex((op: unknown) =>
+    op == null || typeof op !== "object" || typeof (op as { pattern?: unknown }).pattern !== "string"
+    || (op as { data?: unknown }).data == null || typeof (op as { data?: unknown }).data !== "object");
+  if (malformed !== -1) {
+    return Response.json({ error: true, message: `operations[${malformed}] needs a string pattern and an object data` }, { status: 400 });
+  }
   const result = await ctx.hive.batchMutate(JSON.stringify(body.operations), ctx.actor);
   return new Response(result, { headers: { "Content-Type": "application/json" } });
 };

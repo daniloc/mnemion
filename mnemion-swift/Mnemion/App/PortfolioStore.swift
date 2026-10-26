@@ -112,7 +112,29 @@ final class PortfolioStore {
     /// `/api/review` (older deploy), which is not an error worth an alert.
     private(set) var reviewUnavailable = false
 
+    private var reviewFetch: Task<Void, Never>?
+    private var reviewAgain = false
+
+    /// One fetch in flight at a time: a burst of changes (an agent writing a
+    /// batch) coalesces into at most one more fetch after the current one, and
+    /// a slow older response can never overwrite a newer review.
     func loadReview() async {
+        if let running = reviewFetch {
+            reviewAgain = true
+            await running.value
+            return
+        }
+        let task = Task { await self.fetchReview() }
+        reviewFetch = task
+        await task.value
+        reviewFetch = nil
+        if reviewAgain {
+            reviewAgain = false
+            await loadReview()
+        }
+    }
+
+    private func fetchReview() async {
         do {
             review = try await client.review()
             reviewUnavailable = false

@@ -41,8 +41,10 @@ struct SearchPage: Decodable {
 }
 
 extension Entry {
-    /// The entry as one line, the way the worker's deriveLabel reads it: the first
-    /// of the label keys, then the longest text value, then the id.
+    /// The entry as one line. Starts like the worker's deriveLabel (name, title,
+    /// label, key, context), then tries the keys this hive's concept patterns
+    /// title themselves with, then the longest text value, then the id. Display
+    /// only; the worker's `label` endpoint remains the canonical string.
     public var label: String {
         for key in ["name", "title", "label", "key", "context", "axiom", "principle", "frame", "body"] {
             if let v = string(key) { return v }

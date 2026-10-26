@@ -43,7 +43,6 @@ struct ProjectsView: View {
             .toolbar {
                 ToolbarItem {
                     Button("New note", systemImage: "square.and.pencil") { app.showCapture = true }
-                        .keyboardShortcut("n", modifiers: .command)
                 }
                 ToolbarItem {
                     Menu {

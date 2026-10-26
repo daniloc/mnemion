@@ -106,8 +106,10 @@ struct ReviewView: View {
 
     @ViewBuilder
     private func alignment(_ review: Review) -> some View {
+        // Exemptions (the catch-all project) are the worker's, from the charter's
+        // review_exempt, so agents and this screen read the same gaps.
         ForEach(review.alignment) { gap in
-            let entries = gap.entries.filter { !isCatchAll($0) }
+            let entries = gap.entries
             if !entries.isEmpty {
                 Section("\(gapTitle(gap)) · \(entries.count)") {
                     ForEach(entries, id: \.ref) { brief in
@@ -154,11 +156,6 @@ struct ReviewView: View {
         }
     }
 
-    /// The catch-all project serves no goal by design (projects doctrine).
-    private func isCatchAll(_ brief: Review.Brief) -> Bool {
-        store.project(ref: brief.ref).map(Portfolio.isCatchAll) ?? false
-    }
-
     private func open(_ brief: Review.Brief) {
         if brief.pattern == Portfolio.projects, let project = store.project(ref: brief.ref) {
             go(.project(project.id))
@@ -189,14 +186,17 @@ struct WorkRow: View {
             }
             Spacer()
             Menu {
-                Button("Done", systemImage: "checkmark.circle") { Task { await store.update(brief.ref, ["status": "done"]) } }
-                Button("In progress", systemImage: "play.circle") { Task { await store.update(brief.ref, ["status": "in-progress"]) } }
+                // Only statuses the pattern declares; the worker refuses any other.
+                ForEach(store.taskStatuses.filter { $0 != brief.status }, id: \.self) { status in
+                    Button(status.capitalized, systemImage: statusImage(status)) {
+                        Task { await store.update(brief.ref, ["status": .string(status)]) }
+                    }
+                }
+                Divider()
                 Button("Reschedule…", systemImage: "calendar") {
                     newDate = Dates.date(brief.deadline) ?? .now
                     rescheduling = true
                 }
-                Divider()
-                Button("Drop", systemImage: "xmark.circle", role: .destructive) { Task { await store.update(brief.ref, ["status": "dropped"]) } }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -215,6 +215,15 @@ struct WorkRow: View {
                 .buttonStyle(.borderedProminent)
             }
             .padding()
+        }
+    }
+
+    private func statusImage(_ status: String) -> String {
+        switch status.lowercased() {
+        case "done", "complete", "completed": return "checkmark.circle"
+        case "dropped", "cancelled", "canceled": return "xmark.circle"
+        case "in-progress", "doing": return "play.circle"
+        default: return "circle"
         }
     }
 

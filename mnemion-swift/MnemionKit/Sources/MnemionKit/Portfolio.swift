@@ -20,7 +20,7 @@ public enum Portfolio {
 
     /// Statuses that close a task; `dropped` keeps the record (the doctrine says
     /// set status rather than archive).
-    public static let closedStatuses: Set<String> = ["done", "complete", "completed", "dropped", "cancelled", "canceled", "closed"]
+    public static let closedStatuses: Set<String> = ["done", "complete", "completed", "dropped", "cancelled", "canceled", "closed", "retired"]
 
     public static func isClosed(_ task: PatternEntry) -> Bool {
         closedStatuses.contains(task.entry.string("status")?.lowercased() ?? "")

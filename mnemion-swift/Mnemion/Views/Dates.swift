@@ -12,8 +12,16 @@ enum Dates {
         return f
     }()
 
+    /// A date-only value is that day; a timestamp (the hive stores UTC) is read
+    /// as the local calendar day it falls on.
     static func date(_ s: String?) -> Date? {
         guard let s, s.count >= 10 else { return nil }
+        if s.contains("T") {
+            let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+            if let instant = (try? Date(s, strategy: fractional)) ?? (try? Date(s, strategy: .iso8601)) {
+                return Calendar.current.startOfDay(for: instant)
+            }
+        }
         return formatter.date(from: String(s.prefix(10)))
     }
 
@@ -39,6 +47,18 @@ enum Dates {
         case 2...13: return "due in \(days) days"
         default: return "due \(d.formatted(.dateTime.month(.abbreviated).day()))"
         }
+    }
+}
+
+extension View {
+    /// A floor for sheets on the Mac; phones get the sheet's own width.
+    @ViewBuilder
+    func sheetSize(minWidth: CGFloat, minHeight: CGFloat) -> some View {
+        #if os(macOS)
+        self.frame(minWidth: minWidth, minHeight: minHeight)
+        #else
+        self
+        #endif
     }
 }
 

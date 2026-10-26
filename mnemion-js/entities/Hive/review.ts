@@ -93,8 +93,8 @@ export interface Review {
     pattern: string | null;
     due: HookKind[];
     status: HookStatus[];
-    /** When no reviews pattern exists: the create_pattern spec that would declare one. */
-    declare?: Record<string, unknown>;
+    /** When no reviews pattern exists: the pattern and relations to declare, in order. */
+    declare?: { pattern: Record<string, unknown>; relations: Record<string, unknown>[] };
   };
   work: WorkReview[];
   alignment: AlignmentGap[];
@@ -205,7 +205,28 @@ function isReviewsPattern(facets: FacetRow[]): boolean {
   return HOOKS.every((h) => options.has(h)) && facets.some((f) => f.name === "period" && f.type === "datetime");
 }
 
-/** The change an owner applies to declare a reviews pattern — offered when none exists. */
+/** Everything a hive needs before hooks can be recorded: the pattern, and the
+ *  two relations the review entries link with. Apply in order, each a
+ *  propose_change + apply_change. */
+export function reviewsDeclaration(): { pattern: Record<string, unknown>; relations: Record<string, unknown>[] } {
+  return {
+    pattern: reviewsPatternSpec(),
+    relations: [
+      {
+        type: "declare_relation", name: "commits-to", inverse: "committed-in",
+        description: "The source review records that the human chose the target work item as a commitment for the review's period: the primary outcome of a day, or the projects that get attention this week. Use it only from a review entry; membership is belongs-to, and a mere mention in a reflection is references. Example: reviews/1 commits-to tasks/41.",
+        source: ["reviews"], target: ["*"], cardinality: "many", behaviors: [],
+      },
+      {
+        type: "declare_relation", name: "reflects-on", inverse: "reflected-in",
+        description: "The source review (a day-end, week-end or month-end entry) answers the target review (the matching start entry): did the intention happen, what intervened, what changed. One reflection per start review; a reflection that merely cites an older review uses references. Example: reviews/2 reflects-on reviews/1.",
+        source: ["reviews"], target: ["reviews"], cardinality: "one", behaviors: ["acyclic"],
+      },
+    ],
+  };
+}
+
+/** The change an owner applies to declare a reviews pattern. */
 export function reviewsPatternSpec(): Record<string, unknown> {
   return {
     type: "create_pattern",
@@ -224,7 +245,19 @@ export function reviewsPatternSpec(): Record<string, unknown> {
 
 // === Briefs ===
 
-function brief(pattern: string, row: Record<string, unknown>, facets: FacetRow[]): EntryBrief {
+/** The calendar day of a stored datetime, in the hive's timezone. A date-only
+ *  value is already a day; a timestamp (stored as UTC ISO) is read in `timezone`,
+ *  so a deadline of 8 pm Los Angeles is due on that Los Angeles day. */
+export function localDay(value: unknown, timezone: string): string | null {
+  if (value == null) return null;
+  const s = String(value);
+  if (!s.includes("T")) return s.slice(0, 10);
+  const t = Date.parse(s);
+  if (Number.isNaN(t)) return s.slice(0, 10);
+  return localClock(new Date(t), timezone).clock.date;
+}
+
+function brief(pattern: string, row: Record<string, unknown>, facets: FacetRow[], timezone: string): EntryBrief {
   const b: EntryBrief = {
     pattern,
     id: row.id as number,
@@ -232,9 +265,17 @@ function brief(pattern: string, row: Record<string, unknown>, facets: FacetRow[]
     uri: uri(`entry/${pattern}/${row.id}`),
   };
   if (typeof row.status === "string") b.status = row.status;
-  if ("deadline" in row) b.deadline = row.deadline == null ? null : String(row.deadline).slice(0, 10);
+  if ("deadline" in row) b.deadline = localDay(row.deadline, timezone);
   if (typeof row.updated_at === "string") b.updated_at = row.updated_at;
   return b;
+}
+
+/** Entries the owner exempts from alignment gaps, by charter key `review_exempt`
+ *  ("projects/8, goals/2"): stored truth for the exceptions a doctrine names,
+ *  such as the catch-all project that serves no goal by design. */
+function exemptRefs(db: any): Set<string> {
+  const raw = charterValue(db, "review_exempt") ?? "";
+  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
 }
 
 function isOpen(row: Record<string, unknown>): boolean {
@@ -244,7 +285,7 @@ function isOpen(row: Record<string, unknown>): boolean {
 
 // === Work: overdue, due, stalled ===
 
-function reviewWork(db: any, pattern: string, facets: FacetRow[], today: string, weekEnd: string, now: Date): WorkReview {
+function reviewWork(db: any, pattern: string, facets: FacetRow[], today: string, weekEnd: string, now: Date, timezone: string): WorkReview {
   const policy = getMemoryPolicy(db, pattern);
   const stallDays = policy.half_life_days ?? DEFAULT_STALL_DAYS;
   let rows: Record<string, unknown>[] = [];
@@ -255,13 +296,15 @@ function reviewWork(db: any, pattern: string, facets: FacetRow[], today: string,
   const open = rows.filter(isOpen);
   const out: WorkReview = { pattern, open: open.length, undated: 0, stall_days: stallDays, overdue: [], due_today: [], due_this_week: [], stalled: [] };
   for (const row of open) {
-    const b = brief(pattern, row, facets);
+    const b = brief(pattern, row, facets, timezone);
     const d = b.deadline ?? null;
     if (d == null) out.undated++;
     else if (d < today) out.overdue.push(b);
     else if (d === today) out.due_today.push(b);
     else if (d <= weekEnd) out.due_this_week.push(b);
-    if (d == null || d >= today) {
+    // Stalled: open and untouched; an entry already due today or overdue is
+    // listed there, not twice.
+    if (d == null || d > today) {
       const touched = parseDbDate(row.updated_at as string | undefined);
       if (touched != null && (now.getTime() - touched) / DAY >= stallDays) out.stalled.push(b);
     }
@@ -276,11 +319,12 @@ function reviewWork(db: any, pattern: string, facets: FacetRow[], today: string,
 
 // === Alignment: the ends of a chain's steps that hold no link ===
 
-function reviewAlignment(db: any, facetCache: Map<string, FacetRow[]>): AlignmentGap[] {
+function reviewAlignment(db: any, facetCache: Map<string, FacetRow[]>, timezone: string): AlignmentGap[] {
   const rels = activeRelations(db);
   const byName = new Map(rels.map((r) => [r.name, r]));
   const gaps: AlignmentGap[] = [];
   const seen = new Set<string>();
+  const exempt = exemptRefs(db);
   const facets = (p: string) => {
     if (!facetCache.has(p)) facetCache.set(p, facetsOf(db, p));
     return facetCache.get(p)!;
@@ -296,11 +340,15 @@ function reviewAlignment(db: any, facetCache: Map<string, FacetRow[]>): Alignmen
           const key = `${step.name}:${end}:${pattern}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          const rows = entriesLacking(db, pattern, end, step.name);
+          // A closed entry (status done, retired, dropped…) needs no alignment;
+          // the doctrine says set status rather than archive, so honour it here.
+          const rows = entriesLacking(db, pattern, end, step.name)
+            .filter(isOpen)
+            .filter((row) => !exempt.has(`${pattern}/${row.id}`));
           if (rows.length === 0) continue;
           gaps.push({
             chain: chain.name, relation: step.name, end, pattern,
-            entries: rows.slice(0, LIST_CAP).map((row) => brief(pattern, row, facets(pattern))),
+            entries: rows.slice(0, LIST_CAP).map((row) => brief(pattern, row, facets(pattern), timezone)),
           });
         }
       }
@@ -311,7 +359,7 @@ function reviewAlignment(db: any, facetCache: Map<string, FacetRow[]>): Alignmen
 
 // === Hooks ===
 
-function reviewHooks(db: any, pattern: string | null, clock: LocalClock, dayEndHour: number): HookStatus[] {
+function reviewHooks(db: any, pattern: string | null, clock: LocalClock, dayEndHour: number, timezone: string): HookStatus[] {
   const day = clock.date;
   const monday = addDays(day, -(clock.weekday - 1));
   const monthStart = iso(clock.year, clock.month, 1);
@@ -337,7 +385,7 @@ function reviewHooks(db: any, pattern: string | null, clock: LocalClock, dayEndH
           `SELECT id, period FROM ${quoteIdent(pattern)} WHERE archived_at IS NULL AND kind = ? ORDER BY period DESC, id DESC LIMIT 1`,
           kind,
         ).toArray() as any[];
-        if (r[0]) last = { id: r[0].id as number, period: String(r[0].period).slice(0, 10) };
+        if (r[0]) last = { id: r[0].id as number, period: localDay(r[0].period, timezone) ?? "" };
       } catch { /* pattern mid-rebuild */ }
     }
     const covered = last != null && last.period === period[kind];
@@ -350,7 +398,9 @@ function reviewHooks(db: any, pattern: string | null, clock: LocalClock, dayEndH
 function describe(review: Omit<Review, "message">): string | null {
   const parts: string[] = [];
   if (review.hooks.due.length > 0) {
-    parts.push(`${review.hooks.due.join(" and ")} review${review.hooks.due.length > 1 ? "s" : ""} due`);
+    const due = review.hooks.due;
+    const list = due.length > 1 ? `${due.slice(0, -1).join(", ")} and ${due[due.length - 1]}` : due[0];
+    parts.push(`${list} review${due.length > 1 ? "s" : ""} due`);
   }
   const totals = { overdue: 0, due_today: 0, due_this_week: 0, stalled: 0 };
   for (const w of review.work) {
@@ -389,10 +439,10 @@ export function computeReview(ctx: ReviewContext): Review {
     const facets = facetsOf(ctx.db, pattern);
     facetCache.set(pattern, facets);
     if (reviewsPattern == null && isReviewsPattern(facets)) reviewsPattern = pattern;
-    if (isWorkPattern(facets)) work.push(reviewWork(ctx.db, pattern, facets, clock.date, weekEnd, now));
+    if (isWorkPattern(facets)) work.push(reviewWork(ctx.db, pattern, facets, clock.date, weekEnd, now, timezone));
   }
 
-  const status = reviewHooks(ctx.db, reviewsPattern, clock, dayEndHour);
+  const status = reviewHooks(ctx.db, reviewsPattern, clock, dayEndHour, timezone);
   const partial: Omit<Review, "message"> = {
     as_of: clock.date,
     timezone,
@@ -400,10 +450,10 @@ export function computeReview(ctx: ReviewContext): Review {
       pattern: reviewsPattern,
       due: status.filter((h) => h.due).map((h) => h.kind),
       status,
-      ...(reviewsPattern == null ? { declare: reviewsPatternSpec() } : {}),
+      ...(reviewsPattern == null ? { declare: reviewsDeclaration() } : {}),
     },
     work,
-    alignment: reviewAlignment(ctx.db, facetCache),
+    alignment: reviewAlignment(ctx.db, facetCache, timezone),
   };
   return { ...partial, message: describe(partial) };
 }

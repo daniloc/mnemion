@@ -1,6 +1,0 @@
-Mnemion.xcodeproj/
-.build/
-DerivedData/
-*.xcuserstate
-xcuserdata/
-.swiftpm/

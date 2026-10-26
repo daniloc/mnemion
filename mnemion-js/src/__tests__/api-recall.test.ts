@@ -88,6 +88,9 @@ describe("api recall", () => {
 
     const empty = await batchMutate(ctxFor(store, new Request("https://test.local/api/batch", { method: "POST", body: "{}" })));
     expect(empty.status).toBe(400);
+    const malformed = await batchMutate(ctxFor(store, new Request("https://test.local/api/batch", { method: "POST", body: JSON.stringify({ operations: [null, 1] }) })));
+    expect(malformed.status).toBe(400);
+    expect((await malformed.json() as { message: string }).message).toMatch(/operations\[0\]/);
   });
 
   it("the routes exist and sit behind the session gate", async () => {

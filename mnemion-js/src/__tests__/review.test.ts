@@ -121,8 +121,46 @@ describe("derived review", () => {
     expect(review.alignment).toEqual([]);
     expect(review.hooks.pattern).toBeNull();
     expect(review.hooks.due).toEqual([]);
-    expect(review.hooks.declare).toMatchObject({ type: "create_pattern", pattern_name: "reviews" });
+    expect(review.hooks.declare?.pattern).toMatchObject({ type: "create_pattern", pattern_name: "reviews" });
+    expect(review.hooks.declare?.relations.map((r) => r.name)).toEqual(["commits-to", "reflects-on"]);
     expect(review.message).toBeNull();
+
+    // Applying exactly what the review offers lets a hook record its links.
+    await change(store, review.hooks.declare!.pattern);
+    for (const rel of review.hooks.declare!.relations) await change(store, rel);
+    const r = JSON.parse(await store.mutate("reviews", "create", JSON.stringify({ kind: "day-start", period: "2026-10-28", intention: "x" })));
+    expect(r.error).toBeFalsy();
+    const r2 = JSON.parse(await store.mutate("reviews", "create", JSON.stringify({ kind: "day-end", period: "2026-10-28", reflection: "y", _relate: { "reflects-on": `reviews/${r.entry.id}` } })));
+    expect(r2.error).toBeFalsy();
+  });
+
+  it("a deadline with a time is due on its day in the charter timezone, and alignment skips closed and exempt entries", async () => {
+    const store = getStore();
+    await charter(store, "timezone", "America/Los_Angeles");
+    await createPattern(store, "tasks", TASK_FACETS);
+    // 8 pm on the 28th in Los Angeles is 03:00 UTC on the 29th.
+    const evening = await entry(store, "tasks", { title: "evening", deadline: "2026-10-28T20:00:00-07:00", status: "open" });
+    // Wednesday the 28th at noon in Los Angeles.
+    let review = await reviewAt(store, new Date("2026-10-28T19:00:00Z"));
+    expect(review.as_of).toBe("2026-10-28");
+    expect(ids(review.work[0].due_today)).toEqual([evening]);
+    expect(review.work[0].due_today[0].deadline).toBe("2026-10-28");
+
+    await createPattern(store, "goals");
+    await createPattern(store, "projects", [{ name: "title", type: "text" }, { name: "status", type: "select", options: ["active", "retired"] }]);
+    await declare(store, { name: "serves", inverse: "served-by", source: ["projects"], target: ["goals"] });
+    await declare(store, { name: "belongs-to", inverse: "contains", source: ["tasks"], target: ["projects"], cardinality: "one", behaviors: ["containment"] });
+    await change(store, { type: "declare_relation", name: "reaches", inverse: "reached-by", description: DESC("reaches"), chain: ["belongs-to", "serves"] });
+    const live = await entry(store, "projects", { title: "live", status: "active" });
+    const retired = await entry(store, "projects", { title: "retired", status: "retired" });
+    const catchAll = await entry(store, "projects", { title: "catch-all", status: "active" });
+    await charter(store, "review_exempt", `projects/${catchAll}`);
+
+    review = await reviewAt(store, WED_NOON);
+    const gap = (relation: string, end: string) => review.alignment.find((g) => g.relation === relation && g.end === end);
+    expect(ids(gap("serves", "source")!.entries)).toEqual([live]); // retired is closed, catch-all exempt
+    expect(ids(gap("belongs-to", "target")!.entries)).toEqual([live]);
+    void retired;
   });
 
   it("hooks are due until a review entry covers the current period", async () => {
@@ -135,7 +173,7 @@ describe("derived review", () => {
     expect(review.hooks.status.map((h) => h.period)).toEqual([
       "2026-10-28", "2026-10-28", "2026-10-26", "2026-10-26", "2026-10-01", "2026-10-01",
     ]);
-    expect(review.message).toBe("Review: day-start and week-start and month-start reviews due.");
+    expect(review.message).toBe("Review: day-start, week-start and month-start reviews due.");
 
     const dayStart = await entry(store, "reviews", { kind: "day-start", period: "2026-10-28", intention: "ship the review" });
     await entry(store, "reviews", { kind: "week-start", period: "2026-10-26", intention: "the week" });

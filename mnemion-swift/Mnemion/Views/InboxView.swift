@@ -159,6 +159,6 @@ private struct MakeTaskSheet: View {
                 }
             }
         }
-        .frame(minWidth: 440, minHeight: 380)
+        .sheetSize(minWidth: 440, minHeight: 380)
     }
 }

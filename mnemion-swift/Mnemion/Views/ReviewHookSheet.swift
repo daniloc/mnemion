@@ -80,7 +80,7 @@ struct ReviewHookSheet: View {
             }
             .task { await load() }
         }
-        .frame(minWidth: 480, minHeight: 520)
+        .sheetSize(minWidth: 480, minHeight: 520)
     }
 
     /// What the hook gathers, from the review already on screen.

@@ -33,6 +33,13 @@ public actor TokenStore {
 
     private func refresh() async throws -> Credentials {
         if let refreshing { return try await refreshing.value }
+        // Another surface (the share extension, an App Intent, the app itself)
+        // may have rotated the shared item since we loaded it; adopt its grant
+        // rather than spend a refresh token the provider has already retired.
+        if let saved = keychain.load(), saved.accessToken != credentials.accessToken, saved.hiveURL == credentials.hiveURL {
+            credentials = saved
+            if saved.expiresAt.timeIntervalSinceNow > 60 { return saved }
+        }
         let task = Task { [oauth, credentials] in try await oauth.refresh(credentials) }
         refreshing = task
         defer { refreshing = nil }

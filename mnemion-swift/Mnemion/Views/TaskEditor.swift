@@ -119,7 +119,7 @@ struct TaskEditor: View {
                 }
             }
         }
-        .frame(minWidth: 480, minHeight: 560)
+        .sheetSize(minWidth: 480, minHeight: 560)
     }
 
     private var statusOptions: [String] {
@@ -175,6 +175,6 @@ struct NewTaskSheet: View {
                 }
             }
         }
-        .frame(minWidth: 440, minHeight: 360)
+        .sheetSize(minWidth: 440, minHeight: 360)
     }
 }
