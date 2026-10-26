@@ -41,7 +41,7 @@ import {
   walkedProjectFiles,
 } from "@posthog/coherence/plugin";
 import manifest from "./plugin.json" with { type: "json" };
-import { declarationsIn } from "./swift-source.js";
+import { declarationsIn, modulesOf, swiftFilesUnder } from "./swift-source.js";
 
 const LADDER = manifest.ladder;
 const INSTRUMENT = "sourcekit-lsp";
@@ -146,8 +146,18 @@ export class SwiftAdapter {
         },
       }, 60_000);
       client.notify("initialized", {});
+      // sourcekit-lsp loads a SwiftPM workspace around the first document opened
+      // under it; a file asked before its package loaded answers "no language
+      // service". One file of every declared module is opened up front, so each
+      // workspace loads before any question is asked of it.
+      const seeds = new Set();
+      for (const module of modulesOf(this.root)) {
+        const first = module.folders.flatMap((f) => swiftFilesUnder(this.root, f))[0];
+        if (first !== undefined) seeds.add(first);
+      }
       const seed = this.files()[0];
-      if (seed !== undefined) this.open(seed);
+      if (seed !== undefined) seeds.add(seed);
+      for (const file of seeds) this.open(file);
       return { ok: true };
     } catch (error) {
       client.kill();
@@ -349,7 +359,23 @@ export class SwiftAdapter {
     const starts = definition.kind === "module" ? (await this.documentSymbols(definition.file)).map((s) => s.selectionRange.start) : [definition.selection];
     const reported = [];
     for (const position of starts) {
-      const locations = await client.request("textDocument/references", { textDocument: { uri: this.uri(definition.file) }, position, context: { includeDeclaration: false } }, 120_000);
+      const ask = () => client.request("textDocument/references", { textDocument: { uri: this.uri(definition.file) }, position, context: { includeDeclaration: false } }, 120_000);
+      let locations;
+      try {
+        locations = await ask();
+      } catch (error) {
+        // "No language service": the document was opened before its SwiftPM
+        // workspace had loaded, and the server keeps it unowned until it is
+        // opened again. Close it, let the index settle, reopen it, ask once more.
+        if (!/No language service/.test(String(error?.message ?? error))) throw error;
+        this.closeDocument(definition.file);
+        this.symbolCache.delete(definition.file);
+        await new Promise((r) => setTimeout(r, 1_500));
+        await this.settled(client);
+        this.open(definition.file);
+        await new Promise((r) => setTimeout(r, 500));
+        locations = await ask();
+      }
       reported.push(...(locations ?? []));
     }
     const own = keepProjectFiles(this.root, reported.map((l) => this.relative(l.uri)));
