@@ -528,6 +528,36 @@ extra links first.
 
    `serves` stays optional; the *unaligned* view covers it.
 
+**Applied 2026-10-26** (owner-approved from a dry run). The restore point is
+`_schema_history` row 65 (the `tasks` doctrine change); reverting it restores
+the hive to just before Phase 4. The engine forced three detours from the
+plan above:
+
+- **`belongs-to` and `serves` were retired and redeclared.** A relation's
+  source and target aren't amendable, and `belongs-to` admitted only
+  `project-tasks` while `serves` also admitted `tasks`. Their links were
+  unlinked first, then both were redeclared with the same inverses and
+  descriptions: `belongs-to` as tasks → projects (one, containment, then
+  required), `serves` as projects → goals.
+- **`tasks.deadline` and `tasks.status` were dropped and re-added.** No change
+  type alters a facet's type or default. `deadline` came back as a datetime,
+  `status` as a select with default `open`, and the values were rewritten from
+  the tables above.
+- **`project-tasks.project` and `.links` were not dropped.** The pattern is
+  archived with its data intact, which keeps the old ids readable.
+
+Also: `notes` was appended to `context` under a "Notes:" paragraph; the
+catch-all project serves no goal, so goal 12 currently has no work feeding it;
+`addresses` (belongs-to ∘ serves) was declared. New projects are
+`projects/2`–`8` in table order (Mnemion stays `projects/1`).
+
+Id map, `project-tasks` → `tasks` (each moved entry's context also records
+its old id and original creation date):
+
+| project-tasks | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| tasks | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 |
+
 ### Clients
 
 - **Web:** the app shows nothing about links today. Relation rendering ships
