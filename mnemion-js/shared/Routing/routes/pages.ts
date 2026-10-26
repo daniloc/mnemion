@@ -65,6 +65,32 @@ export const queryHistory: RouteHandler = async (ctx) => {
   return new Response(result, { headers: { "Content-Type": "application/json" } });
 };
 
+// === Recall for native and web clients: the same prime and search the MCP tools call ===
+
+/** POST {context, patterns?, limit?} → the prime response (charter, relevant entries, one-hop links). */
+export const primeContext: RouteHandler = async (ctx) => {
+  const body = await ctx.request.json().catch(() => null) as { context?: unknown; patterns?: unknown; limit?: unknown } | null;
+  if (!body || typeof body.context !== "string" || !body.context.trim()) {
+    return Response.json({ error: true, message: "context is required" }, { status: 400 });
+  }
+  const patterns = Array.isArray(body.patterns) ? body.patterns.filter((p): p is string => typeof p === "string") : [];
+  const limit = Math.min(Math.max(Number(body.limit) || 10, 1), 20);
+  const result = await ctx.hive.prime(body.context, patterns.length ? JSON.stringify(patterns) : "", limit);
+  return new Response(result, { headers: { "Content-Type": "application/json" } });
+};
+
+/** GET ?q=term&patterns=a,b&limit=N → cross-pattern full-text search. */
+export const searchEntries: RouteHandler = async (ctx) => {
+  const term = (ctx.url.searchParams.get("q") ?? "").trim();
+  if (!term) {
+    return Response.json({ error: true, message: "q is required" }, { status: 400 });
+  }
+  const patterns = (ctx.url.searchParams.get("patterns") ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+  const limit = Math.min(Math.max(parseInt(ctx.url.searchParams.get("limit") ?? "20", 10) || 20, 1), 100);
+  const result = await ctx.hive.search(term, patterns.length ? JSON.stringify(patterns) : "", limit);
+  return new Response(result, { headers: { "Content-Type": "application/json" } });
+};
+
 /** The derived review (entities/Hive/review.ts): the same JSON as mnemion://review. */
 export const queryReview: RouteHandler = async (ctx) => {
   const result = await ctx.hive.getReview();
