@@ -3,7 +3,7 @@
 
 import { env, SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
-import { primeContext, searchEntries } from "../../shared/Routing/routes/pages";
+import { primeContext, searchEntries, batchMutate } from "../../shared/Routing/routes/pages";
 import type { RouteContext } from "../../shared/Routing/router";
 import type { HiveDO } from "../../entities/Hive/hive";
 
@@ -67,8 +67,31 @@ describe("api recall", () => {
     expect(missing.status).toBe(400);
   });
 
-  it("both routes exist and sit behind the session gate", async () => {
-    for (const [method, path] of [["POST", "/api/prime"], ["GET", "/api/search?q=x"]] as const) {
+  it("/api/batch runs one atomic batch with link and unlink shortcuts", async () => {
+    const store = getStore();
+    await createPattern(store, "notes");
+    const a = JSON.parse(await store.mutate("notes", "create", JSON.stringify({ title: "a" }))).entry.id as number;
+    const b = JSON.parse(await store.mutate("notes", "create", JSON.stringify({ title: "b" }))).entry.id as number;
+    const c = JSON.parse(await store.mutate("notes", "create", JSON.stringify({ title: "c" }))).entry.id as number;
+    await store.mutate("link", "create", JSON.stringify({ source: `notes/${a}`, target: `notes/${b}`, label: "references" }));
+
+    const moved = await batchMutate(ctxFor(store, new Request("https://test.local/api/batch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operations: [
+        { pattern: "unlink", data: { source: `notes/${a}`, target: `notes/${b}`, label: "references" } },
+        { pattern: "link", data: { source: `notes/${a}`, target: `notes/${c}`, label: "references" } },
+      ] }),
+    })));
+    expect(moved.status).toBe(200);
+    const links = JSON.parse(await store.query("_links", JSON.stringify([`source_id=${a}`, "label=references"]), "", "id", 10, false)) as { entries: { target_id: number; archived_at: string | null }[] };
+    expect(links.entries.filter((l) => l.archived_at == null).map((l) => l.target_id)).toEqual([c]);
+
+    const empty = await batchMutate(ctxFor(store, new Request("https://test.local/api/batch", { method: "POST", body: "{}" })));
+    expect(empty.status).toBe(400);
+  });
+
+  it("the routes exist and sit behind the session gate", async () => {
+    for (const [method, path] of [["POST", "/api/prime"], ["GET", "/api/search?q=x"], ["POST", "/api/batch"]] as const) {
       const res = await SELF.fetch(`https://test.local${path}`, { method });
       expect(res.status, path).not.toBe(404);
       expect([302, 401, 503], path).toContain(res.status);

@@ -44,6 +44,16 @@ export const mutateEntry: RouteHandler = async (ctx) => {
   });
 };
 
+/** POST {operations: [{pattern, operation?, data}, ...]} → one atomic batch (link/unlink shortcuts included). */
+export const batchMutate: RouteHandler = async (ctx) => {
+  const body = await ctx.request.json().catch(() => null) as { operations?: unknown } | null;
+  if (!body || !Array.isArray(body.operations) || body.operations.length === 0) {
+    return Response.json({ error: true, message: "operations (a non-empty array) is required" }, { status: 400 });
+  }
+  const result = await ctx.hive.batchMutate(JSON.stringify(body.operations), ctx.actor);
+  return new Response(result, { headers: { "Content-Type": "application/json" } });
+};
+
 export const evolveSchema: RouteHandler = async (ctx) => {
   const body = await ctx.request.json() as { description: string; change: Record<string, unknown> };
   if (!body.description || !body.change) {

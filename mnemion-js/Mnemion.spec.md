@@ -122,6 +122,9 @@ Cloudflare Worker entry: an OAuth-wrapped MCP server whose one declarative route
 - mutate entry: A client request enters the mutate entry route.
   handler: mutateEntry
   trust: served-untrusted
+- batch mutate: A client request enters the batch mutate route.
+  handler: batchMutate
+  trust: served-untrusted
 - evolve schema: A client request enters the evolve schema route.
   handler: evolveSchema
   trust: served-untrusted
