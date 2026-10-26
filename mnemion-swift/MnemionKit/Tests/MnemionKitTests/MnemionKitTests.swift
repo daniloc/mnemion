@@ -255,42 +255,6 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         #expect(data["context"] == nil)
     }
 
-    static let reviewJSON = #"""
-    {"as_of":"2026-10-28","timezone":"UTC",
-     "hooks":{"pattern":"reviews","due":["day-start","week-start"],
-              "status":[{"kind":"day-start","period":"2026-10-28","due":true,"last":null},
-                        {"kind":"day-end","period":"2026-10-28","due":false,"last":{"id":3,"period":"2026-10-27"}}]},
-     "work":[{"pattern":"tasks","open":5,"undated":1,"stall_days":45,
-              "overdue":[{"pattern":"tasks","id":3,"label":"Email Christy","uri":"mnemion://entry/tasks/3","status":"open","deadline":"2026-03-15","updated_at":"2026-10-26 04:07:27"}],
-              "due_today":[],"due_this_week":[],"stalled":[]}],
-     "alignment":[{"chain":"addresses","relation":"serves","end":"target","pattern":"goals",
-                   "entries":[{"pattern":"goals","id":12,"label":"Metabolize success","uri":"mnemion://entry/goals/12"}]}],
-     "message":"Review: day-start and week-start reviews due; 1 overdue; 1 goals without inbound serves."}
-    """#
-
-    @Test func decodesTheDerivedReview() throws {
-        let review = try JSONDecoder().decode(Review.self, from: Data(Self.reviewJSON.utf8))
-        #expect(review.asOf == "2026-10-28")
-        #expect(review.dueHooks == [.dayStart, .weekStart])
-        #expect(review.status(of: .dayEnd)?.last?.id == 3)
-        #expect(review.work[0].stallDays == 45)
-        #expect(review.allOverdue.map(\.ref) == [EntryRef(pattern: "tasks", id: 3)])
-        #expect(review.allOverdue[0].deadline == "2026-03-15")
-        #expect(review.alignment[0].id == "addresses:serves:target:goals")
-        #expect(review.alignment[0].entries[0].label == "Metabolize success")
-        #expect(review.message?.hasPrefix("Review:") == true)
-    }
-
-    @Test func hooksPairUpAndCommitToTheRightPattern() {
-        for hook in ReviewHook.allCases {
-            #expect(hook.counterpart.counterpart == hook)
-            #expect(hook.isStart != hook.counterpart.isStart)
-        }
-        #expect(ReviewHook.dayStart.commitsTo == "tasks")
-        #expect(ReviewHook.weekStart.commitsTo == "projects")
-        #expect(ReviewHook(rawValue: "month-end")?.counterpart == .monthStart)
-    }
-
     @Test func recordReviewWritesOneEntryWithItsLinks() async throws {
         let client = StubProtocol.client(responding: #"{"operation":"create","pattern":"reviews","entry":{"id":7,"kind":"day-start"},"uri":"mnemion://entry/reviews/7"}"#)
         let review = try await client.recordReview(
@@ -420,5 +384,44 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         #expect(Portfolio.toggledStatus(for: done, schema: undeclared) == nil)
         #expect(!Portfolio.isClosed(done, schema: nil))
         #expect(Portfolio.toggledStatus(for: done, schema: nil) == nil)
+    }
+}
+
+/// The worker's review as the app decodes it, and the hook vocabulary; pure, no stub.
+@Suite struct ReviewDecodingTests {
+    static let reviewJSON = #"""
+    {"as_of":"2026-10-28","timezone":"UTC",
+     "hooks":{"pattern":"reviews","due":["day-start","week-start"],
+              "status":[{"kind":"day-start","period":"2026-10-28","due":true,"last":null},
+                        {"kind":"day-end","period":"2026-10-28","due":false,"last":{"id":3,"period":"2026-10-27"}}]},
+     "work":[{"pattern":"tasks","open":5,"undated":1,"stall_days":45,
+              "overdue":[{"pattern":"tasks","id":3,"label":"Email Christy","uri":"mnemion://entry/tasks/3","status":"open","deadline":"2026-03-15","updated_at":"2026-10-26 04:07:27"}],
+              "due_today":[],"due_this_week":[],"stalled":[]}],
+     "alignment":[{"chain":"addresses","relation":"serves","end":"target","pattern":"goals",
+                   "entries":[{"pattern":"goals","id":12,"label":"Metabolize success","uri":"mnemion://entry/goals/12"}]}],
+     "message":"Review: day-start and week-start reviews due; 1 overdue; 1 goals without inbound serves."}
+    """#
+
+    @Test func decodesTheDerivedReview() throws {
+        let review = try JSONDecoder().decode(Review.self, from: Data(Self.reviewJSON.utf8))
+        #expect(review.asOf == "2026-10-28")
+        #expect(review.dueHooks == [.dayStart, .weekStart])
+        #expect(review.status(of: .dayEnd)?.last?.id == 3)
+        #expect(review.work[0].stallDays == 45)
+        #expect(review.allOverdue.map(\.ref) == [EntryRef(pattern: "tasks", id: 3)])
+        #expect(review.allOverdue[0].deadline == "2026-03-15")
+        #expect(review.alignment[0].id == "addresses:serves:target:goals")
+        #expect(review.alignment[0].entries[0].label == "Metabolize success")
+        #expect(review.message?.hasPrefix("Review:") == true)
+    }
+
+    @Test func hooksPairUpAndCommitToTheRightPattern() {
+        for hook in ReviewHook.allCases {
+            #expect(hook.counterpart.counterpart == hook)
+            #expect(hook.isStart != hook.counterpart.isStart)
+        }
+        #expect(ReviewHook.dayStart.commitsTo == "tasks")
+        #expect(ReviewHook.weekStart.commitsTo == "projects")
+        #expect(ReviewHook(rawValue: "month-end")?.counterpart == .monthStart)
     }
 }

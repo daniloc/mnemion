@@ -95,6 +95,27 @@ cd mnemion-swift/MnemionKit
 swift test --scratch-path /tmp/mnemionkit-build
 ```
 
+### Coherence
+
+This folder is its own Coherence project (`coherence.config.json`), with the
+same spec-and-oracle discipline as the worker: `Mnemion.spec.md` (root, trust
+levels and entrances), `MnemionKit/MnemionKit.spec.md` and
+`Mnemion/Mnemion.spec.md` hold the invariants, each with a Swift Testing suite
+as its totality oracle, refuted once with a staged break. Swift is read through
+the plugin in `coherence-plugins/swift/`: a text reading of declarations,
+imports and SwiftPM/XcodeGen modules, entrance rules (`@main`, App Intents,
+extension principal classes, `main.swift`), and an adapter over sourcekit-lsp
+that waits for the background index and stages refutations in a throwaway copy
+of the project. `npm install` here installs Coherence for the hooks and checks:
+
+```bash
+cd mnemion-swift
+npm install
+npm run coherence:spec          # the specs and their state
+npm run coherence:run           # run every oracle
+npm run coherence:plugin-check  # hold the Swift plugin to its duties
+```
+
 `--scratch-path` keeps build products outside `~/Documents`. Extended
 attributes set there (iCloud file provider) make `codesign` reject the test
 bundle.

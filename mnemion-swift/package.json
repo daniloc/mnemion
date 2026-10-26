@@ -1,0 +1,14 @@
+{
+  "name": "mnemion-swift-governance",
+  "private": true,
+  "description": "Coherence for the Swift client: the hooks and checks run from this folder; the code is Swift.",
+  "scripts": {
+    "coherence:spec": "coherence spec --check",
+    "coherence:run": "coherence run",
+    "coherence:plugin-check": "coherence plugin check ./coherence-plugins/swift",
+    "test": "cd MnemionKit && swift test --scratch-path /tmp/mnemionkit-build"
+  },
+  "devDependencies": {
+    "@posthog/coherence": "https://github.com/PostHog/coherence/releases/download/v1.11.0-beta.0/posthog-coherence-1.11.0-beta.0.tgz"
+  }
+}
