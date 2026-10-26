@@ -35,10 +35,6 @@ export interface ReviewContext {
 export const HOOKS = ["day-start", "day-end", "week-start", "week-end", "month-start", "month-end"] as const;
 export type HookKind = (typeof HOOKS)[number];
 
-/** Status values that close a work item. Anything else is open. */
-const CLOSED_STATUSES: ReadonlySet<string> = new Set([
-  "done", "dropped", "complete", "completed", "cancelled", "canceled", "closed", "retired",
-]);
 const DEFAULT_STALL_DAYS = 30;
 const DEFAULT_DAY_END_HOUR = 17;
 /** The month-end hook opens this many days before the month turns. */
@@ -61,6 +57,11 @@ export interface WorkReview {
   open: number;
   undated: number;
   stall_days: number;
+  /** False when the status select declares no `closed` values: then nothing
+   *  counts as closed and every entry is open, until the owner declares them. */
+  closed_declared: boolean;
+  /** Full counts; the lists below are capped at LIST_CAP. */
+  totals: { overdue: number; due_today: number; due_this_week: number; stalled: number };
   overdue: EntryBrief[];
   due_today: EntryBrief[];
   due_this_week: EntryBrief[];
@@ -74,6 +75,8 @@ export interface AlignmentGap {
   relation: string;
   end: "source" | "target";
   pattern: string;
+  /** Full count; `entries` is capped at LIST_CAP. */
+  total: number;
   entries: EntryBrief[];
 }
 
@@ -235,7 +238,7 @@ export function reviewsPatternSpec(): Record<string, unknown> {
     doctrine: "Create one entry when a review hook runs with the human: kind names the hook, period is the day (YYYY-MM-DD), the week's Monday, or the month's first day. Start hooks record an intention; end hooks record a reflection and link reflects-on the matching start entry. Link the work the human committed to with commits-to. Never create a review speculatively; the human's answers are the entry.",
     facets: [
       { name: "kind", type: "select", required: true, options: [...HOOKS] },
-      { name: "period", type: "datetime", required: true },
+      { name: "period", type: "datetime", required: true, resolution: "day" },
       { name: "intention", type: "text" },
       { name: "reflection", type: "text" },
       { name: "energy", type: "select", options: ["low", "medium", "high"] },
@@ -279,21 +282,23 @@ function exemptRefs(db: any): Set<string> {
 }
 
 /** The pattern's declared terminal statuses (`_fields.closed` on its status
- *  select). Empty when undeclared, and then the fallback set applies. */
-function closedStatuses(facets: FacetRow[]): Set<string> {
+ *  select), or null when it declares none. There is no fallback set: an
+ *  undeclared pattern closes nothing (fail closed), and the review says so. */
+function closedStatuses(facets: FacetRow[]): Set<string> | null {
   const status = facets.find((f) => f.name === "status" && f.type === "select");
-  if (!status?.closed) return new Set();
+  if (!status?.closed) return null;
   try {
     const parsed = JSON.parse(status.closed);
-    return new Set(Array.isArray(parsed) ? parsed.map((s) => String(s).toLowerCase()) : []);
+    return Array.isArray(parsed) ? new Set(parsed.map((s) => String(s).toLowerCase())) : null;
   } catch {
-    return new Set();
+    return null;
   }
 }
 
-function isOpen(row: Record<string, unknown>, closed: ReadonlySet<string>): boolean {
+function isOpen(row: Record<string, unknown>, closed: ReadonlySet<string> | null): boolean {
+  if (!closed) return true;
   const s = typeof row.status === "string" ? row.status.trim().toLowerCase() : "";
-  return !(closed.size > 0 ? closed : CLOSED_STATUSES).has(s);
+  return !closed.has(s);
 }
 
 // === Work: overdue, due, stalled ===
@@ -308,7 +313,11 @@ function reviewWork(db: any, pattern: string, facets: FacetRow[], today: string,
 
   const closed = closedStatuses(facets);
   const open = rows.filter((row) => isOpen(row, closed));
-  const out: WorkReview = { pattern, open: open.length, undated: 0, stall_days: stallDays, overdue: [], due_today: [], due_this_week: [], stalled: [] };
+  const out: WorkReview = {
+    pattern, open: open.length, undated: 0, stall_days: stallDays, closed_declared: closed != null,
+    totals: { overdue: 0, due_today: 0, due_this_week: 0, stalled: 0 },
+    overdue: [], due_today: [], due_this_week: [], stalled: [],
+  };
   for (const row of open) {
     const b = brief(pattern, row, facets, timezone);
     const d = b.deadline ?? null;
@@ -316,9 +325,9 @@ function reviewWork(db: any, pattern: string, facets: FacetRow[], today: string,
     else if (d < today) out.overdue.push(b);
     else if (d === today) out.due_today.push(b);
     else if (d <= weekEnd) out.due_this_week.push(b);
-    // Stalled: open and untouched; an entry already due today or overdue is
-    // listed there, not twice.
-    if (d == null || d > today) {
+    // Stalled: open and untouched, and not already listed as due this week or
+    // overdue, so nothing is counted twice.
+    if (d == null || d > weekEnd) {
       const touched = parseDbDate(row.updated_at as string | undefined);
       if (touched != null && (now.getTime() - touched) / DAY >= stallDays) out.stalled.push(b);
     }
@@ -327,7 +336,10 @@ function reviewWork(db: any, pattern: string, facets: FacetRow[], today: string,
   out.overdue.sort(byDeadline);
   out.due_this_week.sort(byDeadline);
   out.stalled.sort((a, b) => (a.updated_at ?? "").localeCompare(b.updated_at ?? ""));
-  for (const k of ["overdue", "due_today", "due_this_week", "stalled"] as const) out[k] = out[k].slice(0, LIST_CAP);
+  for (const k of ["overdue", "due_today", "due_this_week", "stalled"] as const) {
+    out.totals[k] = out[k].length;
+    out[k] = out[k].slice(0, LIST_CAP);
+  }
   return out;
 }
 
@@ -362,7 +374,7 @@ function reviewAlignment(db: any, facetCache: Map<string, FacetRow[]>, timezone:
             .filter((row) => !exempt.has(`${pattern}/${row.id}`));
           if (rows.length === 0) continue;
           gaps.push({
-            chain: chain.name, relation: step.name, end, pattern,
+            chain: chain.name, relation: step.name, end, pattern, total: rows.length,
             entries: rows.slice(0, LIST_CAP).map((row) => brief(pattern, row, facets(pattern), timezone)),
           });
         }
@@ -419,10 +431,10 @@ function describe(review: Omit<Review, "message">): string | null {
   }
   const totals = { overdue: 0, due_today: 0, due_this_week: 0, stalled: 0 };
   for (const w of review.work) {
-    totals.overdue += w.overdue.length;
-    totals.due_today += w.due_today.length;
-    totals.due_this_week += w.due_this_week.length;
-    totals.stalled += w.stalled.length;
+    totals.overdue += w.totals.overdue;
+    totals.due_today += w.totals.due_today;
+    totals.due_this_week += w.totals.due_this_week;
+    totals.stalled += w.totals.stalled;
   }
   const work: string[] = [];
   if (totals.overdue) work.push(`${totals.overdue} overdue`);
@@ -432,8 +444,11 @@ function describe(review: Omit<Review, "message">): string | null {
   if (work.length) parts.push(work.join(", "));
   for (const g of review.alignment) {
     parts.push(g.end === "source"
-      ? `${g.entries.length} ${g.pattern} without ${g.relation}`
-      : `${g.entries.length} ${g.pattern} without inbound ${g.relation}`);
+      ? `${g.total} ${g.pattern} without ${g.relation}`
+      : `${g.total} ${g.pattern} without inbound ${g.relation}`);
+  }
+  for (const w of review.work) {
+    if (!w.closed_declared) parts.push(`${w.pattern}.status declares no closed values, so every entry counts as open (set_options with closed)`);
   }
   if (parts.length === 0) return null;
   return `Review: ${parts.join("; ")}.`;

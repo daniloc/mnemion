@@ -9,7 +9,7 @@ struct ReviewHookSheet: View {
     @Environment(PortfolioStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
-    @State private var energy = "medium"
+    @State private var energy = ""
     @State private var candidates: [PatternEntry] = []
     @State private var chosen: Set<EntryRef> = []
     @State private var startReview: PatternEntry?
@@ -17,16 +17,21 @@ struct ReviewHookSheet: View {
 
     private var period: String { store.review?.status(of: hook)?.period ?? Dates.today }
 
+    private var energyOptions: [String] {
+        guard let pattern = store.review?.hooks.pattern else { return [] }
+        return store.schema(for: pattern)?.facet("energy")?.options ?? []
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 gathered
-                if hook == .dayStart {
+                // Energy is asked only when the reviews pattern declares the facet,
+                // with the options it declares.
+                if hook == .dayStart, !energyOptions.isEmpty {
                     Section("Energy and attention") {
                         Picker("Energy", selection: $energy) {
-                            Text("Low").tag("low")
-                            Text("Medium").tag("medium")
-                            Text("High").tag("high")
+                            ForEach(energyOptions, id: \.self) { Text($0.capitalized).tag($0) }
                         }
                         .pickerStyle(.segmented)
                     }
@@ -69,7 +74,7 @@ struct ReviewHookSheet: View {
                         Task {
                             let ok = await store.recordReview(
                                 hook: hook, period: period, text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                                energy: hook == .dayStart ? energy : nil,
+                                energy: hook == .dayStart && !energy.isEmpty ? energy : nil,
                                 commits: Array(chosen), reflectsOn: startReview?.ref)
                             saving = false
                             if ok { dismiss() }
@@ -125,6 +130,7 @@ struct ReviewHookSheet: View {
     }
 
     private func load() async {
+        if energy.isEmpty, energyOptions.count > 1 { energy = energyOptions[energyOptions.count / 2] }
         if hook.isStart {
             candidates = hook.commitsTo == Portfolio.tasks ? await store.openTasks() : store.projects
             if hook == .dayStart {

@@ -51,6 +51,15 @@ public actor TokenStore {
         } catch let error as AuthError where error.endsSession {
             // The grant is gone (revoked, expired, client registration dropped).
             // Transport failures and 5xx fall through untouched: offline ≠ signed out.
+            // One exception: another surface (the share extension, an App Intent)
+            // may have rotated the shared item while this refresh was in flight,
+            // retiring the token we just presented. Adopt its grant and go on;
+            // delete the item only when the keychain still holds the refused grant.
+            if let saved = keychain.load(), saved.hiveURL == credentials.hiveURL,
+               saved.refreshToken != credentials.refreshToken || saved.accessToken != credentials.accessToken {
+                credentials = saved
+                return saved
+            }
             signOut()
             throw AuthError.signedOut
         }

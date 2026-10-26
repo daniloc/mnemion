@@ -13,9 +13,20 @@ final class PortfolioStore {
 
     private(set) var projects: [PatternEntry] = []
     private(set) var tasks: [EntryRef: [PatternEntry]] = [:]
-    private(set) var taskStatuses: [String] = ["open", "done"]
+    /// The task pattern's declared statuses; empty until the schema loads, and
+    /// never a value this client spelled.
+    private(set) var taskStatuses: [String] = []
     /// The pattern new tasks go in, read off the relation registry (`belongs-to`).
     private(set) var taskSchema: PatternSummary?
+    /// The hive's index, for any pattern's declared facets (statuses, closed, energy).
+    private(set) var index: HiveIndex?
+
+    /// A pattern's declared status options, from the index.
+    func statuses(for pattern: String) -> [String] {
+        index?.pattern(pattern)?.facet("status")?.options ?? []
+    }
+
+    func schema(for pattern: String) -> PatternSummary? { index?.pattern(pattern) }
     /// The weekly review's alignment read (`serves`): nil when the hive declares
     /// no such relation. Derived from the links on every load, never cached across.
     private(set) var alignmentRelation: Relation?
@@ -97,12 +108,11 @@ final class PortfolioStore {
     func loadSchema() async {
         await run {
             let index = try await self.client.index()
+            self.index = index
             self.alignmentRelation = Portfolio.alignmentRelation(in: index)
             let schema = Portfolio.taskPattern(in: index)
             self.taskSchema = schema
-            if let options = schema?.facet("status")?.options, !options.isEmpty {
-                self.taskStatuses = options
-            }
+            self.taskStatuses = schema?.facet("status")?.options ?? []
         }
     }
 
@@ -349,8 +359,10 @@ final class PortfolioStore {
             error = "This hive has no reviews pattern yet. Ask an agent to declare it (mnemion://review carries the spec)."
             return false
         }
+        // Only facets the reviews pattern declares are written.
+        let supportsEnergy = schema(for: pattern)?.facet("energy") != nil
         do {
-            _ = try await client.recordReview(in: pattern, hook: hook, period: period, text: text, energy: energy, commits: commits, reflectsOn: reflectsOn)
+            _ = try await client.recordReview(in: pattern, hook: hook, period: period, text: text, energy: supportsEnergy ? energy : nil, commits: commits, reflectsOn: reflectsOn)
             await loadReview()
             return true
         } catch {
@@ -455,11 +467,9 @@ final class PortfolioStore {
         notes.removeAll { $0.ref == ref }
     }
 
-    private func learnStatuses(_ items: [PatternEntry]) {
-        for s in items.compactMap({ $0.entry.string("status") }) where !taskStatuses.contains(s) {
-            taskStatuses.append(s)
-        }
-    }
+    /// Statuses are the schema's; a stored value outside it stays visible in the
+    /// editor (TaskEditor appends it) but is never offered as a choice.
+    private func learnStatuses(_ items: [PatternEntry]) {}
 
     private static func sorted(_ items: [PatternEntry]) -> [PatternEntry] {
         items.sorted { ($0.entry.updatedAt ?? "") > ($1.entry.updatedAt ?? "") }

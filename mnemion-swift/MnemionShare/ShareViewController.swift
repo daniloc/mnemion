@@ -32,10 +32,9 @@ private struct ShareView: View {
     @State private var saving = false
     @State private var saved = false
     @State private var problem: String?
-
-    private var client: HiveClient? {
-        HiveClient.restored(callbackURI: URL(string: "\(SharedSession.keychainService):/oauth/callback")!)
-    }
+    /// One client for the sheet's life: one TokenStore, so a refresh here is
+    /// single-flight like everywhere else.
+    @State private var client: HiveClient? = HiveClient.restored(callbackURI: URL(string: "\(SharedSession.keychainService):/oauth/callback")!)
 
     var body: some View {
         NavigationStack {

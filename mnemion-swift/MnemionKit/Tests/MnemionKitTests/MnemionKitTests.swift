@@ -405,7 +405,7 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         #expect(p.facet("deadline")?.closed == nil)
     }
 
-    @Test func closedComesFromTheDeclarationNotAFallback() throws {
+    @Test func closedComesOnlyFromTheDeclaration() throws {
         let declared = try Self.schema(#"{"name":"status","type":"select","options":["open","done","parked"],"closed":["parked"]}"#)
         let parked = PatternEntry(pattern: "tasks", entry: Entry(["id": 1, "status": "parked"]))
         let done = PatternEntry(pattern: "tasks", entry: Entry(["id": 2, "status": "done"]))
@@ -414,9 +414,11 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         #expect(Portfolio.toggledStatus(for: parked, schema: declared) == "open")
         #expect(Portfolio.toggledStatus(for: done, schema: declared) == "parked")
 
+        // No declaration: nothing is closed and the checkmark has nothing to write.
         let undeclared = try Self.schema(#"{"name":"status","type":"select","options":["todo","finished"]}"#)
-        #expect(Portfolio.isClosed(done, schema: undeclared)) // undeclared: the fallback set still knows "done"
-        #expect(Portfolio.toggledStatus(for: PatternEntry(pattern: "tasks", entry: Entry(["id": 3, "status": "todo"])), schema: undeclared) == "finished" || Portfolio.toggledStatus(for: PatternEntry(pattern: "tasks", entry: Entry(["id": 3, "status": "todo"])), schema: undeclared) == "done")
-        #expect(Portfolio.isClosed(done, schema: nil))
+        #expect(!Portfolio.isClosed(done, schema: undeclared))
+        #expect(Portfolio.toggledStatus(for: done, schema: undeclared) == nil)
+        #expect(!Portfolio.isClosed(done, schema: nil))
+        #expect(Portfolio.toggledStatus(for: done, schema: nil) == nil)
     }
 }

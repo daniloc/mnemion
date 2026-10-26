@@ -114,4 +114,18 @@ describe("facet declarations", () => {
     const review = await runInDurableObject(store, (_i, state) => computeReview({ db: state.storage.sql, now: new Date("2026-10-28T12:00:00Z") }));
     expect(review.work[0].overdue.map((b) => b.id)).toEqual([done.entry.id]);
   });
+
+  it("an undeclared closed set closes nothing, and the review says so", async () => {
+    const store = getStore();
+    await change(store, { ...TASKS, facets: [
+      { name: "title", type: "text" },
+      { name: "deadline", type: "datetime", resolution: "day" },
+      { name: "status", type: "select", options: ["open", "done"] },
+    ] });
+    await mut(store, "tasks", "create", { title: "done", deadline: "2020-01-01", status: "done" });
+    const review = await runInDurableObject(store, (_i, state) => computeReview({ db: state.storage.sql, now: new Date("2026-10-28T12:00:00Z") }));
+    expect(review.work[0].closed_declared).toBe(false);
+    expect(review.work[0].totals.overdue).toBe(1); // "done" is not closed until declared
+    expect(review.message).toMatch(/tasks.status declares no closed values/);
+  });
 });

@@ -600,8 +600,9 @@ export class HiveDO extends DurableObject {
     if (!Array.isArray(raw) || raw.length === 0) return this.errorJson("A batch is a non-empty array of {pattern, operation?, data} items");
     const malformed = raw.findIndex((op: unknown) =>
       op == null || typeof op !== "object" || typeof (op as any).pattern !== "string"
-      || (op as any).data == null || typeof (op as any).data !== "object");
-    if (malformed !== -1) return this.errorJson(`Batch item ${malformed} needs a string pattern and an object data`);
+      || (op as any).data == null || typeof (op as any).data !== "object"
+      || (!expandShortcut((op as any).pattern) && typeof (op as any).operation !== "string"));
+    if (malformed !== -1) return this.errorJson(`Batch item ${malformed} needs a string pattern, an object data, and an operation unless the pattern is a shortcut (link, unlink, fragment)`);
     // Shortcuts expand exactly as in mutate(): {pattern: "link"} → _links create,
     // {pattern: "unlink"} → _links unlink; the shortcut decides the operation.
     const operations = (raw as { pattern: string; operation?: string; data: any }[]).map((op) => {
@@ -711,10 +712,8 @@ export class HiveDO extends DurableObject {
     const facetRow = this.db.exec(`SELECT type, resolution FROM _fields WHERE object_name = ? AND name = ?`, constraints.target_pattern, constraints.target_facet).toArray()[0] as any;
     if (facetRow?.type === "datetime") {
       if (constraints.mode === "append") return this.errorJson(`Upload target "${constraints.target_facet}" is a datetime facet — it can only be replaced, not appended to. Nothing was written; the token was not consumed.`);
-      const coerced = data.coerceFacetValue("datetime", content.trim());
+      const coerced = data.coerceFacetValue({ type: "datetime", resolution: facetRow.resolution ?? undefined }, content.trim());
       if (!coerced.ok) return this.errorJson(`Upload refused for datetime facet "${constraints.target_facet}": ${coerced.error}. Nothing was written; the token was not consumed.`);
-      const dayErr = data.dayResolutionError({ type: "datetime", resolution: facetRow.resolution ?? undefined }, coerced.value);
-      if (dayErr) return this.errorJson(`Upload refused for datetime facet "${constraints.target_facet}": ${dayErr}. Nothing was written; the token was not consumed.`);
       content = coerced.value as string;
     }
 

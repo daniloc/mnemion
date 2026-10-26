@@ -15,27 +15,26 @@ public enum Portfolio {
     /// worker and every client read; never a slug or an id in code.
     public static let exemptKey = "review_exempt"
 
-    /// The fallback when a status facet declares no `closed` values; the
-    /// declaration (`Facet.closed`) wins wherever the schema has one.
-    static let fallbackClosed: Set<String> = ["done", "complete", "completed", "dropped", "cancelled", "canceled", "closed", "retired"]
-
-    /// Whether a task is closed, by its pattern's declared terminal statuses.
-    public static func isClosed(_ task: PatternEntry, schema: PatternSummary?) -> Bool {
-        let status = task.entry.string("status")?.lowercased() ?? ""
-        let declared = schema?.facet("status")?.closed?.map { $0.lowercased() } ?? []
-        return (declared.isEmpty ? fallbackClosed : Set(declared)).contains(status)
+    /// Whether an entry is closed, by its pattern's declared terminal statuses
+    /// (`closed` on the status select). No declaration, nothing closed: the
+    /// hive is the only home of this rule, and this client never guesses.
+    public static func isClosed(_ item: PatternEntry, schema: PatternSummary?) -> Bool {
+        guard let closed = schema?.facet("status")?.closed, !closed.isEmpty else { return false }
+        let status = item.entry.string("status")?.lowercased() ?? ""
+        return closed.contains { $0.lowercased() == status }
     }
 
-    /// The status a tap on the checkmark writes: the first declared closed option
-    /// to finish, the first open option to reopen.
-    public static func toggledStatus(for task: PatternEntry, schema: PatternSummary?) -> String {
-        let facet = schema?.facet("status")
-        let options = facet?.options ?? ["open", "done"]
-        let closed = facet?.closed ?? options.filter { fallbackClosed.contains($0.lowercased()) }
-        if isClosed(task, schema: schema) {
-            return options.first { !closed.contains($0) } ?? "open"
+    /// The status a tap on the checkmark writes: the first declared closed
+    /// option to finish, the first open option to reopen. Nil when the pattern
+    /// declares no closed values, so the checkmark can only offer what the hive
+    /// will accept.
+    public static func toggledStatus(for item: PatternEntry, schema: PatternSummary?) -> String? {
+        guard let facet = schema?.facet("status"), let options = facet.options,
+              let closed = facet.closed, !closed.isEmpty else { return nil }
+        if isClosed(item, schema: schema) {
+            return options.first { !closed.contains($0) }
         }
-        return closed.first ?? "done"
+        return closed.first { options.contains($0) }
     }
 
     /// The pattern new tasks are created in: `tasks` when `belongs-to` (to

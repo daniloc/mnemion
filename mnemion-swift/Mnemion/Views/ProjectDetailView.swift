@@ -42,10 +42,11 @@ struct ProjectDetailView: View {
     }
 
     private func row(_ task: PatternEntry) -> some View {
-        TaskRow(task: task, done: store.isClosed(task)) {
-            // The pattern's declared statuses decide what a tap writes.
-            Task { await store.setStatus(task, to: Portfolio.toggledStatus(for: task, schema: store.taskSchema)) }
-        }
+        // The pattern's declared statuses decide what a tap writes; with no
+        // closed declaration there is nothing a tap could write, so no toggle.
+        TaskRow(task: task, done: store.isClosed(task), toggle: Portfolio.toggledStatus(for: task, schema: store.schema(for: task.pattern)).map { next in
+            { Task { await store.setStatus(task, to: next) } }
+        })
         .contentShape(Rectangle())
         .onTapGesture { editing = task }
     }
@@ -141,17 +142,19 @@ private struct TaskRow: View {
     @Environment(PortfolioStore.self) private var store
     let task: PatternEntry
     let done: Bool
-    let toggle: () -> Void
+    /// Nil when the pattern declares no closed statuses: nothing to write.
+    let toggle: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Button(action: toggle) {
+            Button(action: toggle ?? {}) {
                 Image(systemName: done ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(done ? (task.entry.string("status") == "dropped" ? Color.gray : Color.green) : Color.secondary)
+                    .foregroundStyle(done ? Color.green : Color.secondary)
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel(done ? "Mark open" : "Mark done")
+            .disabled(toggle == nil)
+            .accessibilityLabel(done ? "Reopen" : "Finish")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(task.entry.string("title") ?? "Untitled")

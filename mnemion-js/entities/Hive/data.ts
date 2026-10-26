@@ -216,22 +216,23 @@ const FACET_VALIDATORS: Record<string, (v: unknown) => Coerce> = {
   select: (v) => ({ ok: true, value: v }), // option membership is checked separately
 };
 
-/** A datetime facet declared `resolution: "day"` holds calendar days only: a
- *  canonical value with a time of day is refused, so no reader ever has an
- *  instant to convert. The writer resolves it to a day (data-is-destiny: the
- *  declaration is true of every stored value). */
-export function dayResolutionError(meta: { type: string; resolution?: string }, canonical: unknown): string | null {
-  if (meta.type !== "datetime" || meta.resolution !== "day") return null;
-  if (typeof canonical === "string" && !canonical.includes("T")) return null;
-  return `this facet holds calendar days (resolution: day); give YYYY-MM-DD, not a time of day (${JSON.stringify(canonical)})`;
-}
+/** What a write path knows about the facet it writes: its type, and for a
+ *  datetime its declared resolution. */
+export interface FacetShape { type: string; resolution?: string }
 
-/** Coerce one value to a facet type's canonical stored form, or say why it can't
- *  be — the single coercion every write path uses (mutate here; the upload path
- *  in hive.consumeUpload). Types without a validator pass through unchanged. */
-export function coerceFacetValue(type: string, value: unknown): Coerce {
-  const coerce = FACET_VALIDATORS[type];
-  return coerce ? coerce(value) : { ok: true, value };
+/** Coerce one value to a facet's canonical stored form, or say why it can't
+ *  be — the single coercion every write path uses (mutate and clipboard
+ *  submissions here; the upload path in hive.consumeUpload). Types without a
+ *  validator pass through unchanged. A datetime facet declared `resolution:
+ *  "day"` holds calendar days only: a canonical value with a time of day is
+ *  refused here, inside the one coercion, so no caller can forget the rule and
+ *  no reader ever has an instant to convert. */
+export function coerceFacetValue(facet: FacetShape, value: unknown): Coerce {
+  const coerce = FACET_VALIDATORS[facet.type];
+  const r: Coerce = coerce ? coerce(value) : { ok: true, value };
+  if (!r.ok || facet.type !== "datetime" || facet.resolution !== "day") return r;
+  if (typeof r.value === "string" && !r.value.includes("T")) return r;
+  return { ok: false, error: `this facet holds calendar days (resolution: day); give YYYY-MM-DD, not a time of day (${JSON.stringify(r.value)})` };
 }
 
 /** A year, or a year and month — periods, not days. */
@@ -336,12 +337,9 @@ function validateSubmission(
       add(key, `must be one of: ${meta.options.join(", ")}`);
       continue;
     }
-    const coerce = FACET_VALIDATORS[meta.type];
-    if (coerce) {
-      const r = coerce(val);
+    if (FACET_VALIDATORS[meta.type]) {
+      const r = coerceFacetValue(meta, val);
       if (!r.ok) { add(key, `(${meta.type}) ${r.error}`); continue; }
-      const dayErr = dayResolutionError(meta, r.value);
-      if (dayErr) { add(key, dayErr); continue; }
       data[key] = r.value; // canonical form for storage + downstream comparison
     }
     const spec = fieldSpecByFacet.get(key);
@@ -910,13 +908,10 @@ function mutateOne(ctx: DataContext, patternName: string, operation: string, dat
         // except `datetime`, canonical in every user pattern so dates compare and
         // sort soundly in SQL (kernel datetime columns are system-managed).
         if (val != null && (isDataset || (meta.type === "datetime" && !isKernelPattern(patternName)))) {
-          const validate = FACET_VALIDATORS[meta.type];
-          if (validate) {
-            const r = validate(val);
+          if (FACET_VALIDATORS[meta.type]) {
+            const r = coerceFacetValue(meta, val);
             if (!r.ok)
               return { error: true, message: `Invalid value for "${key}" on ${isDataset ? "dataset " : ""}"${patternName}" (${meta.type}): ${r.error}` };
-            const dayErr = dayResolutionError(meta, r.value);
-            if (dayErr) return { error: true, message: `Invalid value for "${key}" on "${patternName}": ${dayErr}` };
             data[key] = r.value;
           }
         }

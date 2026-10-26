@@ -186,8 +186,8 @@ struct WorkRow: View {
             }
             Spacer()
             Menu {
-                // Only statuses the pattern declares; the worker refuses any other.
-                ForEach(store.taskStatuses.filter { $0 != brief.status }, id: \.self) { status in
+                // Only statuses this entry's pattern declares; the worker refuses any other.
+                ForEach(store.statuses(for: brief.pattern).filter { $0 != brief.status }, id: \.self) { status in
                     Button(status.capitalized, systemImage: statusImage(status)) {
                         Task { await store.update(brief.ref, ["status": .string(status)]) }
                     }

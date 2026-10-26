@@ -27,11 +27,22 @@ import Testing
         return out
     }
 
-    @Test func viewsNeverSpellAStatusValue() throws {
-        // Home: the pattern's status facet (options, closed) via PortfolioStore.
-        let views = try Self.sources("Mnemion/Views")
-        #expect(try Self.hits(in: views, #""status":\s*"[a-z-]+""#).isEmpty)
-        #expect(try Self.hits(in: views, #"\?\?\s*"(open|done|dropped|in-progress)""#).isEmpty)
+    @Test func appNeverSpellsAStatusOrEnergyValue() throws {
+        // Home: the pattern's facets (options, closed) via the index in PortfolioStore.
+        // Every write form the app uses: ["status": "x"], ["status": .string("x")],
+        // a default "?? "x"", an initial State("x"), or a literal list of values.
+        let app = try Self.sources("Mnemion")
+        #expect(try Self.hits(in: app, #""(status|energy)":\s*(\.string\()?"[a-z-]+""#).isEmpty)
+        #expect(try Self.hits(in: app, #"\?\?\s*"(open|done|dropped|in-progress|doing|medium|low|high)""#).isEmpty)
+        #expect(try Self.hits(in: app, #"(status|energy|Statuses)\s*(:\s*\[String\])?\s*=\s*"[a-z-]+""#).isEmpty)
+        #expect(try Self.hits(in: app, #"\[\s*"open"\s*,\s*"done"\s*\]"#).isEmpty)
+    }
+
+    @Test func kitKeepsNoStatusVocabulary() throws {
+        // Home: the hive's declaration (Facet.closed); the Kit has no fallback set.
+        let kit = try Self.sources("MnemionKit/Sources")
+        #expect(try Self.hits(in: kit, #"\[\s*"done"\s*,"#).isEmpty)
+        #expect(try Self.hits(in: kit, #"fallbackClosed|closedStatuses"#).isEmpty)
     }
 
     @Test func noEntryIsNamedByIdOrSlugInCode() throws {
@@ -50,6 +61,6 @@ import Testing
     @Test func viewsNeverReloadOutsideTheStore() throws {
         // Home: PortfolioStore's coalesced loaders; views use .task / .refreshable.
         let views = try Self.sources("Mnemion/Views")
-        #expect(try Self.hits(in: views, #"Task \{\s*await store\.load"#).isEmpty)
+        #expect(try Self.hits(in: views, #"Task\s*\{\s*(\[.*\]\s*in\s*)?await\s+(self\.)?store\.load"#).isEmpty)
     }
 }

@@ -68,7 +68,7 @@ const WED_NOON = new Date("2026-10-28T12:00:00Z");
 const TASK_FACETS = [
   { name: "title", type: "text" },
   { name: "deadline", type: "datetime" },
-  { name: "status", type: "select", options: ["open", "in-progress", "done", "dropped"] },
+  { name: "status", type: "select", options: ["open", "in-progress", "done", "dropped"], closed: ["done", "dropped"] },
 ];
 
 describe("derived review", () => {
@@ -92,6 +92,8 @@ describe("derived review", () => {
     expect(work.open).toBe(5);
     expect(work.undated).toBe(1);
     expect(work.stall_days).toBe(30); // no memory policy → the default
+    expect(work.closed_declared).toBe(true);
+    expect(work.totals).toEqual({ overdue: 1, due_today: 1, due_this_week: 1, stalled: 1 });
     expect(ids(work.overdue)).toEqual([overdue]);
     expect(ids(work.due_today)).toEqual([today]);
     expect(ids(work.due_this_week)).toEqual([thisWeek]);
@@ -132,6 +134,9 @@ describe("derived review", () => {
     expect(r.error).toBeFalsy();
     const r2 = JSON.parse(await store.mutate("reviews", "create", JSON.stringify({ kind: "day-end", period: "2026-10-28", reflection: "y", _relate: { "reflects-on": `reviews/${r.entry.id}` } })));
     expect(r2.error).toBeFalsy();
+    // The offered pattern holds calendar days only: a period with a time is refused, never misread.
+    const timed = JSON.parse(await store.mutate("reviews", "create", JSON.stringify({ kind: "day-start", period: "2026-10-28T23:00:00-07:00", intention: "z" })));
+    expect(timed).toMatchObject({ error: true, message: expect.stringMatching(/resolution: day/) });
   });
 
   it("a deadline with a time is due on its day in the charter timezone, and alignment skips closed and exempt entries", async () => {
@@ -147,7 +152,7 @@ describe("derived review", () => {
     expect(review.work[0].due_today[0].deadline).toBe("2026-10-28");
 
     await createPattern(store, "goals");
-    await createPattern(store, "projects", [{ name: "title", type: "text" }, { name: "status", type: "select", options: ["active", "retired"] }]);
+    await createPattern(store, "projects", [{ name: "title", type: "text" }, { name: "status", type: "select", options: ["active", "retired"], closed: ["retired"] }]);
     await declare(store, { name: "serves", inverse: "served-by", source: ["projects"], target: ["goals"] });
     await declare(store, { name: "belongs-to", inverse: "contains", source: ["tasks"], target: ["projects"], cardinality: "one", behaviors: ["containment"] });
     await change(store, { type: "declare_relation", name: "reaches", inverse: "reached-by", description: DESC("reaches"), chain: ["belongs-to", "serves"] });
