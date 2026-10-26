@@ -76,8 +76,7 @@ describe("client ID metadata documents", () => {
       token_endpoint_auth_method: "none",
     });
     const res = await SELF.fetch(await authorizeUrl(CLIENT_ID), { redirect: "manual" });
-    expect(res.status).not.toBe(503);
-    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBe(400);
     expect((res.headers.get("Location") || "").startsWith(REDIRECT)).toBe(false);
   });
 

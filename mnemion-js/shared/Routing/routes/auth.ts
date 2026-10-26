@@ -94,7 +94,9 @@ async function completeOAuth(env: any, oauthReq: any, actor: string = OWNER_ACTO
 // === Route handlers ===
 
 export const authorize: RouteHandler = async (ctx) => {
-  const oauthReq = await (ctx.env as any).OAUTH_PROVIDER.parseAuthRequest(ctx.request);
+  // parseAuthRequest throws for a client it can't accept (e.g. a client ID
+  // metadata document that is unreachable or names another URL): a bad request.
+  const oauthReq = await (ctx.env as any).OAUTH_PROVIDER.parseAuthRequest(ctx.request).catch(() => null);
   if (!oauthReq) {
     return new Response("Invalid OAuth request", { status: 400 });
   }
