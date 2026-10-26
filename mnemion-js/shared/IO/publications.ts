@@ -17,7 +17,7 @@
 // current truth.
 
 import { deriveLabel, type LabelFacet } from "../../entities/Hive/labels";
-import { uri } from "../core/constants";
+import { uri, PRODUCT_NAME } from "../core/constants";
 import { parseDbDate } from "../../entities/Hive/prime";
 
 export interface PublicationRow {
@@ -31,7 +31,8 @@ export interface PublicationRow {
 
 export interface RenderContext {
   facets: LabelFacet[];
-  host: string;
+  /** The configured instance host; null when unconfigured (links go relative). */
+  host: string | null;
 }
 
 export interface Rendered {
@@ -230,7 +231,7 @@ ${DEFAULT_CSS}
 <main>
 ${articles.join("\n")}
 </main>
-<footer>Published from <a href="https://${escapeHtml(ctx.host)}">${escapeHtml(ctx.host)}</a></footer>
+${ctx.host ? `<footer>Published from <a href="https://${escapeHtml(ctx.host)}">${escapeHtml(ctx.host)}</a></footer>` : ""}
 </body>
 </html>`;
 
@@ -240,7 +241,7 @@ ${articles.join("\n")}
 // === RSS 2.0 ===
 
 function renderRss(pub: PublicationRow, title: string, entries: Record<string, unknown>[], ctx: RenderContext): Rendered {
-  const pubUrl = `https://${ctx.host}/p/${pub.path}`;
+  const pubUrl = ctx.host ? `https://${ctx.host}/p/${pub.path}` : `/p/${pub.path}`;
 
   const items = entries.map((entry) => {
     const label = deriveLabel(entry, ctx.facets);
@@ -267,7 +268,7 @@ function renderRss(pub: PublicationRow, title: string, entries: Record<string, u
 <channel>
 <title>${escapeHtml(title)}</title>
 <link>${escapeHtml(pubUrl)}</link>
-<description>${escapeHtml(`${title} — published from ${ctx.host}`)}</description>
+<description>${escapeHtml(`${title} — published from ${ctx.host ?? PRODUCT_NAME}`)}</description>
 <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
 ${items.join("\n")}
 </channel>

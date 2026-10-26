@@ -81,8 +81,8 @@ export interface ServedContext {
   facetMeta(pattern: string): { name: string; type: string }[];
 
   /** This instance's host, for publication absolute URLs. Configuration, never
-   *  request data (currentHost ignores the inbound Host). */
-  host(): string;
+   *  request data (currentHost ignores the inbound Host); null when unconfigured. */
+  host(): string | null;
 
   /** The shared error-JSON shape. */
   errorJson(message: string): string;

@@ -13,6 +13,7 @@
 
 import type { Feature } from "../feature";
 import { servePage, servePageOg, servePageOgPng } from "../../../shared/Routing/routes/io";
+import { HOST_UNCONFIGURED_NOTE } from "../../../shared/core/host";
 import { patterns as pagesPatterns } from "./schema";
 import { onWrite as pagesOnWrite } from "./hooks";
 
@@ -50,7 +51,9 @@ export const pages: Feature = {
         if ((operation === "create" || operation === "update") && entry?.path) {
           const isPublic = entry.visibility === "public";
           const slug = encodeURIComponent(entry.path);
-          result.page_url = isPublic ? ctx.instanceUrl(`page/${slug}`) : ctx.instanceUrl(`#page:${slug}`);
+          const pageUrl = isPublic ? ctx.instanceUrl(`page/${slug}`) : ctx.instanceUrl(`#page:${slug}`);
+          if (!pageUrl) { result.host_note = HOST_UNCONFIGURED_NOTE; return; }
+          result.page_url = pageUrl;
           if (isPublic) result.og_image = ctx.instanceUrl(`page/${slug}/og.png`);
           else result.page_note = "Private page — only you, signed in, can open this link. Publishing it (visibility: public) is consent-gated.";
         }
