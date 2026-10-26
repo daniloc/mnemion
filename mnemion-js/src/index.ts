@@ -174,6 +174,10 @@ export default new OAuthProvider({
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
   scopesSupported: ["read", "write"],
+  // Client ID Metadata Documents: a client may use an https URL as its client_id
+  // instead of registering (DCR stays on for older clients). The provider fetches
+  // and validates the document; needs the global_fetch_strictly_public flag.
+  clientIdMetadataDocumentEnabled: true,
 
   async resolveExternalToken({ token, env }) {
     // Tokens are generated via SQLite hex(randomblob(16)) → 32 uppercase hex

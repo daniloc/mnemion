@@ -250,7 +250,7 @@ export function setupPage(token: string): string {
 }
 
 /** Login page — passkey-first with secret fallback */
-export function passkeyLoginPage(authStateId: string): string {
+export function passkeyLoginPage(authStateId: string, clientLine = ""): string {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -275,6 +275,7 @@ export function passkeyLoginPage(authStateId: string): string {
 </head>
 <body>
   <h1>${PRODUCT_NAME}</h1>
+  ${clientLine}
   <button id="passkey-btn">Sign in with passkey</button>
   <div class="divider">or</div>
   <button id="toggle">Use master secret instead</button>

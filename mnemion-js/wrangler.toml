@@ -1,7 +1,7 @@
 name = "mnemion"
 main = "src/index.ts"
 compatibility_date = "2025-04-01"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
 # Pre-deploy build hook. Runs on every `wrangler deploy` (and in Workers Builds
 # for one-click installs): ensures the Vectorize index exists (Vectorize is not

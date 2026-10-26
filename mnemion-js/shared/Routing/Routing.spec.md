@@ -15,6 +15,18 @@ Declarative HTTP dispatch and session machinery: pattern-matched route table plu
   checklist: encrypted-storage dismissed: this rule requires a master secret but does not encrypt stored data
   checklist: key-rotation-compatibility dismissed: it checks whether a deploy can bypass auth, not how a secret rotates
   checklist: separation-of-duties dismissed: this rule rejects anonymous owner access, not actor-role separation
+- client metadata document clients: An MCP client can sign in with an https URL as its client_id, without registering first.
+  over: OAuth authorization requests whose client_id is an https URL serving a matching metadata document
+  via: accepts a URL client_id whose document matches it
+  because: MCP clients now identify themselves by a metadata document URL, and a server that only takes registered clients turns them away.
+  crossing: served-untrusted -> owner-trusted
+  kinds: credential
+  checklist: capability-authorization dismissed: a client document only identifies the client; the person still signs in with a passkey or the master secret
+  checklist: revalidated-permission dismissed: the provider refetches and rechecks the document under its own cache rules, not per request here
+  checklist: message-authenticity dismissed: the provider library checks that the document names its own URL; the mismatch test covers it, not this rule
+  checklist: encrypted-storage dismissed: the document is public client metadata and nothing secret is stored from it
+  checklist: key-rotation-compatibility dismissed: CIMD clients are public and hold no secret to rotate
+  checklist: separation-of-duties dismissed: which member signs in is decided by the passkey, not by the client document
 - deployed public rate-limit bindings: Each deployed worker has both public cost guards bound.
   over: production and test Wrangler environments
   via: deployed public rate-limit bindings
