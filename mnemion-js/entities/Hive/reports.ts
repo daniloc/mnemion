@@ -17,6 +17,7 @@ import { uri } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { parseDbDate, getMemoryPolicy } from "./prime";
 import { IMMUTABLE } from "./kernel";
+import { HOST_UNCONFIGURED_NOTE } from "../../shared/core/host";
 import { listRelations, supersededBy, heldPatterns, type Relation } from "./relations";
 
 export interface ReportsContext {
@@ -24,9 +25,10 @@ export interface ReportsContext {
   /** A pattern's class: "dataset" (records, never stale) vs "knowledge". Bound by
    *  the DO over prime.getPatternClass. */
   patternClass(name: string): "knowledge" | "dataset";
-  /** The authoritative instance host (WORKER_HOST, else the live Host header).
-   *  Bound by the DO because it reads DO instance state — kept off this module. */
-  currentHost(): string;
+  /** The authoritative instance host (WORKER_HOST; the live Host header only in
+   *  local dev; null when unconfigured). Bound by the DO because it reads DO
+   *  instance state — kept off this module. */
+  currentHost(): string | null;
   errorJson(message: string): string;
   /** Whether the R2 document store is enabled (env.DOCUMENTS bound). Drives the
    *  index's _documents "unavailable" annotation; injected as a boolean so this
@@ -403,6 +405,9 @@ export function getSystemDoc(ctx: ReportsContext, slug: string, returnDefault: b
 
 export function renderInstanceDoc(ctx: ReportsContext): string {
   const host = ctx.currentHost();
+  if (!host) return `# Instance Info
+
+${HOST_UNCONFIGURED_NOTE}`;
   return `# Instance Info
 
 - **Host**: ${host}

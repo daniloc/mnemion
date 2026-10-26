@@ -234,8 +234,15 @@ After it deploys, register your owner passkey **once**:
 https://<your-worker>.workers.dev/setup?token=<the MNEMION_SECRET you set>
 ```
 
-That's the only manual step — passkey registration has to happen in your browser,
-on your device. After that, browser login uses the passkey and the secret is your
+Then tell the instance its own host: in the Cloudflare dashboard, open the
+worker's **Settings → Variables** and add `WORKER_HOST` = your worker's host
+(e.g. `mnemion.<you>.workers.dev`, no `https://`). Every link it hands out
+(upload URLs, page links, the instance doc) uses this value and never the
+request's `Host` header, which a client can spoof. Until it's set, the instance
+generates no links. Deploys keep it (`keep_vars = true`).
+
+Passkey registration is the step that has to happen in your browser, on your
+device. After that, browser login uses the passkey and the secret is your
 headless/fallback credential. (Document storage still needs R2 — see *Document
 storage requires R2* above — but everything else works immediately.)
 

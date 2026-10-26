@@ -20,6 +20,9 @@ export default defineConfig({
     cloudflareTest({
       main: "src/index.ts",
       wrangler: { configPath: "./wrangler.toml" },
+      // WORKER_HOST is a per-install runtime var (never in wrangler.toml); give
+      // the suite one so generated URLs (upload_url, page_url) are exercised.
+      miniflare: { bindings: { WORKER_HOST: "hive.test" } },
     }),
   ],
 });

@@ -104,20 +104,22 @@ export class HiveDO extends DurableObject {
     return { [col]: raw };
   }
 
-  private currentHost(): string {
+  private currentHost(): string | null {
     // Generated URLs (upload_url / page_url / og_image / the instance doc) must
     // not be poisoned by an attacker-controlled Host on an unauthenticated
     // request (e.g. a /ws upgrade). The decision — configured WORKER_HOST wins
-    // and the inbound Host is IGNORED; observed host is the local-dev fallback —
-    // lives in the pure, testable resolveHost (shared/core/host.ts), anchored by
-    // the "instance-identity host" boundary.
-    return resolveHost((this.env as any).WORKER_HOST, this.lastKnownHost);
+    // and the inbound Host is IGNORED; observed host is the local-dev fallback;
+    // otherwise null (fail closed) — lives in the pure, testable resolveHost
+    // (shared/core/host.ts), anchored by the "instance-identity host" boundary.
+    return resolveHost((this.env as any).WORKER_HOST, this.lastKnownHost, (this.env as any).DEV === "true");
   }
 
   /** A public URL on this instance — the one place upload_url / page_url /
-   *  og_image hand-build `https://{host}/{path}` from the live host. */
-  private instanceUrl(path: string): string {
-    return `https://${this.currentHost()}/${path}`;
+   *  og_image hand-build `https://{host}/{path}`. Null when the host is not
+   *  configured: the caller says so instead of handing back a URL. */
+  private instanceUrl(path: string): string | null {
+    const host = this.currentHost();
+    return host ? `https://${host}/${path}` : null;
   }
 
   // === RPC methods (called from MnemionSession) ===
@@ -1448,11 +1450,10 @@ export class HiveDO extends DurableObject {
   // === Live updates via WebSocket (Hibernatable API) ===
 
   async fetch(request: Request): Promise<Response> {
-    // Record the inbound host so instance-doc generation reflects reality, not
-    // a wrangler config that can drift from the worker name.
-    // Only retain a syntactically valid host (no scheme/path/spaces) — a
+    // Record the inbound host for the LOCAL-DEV fallback only (resolveHost never
+    // reads it outside DEV=true). Only retain a syntactically valid host (no scheme/path/spaces) — a
     // malformed/attacker Host header must never be stored and reflected into
-    // generated URLs. (currentHost also prefers WORKER_HOST when configured.)
+    // generated URLs.
     const host = request.headers.get("host");
     if (host && /^[a-zA-Z0-9.-]+(:\d+)?$/.test(host)) this.lastKnownHost = host;
     if (request.headers.get("Upgrade") === "websocket") {

@@ -20,6 +20,7 @@
 
 import type { Feature } from "../feature";
 import { HEX_TOKEN_RE } from "../../../shared/core/constants";
+import { HOST_UNCONFIGURED_NOTE } from "../../../shared/core/host";
 import { logWarn } from "../../../shared/core/log";
 import { uploadDocument, serveDocument } from "../../../shared/Routing/routes/io";
 import { cached } from "../../../shared/Routing/router";
@@ -71,7 +72,9 @@ export const documents: Feature = {
           const rawTok = tok.once?.token;
           if (!tok.error && rawTok) {
             result.upload_token = rawTok; // raw, shown once (DB holds the digest)
-            result.upload_url = ctx.instanceUrl(`f/${rawTok}`);
+            const url = ctx.instanceUrl(`f/${rawTok}`);
+            if (url) result.upload_url = url;
+            else result.host_note = HOST_UNCONFIGURED_NOTE;
           }
           // Minting the token is pure DB; the bytes need R2. If it isn't enabled, say so
           // plainly rather than handing back an upload_url that 503s.
