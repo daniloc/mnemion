@@ -48,7 +48,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.7",
     "@cloudflare/workers-types": "^4.20260615.1",
-    "@posthog/coherence": "^1.7.2",
+    "@posthog/coherence": "https://github.com/PostHog/coherence/releases/download/v1.11.0-beta.0/posthog-coherence-1.11.0-beta.0.tgz",
     "@types/node": "^25.9.3",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
