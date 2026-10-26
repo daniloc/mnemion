@@ -7,8 +7,24 @@ import Foundation
 public enum Portfolio {
     public static let projects = "projects"
     public static let tasks = "tasks"
+    public static let goals = "goals"
     public static let belongsTo = "belongs-to"
     public static let serves = "serves"
+    /// The project that holds tasks with no natural home. The doctrine says it
+    /// serves no goal by design, so the alignment view never flags it.
+    public static let catchAllSlug = "catch-all"
+
+    public static func isCatchAll(_ project: PatternEntry) -> Bool {
+        project.entry.string("slug") == catchAllSlug
+    }
+
+    /// Statuses that close a task; `dropped` keeps the record (the doctrine says
+    /// set status rather than archive).
+    public static let closedStatuses: Set<String> = ["done", "complete", "completed", "dropped", "cancelled", "canceled", "closed"]
+
+    public static func isClosed(_ task: PatternEntry) -> Bool {
+        closedStatuses.contains(task.entry.string("status")?.lowercased() ?? "")
+    }
 
     /// The pattern new tasks are created in: `tasks` when `belongs-to` (to
     /// projects) admits it, else the first source pattern the hive has. Nil when
@@ -81,7 +97,39 @@ extension HiveClient {
         let edges = try await links(label: relation.name)
         let judged = Portfolio.alignment(relation: relation.name, sources: sources.map(\.ref), targets: targets.map(\.ref), links: edges)
         let unaligned = Set(judged.unaligned), unserved = Set(judged.unserved)
-        return (sources.filter { unaligned.contains($0.ref) }, targets.filter { unserved.contains($0.ref) })
+        return (sources.filter { unaligned.contains($0.ref) && !Portfolio.isCatchAll($0) }, targets.filter { unserved.contains($0.ref) })
+    }
+
+    /// Active goals, in id order.
+    public func goals() async throws -> [PatternEntry] {
+        try await query(Portfolio.goals, sort: "id", limit: 100)
+            .map { PatternEntry(pattern: Portfolio.goals, entry: $0) }
+    }
+
+    /// The goals a project `serves`.
+    public func goalsServed(by project: EntryRef) async throws -> [EntryRef] {
+        try await links(source: project, label: Portfolio.serves).map(\.target)
+    }
+
+    /// The projects that `serve` a goal.
+    public func projectsServing(_ goal: EntryRef) async throws -> [EntryRef] {
+        try await links(targetPattern: goal.pattern, targetID: goal.id, label: Portfolio.serves).map(\.source)
+    }
+
+    /// Open tasks across every project (for picking a day's commitments).
+    public func openTasks(in schema: PatternSummary) async throws -> [PatternEntry] {
+        try await query(schema.name, sort: "-updated_at", limit: 500)
+            .map { PatternEntry(pattern: schema.name, entry: $0) }
+            .filter { !Portfolio.isClosed($0) }
+    }
+
+    /// Move a task to another project: the old `belongs-to` link is archived and
+    /// the new one written in one batch, so the required relation never lapses.
+    public func move(_ task: PatternEntry, from old: PatternEntry, to new: PatternEntry) async throws {
+        try await batch([
+            ["pattern": "unlink", "data": .object(["source": .string(task.ref.description), "target": .string(old.ref.description), "label": .string(Portfolio.belongsTo)])],
+            ["pattern": "link", "data": .object(["source": .string(task.ref.description), "target": .string(new.ref.description), "label": .string(Portfolio.belongsTo)])],
+        ])
     }
 
     /// Every entry that `belongs-to` the project, whatever pattern it lives in.
@@ -102,7 +150,7 @@ extension HiveClient {
     /// project in one write (`_relate`): if the link is refused, so is the task.
     /// Only facets the pattern declares are sent, so the retired `project` text
     /// echo is written only while the pattern still has it.
-    public func createTask(in project: PatternEntry, title: String, context: String?, schema: PatternSummary) async throws -> PatternEntry {
+    public func createTask(in project: PatternEntry, title: String, context: String?, deadline: String? = nil, schema: PatternSummary, also: [String: [EntryRef]] = [:]) async throws -> PatternEntry {
         var data: [String: JSONValue] = ["title": .string(title)]
         if schema.facet("project") != nil {
             data["project"] = .string(project.entry.string("slug") ?? project.entry.string("title") ?? "")
@@ -111,7 +159,10 @@ extension HiveClient {
             data["status"] = "open"
         }
         if let context, !context.isEmpty, schema.facet("context") != nil { data["context"] = .string(context) }
-        let created = try await mutate(schema.name, .create, data, relate: [Portfolio.belongsTo: [project.ref]])
+        if let deadline, !deadline.isEmpty, schema.facet("deadline") != nil { data["deadline"] = .string(deadline) }
+        var relate = also
+        relate[Portfolio.belongsTo] = [project.ref]
+        let created = try await mutate(schema.name, .create, data, relate: relate)
         guard let entry = created.entry else { throw HiveError.decoding("create returned no entry") }
         return PatternEntry(pattern: schema.name, entry: entry)
     }

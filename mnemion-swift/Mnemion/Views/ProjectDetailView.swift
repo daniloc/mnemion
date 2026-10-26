@@ -8,8 +8,8 @@ struct ProjectDetailView: View {
     @State private var editing: PatternEntry?
 
     private var tasks: [PatternEntry] { store.tasks[project.ref] ?? [] }
-    private var open: [PatternEntry] { tasks.filter { !isDone($0) } }
-    private var done: [PatternEntry] { tasks.filter(isDone) }
+    private var open: [PatternEntry] { tasks.filter { !Portfolio.isClosed($0) }.sorted(by: byDeadline) }
+    private var done: [PatternEntry] { tasks.filter(Portfolio.isClosed) }
 
     var body: some View {
         List {
@@ -42,20 +42,36 @@ struct ProjectDetailView: View {
     }
 
     private func row(_ task: PatternEntry) -> some View {
-        TaskRow(task: task, done: isDone(task)) {
-            Task { await store.setStatus(task, to: isDone(task) ? "open" : "done") }
+        TaskRow(task: task, done: Portfolio.isClosed(task)) {
+            Task { await store.setStatus(task, to: Portfolio.isClosed(task) ? "open" : "done") }
         }
         .contentShape(Rectangle())
         .onTapGesture { editing = task }
     }
 
-    private func isDone(_ task: PatternEntry) -> Bool {
-        ["done", "complete", "completed"].contains(task.entry.string("status")?.lowercased() ?? "")
+    /// Dated first, soonest first; undated after, newest first.
+    private func byDeadline(_ a: PatternEntry, _ b: PatternEntry) -> Bool {
+        switch (a.entry.string("deadline"), b.entry.string("deadline")) {
+        case let (x?, y?): return x < y
+        case (_?, nil): return true
+        case (nil, _?): return false
+        default: return (a.entry.updatedAt ?? "") > (b.entry.updatedAt ?? "")
+        }
     }
 }
 
 private struct ProjectHeader: View {
     let project: PatternEntry
+    @Environment(PortfolioStore.self) private var store
+
+    private var served: [PatternEntry] {
+        (store.projectGoals[project.ref] ?? []).compactMap(store.goal(ref:))
+    }
+
+    private var unserved: [PatternEntry] {
+        let served = Set(served.map(\.ref))
+        return store.goals.filter { !served.contains($0.ref) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -70,6 +86,38 @@ private struct ProjectHeader: View {
             }
             if let outcome = project.entry.string("outcome") {
                 LabeledText(label: "Outcome", text: outcome)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Serves").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                if Portfolio.isCatchAll(project) {
+                    Text("No goal, by design: this project holds tasks with no natural home.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 6) {
+                        ForEach(served) { goal in
+                            Text(goal.entry.string("title") ?? "Goal")
+                                .font(.caption)
+                                .padding(.horizontal, 8).padding(.vertical, 3)
+                                .background(.quaternary, in: Capsule())
+                        }
+                        if served.isEmpty {
+                            Label("No goal", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                        }
+                        if !unserved.isEmpty {
+                            Menu {
+                                ForEach(unserved) { goal in
+                                    Button(goal.entry.string("title") ?? "Goal") {
+                                        Task { await store.serve(project, goal: goal) }
+                                    }
+                                }
+                            } label: {
+                                Label("Add", systemImage: "plus.circle").font(.caption)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                        }
+                    }
+                }
             }
         }
         .padding(.vertical, 4)
@@ -99,7 +147,7 @@ private struct TaskRow: View {
             Button(action: toggle) {
                 Image(systemName: done ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(done ? Color.green : Color.secondary)
+                    .foregroundStyle(done ? (task.entry.string("status") == "dropped" ? Color.gray : Color.green) : Color.secondary)
             }
             .buttonStyle(.borderless)
             .accessibilityLabel(done ? "Mark open" : "Mark done")
@@ -115,11 +163,12 @@ private struct TaskRow: View {
                         .lineLimit(2)
                 }
                 HStack(spacing: 6) {
-                    if let status = task.entry.string("status"), !done { StatusBadge(status: status) }
+                    DeadlineLabel(deadline: task.entry.string("deadline"), closed: done)
+                    if let status = task.entry.string("status"), status != "open" { StatusBadge(status: status) }
                     if task.pattern != store.taskSchema?.name {
                         Text(task.pattern).font(.caption2).foregroundStyle(.tertiary)
                     }
-                    if let by = task.entry.updatedBy {
+                    if store.memberCount > 1, let by = task.entry.updatedBy {
                         Text("by \(by)").font(.caption2).foregroundStyle(.tertiary)
                     }
                 }

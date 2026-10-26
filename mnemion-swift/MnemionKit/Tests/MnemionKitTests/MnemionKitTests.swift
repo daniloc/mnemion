@@ -166,27 +166,6 @@ import Testing
         #expect(view == Alignment(unaligned: [p(2), p(3)], unserved: [g(12)]))
         #expect(Portfolio.alignment(relation: "serves", sources: [], targets: [], links: []) == Alignment())
     }
-
-    @Test func createTaskIsOneWriteWithRelate() async throws {
-        let index = try Self.index(belongsToSource: #"["tasks"]"#, patterns: ["projects", "tasks"])
-        let schema = try #require(Portfolio.taskPattern(in: index))
-        let client = StubProtocol.client(responding: #"{"operation":"create","pattern":"tasks","entry":{"id":42,"title":"Ship"},"uri":"mnemion://entry/tasks/42","links":[{"id":9,"source":"tasks/42","target":"projects/3","label":"belongs-to"}]}"#)
-        let project = PatternEntry(pattern: "projects", entry: Entry(["id": 3, "slug": "mnemion"]))
-
-        let task = try await client.createTask(in: project, title: "Ship", context: "ignored: no context facet", schema: schema)
-
-        #expect(task.ref == EntryRef(pattern: "tasks", id: 42))
-        let requests = StubProtocol.requests.withLock { $0 }
-        #expect(requests.count == 1) // the entry and its link together, never two writes
-        let req = try #require(requests.first)
-        #expect(req.url?.path == "/api/mutate/tasks")
-        let body = try JSONDecoder().decode([String: JSONValue].self, from: try #require(req.body))
-        guard case .object(let data)? = body["data"] else { Issue.record("no data"); return }
-        #expect(data["_relate"] == .object(["belongs-to": "projects/3"]))
-        #expect(data["title"] == "Ship")
-        #expect(data["project"] == nil) // only facets the pattern declares
-        #expect(data["context"] == nil)
-    }
 }
 
 /// Captures requests and answers each with a canned body.
@@ -234,4 +213,164 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+}
+
+/// Every test here drives StubProtocol, whose captured requests are one shared
+/// static; serialized so a parallel test can't reset another's capture.
+@Suite(.serialized) struct StubClientTests {
+    @Test func createTaskIsOneWriteWithRelate() async throws {
+        let index = try RelationTests.index(belongsToSource: #"["tasks"]"#, patterns: ["projects", "tasks"])
+        let schema = try #require(Portfolio.taskPattern(in: index))
+        let client = StubProtocol.client(responding: #"{"operation":"create","pattern":"tasks","entry":{"id":42,"title":"Ship"},"uri":"mnemion://entry/tasks/42","links":[{"id":9,"source":"tasks/42","target":"projects/3","label":"belongs-to"}]}"#)
+        let project = PatternEntry(pattern: "projects", entry: Entry(["id": 3, "slug": "mnemion"]))
+
+        let task = try await client.createTask(in: project, title: "Ship", context: "ignored: no context facet", schema: schema)
+
+        #expect(task.ref == EntryRef(pattern: "tasks", id: 42))
+        let requests = StubProtocol.requests.withLock { $0 }
+        #expect(requests.count == 1) // the entry and its link together, never two writes
+        let req = try #require(requests.first)
+        #expect(req.url?.path == "/api/mutate/tasks")
+        let body = try JSONDecoder().decode([String: JSONValue].self, from: try #require(req.body))
+        guard case .object(let data)? = body["data"] else { Issue.record("no data"); return }
+        #expect(data["_relate"] == .object(["belongs-to": "projects/3"]))
+        #expect(data["title"] == "Ship")
+        #expect(data["project"] == nil) // only facets the pattern declares
+        #expect(data["context"] == nil)
+    }
+
+    static let reviewJSON = #"""
+    {"as_of":"2026-10-28","timezone":"UTC",
+     "hooks":{"pattern":"reviews","due":["day-start","week-start"],
+              "status":[{"kind":"day-start","period":"2026-10-28","due":true,"last":null},
+                        {"kind":"day-end","period":"2026-10-28","due":false,"last":{"id":3,"period":"2026-10-27"}}]},
+     "work":[{"pattern":"tasks","open":5,"undated":1,"stall_days":45,
+              "overdue":[{"pattern":"tasks","id":3,"label":"Email Christy","uri":"mnemion://entry/tasks/3","status":"open","deadline":"2026-03-15","updated_at":"2026-10-26 04:07:27"}],
+              "due_today":[],"due_this_week":[],"stalled":[]}],
+     "alignment":[{"chain":"addresses","relation":"serves","end":"target","pattern":"goals",
+                   "entries":[{"pattern":"goals","id":12,"label":"Metabolize success","uri":"mnemion://entry/goals/12"}]}],
+     "message":"Review: day-start and week-start reviews due; 1 overdue; 1 goals without inbound serves."}
+    """#
+
+    @Test func decodesTheDerivedReview() throws {
+        let review = try JSONDecoder().decode(Review.self, from: Data(Self.reviewJSON.utf8))
+        #expect(review.asOf == "2026-10-28")
+        #expect(review.dueHooks == [.dayStart, .weekStart])
+        #expect(review.status(of: .dayEnd)?.last?.id == 3)
+        #expect(review.work[0].stallDays == 45)
+        #expect(review.allOverdue.map(\.ref) == [EntryRef(pattern: "tasks", id: 3)])
+        #expect(review.allOverdue[0].deadline == "2026-03-15")
+        #expect(review.alignment[0].id == "addresses:serves:target:goals")
+        #expect(review.alignment[0].entries[0].label == "Metabolize success")
+        #expect(review.message?.hasPrefix("Review:") == true)
+    }
+
+    @Test func hooksPairUpAndCommitToTheRightPattern() {
+        for hook in ReviewHook.allCases {
+            #expect(hook.counterpart.counterpart == hook)
+            #expect(hook.isStart != hook.counterpart.isStart)
+        }
+        #expect(ReviewHook.dayStart.commitsTo == "tasks")
+        #expect(ReviewHook.weekStart.commitsTo == "projects")
+        #expect(ReviewHook(rawValue: "month-end")?.counterpart == .monthStart)
+    }
+
+    @Test func recordReviewWritesOneEntryWithItsLinks() async throws {
+        let client = StubProtocol.client(responding: #"{"operation":"create","pattern":"reviews","entry":{"id":7,"kind":"day-start"},"uri":"mnemion://entry/reviews/7"}"#)
+        let review = try await client.recordReview(
+            in: "reviews", hook: .dayStart, period: "2026-10-28", text: "Ship the review", energy: "high",
+            commits: [EntryRef(pattern: "tasks", id: 41), EntryRef(pattern: "tasks", id: 42)], reflectsOn: nil)
+        #expect(review.ref == EntryRef(pattern: "reviews", id: 7))
+        let req = try #require(StubProtocol.requests.withLock { $0 }.first)
+        #expect(req.url?.path == "/api/mutate/reviews")
+        let body = try JSONDecoder().decode([String: JSONValue].self, from: try #require(req.body))
+        guard case .object(let data)? = body["data"] else { Issue.record("no data"); return }
+        #expect(data["kind"] == "day-start")
+        #expect(data["period"] == "2026-10-28")
+        #expect(data["intention"] == "Ship the review")
+        #expect(data["reflection"] == nil)
+        #expect(data["energy"] == "high")
+        #expect(data["_relate"] == .object(["commits-to": .array(["tasks/41", "tasks/42"])]))
+    }
+
+    @Test func endReviewReflectsOnItsStart() async throws {
+        let client = StubProtocol.client(responding: #"{"operation":"create","pattern":"reviews","entry":{"id":8},"uri":"mnemion://entry/reviews/8"}"#)
+        _ = try await client.recordReview(in: "reviews", hook: .dayEnd, period: "2026-10-28", text: "It shipped", energy: nil, commits: [], reflectsOn: EntryRef(pattern: "reviews", id: 7))
+        let req = try #require(StubProtocol.requests.withLock { $0 }.first)
+        let body = try JSONDecoder().decode([String: JSONValue].self, from: try #require(req.body))
+        guard case .object(let data)? = body["data"] else { Issue.record("no data"); return }
+        #expect(data["reflection"] == "It shipped")
+        #expect(data["intention"] == nil)
+        #expect(data["_relate"] == .object(["reflects-on": "reviews/7"]))
+    }
+
+    @Test func captureNeedsOnlyABody() async throws {
+        let client = StubProtocol.client(responding: #"{"operation":"create","pattern":"inbox","entry":{"id":1,"body":"an idea","status":"open"},"uri":"mnemion://entry/inbox/1"}"#)
+        let note = try await client.capture("an idea", source: .mac, url: "https://example.com")
+        #expect(note.ref == EntryRef(pattern: "inbox", id: 1))
+        let req = try #require(StubProtocol.requests.withLock { $0 }.first)
+        #expect(req.url?.path == "/api/mutate/inbox")
+        let body = try JSONDecoder().decode([String: JSONValue].self, from: try #require(req.body))
+        guard case .object(let data)? = body["data"] else { Issue.record("no data"); return }
+        #expect(data["body"] == "an idea")
+        #expect(data["source"] == "mac")
+        #expect(data["url"] == "https://example.com")
+        #expect(data["status"] == "open")
+        #expect(data["_relate"] == nil) // no project at capture, by doctrine
+    }
+
+    @Test func makeTaskIsBornDerivedFromTheNote() async throws {
+        let index = try RelationTests.index(belongsToSource: #"["tasks"]"#, patterns: ["projects", "tasks"])
+        let schema = try #require(Portfolio.taskPattern(in: index))
+        let client = StubProtocol.client(responding: #"{"operation":"create","pattern":"tasks","entry":{"id":50,"title":"Do it","version":0},"uri":"mnemion://entry/tasks/50"}"#)
+        let note = PatternEntry(pattern: "inbox", entry: Entry(["id": 9, "body": "Do it", "version": 1]))
+        let project = PatternEntry(pattern: "projects", entry: Entry(["id": 3]))
+        _ = try await client.makeTask(from: note, in: project, title: "Do it", context: nil, schema: schema)
+        let requests = StubProtocol.requests.withLock { $0 }
+        #expect(requests.count == 2) // the task with its links, then the note's triage
+        let body = try JSONDecoder().decode([String: JSONValue].self, from: try #require(requests[0].body))
+        guard case .object(let data)? = body["data"] else { Issue.record("no data"); return }
+        #expect(data["_relate"] == .object(["belongs-to": "projects/3", "derived-from": "inbox/9"]))
+        #expect(requests[1].url?.path == "/api/mutate/inbox")
+    }
+
+    @Test func primeAndSearchDecodeLeniently() async throws {
+        let prime = StubProtocol.client(responding: #"{"charter":{},"results":[{"pattern":"axioms","id":7,"relevance":0.81,"entry":{"id":7,"axiom":"The goal is cognitive everpresence."},"uri":"mnemion://entry/axioms/7","linked":[]}],"count":1}"#)
+        let hits = try await prime.prime("everpresence", limit: 3)
+        #expect(hits.map(\.label) == ["The goal is cognitive everpresence."])
+        #expect(try #require(hits.first).ref == EntryRef(pattern: "axioms", id: 7))
+        let req = try #require(StubProtocol.requests.withLock { $0 }.first)
+        #expect(req.url?.path == "/api/prime")
+
+        let search = StubProtocol.client(responding: #"{"term":"x","results":[{"pattern":"notes","entry":{"id":2,"body":"x marks"},"matched_facets":["body"]}],"count":1}"#)
+        let found = try await search.search("x", patterns: ["notes"])
+        let hit = try #require(found.first)
+        #expect(hit.ref == EntryRef(pattern: "notes", id: 2))
+        #expect(hit.matchedFacets == ["body"])
+        let sreq = try #require(StubProtocol.requests.withLock { $0 }.first)
+        #expect(sreq.url?.query?.contains("patterns=notes") == true)
+    }
+
+    @Test func entryLabelFollowsTheWorkerOrder() {
+        #expect(Entry(["id": 1, "title": "T", "body": "B"]).label == "T")
+        #expect(Entry(["id": 1, "axiom": "A", "meaning": "M"]).label == "A")
+        #expect(Entry(["id": 1, "observation": "a long observation", "updated_at": "2026"]).label == "a long observation")
+        #expect(Entry(["id": 4]).label == "#4")
+    }
+
+    @Test func moveIsOneBatchOfUnlinkAndLink() async throws {
+        let client = StubProtocol.client(responding: #"{"ok":true}"#)
+        let task = PatternEntry(pattern: "tasks", entry: Entry(["id": 1]))
+        let old = PatternEntry(pattern: "projects", entry: Entry(["id": 8]))
+        let new = PatternEntry(pattern: "projects", entry: Entry(["id": 2]))
+        try await client.move(task, from: old, to: new)
+        let req = try #require(StubProtocol.requests.withLock { $0 }.first)
+        #expect(req.url?.path == "/api/batch")
+        let body = try JSONDecoder().decode([String: JSONValue].self, from: try #require(req.body))
+        guard case .array(let ops)? = body["operations"], ops.count == 2,
+              case .object(let unlink) = ops[0], case .object(let link) = ops[1] else { Issue.record("bad batch"); return }
+        #expect(unlink["pattern"] == "unlink")
+        #expect(link["pattern"] == "link")
+        #expect(link["data"] == .object(["source": "tasks/1", "target": "projects/2", "label": "belongs-to"]))
+    }
 }
