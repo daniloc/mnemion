@@ -4,6 +4,7 @@ import {
   createRelationFields, buildRelatePayload, entryRelationsView,
   type RelationItem, type RelationGroup,
 } from '../../shared/core/relation-view';
+import { alignmentRelation, alignmentView, type AlignmentView, type LinkRow } from '../../shared/core/alignment-view';
 import type { Facet } from './views';
 
 // Relation surfaces (Phase 3, P3-E): thin renderers of the pure shapes in
@@ -194,5 +195,64 @@ export function CreateEntryDialog({ pattern, facets, relations, onClose, onCreat
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+// === Alignment (the weekly review's "unaligned" read) ===
+
+/** Projects serving no goal and goals nothing serves, derived from `serves`
+ *  links (alignmentView). Renders nothing when the hive declares no such
+ *  relation; refetches when a change touches its ends or `_links`. */
+export function AlignmentPanel({ relations }: { relations: RelationItem[] }) {
+  const relation = alignmentRelation(relations);
+  const [view, setView] = useState<AlignmentView | null>(null);
+  const [tick, setTick] = useState(0);
+  const watched = relation ? [...relation.source, ...relation.target, '_links'] : [];
+  const key = relation ? `${relation.name}|${watched.join(',')}` : '';
+
+  useEffect(() => {
+    if (!relation) return;
+    const handler = (e: Event) => {
+      const changed: string[] = (e as CustomEvent).detail?.patterns || [];
+      if (changed.some((p) => watched.includes(p))) setTick((t) => t + 1);
+    };
+    window.addEventListener('mnemion:changed', handler);
+    return () => window.removeEventListener('mnemion:changed', handler);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!relation) { setView(null); return; }
+    let live = true;
+    const ids = (p: string) => fetch(`/api/query/${encodeURIComponent(p)}?limit=1000&facets=id&sort=id`).then((r) => r.json())
+      .then((d) => ((d.entries || []) as { id: number }[]).map((e) => ({ pattern: p, id: e.id })));
+    const links = fetch(`/api/query/_links?limit=1000&filter=${encodeURIComponent(`label=${relation.name}`)}`).then((r) => r.json())
+      .then((d) => (d.entries || []) as LinkRow[]);
+    Promise.all([Promise.all(relation.source.map(ids)), Promise.all(relation.target.map(ids)), links])
+      .then(([s, t, l]) => { if (live) setView(alignmentView(relation, s.flat(), t.flat(), l)); })
+      .catch(() => { if (live) setView(null); });
+    return () => { live = false; };
+  }, [key, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!relation || !view) return null;
+  const src = view.sources.join(' or ');
+  const tgt = view.targets.join(' or ');
+  const rows: { name: string; items: { pattern: string; id: number }[]; empty: string }[] = [
+    { name: `${src} serving no ${tgt}`, items: view.unaligned, empty: `every ${src} entry serves a ${tgt} entry` },
+    { name: `${tgt} no ${src} serve`, items: view.unserved, empty: `every ${tgt} entry has ${src} serving it` },
+  ];
+  return (
+    <div className="alignment">
+      <div className="relations-head">alignment</div>
+      {rows.map((r) => (
+        <div className="field inline rel-group" key={r.name}>
+          <div className="field-name">{r.name}</div>
+          <div className="field-value rel-items">
+            {r.items.length
+              ? r.items.map((it) => <EntryChip key={`${it.pattern}/${it.id}`} pattern={it.pattern} id={it.id} />)
+              : <span className="alignment-none">{r.empty}</span>}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }

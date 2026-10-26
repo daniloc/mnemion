@@ -22,7 +22,8 @@ MnemionKit/            platform-neutral Swift package (Foundation + Security onl
                        TokenStore (single-flight refresh), KeychainStore
   HiveClient           /api/index, query, mutate, resolve, links
   LiveEvents           /ws change stream with reconnect
-  Portfolio            projects ← belongs-to ← tasks, the project vocabulary
+  Portfolio            projects ← belongs-to ← tasks, projects → serves → goals,
+                       and the alignment read (projects serving no goal)
 ```
 
 ## Auth
