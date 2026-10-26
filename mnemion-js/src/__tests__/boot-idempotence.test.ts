@@ -15,7 +15,7 @@
 import { describe, it, expect } from "vitest";
 import { env, runInDurableObject } from "cloudflare:test";
 import { getStore, createPattern } from "./helpers";
-import { initializeSchema, runOnce, applyTokenHashScrub } from "../../entities/Hive/schema";
+import { bootSchema, runOnce, applyTokenHashScrub } from "../../entities/Hive/schema";
 
 /** Wrap a SqlStorage so every exec() accumulates its rowsWritten. */
 function countingSql(sql: any): { db: any; written: () => number; culprits: () => string[] } {
@@ -46,7 +46,7 @@ function countingSql(sql: any): { db: any; written: () => number; culprits: () =
 async function writesOnSecondBoot(store: any): Promise<string[]> {
   return await runInDurableObject(store, async (_i: any, state: any) => {
     const boot = async (d: any) => {
-      initializeSchema(d, {});
+      await bootSchema(d, {}, async () => "bookmark");
       await applyTokenHashScrub(d, async (raw: string) => raw.padEnd(64, "0"));
     };
     await boot(state.storage.sql); // settle
@@ -91,7 +91,7 @@ describe("boot idempotence", () => {
         // runs. Measuring only initializeSchema would have missed the audit-log
         // scrub, which read 6,000 rows per wake to find nothing to do.
         const boot = async (d: any) => {
-          initializeSchema(d, {});
+          await bootSchema(d, {}, async () => "bookmark");
           await applyTokenHashScrub(d, async (raw: string) => raw.padEnd(64, "0"));
         };
 
