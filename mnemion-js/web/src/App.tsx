@@ -3,7 +3,7 @@ import './notebook.css';
 import { store } from './store';
 import { COMPONENTS, StackView, PeekDialog, type Facet, type ViewSpec } from './views';
 import { PageView, type Page } from './PageView';
-import { CreateEntryDialog } from './relations';
+import { AlignmentPanel, CreateEntryDialog } from './relations';
 import type { RelationItem } from '../../shared/core/relation-view';
 import { isViewType } from '../../shared/core/view-palette';
 
@@ -108,6 +108,9 @@ export default function App() {
           const msg = JSON.parse(e.data);
           if (msg.type !== 'changed') return;
           const changed: string[] = msg.patterns || [];
+          // Panels that derive from several patterns (the alignment view) refetch
+          // on their own when a change touches what they read.
+          window.dispatchEvent(new CustomEvent('mnemion:changed', { detail: { patterns: changed } }));
           // UI structure changed — the agent reworked a view spec (_views) or the
           // schema/a facet's format (_schema). Re-fetch the specs and re-render the
           // open pattern IN PLACE: no reload. This is the live hyperdesk — the user
@@ -246,6 +249,7 @@ export default function App() {
                 </div>
               ))}
             </div>
+            {ready && <AlignmentPanel relations={relations} />}
             {ready && charterEntries.length === 0 && <p className="cover-empty">Select a pattern to begin.</p>}
           </section>
         ) : (

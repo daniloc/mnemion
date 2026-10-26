@@ -78,16 +78,16 @@ import Testing
     }
 
     @Test func linkRowMapsBothEnds() throws {
-        let json = #"{"id":4,"source_pattern":"project-tasks","source_id":11,"target_pattern":"projects","target_id":1,"label":"belongs-to"}"#
+        let json = #"{"id":4,"source_pattern":"tasks","source_id":11,"target_pattern":"projects","target_id":1,"label":"belongs-to"}"#
         let link = try #require(Link(try JSONDecoder().decode(Entry.self, from: Data(json.utf8))))
-        #expect(link.source == EntryRef(pattern: "project-tasks", id: 11))
+        #expect(link.source == EntryRef(pattern: "tasks", id: 11))
         #expect(link.target.description == "projects/1")
     }
 
     @Test func decodesLiveDelta() throws {
-        let json = #"{"type":"changed","patterns":["project-tasks"],"delta":{"pattern":"project-tasks","op":"update","id":11,"entry":{"id":11,"status":"done"}}}"#
+        let json = #"{"type":"changed","patterns":["tasks"],"delta":{"pattern":"tasks","op":"update","id":11,"entry":{"id":11,"status":"done"}}}"#
         let change = try JSONDecoder().decode(HiveChange.self, from: Data(json.utf8))
-        #expect(change.touches("project-tasks"))
+        #expect(change.touches("tasks"))
         #expect(change.delta?.entry?.string("status") == "done")
     }
 
@@ -105,7 +105,7 @@ import Testing
     }
 
     @Test func decodesTheRegistry() throws {
-        let index = try Self.index(belongsToSource: #"["project-tasks"]"#, patterns: ["projects", "project-tasks"])
+        let index = try Self.index(belongsToSource: #"["tasks"]"#, patterns: ["projects", "tasks"])
         let rel = try #require(index.relation("belongs-to"))
         #expect(rel.required)
         #expect(rel.cardinality == "one")
@@ -121,18 +121,50 @@ import Testing
     }
 
     @Test func taskPatternComesFromBelongsToSources() throws {
-        // Before the merge: both task patterns are sources; project-tasks wins.
-        let before = try Self.index(belongsToSource: #"["tasks","project-tasks"]"#, patterns: ["projects", "tasks", "project-tasks"])
-        #expect(Portfolio.taskPattern(in: before)?.name == "project-tasks")
-        // After the merge: project-tasks is gone, tasks is the one source.
-        let after = try Self.index(belongsToSource: #"["tasks"]"#, patterns: ["projects", "tasks"])
-        #expect(Portfolio.taskPattern(in: after)?.name == "tasks")
+        // tasks is the one source.
+        let merged = try Self.index(belongsToSource: #"["tasks"]"#, patterns: ["projects", "tasks"])
+        #expect(Portfolio.taskPattern(in: merged)?.name == "tasks")
+        // Several sources: tasks wins wherever it is listed; otherwise the first the hive has.
+        let several = try Self.index(belongsToSource: #"["chores","tasks"]"#, patterns: ["projects", "chores", "tasks"])
+        #expect(Portfolio.taskPattern(in: several)?.name == "tasks")
+        let other = try Self.index(belongsToSource: #"["errands","chores"]"#, patterns: ["projects", "chores"])
+        #expect(Portfolio.taskPattern(in: other)?.name == "chores")
         // A listed source the hive doesn't have is skipped.
-        let stale = try Self.index(belongsToSource: #"["project-tasks","tasks"]"#, patterns: ["projects", "tasks"])
+        let stale = try Self.index(belongsToSource: #"["errands","tasks"]"#, patterns: ["projects", "tasks"])
         #expect(Portfolio.taskPattern(in: stale)?.name == "tasks")
-        // Wildcard source: fall back to the known task patterns that exist.
+        // Wildcard source: tasks, when the hive has it.
         let wild = try Self.index(belongsToSource: #"["*"]"#, patterns: ["projects", "notes", "tasks"])
         #expect(Portfolio.taskPattern(in: wild)?.name == "tasks")
+    }
+
+    static func link(_ id: Int, _ s: Int, _ t: Int, _ label: String = "serves") -> Link {
+        Link(Entry(["id": .number(Double(id)), "source_pattern": "projects", "source_id": .number(Double(s)),
+                    "target_pattern": "goals", "target_id": .number(Double(t)), "label": .string(label)]))!
+    }
+
+    @Test func alignmentRelationNeedsStoredServesWithExplicitEnds() throws {
+        func index(_ serves: String) throws -> HiveIndex {
+            try JSONDecoder().decode(HiveIndex.self, from: Data(#"{"patterns":[],"relations":[\#(serves)]}"#.utf8))
+        }
+        let ok = try index(#"{"name":"serves","inverse":"served-by","source":["projects"],"target":["goals"]}"#)
+        #expect(Portfolio.alignmentRelation(in: ok)?.name == "serves")
+        #expect(Portfolio.alignmentRelation(in: try index(#"{"name":"serves","inverse":"served-by","source":["*"],"target":["goals"]}"#)) == nil)
+        #expect(Portfolio.alignmentRelation(in: try index(#"{"name":"serves","inverse":"served-by","source":["projects"],"target":["goals"],"derived":true}"#)) == nil)
+        #expect(Portfolio.alignmentRelation(in: try index(#"{"name":"references","inverse":"referenced-by","source":["projects"],"target":["goals"]}"#)) == nil)
+        #expect(Portfolio.alignmentRelation(in: HiveIndex(patterns: [])) == nil)
+    }
+
+    @Test func alignmentFindsUnalignedProjectsAndUnservedGoals() {
+        let p = { EntryRef(pattern: "projects", id: $0) }, g = { EntryRef(pattern: "goals", id: $0) }
+        let view = Portfolio.alignment(relation: "serves", sources: [p(1), p(2), p(3)], targets: [g(10), g(11), g(12)], links: [
+            Self.link(1, 1, 10),
+            Self.link(2, 1, 11),
+            Self.link(3, 2, 12, "references"), // another relation aligns nothing
+            Self.link(4, 9, 12),               // archived project: goal 12 stays unserved
+            Self.link(5, 3, 99),               // archived goal: project 3 stays unaligned
+        ])
+        #expect(view == Alignment(unaligned: [p(2), p(3)], unserved: [g(12)]))
+        #expect(Portfolio.alignment(relation: "serves", sources: [], targets: [], links: []) == Alignment())
     }
 
     @Test func createTaskIsOneWriteWithRelate() async throws {

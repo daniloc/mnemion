@@ -599,6 +599,8 @@ body { background: var(--paper); font-family: var(--sans); color: var(--ink); -w
   color: var(--ink-2); border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 6px;
 }
 .rel-items { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.alignment { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.alignment-none { font-size: 13px; color: var(--ink-3); }
 .rel-chip-pattern { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
 .create-form { display: flex; flex-direction: column; gap: 14px; }
 .form-row { display: flex; flex-direction: column; gap: 6px; }

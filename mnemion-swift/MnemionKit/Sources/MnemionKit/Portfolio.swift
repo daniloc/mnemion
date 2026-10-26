@@ -3,31 +3,59 @@ import Foundation
 /// The hive's project vocabulary, as the `projects` doctrine defines it: tasks
 /// connect to a project through a `belongs-to` link, projects to goals through
 /// `serves`. The link graph is the source of truth. Which pattern holds tasks is
-/// read off the relation registry (the sources of `belongs-to`), not assumed:
-/// `project-tasks` today, `tasks` once the two merge.
+/// read off the relation registry (the sources of `belongs-to`), not assumed.
 public enum Portfolio {
     public static let projects = "projects"
-    public static let projectTasks = "project-tasks"
     public static let tasks = "tasks"
     public static let belongsTo = "belongs-to"
+    public static let serves = "serves"
 
-    /// Preferred task patterns when `belongs-to` admits several: the dedicated
-    /// project-task pattern while it exists, then the merged `tasks`.
-    static let taskPatternPreference = [projectTasks, tasks]
-
-    /// The pattern new tasks are created in: an existing source pattern of
-    /// `belongs-to` (to projects), by preference. Nil when the hive has no such
-    /// relation or none of its sources exist.
+    /// The pattern new tasks are created in: `tasks` when `belongs-to` (to
+    /// projects) admits it, else the first source pattern the hive has. Nil when
+    /// the hive has no such relation or none of its sources exist.
     public static func taskPattern(in index: HiveIndex) -> PatternSummary? {
         guard let rel = index.relation(belongsTo), !rel.derived, rel.admitsTarget(projects) else { return nil }
-        let candidates = rel.source.contains("*")
-            ? index.patterns.filter { taskPatternPreference.contains($0.name) }
-            : rel.source.compactMap(index.pattern)
-        return candidates.min { rank($0.name) < rank($1.name) }
+        if rel.source.contains("*") { return index.pattern(tasks) }
+        let candidates = rel.source.compactMap(index.pattern)
+        return candidates.first { $0.name == tasks } ?? candidates.first
     }
 
-    private static func rank(_ pattern: String) -> Int {
-        taskPatternPreference.firstIndex(of: pattern) ?? taskPatternPreference.count
+    // MARK: Alignment
+
+    /// The stored `serves` relation with explicit ends, or nil when the hive
+    /// declares none (the alignment view then doesn't apply). A `*` end has no
+    /// "every entry of this pattern" to judge, so it doesn't qualify.
+    public static func alignmentRelation(in index: HiveIndex) -> Relation? {
+        guard let rel = index.relations.first(where: { $0.name == serves }), !rel.derived else { return nil }
+        let explicit = { (end: [String]) in !end.isEmpty && !end.contains("*") }
+        return explicit(rel.source) && explicit(rel.target) ? rel : nil
+    }
+
+    /// The weekly review's "unaligned" read (relations.md, decision 2): active
+    /// sources holding no link of `relation` (projects serving no goal) and active
+    /// targets nothing active links to (goals no work feeds). A link counts only
+    /// when both its ends are in the given active sets, so a goal served only by
+    /// an archived project is still unserved. Order follows the inputs. Mirrors
+    /// `alignmentView` in `mnemion-js/shared/core/alignment-view.ts`.
+    public static func alignment(relation: String, sources: [EntryRef], targets: [EntryRef], links: [Link]) -> Alignment {
+        let activeSources = Set(sources), activeTargets = Set(targets)
+        var serving = Set<EntryRef>(), served = Set<EntryRef>()
+        for link in links where link.label == relation && activeSources.contains(link.source) && activeTargets.contains(link.target) {
+            serving.insert(link.source)
+            served.insert(link.target)
+        }
+        return Alignment(unaligned: sources.filter { !serving.contains($0) }, unserved: targets.filter { !served.contains($0) })
+    }
+}
+
+/// Entries the alignment view surfaces for review.
+public struct Alignment: Hashable, Sendable {
+    public var unaligned: [EntryRef]
+    public var unserved: [EntryRef]
+
+    public init(unaligned: [EntryRef] = [], unserved: [EntryRef] = []) {
+        self.unaligned = unaligned
+        self.unserved = unserved
     }
 }
 
@@ -36,6 +64,24 @@ extension HiveClient {
     public func projects() async throws -> [PatternEntry] {
         try await query(Portfolio.projects, sort: "-updated_at", limit: 500)
             .map { PatternEntry(pattern: Portfolio.projects, entry: $0) }
+    }
+
+    /// The alignment view's entries, fetched in full (for titles): every active
+    /// entry of the relation's ends and its links, judged by `Portfolio.alignment`.
+    public func alignment(_ relation: Relation) async throws -> (unaligned: [PatternEntry], unserved: [PatternEntry]) {
+        func active(_ patterns: [String]) async throws -> [PatternEntry] {
+            var out: [PatternEntry] = []
+            for pattern in patterns {
+                out += try await query(pattern, sort: "id", limit: 1000).map { PatternEntry(pattern: pattern, entry: $0) }
+            }
+            return out
+        }
+        let sources = try await active(relation.source)
+        let targets = try await active(relation.target)
+        let edges = try await links(label: relation.name)
+        let judged = Portfolio.alignment(relation: relation.name, sources: sources.map(\.ref), targets: targets.map(\.ref), links: edges)
+        let unaligned = Set(judged.unaligned), unserved = Set(judged.unserved)
+        return (sources.filter { unaligned.contains($0.ref) }, targets.filter { unserved.contains($0.ref) })
     }
 
     /// Every entry that `belongs-to` the project, whatever pattern it lives in.

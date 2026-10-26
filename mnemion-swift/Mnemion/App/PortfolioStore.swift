@@ -15,6 +15,11 @@ final class PortfolioStore {
     private(set) var taskStatuses: [String] = ["open", "done"]
     /// The pattern new tasks go in, read off the relation registry (`belongs-to`).
     private(set) var taskSchema: PatternSummary?
+    /// The weekly review's alignment read (`serves`): nil when the hive declares
+    /// no such relation. Derived from the links on every load, never cached across.
+    private(set) var alignmentRelation: Relation?
+    private(set) var unaligned: Set<EntryRef> = []
+    private(set) var unservedGoals: [PatternEntry] = []
     var error: String?
 
     init(client: HiveClient, credentials: Credentials) {
@@ -47,11 +52,27 @@ final class PortfolioStore {
     /// (otherwise keep what's observed).
     func loadSchema() async {
         await run {
-            let schema = Portfolio.taskPattern(in: try await self.client.index())
+            let index = try await self.client.index()
+            self.alignmentRelation = Portfolio.alignmentRelation(in: index)
+            let schema = Portfolio.taskPattern(in: index)
             self.taskSchema = schema
             if let options = schema?.facet("status")?.options, !options.isEmpty {
                 self.taskStatuses = options
             }
+        }
+    }
+
+    /// Projects serving no goal and goals nothing serves.
+    func loadAlignment() async {
+        guard let relation = alignmentRelation else {
+            unaligned = []
+            unservedGoals = []
+            return
+        }
+        await run {
+            let view = try await self.client.alignment(relation)
+            self.unaligned = Set(view.unaligned.map(\.ref))
+            self.unservedGoals = view.unserved
         }
     }
 
@@ -107,7 +128,11 @@ final class PortfolioStore {
             switch delta.pattern {
             case Portfolio.projects:
                 await loadProjects()
+                await loadAlignment()
+            case _ where alignmentRelation?.target.contains(delta.pattern) ?? false:
+                await loadAlignment()
             case "_links":
+                if delta.entry?["label"]?.stringValue == alignmentRelation?.name || delta.entry == nil { await loadAlignment() }
                 // A new/removed belongs-to changes a project's task list.
                 if let target = delta.entry?["target_id"]?.intValue,
                    let project = projects.first(where: { $0.entry.id == target }) {
@@ -131,6 +156,9 @@ final class PortfolioStore {
         // Coarse event (batch, schema change, ingress): refetch what it touched.
         if change.touches(Portfolio.projects) { await loadProjects() }
         if change.touches("_schema") || change.touches("_relations") { await loadSchema() }
+        if let rel = alignmentRelation, change.patterns.contains(where: { $0 == "_links" || rel.source.contains($0) || rel.target.contains($0) }) {
+            await loadAlignment()
+        }
         if change.patterns.contains(where: { $0 == "_links" || $0.contains("tasks") }) { await reloadLoadedTasks() }
     }
 
