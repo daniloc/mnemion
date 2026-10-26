@@ -1,0 +1,51 @@
+# XcodeGen spec — the Xcode project is generated from this file, never edited
+# by hand (Mnemion.xcodeproj is gitignored). Run `xcodegen generate` here.
+#
+# One multiplatform SwiftUI target: iPhone/iPad today, Mac and Vision Pro from
+# the same sources. Shared logic lives in the MnemionKit package (which also
+# declares watchOS, for the companion app to come).
+name: Mnemion
+options:
+  bundleIdPrefix: com.danilocampos
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+    visionOS: "26.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Set your team here (or in Xcode's Signing pane) to run on a device.
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+
+packages:
+  MnemionKit:
+    path: MnemionKit
+
+targets:
+  Mnemion:
+    type: application
+    supportedDestinations: [iOS, macOS, visionOS]
+    sources:
+      - path: Mnemion
+    dependencies:
+      - package: MnemionKit
+    settings:
+      base:
+        PRODUCT_NAME: Mnemion
+        # Also the OAuth callback scheme (SessionModel derives it from the bundle id).
+        PRODUCT_BUNDLE_IDENTIFIER: com.danilocampos.mnemion
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Mnemion
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        TARGETED_DEVICE_FAMILY: "1,2,7"
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Mnemion/Mnemion-macOS.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
