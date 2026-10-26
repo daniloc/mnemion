@@ -1,6 +1,7 @@
 import type { RouteHandler } from "../router";
 import { createSessionCookie, revokeAllSessions, timingSafeEqual, isDevAutoApprove } from "../router";
 import { PRODUCT_NAME, HIVE_ID, OWNER_ACTOR } from "../../core/constants";
+import { escapeXml } from "../../core/escape";
 
 // Passkey module loaded lazily to avoid tslib issues in test environments
 type PasskeyModule = typeof import("../../Auth/passkey");
@@ -12,7 +13,7 @@ async function passkey(): Promise<PasskeyModule> {
 
 // === Login page (secret-only fallback, used when no passkey is registered) ===
 
-function secretOnlyLoginPage(authStateId: string): string {
+function secretOnlyLoginPage(authStateId: string, clientLine: string): string {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -32,6 +33,7 @@ function secretOnlyLoginPage(authStateId: string): string {
 </head>
 <body>
   <h1>${PRODUCT_NAME}</h1>
+  ${clientLine}
   <form id="form">
     <input type="password" id="secret" placeholder="Master secret or one-time code" autofocus />
     <button type="submit">Sign in</button>
@@ -60,6 +62,22 @@ function secretOnlyLoginPage(authStateId: string): string {
 
 // === Helpers ===
 
+// Names the OAuth client on the sign-in page, so the person sees who gets access.
+// A Client ID Metadata Document client's id is an https URL the provider fetched
+// and validated, so its host is verified; a client_name (and every DCR client) is
+// self-asserted, and the line says so.
+export function clientLine(client: { clientId: string; clientName?: string } | null): string {
+  if (!client) return "";
+  let host: string | null = null;
+  try {
+    const url = new URL(client.clientId);
+    if (url.protocol === "https:") host = url.host;
+  } catch { /* not a URL: a registered (DCR) client id */ }
+  const name = client.clientName?.trim() || host || "An unnamed app";
+  const source = host ? `from ${host}` : "self-registered, unverified";
+  return `<p class="client">Sign in to give <strong>${escapeXml(name)}</strong> (${escapeXml(source)}) access to this hive.</p>`;
+}
+
 // Complete the OAuth grant, attributing the resulting session to a member.
 // `actor` is the member label that authenticated (defaults to the owner
 // sentinel for secret/code logins, which aren't tied to a specific member).
@@ -76,7 +94,9 @@ async function completeOAuth(env: any, oauthReq: any, actor: string = OWNER_ACTO
 // === Route handlers ===
 
 export const authorize: RouteHandler = async (ctx) => {
-  const oauthReq = await (ctx.env as any).OAUTH_PROVIDER.parseAuthRequest(ctx.request);
+  // parseAuthRequest throws for a client it can't accept (e.g. a client ID
+  // metadata document that is unreachable or names another URL): a bad request.
+  const oauthReq = await (ctx.env as any).OAUTH_PROVIDER.parseAuthRequest(ctx.request).catch(() => null);
   if (!oauthReq) {
     return new Response("Invalid OAuth request", { status: 400 });
   }
@@ -109,9 +129,10 @@ export const authorize: RouteHandler = async (ctx) => {
   // Check if a passkey is registered — show passkey-first page if so
   const hasPasskey = await ctx.hive.hasPasskey();
   const pk = await passkey();
+  const client = clientLine(await (ctx.env as any).OAUTH_PROVIDER.lookupClient(oauthReq.clientId).catch(() => null));
   const html = hasPasskey
-    ? pk.passkeyLoginPage(authStateId)
-    : secretOnlyLoginPage(authStateId);
+    ? pk.passkeyLoginPage(authStateId, client)
+    : secretOnlyLoginPage(authStateId, client);
 
   return new Response(html, { headers: { "Content-Type": "text/html" } });
 };
