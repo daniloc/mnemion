@@ -430,6 +430,8 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
             required: z.boolean().default(false),
             default_value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
             options: z.array(z.string()).optional().describe("Allowed values (required for select type)"),
+            resolution: z.enum(["day", "instant"]).optional().describe("datetime facets: \"day\" stores calendar days only (a time of day is refused at write); default instant"),
+            closed: z.array(z.string()).optional().describe("select facets: the options that END an item (done, dropped…), a strict subset of options — every reader of a status derives open/closed from this"),
             // Carried through (not stripped) only so the engine refuses it with its
             // guidance: a silently dropped `links` would make a reference facet look created.
             links: z.unknown().optional().describe("Retired: reference (foreign-key) facets are refused — connect entries with a relation (declare_relation, then link or _relate)"),
@@ -438,6 +440,8 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           facet: z.string().optional().describe("Target facet name (for set_facet_format / drop_facet)"),
           format: z.enum(FORMAT_IDS as [string, ...string[]]).nullable().optional().describe("Value render format for set_facet_format (null clears → render by type)"),
           options: z.array(z.string()).optional().describe("Allowed values (for set_options)"),
+          closed: z.array(z.string()).nullable().optional().describe("For set_options: the options that end an item (subset of options; null clears). Omit to keep the current declaration"),
+          resolution: z.enum(["day", "instant"]).nullable().optional().describe("For set_resolution (pattern_name + facet): \"day\" is refused while any stored value carries a time of day; null/\"instant\" clears"),
           entry_id: z.number().optional().describe("Entry ID (for set_sharing)"),
           visibility: z.enum(["public", "unlisted", "private"]).optional().describe("Sharing visibility (for set_sharing)"),
           policy: z.object({

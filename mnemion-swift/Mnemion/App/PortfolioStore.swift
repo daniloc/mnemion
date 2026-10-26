@@ -32,7 +32,14 @@ final class PortfolioStore {
     private(set) var projectGoals: [EntryRef: [EntryRef]] = [:]
     /// How many people share the hive; attribution chips only matter past one.
     private(set) var memberCount = 1
+    /// Entries the owner exempts from alignment (charter `review_exempt`).
+    private(set) var exempt: Set<EntryRef> = []
     var error: String?
+
+    func isExempt(_ item: PatternEntry) -> Bool { exempt.contains(item.ref) }
+
+    /// Closed by the task pattern's declared terminal statuses.
+    func isClosed(_ task: PatternEntry) -> Bool { Portfolio.isClosed(task, schema: taskSchema) }
 
     init(client: HiveClient, credentials: Credentials) {
         self.client = client
@@ -62,8 +69,13 @@ final class PortfolioStore {
         async let d: () = loadInbox()
         async let e: () = loadGoals()
         async let f: () = loadMembers()
-        _ = await (a, b, c, d, e, f)
+        async let g: () = loadExemptions()
+        _ = await (a, b, c, d, e, f, g)
         await loadAlignment()
+    }
+
+    func loadExemptions() async {
+        if let refs = try? await client.reviewExemptions() { exempt = refs }
     }
 
     // MARK: Loading
@@ -94,15 +106,24 @@ final class PortfolioStore {
         }
     }
 
-    /// Projects serving no goal and goals nothing serves.
+    /// Projects serving no goal and goals nothing serves. The worker's review is
+    /// the home of this judgement (closed and exempt entries already skipped);
+    /// the client-side read is the fallback for a worker without it.
     func loadAlignment() async {
+        if let review, !reviewUnavailable {
+            let source = review.alignment.first { $0.relation == Portfolio.serves && $0.end == "source" }
+            let target = review.alignment.first { $0.relation == Portfolio.serves && $0.end == "target" }
+            unaligned = Set((source?.entries ?? []).map(\.ref))
+            unservedGoals = (target?.entries ?? []).compactMap { goal(ref: $0.ref) }
+            return
+        }
         guard let relation = alignmentRelation else {
             unaligned = []
             unservedGoals = []
             return
         }
         await run {
-            let view = try await self.client.alignment(relation)
+            let view = try await self.client.alignment(relation, exempt: self.exempt)
             self.unaligned = Set(view.unaligned.map(\.ref))
             self.unservedGoals = view.unserved
         }
@@ -138,6 +159,7 @@ final class PortfolioStore {
         do {
             review = try await client.review()
             reviewUnavailable = false
+            await loadAlignment()
         } catch let e as HiveError {
             if case .http(let status, _) = e, status == 404 { reviewUnavailable = true } else { error = e.localizedDescription }
         } catch is CancellationError {
@@ -397,6 +419,7 @@ final class PortfolioStore {
         if change.touches(Inbox.pattern) { await loadInbox() }
         if change.touches(Portfolio.goals) || change.touches("_links") { await loadGoals() }
         if change.touches("_schema") || change.touches("_relations") { await loadSchema() }
+        if change.touches("_charter") { await loadExemptions() }
         if let rel = alignmentRelation, change.patterns.contains(where: { $0 == "_links" || rel.source.contains($0) || rel.target.contains($0) }) {
             await loadAlignment()
         }

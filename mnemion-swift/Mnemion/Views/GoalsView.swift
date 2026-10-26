@@ -33,7 +33,7 @@ private struct GoalSection: View {
 
     private var unserving: [PatternEntry] {
         let serving = Set(serving.map(\.ref))
-        return store.projects.filter { !serving.contains($0.ref) && !Portfolio.isCatchAll($0) }
+        return store.projects.filter { !serving.contains($0.ref) && !store.isExempt($0) }
     }
 
     var body: some View {
@@ -81,6 +81,6 @@ private struct GoalSection: View {
     }
 
     private func openCount(_ project: PatternEntry) -> Int? {
-        store.tasks[project.ref].map { $0.filter { !Portfolio.isClosed($0) }.count }
+        store.tasks[project.ref].map { $0.filter { !store.isClosed($0) }.count }
     }
 }

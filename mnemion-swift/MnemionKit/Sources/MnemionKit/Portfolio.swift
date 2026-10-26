@@ -10,20 +10,32 @@ public enum Portfolio {
     public static let goals = "goals"
     public static let belongsTo = "belongs-to"
     public static let serves = "serves"
-    /// The project that holds tasks with no natural home. The doctrine says it
-    /// serves no goal by design, so the alignment view never flags it.
-    public static let catchAllSlug = "catch-all"
+    /// The charter key naming entries the review exempts from alignment gaps
+    /// (the catch-all project that serves no goal by design). Stored truth the
+    /// worker and every client read; never a slug or an id in code.
+    public static let exemptKey = "review_exempt"
 
-    public static func isCatchAll(_ project: PatternEntry) -> Bool {
-        project.entry.string("slug") == catchAllSlug
+    /// The fallback when a status facet declares no `closed` values; the
+    /// declaration (`Facet.closed`) wins wherever the schema has one.
+    static let fallbackClosed: Set<String> = ["done", "complete", "completed", "dropped", "cancelled", "canceled", "closed", "retired"]
+
+    /// Whether a task is closed, by its pattern's declared terminal statuses.
+    public static func isClosed(_ task: PatternEntry, schema: PatternSummary?) -> Bool {
+        let status = task.entry.string("status")?.lowercased() ?? ""
+        let declared = schema?.facet("status")?.closed?.map { $0.lowercased() } ?? []
+        return (declared.isEmpty ? fallbackClosed : Set(declared)).contains(status)
     }
 
-    /// Statuses that close a task; `dropped` keeps the record (the doctrine says
-    /// set status rather than archive).
-    public static let closedStatuses: Set<String> = ["done", "complete", "completed", "dropped", "cancelled", "canceled", "closed", "retired"]
-
-    public static func isClosed(_ task: PatternEntry) -> Bool {
-        closedStatuses.contains(task.entry.string("status")?.lowercased() ?? "")
+    /// The status a tap on the checkmark writes: the first declared closed option
+    /// to finish, the first open option to reopen.
+    public static func toggledStatus(for task: PatternEntry, schema: PatternSummary?) -> String {
+        let facet = schema?.facet("status")
+        let options = facet?.options ?? ["open", "done"]
+        let closed = facet?.closed ?? options.filter { fallbackClosed.contains($0.lowercased()) }
+        if isClosed(task, schema: schema) {
+            return options.first { !closed.contains($0) } ?? "open"
+        }
+        return closed.first ?? "done"
     }
 
     /// The pattern new tasks are created in: `tasks` when `belongs-to` (to
@@ -84,7 +96,7 @@ extension HiveClient {
 
     /// The alignment view's entries, fetched in full (for titles): every active
     /// entry of the relation's ends and its links, judged by `Portfolio.alignment`.
-    public func alignment(_ relation: Relation) async throws -> (unaligned: [PatternEntry], unserved: [PatternEntry]) {
+    public func alignment(_ relation: Relation, exempt: Set<EntryRef> = []) async throws -> (unaligned: [PatternEntry], unserved: [PatternEntry]) {
         func active(_ patterns: [String]) async throws -> [PatternEntry] {
             var out: [PatternEntry] = []
             for pattern in patterns {
@@ -97,7 +109,19 @@ extension HiveClient {
         let edges = try await links(label: relation.name)
         let judged = Portfolio.alignment(relation: relation.name, sources: sources.map(\.ref), targets: targets.map(\.ref), links: edges)
         let unaligned = Set(judged.unaligned), unserved = Set(judged.unserved)
-        return (sources.filter { unaligned.contains($0.ref) && !Portfolio.isCatchAll($0) }, targets.filter { unserved.contains($0.ref) })
+        return (sources.filter { unaligned.contains($0.ref) && !exempt.contains($0.ref) }, targets.filter { unserved.contains($0.ref) && !exempt.contains($0.ref) })
+    }
+
+    /// The entries the owner exempts from alignment (charter `review_exempt`:
+    /// "projects/8, goals/2").
+    public func reviewExemptions() async throws -> Set<EntryRef> {
+        let rows = try await query("_charter", filters: ["key=\(Portfolio.exemptKey)"], limit: 1)
+        guard let raw = rows.first?.string("value") else { return [] }
+        return Set(raw.split(separator: ",").compactMap { part in
+            let bits = part.trimmingCharacters(in: .whitespaces).split(separator: "/", maxSplits: 1)
+            guard bits.count == 2, let id = Int(bits[1]) else { return nil }
+            return EntryRef(pattern: String(bits[0]), id: id)
+        })
     }
 
     /// Active goals, in id order.
@@ -120,7 +144,7 @@ extension HiveClient {
     public func openTasks(in schema: PatternSummary) async throws -> [PatternEntry] {
         try await query(schema.name, sort: "-updated_at", limit: 500)
             .map { PatternEntry(pattern: schema.name, entry: $0) }
-            .filter { !Portfolio.isClosed($0) }
+            .filter { !Portfolio.isClosed($0, schema: schema) }
     }
 
     /// Move a task to another project: the old `belongs-to` link is archived and
@@ -155,8 +179,11 @@ extension HiveClient {
         if schema.facet("project") != nil {
             data["project"] = .string(project.entry.string("slug") ?? project.entry.string("title") ?? "")
         }
-        if let status = schema.facet("status"), status.options?.contains("open") ?? true {
-            data["status"] = "open"
+        // A new task starts in the pattern's first open status (its default when
+        // it declares one), never a value this client spelled.
+        if let status = schema.facet("status"), status.defaultValue == nil {
+            let closed = Set(status.closed ?? [])
+            if let first = status.options?.first(where: { !closed.contains($0) }) { data["status"] = .string(first) }
         }
         if let context, !context.isEmpty, schema.facet("context") != nil { data["context"] = .string(context) }
         if let deadline, !deadline.isEmpty, schema.facet("deadline") != nil { data["deadline"] = .string(deadline) }

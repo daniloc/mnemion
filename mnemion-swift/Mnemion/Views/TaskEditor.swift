@@ -22,7 +22,7 @@ struct TaskEditor: View {
         self.task = task
         self.project = project
         _title = State(initialValue: task.entry.string("title") ?? "")
-        _status = State(initialValue: task.entry.string("status") ?? "open")
+        _status = State(initialValue: task.entry.string("status") ?? "")
         _context = State(initialValue: task.entry.string("context") ?? "")
         let d = Dates.date(task.entry.string("deadline"))
         _hasDeadline = State(initialValue: d != nil)
@@ -94,6 +94,7 @@ struct TaskEditor: View {
                 .foregroundStyle(.secondary)
             }
             .formStyle(.grouped)
+            .onAppear { if status.isEmpty, let first = store.taskStatuses.first { status = first } }
             .navigationTitle("Task")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -122,8 +123,11 @@ struct TaskEditor: View {
         .sheetSize(minWidth: 480, minHeight: 560)
     }
 
+    /// The pattern's statuses; an unknown stored value stays selectable, and an
+    /// unset one reads as the first declared option.
     private var statusOptions: [String] {
-        store.taskStatuses.contains(status) ? store.taskStatuses : store.taskStatuses + [status]
+        if status.isEmpty { return store.taskStatuses }
+        return store.taskStatuses.contains(status) ? store.taskStatuses : store.taskStatuses + [status]
     }
 }
 

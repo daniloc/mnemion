@@ -1344,6 +1344,20 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     if (!fieldCols.some((c: any) => c.name === "format")) {
       db.exec(`ALTER TABLE "_fields" ADD COLUMN "format" TEXT`);
     }
+    // --- v20: a facet declares what its values are, so no reader re-decides it ---
+    //
+    // `resolution` on a datetime facet: "day" means the stored value is a calendar
+    // day (YYYY-MM-DD) and a time of day is refused at write; null/"instant" keeps
+    // full timestamps. `closed` on a select facet: the JSON list of its terminal
+    // options (done, dropped…), read by the review and every client instead of a
+    // hard-coded set. Both are set at create_pattern/add_facet or through
+    // set_resolution / set_options.
+    if (!fieldCols.some((c: any) => c.name === "resolution")) {
+      db.exec(`ALTER TABLE "_fields" ADD COLUMN "resolution" TEXT`);
+    }
+    if (!fieldCols.some((c: any) => c.name === "closed")) {
+      db.exec(`ALTER TABLE "_fields" ADD COLUMN "closed" TEXT`);
+    }
   } catch {}
 
   // --- v17: relations registry ---

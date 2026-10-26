@@ -66,6 +66,10 @@ export interface IndexFacetEntry {
   options?: string[];
   readonly?: boolean;
   format?: string;
+  /** datetime facets: "day" stores calendar days only (a time of day is refused at write). */
+  resolution?: string;
+  /** select facets: the terminal options (done, dropped…), for every reader of a status. */
+  closed?: string[];
 }
 
 /** The structural index: schema + charter + facet metadata, entry counts zeroed.
@@ -93,6 +97,8 @@ export function getCurrentIndex(ctx: ReportsContext): StoreIndex {
     };
     if (f.options) facet.options = JSON.parse(f.options);
     if (f.format) facet.format = f.format;
+    if (f.resolution) facet.resolution = f.resolution;
+    if (f.closed) { try { facet.closed = JSON.parse(f.closed); } catch { /* corrupt → undeclared */ } }
     if (IMMUTABLE[f.object_name]?.fields.includes(f.name)) facet.readonly = true;
     facetsByPattern.get(f.object_name)!.push(facet);
   }

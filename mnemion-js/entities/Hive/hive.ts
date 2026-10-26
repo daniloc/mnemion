@@ -212,7 +212,7 @@ export class HiveDO extends DurableObject {
     ).one() as { name: string; description: string; pattern_class: string };
 
     const fields = this.db.exec(
-      "SELECT name, type, required, default_value, format FROM _fields WHERE object_name = ? ORDER BY id",
+      "SELECT name, type, required, default_value, format, options, resolution, closed FROM _fields WHERE object_name = ? ORDER BY id",
       patternName
     ).toArray() as any[];
 
@@ -232,6 +232,11 @@ export class HiveDO extends DurableObject {
           default: f.default_value != null ? JSON.parse(f.default_value) : null,
         };
         if (f.format) facet.format = f.format;
+        if (f.options) { try { facet.options = JSON.parse(f.options); } catch { /* undeclared */ } }
+        // What the values ARE, declared once (evolution.ts): a day-only datetime,
+        // a select's terminal options. Readers derive from these, never re-decide.
+        if (f.resolution) facet.resolution = f.resolution;
+        if (f.closed) { try { facet.closed = JSON.parse(f.closed); } catch { /* undeclared */ } }
         return facet;
       }),
       kernel_columns: [...STRUCTURAL_KERNEL_COLUMNS],
@@ -305,11 +310,12 @@ export class HiveDO extends DurableObject {
       hasKernelVersion: (name) => this.hasKernelVersion(name),
       facetMeta: (pattern, facet) => {
         const rows = this.db.exec(
-          "SELECT type, options FROM _fields WHERE object_name = ? AND name = ?", pattern, facet
+          "SELECT type, options, resolution FROM _fields WHERE object_name = ? AND name = ?", pattern, facet
         ).toArray() as any[];
         if (!rows.length) return null;
-        const meta: { type: string; options?: string[] } = { type: rows[0].type };
+        const meta: { type: string; options?: string[]; resolution?: string } = { type: rows[0].type };
         if (rows[0].options) meta.options = JSON.parse(rows[0].options);
+        if (rows[0].resolution) meta.resolution = rows[0].resolution;
         return meta;
       },
       patternClass: (name) => this.patternClass(name),
@@ -588,9 +594,17 @@ export class HiveDO extends DurableObject {
   }
 
   async batchMutate(operationsJson: string, actor: string = OWNER_ACTOR): Promise<string> {
+    // Shape is judged here, at the one chokepoint MCP and /api/batch share, so
+    // a malformed item is a refusal, never a thrown TypeError further down.
+    const raw = JSON.parse(operationsJson);
+    if (!Array.isArray(raw) || raw.length === 0) return this.errorJson("A batch is a non-empty array of {pattern, operation?, data} items");
+    const malformed = raw.findIndex((op: unknown) =>
+      op == null || typeof op !== "object" || typeof (op as any).pattern !== "string"
+      || (op as any).data == null || typeof (op as any).data !== "object");
+    if (malformed !== -1) return this.errorJson(`Batch item ${malformed} needs a string pattern and an object data`);
     // Shortcuts expand exactly as in mutate(): {pattern: "link"} → _links create,
     // {pattern: "unlink"} → _links unlink; the shortcut decides the operation.
-    const operations = (JSON.parse(operationsJson) as { pattern: string; operation?: string; data: any }[]).map((op) => {
+    const operations = (raw as { pattern: string; operation?: string; data: any }[]).map((op) => {
       const shortcut = expandShortcut(op.pattern);
       return shortcut ? { ...op, pattern: shortcut.pattern, operation: shortcut.operation } : op;
     }) as { pattern: string; operation: string; data: any }[];
@@ -694,11 +708,13 @@ export class HiveDO extends DurableObject {
     // datetime now, the upload is coerced exactly as a mutate would be (canonical
     // ISO 8601, relative phrases refused) — refused uploads write nothing and
     // leave the token unconsumed.
-    const facetType = (this.db.exec(`SELECT type FROM _fields WHERE object_name = ? AND name = ?`, constraints.target_pattern, constraints.target_facet).toArray()[0] as any)?.type;
-    if (facetType === "datetime") {
+    const facetRow = this.db.exec(`SELECT type, resolution FROM _fields WHERE object_name = ? AND name = ?`, constraints.target_pattern, constraints.target_facet).toArray()[0] as any;
+    if (facetRow?.type === "datetime") {
       if (constraints.mode === "append") return this.errorJson(`Upload target "${constraints.target_facet}" is a datetime facet — it can only be replaced, not appended to. Nothing was written; the token was not consumed.`);
       const coerced = data.coerceFacetValue("datetime", content.trim());
       if (!coerced.ok) return this.errorJson(`Upload refused for datetime facet "${constraints.target_facet}": ${coerced.error}. Nothing was written; the token was not consumed.`);
+      const dayErr = data.dayResolutionError({ type: "datetime", resolution: facetRow.resolution ?? undefined }, coerced.value);
+      if (dayErr) return this.errorJson(`Upload refused for datetime facet "${constraints.target_facet}": ${dayErr}. Nothing was written; the token was not consumed.`);
       content = coerced.value as string;
     }
 
@@ -1366,7 +1382,7 @@ export class HiveDO extends DurableObject {
       "SELECT name, description, doctrine FROM _objects WHERE name = ?", patternName
     ).one() as any;
     const facets = this.db.exec(
-      "SELECT name, type, required, default_value, options FROM _fields WHERE object_name = ? ORDER BY id", patternName
+      "SELECT name, type, required, default_value, options, resolution, closed FROM _fields WHERE object_name = ? ORDER BY id", patternName
     ).toArray() as any[];
 
     const meta = {
@@ -1377,6 +1393,8 @@ export class HiveDO extends DurableObject {
         const facet: any = { name: f.name, type: f.type, required: !!f.required };
         if (f.default_value != null) facet.default = JSON.parse(f.default_value);
         if (f.options) facet.options = JSON.parse(f.options);
+        if (f.resolution) facet.resolution = f.resolution;
+        if (f.closed) { try { facet.closed = JSON.parse(f.closed); } catch { /* undeclared */ } }
         return facet;
       }),
       exported_at: new Date().toISOString(),

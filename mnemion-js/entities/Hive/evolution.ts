@@ -78,6 +78,31 @@ function validateFacets(
       return `Facet "${a.name}" is type select but has no options`;
     if (a.type !== "select" && a.options)
       return `Facet "${a.name}" has options but is not type select`;
+    const declErr = validateFacetDeclarations(a.name, a.type, a.options, a.resolution, a.closed);
+    if (declErr) return declErr;
+  }
+  return null;
+}
+
+/** What a facet's values ARE, declared once so no reader re-decides it:
+ *  `resolution` on a datetime ("day" | "instant"), `closed` on a select (the
+ *  subset of its options that end an item). */
+const RESOLUTIONS = new Set(["day", "instant"]);
+
+function validateFacetDeclarations(name: string, type: string, options: unknown, resolution: unknown, closed: unknown): string | null {
+  if (resolution !== undefined && resolution !== null) {
+    if (type !== "datetime") return `Facet "${name}" declares a resolution but is not type datetime`;
+    if (typeof resolution !== "string" || !RESOLUTIONS.has(resolution))
+      return `Facet "${name}": resolution must be "day" or "instant"`;
+  }
+  if (closed !== undefined && closed !== null) {
+    if (type !== "select") return `Facet "${name}" declares closed values but is not type select`;
+    if (!Array.isArray(closed) || closed.some((c) => typeof c !== "string"))
+      return `Facet "${name}": closed must be an array of this facet's options`;
+    const opts = Array.isArray(options) ? options : [];
+    const stray = closed.filter((c) => !opts.includes(c));
+    if (stray.length) return `Facet "${name}": closed values must be among its options; not options: ${stray.join(", ")}`;
+    if (closed.length >= opts.length) return `Facet "${name}": at least one option must stay open`;
   }
   return null;
 }
@@ -88,6 +113,8 @@ function facetToIndexEntry(a: any): IndexFacetEntry {
     default: a.default_value ?? null,
   };
   if (a.options) facet.options = a.options;
+  if (a.resolution) facet.resolution = a.resolution;
+  if (a.closed) facet.closed = a.closed;
   return facet;
 }
 
@@ -107,10 +134,12 @@ function facetToDDL(a: any): string {
 function registerFacets(db: DB, patternName: string, facets: any[]): void {
   for (const a of facets) {
     db.exec(
-      "INSERT INTO _fields (object_name, name, type, required, default_value, options) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO _fields (object_name, name, type, required, default_value, options, resolution, closed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       patternName, a.name, a.type, a.required ? 1 : 0,
       a.default_value != null ? JSON.stringify(a.default_value) : null,
-      a.options ? JSON.stringify(a.options) : null
+      a.options ? JSON.stringify(a.options) : null,
+      a.resolution ?? null,
+      a.closed ? JSON.stringify(a.closed) : null,
     );
   }
 }
@@ -336,6 +365,14 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         return `set_options only works on text or select facets, "${change.facet_name}" is ${facet.type}`;
       if (!Array.isArray(change.options) || change.options.length === 0)
         return "options must be a non-empty array of strings";
+      // `closed`: which options end an item. Omitted keeps the current declaration
+      // where it still fits the new options; null clears it.
+      if (change.closed !== undefined) {
+        const err = validateFacetDeclarations(change.facet_name, "select", change.options, undefined, change.closed);
+        if (err) return err;
+      } else if (facet.closed?.some((c) => !change.options.includes(c))) {
+        return `The current closed values (${facet.closed.join(", ")}) are not all among the new options; pass closed explicitly`;
+      }
       return null;
     },
     preview(change, preview) {
@@ -343,11 +380,62 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
       const facet = pat.facets.find((f) => f.name === change.facet_name)!;
       facet.type = "select";
       facet.options = change.options;
+      if (change.closed !== undefined) {
+        if (change.closed) facet.closed = change.closed; else delete facet.closed;
+      }
+    },
+    apply(change, { db }) {
+      if (change.closed !== undefined) {
+        db.exec(
+          "UPDATE _fields SET type = 'select', options = ?, closed = ? WHERE object_name = ? AND name = ?",
+          JSON.stringify(change.options), change.closed ? JSON.stringify(change.closed) : null, change.pattern_name, change.facet_name
+        );
+      } else {
+        db.exec(
+          "UPDATE _fields SET type = 'select', options = ? WHERE object_name = ? AND name = ?",
+          JSON.stringify(change.options), change.pattern_name, change.facet_name
+        );
+      }
+    },
+  },
+
+  set_resolution: {
+    validate(change, ctx, preview) {
+      if (!change.pattern_name) return "pattern_name is required for set_resolution";
+      if (!change.facet) return "facet is required for set_resolution";
+      if (!ctx.patternExists(change.pattern_name))
+        return `Pattern "${change.pattern_name}" does not exist`;
+      if (isKernelPattern(change.pattern_name))
+        return `Resolutions apply to user patterns, not kernel pattern "${change.pattern_name}"`;
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      const facet = pat?.facets.find((f) => f.name === change.facet);
+      if (!facet) return `Facet "${change.facet}" does not exist on "${change.pattern_name}"`;
+      return validateFacetDeclarations(change.facet, facet.type, undefined, change.resolution ?? "instant", undefined);
+    },
+    preview(change, preview) {
+      const pat = preview.patterns.find((p) => p.name === change.pattern_name);
+      const facet = pat?.facets.find((f) => f.name === change.facet);
+      if (facet) { if (change.resolution) facet.resolution = change.resolution; else delete facet.resolution; }
+    },
+    // Declaring "day" is refused while any stored value carries a time of day: the
+    // declaration must be true of the data, never a wish. The writer resolves them.
+    blockers: {
+      violations: (change, ctx) => {
+        if (change.resolution !== "day") return [];
+        try {
+          const rows = ctx.db.exec(
+            `SELECT id, ${quoteIdent(change.facet)} AS v FROM ${quoteIdent(change.pattern_name)} WHERE ${quoteIdent(change.facet)} LIKE '%T%'`,
+          ).toArray() as { id: number; v: string }[];
+          return rows.map((r) => ({ reason: `${change.pattern_name}/${r.id} holds ${JSON.stringify(r.v)}, a timestamp, not a day` }));
+        } catch {
+          return [];
+        }
+      },
     },
     apply(change, { db }) {
       db.exec(
-        "UPDATE _fields SET type = 'select', options = ? WHERE object_name = ? AND name = ?",
-        JSON.stringify(change.options), change.pattern_name, change.facet_name
+        "UPDATE _fields SET resolution = ? WHERE object_name = ? AND name = ?",
+        change.resolution ?? null, change.pattern_name, change.facet
       );
     },
   },

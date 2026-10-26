@@ -161,7 +161,7 @@ function charterValue(db: any, key: string): string | null {
 
 // === Pattern discovery ===
 
-interface FacetRow { name: string; type: string; options: string | null; required: number }
+interface FacetRow { name: string; type: string; options: string | null; required: number; closed?: string | null; resolution?: string | null }
 
 function userPatterns(db: any): string[] {
   try {
@@ -175,7 +175,7 @@ function userPatterns(db: any): string[] {
 
 function facetsOf(db: any, pattern: string): FacetRow[] {
   try {
-    return db.exec("SELECT name, type, options, required FROM _fields WHERE object_name = ? ORDER BY id", pattern).toArray() as FacetRow[];
+    return db.exec("SELECT name, type, options, required, closed, resolution FROM _fields WHERE object_name = ? ORDER BY id", pattern).toArray() as FacetRow[];
   } catch {
     return [];
   }
@@ -278,9 +278,22 @@ function exemptRefs(db: any): Set<string> {
   return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
 }
 
-function isOpen(row: Record<string, unknown>): boolean {
+/** The pattern's declared terminal statuses (`_fields.closed` on its status
+ *  select). Empty when undeclared, and then the fallback set applies. */
+function closedStatuses(facets: FacetRow[]): Set<string> {
+  const status = facets.find((f) => f.name === "status" && f.type === "select");
+  if (!status?.closed) return new Set();
+  try {
+    const parsed = JSON.parse(status.closed);
+    return new Set(Array.isArray(parsed) ? parsed.map((s) => String(s).toLowerCase()) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function isOpen(row: Record<string, unknown>, closed: ReadonlySet<string>): boolean {
   const s = typeof row.status === "string" ? row.status.trim().toLowerCase() : "";
-  return !CLOSED_STATUSES.has(s);
+  return !(closed.size > 0 ? closed : CLOSED_STATUSES).has(s);
 }
 
 // === Work: overdue, due, stalled ===
@@ -293,7 +306,8 @@ function reviewWork(db: any, pattern: string, facets: FacetRow[], today: string,
     rows = db.exec(`SELECT * FROM ${quoteIdent(pattern)} WHERE archived_at IS NULL`).toArray() as Record<string, unknown>[];
   } catch { /* table may be mid-rebuild */ }
 
-  const open = rows.filter(isOpen);
+  const closed = closedStatuses(facets);
+  const open = rows.filter((row) => isOpen(row, closed));
   const out: WorkReview = { pattern, open: open.length, undated: 0, stall_days: stallDays, overdue: [], due_today: [], due_this_week: [], stalled: [] };
   for (const row of open) {
     const b = brief(pattern, row, facets, timezone);
@@ -342,8 +356,9 @@ function reviewAlignment(db: any, facetCache: Map<string, FacetRow[]>, timezone:
           seen.add(key);
           // A closed entry (status done, retired, dropped…) needs no alignment;
           // the doctrine says set status rather than archive, so honour it here.
+          const closed = closedStatuses(facets(pattern));
           const rows = entriesLacking(db, pattern, end, step.name)
-            .filter(isOpen)
+            .filter((row) => isOpen(row, closed))
             .filter((row) => !exempt.has(`${pattern}/${row.id}`));
           if (rows.length === 0) continue;
           gaps.push({

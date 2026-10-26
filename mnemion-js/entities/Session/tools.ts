@@ -105,7 +105,7 @@ Federation: use this to help the user access content on other hives.
     name: "propose_change",
     description: `Use this to help the user evolve the structure of their hive. Propose a structural change — validates and returns a preview without committing.
 
-Supports: create_pattern (with facets), add_facet (to existing pattern), drop_facet (remove a facet and its data), set_sharing (entry-level HTTP visibility), set_options, set_doctrine, set_memory_policy, set_class, set_facet_format (how a facet's value renders in the web app — pass facet + format), archive_pattern (refused while a containment relation's members in other patterns still link in), unarchive_pattern, declare_relation, amend_relation, retire_relation (the link vocabulary).
+Supports: create_pattern (with facets), add_facet (to existing pattern), drop_facet (remove a facet and its data), set_sharing (entry-level HTTP visibility), set_options (also sets which options END an item via closed), set_resolution (a datetime facet holds calendar days only: pattern_name + facet + resolution "day"), set_doctrine, set_memory_policy, set_class, set_facet_format (how a facet's value renders in the web app — pass facet + format), archive_pattern (refused while a containment relation's members in other patterns still link in), unarchive_pattern, declare_relation, amend_relation, retire_relation (the link vocabulary).
 Facets hold values, never connections: connect entries with relations (declare_relation, then link, or _relate on create) — reference/foreign-key facets are retired.
 Pattern/facet names: lowercase, a-z/0-9/hyphens/underscores, max 64 chars. Max 64 facets per pattern.
 

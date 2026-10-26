@@ -63,7 +63,7 @@ export interface DataContext {
   listPatterns(): string[];
   entryExists(pattern: string, id: number): boolean;
   hasKernelVersion(patternName: string): boolean;
-  facetMeta(pattern: string, facet: string): { type: string; options?: string[] } | null;
+  facetMeta(pattern: string, facet: string): { type: string; options?: string[]; resolution?: string } | null;
   patternClass(name: string): "knowledge" | "dataset";
   /** The active clipboard bound to this pattern (a validated job-dispatch form), or
    *  null. A clipboard-bound pattern's writes are SUBMISSIONS — validated collect-all
@@ -216,6 +216,16 @@ const FACET_VALIDATORS: Record<string, (v: unknown) => Coerce> = {
   select: (v) => ({ ok: true, value: v }), // option membership is checked separately
 };
 
+/** A datetime facet declared `resolution: "day"` holds calendar days only: a
+ *  canonical value with a time of day is refused, so no reader ever has an
+ *  instant to convert. The writer resolves it to a day (data-is-destiny: the
+ *  declaration is true of every stored value). */
+export function dayResolutionError(meta: { type: string; resolution?: string }, canonical: unknown): string | null {
+  if (meta.type !== "datetime" || meta.resolution !== "day") return null;
+  if (typeof canonical === "string" && !canonical.includes("T")) return null;
+  return `this facet holds calendar days (resolution: day); give YYYY-MM-DD, not a time of day (${JSON.stringify(canonical)})`;
+}
+
 /** Coerce one value to a facet type's canonical stored form, or say why it can't
  *  be — the single coercion every write path uses (mutate here; the upload path
  *  in hive.consumeUpload). Types without a validator pass through unchanged. */
@@ -330,6 +340,8 @@ function validateSubmission(
     if (coerce) {
       const r = coerce(val);
       if (!r.ok) { add(key, `(${meta.type}) ${r.error}`); continue; }
+      const dayErr = dayResolutionError(meta, r.value);
+      if (dayErr) { add(key, dayErr); continue; }
       data[key] = r.value; // canonical form for storage + downstream comparison
     }
     const spec = fieldSpecByFacet.get(key);
@@ -903,6 +915,8 @@ function mutateOne(ctx: DataContext, patternName: string, operation: string, dat
             const r = validate(val);
             if (!r.ok)
               return { error: true, message: `Invalid value for "${key}" on ${isDataset ? "dataset " : ""}"${patternName}" (${meta.type}): ${r.error}` };
+            const dayErr = dayResolutionError(meta, r.value);
+            if (dayErr) return { error: true, message: `Invalid value for "${key}" on "${patternName}": ${dayErr}` };
             data[key] = r.value;
           }
         }

@@ -32,3 +32,7 @@ worker-configuration.d.ts
 .mcp.json
 # Workflow/agent isolation worktrees (transient)
 .claude/worktrees/
+
+# Finder/iCloud conflict copies
+* 2
+* 2.*

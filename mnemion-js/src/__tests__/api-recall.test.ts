@@ -88,9 +88,11 @@ describe("api recall", () => {
 
     const empty = await batchMutate(ctxFor(store, new Request("https://test.local/api/batch", { method: "POST", body: "{}" })));
     expect(empty.status).toBe(400);
+    // A malformed item is refused by the hive itself (the chokepoint MCP shares), never a 500.
     const malformed = await batchMutate(ctxFor(store, new Request("https://test.local/api/batch", { method: "POST", body: JSON.stringify({ operations: [null, 1] }) })));
-    expect(malformed.status).toBe(400);
-    expect((await malformed.json() as { message: string }).message).toMatch(/operations\[0\]/);
+    expect(malformed.status).toBe(200);
+    expect(await malformed.json()).toMatchObject({ error: true, message: expect.stringMatching(/item 0/) });
+    expect(JSON.parse(await store.batchMutate(JSON.stringify([{ pattern: "notes" }])))).toMatchObject({ error: true, message: expect.stringMatching(/item 0/) });
   });
 
   it("the routes exist and sit behind the session gate", async () => {

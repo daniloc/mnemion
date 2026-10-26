@@ -118,3 +118,10 @@ It is refused while anything still names the facet — a memory policy's `exclus
 ## Dates
 
 A `datetime` facet stores ISO 8601 in every user pattern, knowledge or dataset: a date-only value ("March 7, 2026") as `YYYY-MM-DD`, anything with a time of day as a full UTC timestamp. Only a full date counts: periods ("2026", "2026-03", "March 2026"), days that don't exist ("2026-02-30") and relative phrases ("next week", "Q2") are refused — resolving a period or phrase to a specific day, against the moment of writing, is the writer's job. The same rule applies to uploads into a datetime facet. Values written before this rule stay as they are until that facet is written again.
+
+## Facet declarations: resolution and closed
+
+A facet declares what its values *are*, once, so no reader has to re-decide it:
+
+- `resolution` on a `datetime` facet: `"day"` means the facet holds calendar days only. A value with a time of day is refused at write (`YYYY-MM-DD` is the only form), so readers never have an instant to convert into a day. Declare it in `create_pattern` / `add_facet` (`{name: "deadline", type: "datetime", resolution: "day"}`) or later with `set_resolution` (`pattern_name`, `facet`, `resolution`), which is refused while any stored value still carries a time — resolve those first.
+- `closed` on a `select` facet: the options that end an item (`done`, `dropped`, `retired`…), a strict subset of `options`. Declare it with the facet or through `set_options` (`closed: [...]`; `null` clears; omitted keeps the current declaration while it still fits). The review (`mnemion://review`) and every client derive open/closed from it.

@@ -218,6 +218,22 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
 /// Every test here drives StubProtocol, whose captured requests are one shared
 /// static; serialized so a parallel test can't reset another's capture.
 @Suite(.serialized) struct StubClientTests {
+    @Test func newTasksStartInTheFirstOpenOption() async throws {
+        let schema = try DeclarationTests.schema(#"{"name":"status","type":"select","options":["done","queued","open"],"closed":["done"]}"#)
+        let client = StubProtocol.client(responding: #"{"operation":"create","pattern":"tasks","entry":{"id":1},"uri":"mnemion://entry/tasks/1"}"#)
+        _ = try await client.createTask(in: PatternEntry(pattern: "projects", entry: Entry(["id": 3])), title: "t", context: nil, schema: schema)
+        let req = try #require(StubProtocol.requests.withLock { $0 }.first)
+        let body = try JSONDecoder().decode([String: JSONValue].self, from: try #require(req.body))
+        guard case .object(let data)? = body["data"] else { Issue.record("no data"); return }
+        #expect(data["status"] == "queued")
+    }
+
+    @Test func exemptionsParseFromTheCharterValue() async throws {
+        let client = StubProtocol.client(responding: #"{"entries":[{"id":9,"key":"review_exempt","value":"projects/8, goals/2 ,bad, x/y"}]}"#)
+        let refs = try await client.reviewExemptions()
+        #expect(refs == [EntryRef(pattern: "projects", id: 8), EntryRef(pattern: "goals", id: 2)])
+    }
+
     @Test func createTaskIsOneWriteWithRelate() async throws {
         let index = try RelationTests.index(belongsToSource: #"["tasks"]"#, patterns: ["projects", "tasks"])
         let schema = try #require(Portfolio.taskPattern(in: index))
@@ -372,5 +388,35 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         #expect(unlink["pattern"] == "unlink")
         #expect(link["pattern"] == "link")
         #expect(link["data"] == .object(["source": "tasks/1", "target": "projects/2", "label": "belongs-to"]))
+    }
+}
+
+@Suite struct DeclarationTests {
+    static func schema(_ statusJSON: String) throws -> PatternSummary {
+        let json = #"{"patterns":[{"name":"tasks","facets":[{"name":"title","type":"text"},\#(statusJSON)]}]}"#
+        return try #require(try JSONDecoder().decode(HiveIndex.self, from: Data(json.utf8)).pattern("tasks"))
+    }
+
+    @Test func facetsDecodeResolutionAndClosed() throws {
+        let json = #"{"patterns":[{"name":"t","facets":[{"name":"deadline","type":"datetime","resolution":"day"},{"name":"status","type":"select","options":["open","done"],"closed":["done"]}]}]}"#
+        let p = try #require(try JSONDecoder().decode(HiveIndex.self, from: Data(json.utf8)).pattern("t"))
+        #expect(p.facet("deadline")?.resolution == "day")
+        #expect(p.facet("status")?.closed == ["done"])
+        #expect(p.facet("deadline")?.closed == nil)
+    }
+
+    @Test func closedComesFromTheDeclarationNotAFallback() throws {
+        let declared = try Self.schema(#"{"name":"status","type":"select","options":["open","done","parked"],"closed":["parked"]}"#)
+        let parked = PatternEntry(pattern: "tasks", entry: Entry(["id": 1, "status": "parked"]))
+        let done = PatternEntry(pattern: "tasks", entry: Entry(["id": 2, "status": "done"]))
+        #expect(Portfolio.isClosed(parked, schema: declared))
+        #expect(!Portfolio.isClosed(done, schema: declared)) // "done" is open where the hive says so
+        #expect(Portfolio.toggledStatus(for: parked, schema: declared) == "open")
+        #expect(Portfolio.toggledStatus(for: done, schema: declared) == "parked")
+
+        let undeclared = try Self.schema(#"{"name":"status","type":"select","options":["todo","finished"]}"#)
+        #expect(Portfolio.isClosed(done, schema: undeclared)) // undeclared: the fallback set still knows "done"
+        #expect(Portfolio.toggledStatus(for: PatternEntry(pattern: "tasks", entry: Entry(["id": 3, "status": "todo"])), schema: undeclared) == "finished" || Portfolio.toggledStatus(for: PatternEntry(pattern: "tasks", entry: Entry(["id": 3, "status": "todo"])), schema: undeclared) == "done")
+        #expect(Portfolio.isClosed(done, schema: nil))
     }
 }

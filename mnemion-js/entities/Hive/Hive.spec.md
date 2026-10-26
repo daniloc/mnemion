@@ -526,3 +526,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   via: derived review
   because: The doctrine asked for a weekly review and for agents to check open tasks first, and a rule held by memory is a block-list; one derived surface every reader crosses cannot go stale.
   kinds: none
+- facet declarations: What a facet's values are is declared once in _fields and enforced at the write chokepoint: a datetime facet with resolution day stores calendar days only and refuses a time of day on every write path, a select facet's closed values are a strict subset of its options, and the index, the schema and the review read these declarations instead of re-deciding them.
+  over: create_pattern and add_facet declarations (resolution on non-datetime, unknown resolutions, closed on non-select, closed outside options, closed covering every option), mutate create and update on a day-resolution facet with dates and timestamps, set_resolution to day with and without stored timestamps, set_options with closed kept, replaced and cleared, the index and schema projections, and the review's open/closed judgement against a declared closed set that differs from the fallback
+  via: facet declarations
+  because: Every reader that decided for itself whether a value was a day or whether a status was closed decided differently; a declaration that is true of every stored value is the only home that cannot drift.
+  kinds: none

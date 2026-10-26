@@ -8,8 +8,8 @@ struct ProjectDetailView: View {
     @State private var editing: PatternEntry?
 
     private var tasks: [PatternEntry] { store.tasks[project.ref] ?? [] }
-    private var open: [PatternEntry] { tasks.filter { !Portfolio.isClosed($0) }.sorted(by: byDeadline) }
-    private var done: [PatternEntry] { tasks.filter(Portfolio.isClosed) }
+    private var open: [PatternEntry] { tasks.filter { !store.isClosed($0) }.sorted(by: byDeadline) }
+    private var done: [PatternEntry] { tasks.filter { store.isClosed($0) } }
 
     var body: some View {
         List {
@@ -42,8 +42,9 @@ struct ProjectDetailView: View {
     }
 
     private func row(_ task: PatternEntry) -> some View {
-        TaskRow(task: task, done: Portfolio.isClosed(task)) {
-            Task { await store.setStatus(task, to: Portfolio.isClosed(task) ? "open" : "done") }
+        TaskRow(task: task, done: store.isClosed(task)) {
+            // The pattern's declared statuses decide what a tap writes.
+            Task { await store.setStatus(task, to: Portfolio.toggledStatus(for: task, schema: store.taskSchema)) }
         }
         .contentShape(Rectangle())
         .onTapGesture { editing = task }
@@ -89,8 +90,8 @@ private struct ProjectHeader: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Serves").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                if Portfolio.isCatchAll(project) {
-                    Text("No goal, by design: this project holds tasks with no natural home.")
+                if store.isExempt(project) {
+                    Text("Exempt from alignment by the charter: this project serves no goal by design.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     HStack(spacing: 6) {
@@ -164,7 +165,7 @@ private struct TaskRow: View {
                 }
                 HStack(spacing: 6) {
                     DeadlineLabel(deadline: task.entry.string("deadline"), closed: done)
-                    if let status = task.entry.string("status"), status != "open" { StatusBadge(status: status) }
+                    if let status = task.entry.string("status"), status != store.taskSchema?.facet("status")?.options?.first { StatusBadge(status: status) }
                     if task.pattern != store.taskSchema?.name {
                         Text(task.pattern).font(.caption2).foregroundStyle(.tertiary)
                     }
