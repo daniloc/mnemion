@@ -85,9 +85,9 @@ bundle.
 
 The hive's open project tasks pick up from here:
 
-- frictionless idea capture (`project-tasks/12`)
-- daily cockpit (`project-tasks/13`)
-- Watch companion (`project-tasks/14`)
+- frictionless idea capture (`tasks/41`)
+- daily cockpit (`tasks/42`)
+- Watch companion (`tasks/43`)
 
 The Watch app will need a keychain access group (`KeychainStore(accessGroup:)`)
 or WatchConnectivity to share the session.
