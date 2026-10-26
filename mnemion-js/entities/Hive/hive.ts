@@ -15,7 +15,7 @@ import { DurableObject } from "cloudflare:workers";
 import { URI_SCHEME, URI_PREFIX, uri, OWNER_ACTOR } from "../../shared/core/constants";
 import { quoteIdent } from "../../shared/core/sql";
 import { evaluateMapping } from "./transform";
-import { bootSchema } from "./schema";
+import { bootSchema, applyTokenHashScrub } from "./schema";
 import { KERNEL_COLUMN_SET, STRUCTURAL_KERNEL_COLUMNS } from "./kernel-columns";
 import { expandShortcut, normalizeHost } from "./kernel";
 import { isKernelPattern, isValidWriteTarget, writeClass, seal, sealAll, secretColumn, SENSITIVE_COLUMNS, primeIncluded } from "./policy";
@@ -61,32 +61,16 @@ export class HiveDO extends DurableObject {
   /** One-time cleanup of secrets that leaked BEFORE born-hashing: hash any legacy
    *  plaintext token still in `_access_tokens` (raw = 32 hex, digest = 64), and
    *  scrub any raw token the old post-insert path left in the `_mutation_log`
-   *  audit trail. Idempotent; a near-no-op after the first cold start. */
+   *  audit trail.
+   *
+   *  Runs at most once per hive (`runOnce`). It was "idempotent, a near-no-op
+   *  after the first cold start" — but the no-op still COST six full scans of
+   *  `_mutation_log` (6,000 rows read) on every wake to re-discover there was
+   *  nothing to do. Purely historical work: no new sensitive value can enter the
+   *  audit log, because the triggers record `SENSITIVE_COLUMNS` as NULL and
+   *  secrets are born hashed, so once converged it can never un-converge. */
   private async migrateTokenHashes(): Promise<void> {
-    try {
-      const rows = this.db.exec(`SELECT id, token FROM "_access_tokens" WHERE length(token) != 64`).toArray() as any[];
-      for (const r of rows) {
-        if (typeof r.token !== "string") continue;
-        try { this.db.exec(`UPDATE "_access_tokens" SET token = ? WHERE id = ?`, await cred.hashToken(r.token), r.id); }
-        catch { /* a bad row must not brick construction — skip it */ }
-      }
-    } catch { /* table may not exist yet on a brand-new hive */ }
-    // Audit-log scrub: NULL out every sensitive value the pre-recreate audit
-    // triggers captured (raw tokens, passkey material). Derived from SENSITIVE_COLUMNS
-    // so it covers every classified column; idempotent (once null, the guard skips it).
-    try {
-      for (const [table, cols] of Object.entries(SENSITIVE_COLUMNS)) {
-        for (const c of cols) {
-          for (const field of ["new_data", "old_data"]) {
-            this.db.exec(
-              `UPDATE _mutation_log SET ${field} = json_set(${field}, '$.${c.column}', null)
-               WHERE table_name = ? AND json_extract(${field}, '$.${c.column}') IS NOT NULL`,
-              table,
-            );
-          }
-        }
-      }
-    } catch { /* best effort */ }
+    await applyTokenHashScrub(this.db, cred.hashToken);
   }
 
   /** Born-hashed secrets: for a CREATE of a pattern with a `secret` column
@@ -395,9 +379,29 @@ export class HiveDO extends DurableObject {
   async registerSession(id: string): Promise<void> {
     // Most-recent-last, deduped, capped — a bounded ring so the registry can't grow
     // without bound on a long-lived hive (the prior leak: append-only, pruned only lazily).
-    const ids = ((await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? []).filter((x) => x !== id);
+    const current = (await this.ctx.storage.get<string[]>(HiveDO.SESSIONS_KEY)) ?? [];
+    // Re-registration of the already-current session is a no-op READ, not a
+    // rewrite: MCP clients re-handshake on their own schedule (~1/min each was
+    // observed), and every handshake lands here. The put fires only when the
+    // membership or ordering actually changes.
+    if (current[current.length - 1] === id) return;
+    const ids = current.filter((x) => x !== id);
     ids.push(id);
     await this.ctx.storage.put(HiveDO.SESSIONS_KEY, ids.slice(-HiveDO.MAX_SESSIONS));
+  }
+
+  /** Everything SessionDO.init() needs from the hive, in ONE wake: register the
+   *  session for scratchpad fanout and return the working-memory + maintenance
+   *  briefing. init() previously made three separate RPCs for this, so every
+   *  client re-handshake billed three hive requests and one registry write;
+   *  the reconnect cadence belongs to the clients, so the per-handshake cost
+   *  is the server's only lever (see session-briefing.test.ts). */
+  async getSessionBriefing(sessionId: string): Promise<string> {
+    await this.registerSession(sessionId);
+    return JSON.stringify({
+      recent: JSON.parse(await reports.getRecentActivity(this.reportsCtx(), 10)),
+      maintenance: JSON.parse(await reports.getMaintenanceStatus(this.reportsCtx())),
+    });
   }
 
   private async fanoutScratch(pad: string): Promise<void> {

@@ -977,6 +977,10 @@ export function findLegacyRelations(relations: Pick<Relation, "name" | "legacy_d
 function dropStoredLegacyFlag(db: DB): void {
   // Trigger-safe: a Phase 1 boot built _relations' audit triggers over `legacy`,
   // and SQLite refuses DROP COLUMN on a column a trigger names (the v18 failure).
+  // Converged hives skip it: dropColumn rebuilds the triggers even when the
+  // column is gone, and this runs on every wake (boot quiescence).
+  const cols = (db.exec(`PRAGMA table_info("_relations")`).toArray() as { name: string }[]).map((c) => c.name);
+  if (!cols.includes("legacy")) return;
   dropColumn(db, "_relations", "legacy");
   db.exec(`DELETE FROM _fields WHERE object_name = '_relations' AND name = 'legacy'`);
 }
