@@ -16,3 +16,6 @@ The native client: SwiftUI surfaces over MnemionKit, a pure client of the hive's
 - share sheet: The host app loads the share extension's principal class.
   handler: ShareViewController
   trust: owner-session
+- app shortcuts: The system reads the shortcuts the app offers (their phrases and intents) when the app is installed.
+  handler: MnemionShortcuts
+  trust: owner-session
