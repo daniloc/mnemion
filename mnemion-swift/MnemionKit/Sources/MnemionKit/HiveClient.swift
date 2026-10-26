@@ -30,6 +30,15 @@ public struct MutateResult: Decodable, Sendable {
     public let pattern: String
     public let entry: Entry?
     public let uri: String?
+    /// The links a create was born with (`_relate`), written in the same transaction.
+    public let links: [CreatedLink]?
+
+    public struct CreatedLink: Decodable, Sendable {
+        public let id: Int
+        public let source: String
+        public let target: String
+        public let label: String
+    }
 }
 
 /// `POST /api/resolve` — an entry plus everything one link-hop away.
@@ -99,9 +108,18 @@ public final class HiveClient: Sendable {
 
     // MARK: Writes
 
-    /// Pass `version` in `data` on update to get optimistic locking.
+    /// Pass `version` in `data` on update to get optimistic locking. On create,
+    /// `relate` (relation name or inverse → targets) becomes `_relate`: the entry
+    /// and all its links are written together, or the create is refused whole.
     @discardableResult
-    public func mutate(_ pattern: String, _ operation: MutateOperation, _ data: [String: JSONValue]) async throws -> MutateResult {
+    public func mutate(_ pattern: String, _ operation: MutateOperation, _ data: [String: JSONValue], relate: [String: [EntryRef]] = [:]) async throws -> MutateResult {
+        var data = data
+        let relate = relate.filter { !$0.value.isEmpty }
+        if !relate.isEmpty {
+            data["_relate"] = .object(relate.mapValues { refs in
+                refs.count == 1 ? .string(refs[0].description) : .array(refs.map { .string($0.description) })
+            })
+        }
         let body: [String: JSONValue] = ["operation": .string(operation.rawValue), "data": .object(data)]
         return try decode(MutateResult.self, from: try await send(post("api/mutate/\(pattern)", body: body)))
     }

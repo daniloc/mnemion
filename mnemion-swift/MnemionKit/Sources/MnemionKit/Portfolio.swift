@@ -1,13 +1,34 @@
 import Foundation
 
 /// The hive's project vocabulary, as the `projects` doctrine defines it: tasks
-/// (from either task pattern) connect to a project through a `belongs-to` link,
-/// projects to goals through `serves`. The link graph is the source of truth;
-/// the `project` text facet on project-tasks is a human-readable echo.
+/// connect to a project through a `belongs-to` link, projects to goals through
+/// `serves`. The link graph is the source of truth. Which pattern holds tasks is
+/// read off the relation registry (the sources of `belongs-to`), not assumed:
+/// `project-tasks` today, `tasks` once the two merge.
 public enum Portfolio {
     public static let projects = "projects"
     public static let projectTasks = "project-tasks"
+    public static let tasks = "tasks"
     public static let belongsTo = "belongs-to"
+
+    /// Preferred task patterns when `belongs-to` admits several: the dedicated
+    /// project-task pattern while it exists, then the merged `tasks`.
+    static let taskPatternPreference = [projectTasks, tasks]
+
+    /// The pattern new tasks are created in: an existing source pattern of
+    /// `belongs-to` (to projects), by preference. Nil when the hive has no such
+    /// relation or none of its sources exist.
+    public static func taskPattern(in index: HiveIndex) -> PatternSummary? {
+        guard let rel = index.relation(belongsTo), !rel.derived, rel.admitsTarget(projects) else { return nil }
+        let candidates = rel.source.contains("*")
+            ? index.patterns.filter { taskPatternPreference.contains($0.name) }
+            : rel.source.compactMap(index.pattern)
+        return candidates.min { rank($0.name) < rank($1.name) }
+    }
+
+    private static func rank(_ pattern: String) -> Int {
+        taskPatternPreference.firstIndex(of: pattern) ?? taskPatternPreference.count
+    }
 }
 
 extension HiveClient {
@@ -31,27 +52,22 @@ extension HiveClient {
         }
     }
 
-    /// Create a project-task and link it to its project.
-    ///
-    /// Two writes, not one: `/api/mutate` takes a single op and a batch can't
-    /// reference an id it creates. If the link fails the task still exists,
-    /// carrying the project slug, and the error says so.
-    public func createTask(in project: PatternEntry, title: String, context: String?) async throws -> PatternEntry {
-        var data: [String: JSONValue] = [
-            "title": .string(title),
-            "project": .string(project.entry.string("slug") ?? project.entry.string("title") ?? ""),
-            "status": "open",
-        ]
-        if let context, !context.isEmpty { data["context"] = .string(context) }
-        let created = try await mutate(Portfolio.projectTasks, .create, data)
-        guard let entry = created.entry else { throw HiveError.decoding("create returned no entry") }
-        let task = PatternEntry(pattern: Portfolio.projectTasks, entry: entry)
-        do {
-            try await link(task.ref, to: project.ref, label: Portfolio.belongsTo)
-        } catch {
-            throw HiveError.hive("Created \(task.ref) but couldn't link it to \(project.ref): \(error.localizedDescription)")
+    /// Create a task in `schema`'s pattern, born with its `belongs-to` link to the
+    /// project in one write (`_relate`): if the link is refused, so is the task.
+    /// Only facets the pattern declares are sent, so the retired `project` text
+    /// echo is written only while the pattern still has it.
+    public func createTask(in project: PatternEntry, title: String, context: String?, schema: PatternSummary) async throws -> PatternEntry {
+        var data: [String: JSONValue] = ["title": .string(title)]
+        if schema.facet("project") != nil {
+            data["project"] = .string(project.entry.string("slug") ?? project.entry.string("title") ?? "")
         }
-        return task
+        if let status = schema.facet("status"), status.options?.contains("open") ?? true {
+            data["status"] = "open"
+        }
+        if let context, !context.isEmpty, schema.facet("context") != nil { data["context"] = .string(context) }
+        let created = try await mutate(schema.name, .create, data, relate: [Portfolio.belongsTo: [project.ref]])
+        guard let entry = created.entry else { throw HiveError.decoding("create returned no entry") }
+        return PatternEntry(pattern: schema.name, entry: entry)
     }
 
     /// Update facets of an entry under optimistic locking.

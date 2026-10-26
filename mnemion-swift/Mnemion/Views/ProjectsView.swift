@@ -44,7 +44,7 @@ struct ProjectsView: View {
         }
         .task {
             await store.loadProjects()
-            await store.loadStatusOptions()
+            await store.loadSchema()
         }
         .task { await store.listen() }
         .alert("Mnemion", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {

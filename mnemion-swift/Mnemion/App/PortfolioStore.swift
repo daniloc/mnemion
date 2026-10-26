@@ -13,6 +13,8 @@ final class PortfolioStore {
     private(set) var projects: [PatternEntry] = []
     private(set) var tasks: [EntryRef: [PatternEntry]] = [:]
     private(set) var taskStatuses: [String] = ["open", "done"]
+    /// The pattern new tasks go in, read off the relation registry (`belongs-to`).
+    private(set) var taskSchema: PatternSummary?
     var error: String?
 
     init(client: HiveClient, credentials: Credentials) {
@@ -41,10 +43,15 @@ final class PortfolioStore {
         }
     }
 
-    func loadStatusOptions() async {
-        // Prefer the schema's declared options; otherwise keep what's observed.
-        if let options = try? await client.index().pattern(Portfolio.projectTasks)?.facet("status")?.options, !options.isEmpty {
-            taskStatuses = options
+    /// Learn the task pattern from the registry, and its declared status options
+    /// (otherwise keep what's observed).
+    func loadSchema() async {
+        await run {
+            let schema = Portfolio.taskPattern(in: try await self.client.index())
+            self.taskSchema = schema
+            if let options = schema?.facet("status")?.options, !options.isEmpty {
+                self.taskStatuses = options
+            }
         }
     }
 
@@ -70,8 +77,13 @@ final class PortfolioStore {
     }
 
     func createTask(in project: PatternEntry, title: String, context: String) async -> Bool {
+        if taskSchema == nil { await loadSchema() }
+        guard let schema = taskSchema else {
+            error = error ?? "This hive declares no \(Portfolio.belongsTo) relation to \(Portfolio.projects), so there's nowhere to create a task."
+            return false
+        }
         do {
-            let task = try await client.createTask(in: project, title: title, context: context)
+            let task = try await client.createTask(in: project, title: title, context: context, schema: schema)
             tasks[project.ref] = Self.sorted((tasks[project.ref] ?? []).filter { $0.ref != task.ref } + [task])
             return true
         } catch {
@@ -103,6 +115,10 @@ final class PortfolioStore {
                 } else {
                     await reloadLoadedTasks()
                 }
+            case _ where delta.op == "create" && change.touches("_links"):
+                // Born with its links (`_relate`): which project it joined isn't in
+                // the delta, so refetch the lists on screen.
+                await reloadLoadedTasks()
             default:
                 if let entry = delta.entry, delta.op != "archive" {
                     replace(PatternEntry(pattern: delta.pattern, entry: entry))
@@ -114,6 +130,7 @@ final class PortfolioStore {
         }
         // Coarse event (batch, schema change, ingress): refetch what it touched.
         if change.touches(Portfolio.projects) { await loadProjects() }
+        if change.touches("_schema") || change.touches("_relations") { await loadSchema() }
         if change.patterns.contains(where: { $0 == "_links" || $0.contains("tasks") }) { await reloadLoadedTasks() }
     }
 

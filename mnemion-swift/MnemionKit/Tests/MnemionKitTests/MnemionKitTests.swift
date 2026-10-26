@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import MnemionKit
 
@@ -94,4 +95,111 @@ import Testing
         let data = try JSONEncoder().encode(["id": JSONValue(integerLiteral: 7)])
         #expect(String(decoding: data, as: UTF8.self) == #"{"id":7}"#)
     }
+}
+
+@Suite struct RelationTests {
+    static func index(belongsToSource: String, patterns: [String]) throws -> HiveIndex {
+        let pats = patterns.map { #"{"name":"\#($0)","facets":[{"name":"title","type":"text"}]}"# }.joined(separator: ",")
+        let json = #"{"patterns":[\#(pats)],"relations":[{"name":"references","inverse":"referenced-by","source":["*"],"target":["*"],"cardinality":"many","required":false,"derived":false},{"name":"belongs-to","inverse":"has-member","source":\#(belongsToSource),"target":["projects"],"cardinality":"one","required":true,"derived":false}]}"#
+        return try JSONDecoder().decode(HiveIndex.self, from: Data(json.utf8))
+    }
+
+    @Test func decodesTheRegistry() throws {
+        let index = try Self.index(belongsToSource: #"["project-tasks"]"#, patterns: ["projects", "project-tasks"])
+        let rel = try #require(index.relation("belongs-to"))
+        #expect(rel.required)
+        #expect(rel.cardinality == "one")
+        #expect(rel.admitsTarget("projects"))
+        #expect(!rel.admitsTarget("goals"))
+        #expect(index.relation("has-member")?.name == "belongs-to") // inverse names resolve too
+    }
+
+    @Test func indexWithoutRelationsStillDecodes() throws {
+        let index = try JSONDecoder().decode(HiveIndex.self, from: Data(#"{"patterns":[]}"#.utf8))
+        #expect(index.relations.isEmpty)
+        #expect(Portfolio.taskPattern(in: index) == nil)
+    }
+
+    @Test func taskPatternComesFromBelongsToSources() throws {
+        // Before the merge: both task patterns are sources; project-tasks wins.
+        let before = try Self.index(belongsToSource: #"["tasks","project-tasks"]"#, patterns: ["projects", "tasks", "project-tasks"])
+        #expect(Portfolio.taskPattern(in: before)?.name == "project-tasks")
+        // After the merge: project-tasks is gone, tasks is the one source.
+        let after = try Self.index(belongsToSource: #"["tasks"]"#, patterns: ["projects", "tasks"])
+        #expect(Portfolio.taskPattern(in: after)?.name == "tasks")
+        // A listed source the hive doesn't have is skipped.
+        let stale = try Self.index(belongsToSource: #"["project-tasks","tasks"]"#, patterns: ["projects", "tasks"])
+        #expect(Portfolio.taskPattern(in: stale)?.name == "tasks")
+        // Wildcard source: fall back to the known task patterns that exist.
+        let wild = try Self.index(belongsToSource: #"["*"]"#, patterns: ["projects", "notes", "tasks"])
+        #expect(Portfolio.taskPattern(in: wild)?.name == "tasks")
+    }
+
+    @Test func createTaskIsOneWriteWithRelate() async throws {
+        let index = try Self.index(belongsToSource: #"["tasks"]"#, patterns: ["projects", "tasks"])
+        let schema = try #require(Portfolio.taskPattern(in: index))
+        let client = StubProtocol.client(responding: #"{"operation":"create","pattern":"tasks","entry":{"id":42,"title":"Ship"},"uri":"mnemion://entry/tasks/42","links":[{"id":9,"source":"tasks/42","target":"projects/3","label":"belongs-to"}]}"#)
+        let project = PatternEntry(pattern: "projects", entry: Entry(["id": 3, "slug": "mnemion"]))
+
+        let task = try await client.createTask(in: project, title: "Ship", context: "ignored: no context facet", schema: schema)
+
+        #expect(task.ref == EntryRef(pattern: "tasks", id: 42))
+        let requests = StubProtocol.requests.withLock { $0 }
+        #expect(requests.count == 1) // the entry and its link together, never two writes
+        let req = try #require(requests.first)
+        #expect(req.url?.path == "/api/mutate/tasks")
+        let body = try JSONDecoder().decode([String: JSONValue].self, from: try #require(req.body))
+        guard case .object(let data)? = body["data"] else { Issue.record("no data"); return }
+        #expect(data["_relate"] == .object(["belongs-to": "projects/3"]))
+        #expect(data["title"] == "Ship")
+        #expect(data["project"] == nil) // only facets the pattern declares
+        #expect(data["context"] == nil)
+    }
+}
+
+/// Captures requests and answers each with a canned body.
+final class StubProtocol: URLProtocol, @unchecked Sendable {
+    struct Captured: Sendable { let url: URL?; let body: Data? }
+    static let requests = Mutex<[Captured]>([])
+    static let response = Mutex<String>("")
+
+    static func client(responding body: String) -> HiveClient {
+        requests.withLock { $0 = [] }
+        response.withLock { $0 = body }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubProtocol.self]
+        let creds = Credentials(hiveURL: URL(string: "https://hive.example.dev")!, clientID: "c", accessToken: "owner:g:s", refreshToken: nil, expiresAt: .distantFuture)
+        let tokens = TokenStore(
+            credentials: creds,
+            oauth: OAuthClient(configuration: .init(clientName: "Test", redirectURI: URL(string: "com.example.app:/oauth/callback")!)),
+            keychain: KeychainStore(service: "test.mnemion.stub"),
+            onSignedOut: {})
+        return HiveClient(baseURL: creds.hiveURL, tokens: tokens, session: URLSession(configuration: config))
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        var body = request.httpBody
+        if body == nil, let stream = request.httpBodyStream {
+            stream.open()
+            var data = Data()
+            var buf = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let n = stream.read(&buf, maxLength: buf.count)
+                if n <= 0 { break }
+                data.append(buf, count: n)
+            }
+            stream.close()
+            body = data
+        }
+        Self.requests.withLock { $0.append(Captured(url: request.url, body: body)) }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(Self.response.withLock { $0 }.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

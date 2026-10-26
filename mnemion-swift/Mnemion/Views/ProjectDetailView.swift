@@ -89,6 +89,7 @@ struct LabeledText: View {
 }
 
 private struct TaskRow: View {
+    @Environment(PortfolioStore.self) private var store
     let task: PatternEntry
     let done: Bool
     let toggle: () -> Void
@@ -115,7 +116,7 @@ private struct TaskRow: View {
                 }
                 HStack(spacing: 6) {
                     if let status = task.entry.string("status"), !done { StatusBadge(status: status) }
-                    if task.pattern != Portfolio.projectTasks {
+                    if task.pattern != store.taskSchema?.name {
                         Text(task.pattern).font(.caption2).foregroundStyle(.tertiary)
                     }
                     if let by = task.entry.updatedBy {
