@@ -76,6 +76,7 @@ Mnemion uses biological vocabulary at every layer — API parameters, URIs, JSON
 - `mnemion://history` — schema evolution history (supports `?limit=N`)
 - `mnemion://entry/{pattern}/{id}` — individual entry by URI
 - `mnemion://stale` — entries past their staleness horizon (supports `?days=N`); review surface for maintenance passes
+- `mnemion://review` — what needs attention now (`entities/Hive/review.ts`; also `GET /api/review`): due review hooks (day/week/month start and end, derived from the latest entry of each kind in the hive's reviews pattern against the charter `timezone` and `review_day_end_hour`), overdue/due/stalled entries of every pattern with `deadline` + `status` facets, and alignment gaps along chained relations (`entriesLacking` in relations.ts). Its one-line `message` rides the MCP init briefing and the prime response. Protocol: `src/system-docs/reviews.md`.
 - `mnemion://relations` — the relation vocabulary (every label a link may carry); also the index's `relations` key
 
 ### Tools (8 total)

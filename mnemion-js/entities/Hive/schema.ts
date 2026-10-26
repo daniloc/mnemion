@@ -36,6 +36,7 @@ import remoteAccessRaw from "../../src/system-docs/remote-access.md";
 import httpIoRaw from "../../src/system-docs/http-io.md";
 import capabilitiesRaw from "../../src/system-docs/capabilities.md";
 import memoryMaintenanceRaw from "../../src/system-docs/memory-maintenance.md";
+import reviewsRaw from "../../src/system-docs/reviews.md";
 
 // === System doc parsing ===
 
@@ -68,7 +69,7 @@ function generateToolsDoc(): string {
 const SYSTEM_DOCS_SEED = [
   schemaEvolutionRaw, skillsRaw, conventionsRaw,
   indexGuideRaw, remoteAccessRaw, httpIoRaw, capabilitiesRaw,
-  memoryMaintenanceRaw,
+  memoryMaintenanceRaw, reviewsRaw,
 ].map(parseDocFile);
 
 // === Kernel table declarations ===

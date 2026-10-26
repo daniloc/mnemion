@@ -127,6 +127,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     const briefing = JSON.parse(await hive.getSessionBriefing((this.ctx as any).id.toString())) as {
       recent: { pattern: string; id: number; summary: string; updated_at: string }[];
       maintenance: { days_since_last_pass: number | null; interval_days: number; overdue: boolean };
+      review: { message: string; due_hooks: string[]; uri: string } | null;
     };
 
     // === Inject working memory into instructions ===
@@ -152,6 +153,16 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         (this.server as any)._instructions = section + base;
       }
     } catch { /* best-effort */ }
+
+    // === Inject the review into instructions ===
+    // Due hooks, overdue and stalled work, alignment gaps — derived at read time
+    // (review.ts), carried by the same briefing RPC. "Check open tasks first" is
+    // done for the agent instead of asked of it. (Also rides the prime response.)
+    if (briefing.review?.message) {
+      const section = `=== Review ===\n${briefing.review.message} Read ${uri("review")} for the lists. Run a due hook with the owner and record it as a review entry; see ${uri("_system/reviews")}.\n\n`;
+      const base = (this.server as any)._instructions ?? "";
+      (this.server as any)._instructions = section + base;
+    }
 
     // === Capability status: document storage needs R2 ===
     // When R2 isn't enabled, _documents entries can be created but file upload
@@ -222,6 +233,18 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       { description: "Entries past their staleness horizon — neither updated nor recalled recently. Read-only review surface for maintenance passes.", mimeType: "application/json" },
       async (u) => {
         const result = await hive.getStaleEntries();
+        return {
+          contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
+        };
+      }
+    );
+
+    this.server.resource(
+      "review",
+      uri("review"),
+      { description: "What needs attention now, derived at read time: due review hooks (day, week and month start and end), overdue, due and stalled work, and alignment gaps along chained relations. Never stored.", mimeType: "application/json" },
+      async (u) => {
+        const result = await hive.getReview();
         return {
           contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
         };

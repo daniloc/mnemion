@@ -81,6 +81,7 @@ Valid URIs:
 - ${uri("entry/{pattern}/{id}")} — a single entry
 - ${uri("history")} — schema change log (supports ?limit=N)
 - ${uri("stale")} — entries past their staleness horizon, for maintenance review (supports ?days=N)
+- ${uri("review")} — what needs attention now: due review hooks, overdue/due/stalled work, alignment gaps (derived, never stored)
 - ${uri("_system/")} — list all system docs
 - ${uri("_system/{slug}")} — read a system doc (tools, schema-evolution, skills, index-guide, conventions)
 - ${uri("_system/{slug}/default")} — read original seed version

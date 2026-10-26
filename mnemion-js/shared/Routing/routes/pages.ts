@@ -65,6 +65,12 @@ export const queryHistory: RouteHandler = async (ctx) => {
   return new Response(result, { headers: { "Content-Type": "application/json" } });
 };
 
+/** The derived review (entities/Hive/review.ts): the same JSON as mnemion://review. */
+export const queryReview: RouteHandler = async (ctx) => {
+  const result = await ctx.hive.getReview();
+  return new Response(result, { headers: { "Content-Type": "application/json" } });
+};
+
 export const queryLabel: RouteHandler = async (ctx) => {
   const id = parseInt(ctx.params.id, 10);
   const result = await ctx.hive.getEntryLabel(ctx.params.pattern, id);

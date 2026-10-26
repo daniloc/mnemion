@@ -521,3 +521,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: one migration over the reference facets present at boot
   checklist: completion-evidence dismissed: the check is synchronous with the change or boot pass
+- derived review: What needs attention — due review hooks, overdue, due and stalled work, and alignment gaps along chained relations — is computed on every read from stored entries, links and the calendar; no row stores a due flag, a count or a hook state.
+  over: computeReview over work patterns (deadline + status) holding open, closed, undated, overdue, due-today, due-this-week and stalled entries; hook windows across the charter timezone and day-end hour, with and without a covering review entry; and chain steps with unlinked source and target entries, read through resolve, the prime response and the /api/review route
+  via: derived review
+  because: The doctrine asked for a weekly review and for agents to check open tasks first, and a rule held by memory is a block-list; one derived surface every reader crosses cannot go stale.
+  kinds: none

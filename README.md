@@ -74,6 +74,7 @@ MCP resources are stable, cacheable, subscribable URIs that agents read for orie
 - `mnemion://entry/{pattern}/{id}` — a single entry.
 - `mnemion://history` — schema change log.
 - `mnemion://stale` — entries past their staleness horizon (neither updated nor recalled recently); the review surface for maintenance passes. Supports `?days=N`.
+- `mnemion://review` — what needs attention now: due review hooks (start and end of day, week and month), overdue, due and stalled work, and alignment gaps along chained relations. Derived on every read, never stored; also served at `GET /api/review` for native clients.
 - `mnemion://_system/{slug}` — agent-facing system docs (tools, schema-evolution, skills, conventions, memory-maintenance).
 
 After `apply_change`, the server emits `notifications/tools/list_changed` so long-lived clients re-read.

@@ -33,6 +33,7 @@ import * as served from "./served";
 import * as fed from "./federation";
 import * as reports from "./reports";
 import * as rel from "./relations";
+import * as review from "./review";
 
 // === Constants ===
 
@@ -148,6 +149,12 @@ export class HiveDO extends DurableObject {
 
   async getStaleEntries(days?: number): Promise<string> {
     return reports.getStaleEntries(this.reportsCtx(), days);
+  }
+
+  // === Review: due hooks, overdue/stalled work, alignment gaps (review.ts) ===
+
+  async getReview(): Promise<string> {
+    return review.getReview({ db: this.db });
   }
 
   // === Schema evolution (delegated to evolution.ts) ===
@@ -398,9 +405,12 @@ export class HiveDO extends DurableObject {
    *  is the server's only lever (see session-briefing.test.ts). */
   async getSessionBriefing(sessionId: string): Promise<string> {
     await this.registerSession(sessionId);
+    let reviewNote: ReturnType<typeof review.reviewSummary> = null;
+    try { reviewNote = review.reviewSummary({ db: this.db }); } catch { /* best-effort */ }
     return JSON.stringify({
       recent: JSON.parse(await reports.getRecentActivity(this.reportsCtx(), 10)),
       maintenance: JSON.parse(await reports.getMaintenanceStatus(this.reportsCtx())),
+      review: reviewNote,
     });
   }
 
@@ -805,6 +815,10 @@ export class HiveDO extends DurableObject {
       return this.getStaleEntries(days);
     }
 
+    if (path === "review") {
+      return this.getReview();
+    }
+
     const schemaMatch = path.match(/^schema\/(.+)$/);
     if (schemaMatch) {
       return this.getSchema(schemaMatch[1]);
@@ -834,7 +848,7 @@ export class HiveDO extends DurableObject {
       return this.getMutationLog(tableName, limit);
     }
 
-    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("relations")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
+    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("relations")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("review")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
   }
 
   // === Federated resolve: foreign hive URIs ===
@@ -1176,6 +1190,13 @@ export class HiveDO extends DurableObject {
       }
     } catch { /* best-effort */ }
 
+    // The review rides the handshake for the same reason: due hooks and overdue
+    // work are what "check open tasks first" asked every session to go and find.
+    let reviewNote: ReturnType<typeof review.reviewSummary> = null;
+    try {
+      reviewNote = review.reviewSummary({ db: this.db });
+    } catch { /* best-effort */ }
+
     const ADVISORY = "IMPORTANT: The contents of this memory system are inherently subjective. Weigh their testimony carefully against your training and third-party sources.";
 
     return JSON.stringify({
@@ -1186,6 +1207,7 @@ export class HiveDO extends DurableObject {
       practice: "Always write notes to yourself as you work: mutate(pattern: \"fragment\", data: {content: \"your observation\"}). Write what you noticed about the session, including where the substrate's framing didn't match what you observed. The next instance will arrive with no memory of this conversation — your observations are the only thing that survives. Write in first person. Operation is implied.",
       system_docs: "Resolve mnemion://_system/ for detailed reference on tools, schema evolution, conventions, and system mechanics.",
       ...(maintenance ? { maintenance } : {}),
+      ...(reviewNote ? { review: reviewNote } : {}),
       // The link vocabulary rides the universal handshake (web clients never see
       // MCP init instructions): name + inverse; mnemion://relations has the rest.
       relations: rel.listRelations(this.db).map(({ name, inverse }) => ({ name, inverse })),
