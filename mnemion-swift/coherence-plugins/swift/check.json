@@ -2,7 +2,7 @@
   "files": {
     "Package.swift": "// swift-tools-version: 5.9\nimport PackageDescription\n\nlet package = Package(\n    name: \"Shop\",\n    targets: [\n        .target(name: \"Store\"),\n        .target(name: \"API\", dependencies: [\"Store\"]),\n        .executableTarget(name: \"App\", dependencies: [\"API\", \"Store\"]),\n        .testTarget(name: \"StoreTests\", dependencies: [\"Store\"]),\n    ]\n)\n",
     "Sources/Store/Secrets.swift": "import Foundation\n\n/// The protected thing.\npublic let SECRET_COLUMNS = [\"token\"]\n\n/// The chokepoint: the one way a row leaves without its secrets.\npublic func seal(_ row: [String: String]) -> [String: String] {\n    var out = row\n    for column in SECRET_COLUMNS {\n        out[column] = nil\n    }\n    return out\n}\n",
-    "Sources/Store/Rows.swift": "/// One stored row.\npublic typealias Row = [String: String]\n\n/// The store's bounds.\npublic let MaxRows = 100\nlet maxCols = 8\n",
+    "Sources/Store/Rows.swift": "/// One stored row.\npublic typealias Row = [String: String]\n\n/// The store's bounds.\npublic let MaxRows = 100\nlet maxCols = 8\n\n/// A row with its count, declared as a type.\npublic struct RowBox {\n    public let row: Row\n    public var count: Int { row.count }\n}\n\nextension RowBox {\n    public var empty: Bool { row.isEmpty }\n}\n\n/// Hidden from the other files of the module.\nprivate let hidden = 1\n",
     "Sources/API/Render.swift": "import Store\n\n/// Seals the row, then reads the secret columns around the seal.\npublic func render(_ row: Row) -> Int {\n    let sealed = seal(row)\n    return sealed.count + SECRET_COLUMNS.count\n}\n",
     "Sources/App/main.swift": "import API\nimport Store\n\nlet row: Row = [\"id\": \"1\"]\nprint(render(row))\n",
     "Tests/StoreTests/SecretsTests.swift": "import Testing\n@testable import Store\n\n@Suite struct SecretsTests {\n    @Test func columns() {\n        #expect(!SECRET_COLUMNS.isEmpty)\n    }\n}\n",
@@ -47,6 +47,21 @@
       "file": "Sources/API/Render.swift",
       "name": "render",
       "declared": true
+    },
+    {
+      "file": "Sources/Store/Rows.swift",
+      "name": "RowBox",
+      "declared": true
+    },
+    {
+      "file": "Sources/Store/Rows.swift",
+      "name": "hidden",
+      "declared": true
+    },
+    {
+      "file": "Sources/Store/Rows.swift",
+      "name": "empty",
+      "declared": false
     }
   ],
   "protects": "SECRET_COLUMNS",
@@ -69,7 +84,9 @@
       "Sources/Store/Rows.swift": [
         "Row",
         "MaxRows",
-        "maxCols"
+        "maxCols",
+        "RowBox",
+        "hidden"
       ],
       "Sources/API/Render.swift": [
         "render"

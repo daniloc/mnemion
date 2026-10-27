@@ -1,26 +1,22 @@
 /**
- * Swift's facts for the plain source scan: which names a file declares at
- * its top level, which modules it imports, and where an import leads
- * (source.ts reads them through the source slot).
+ * Swift's module layout, and the one regular-expression reading of Swift
+ * text the plugin still keeps for the readings no parse answers.
  *
- * A module is a SwiftPM target or an XcodeGen target, a folder of files:
- * `import MnemionKit` leads to the target of that name, read off the nearest
- * Package.swift above the importing file (`.target(name:path:)`, default
- * Sources/<name>; `.testTarget`, default Tests/<name>) and the project.yml at
- * the root (`targets: <name>: sources: - path: <folder>`). A system or
- * dependency module (Foundation, SwiftUI, a package the manifest fetches)
- * resolves to nothing.
+ * A module is a SwiftPM target or an XcodeGen target, a folder of files: read
+ * off every Package.swift (`.target(name:path:)`, default Sources/<name>;
+ * `.testTarget`, default Tests/<name>) and project.yml (`targets: <name>:
+ * sources: - path: <folder>`) under the root. swift-resolve.js resolves an
+ * import to one of them; swift.js opens one file of each so sourcekit-lsp
+ * loads every workspace before it is asked.
  *
- * Swift's files inside one module see each other with no import at all
- * (internal is module-wide), so every file reads as importing its own
- * module whole: the economy's closure of a change then reaches the module,
- * which is what the compiler reaches. The specifier for it is "." (self).
- *
- * This file is the plugin's one model of Swift text: what code is (comments,
- * nested block comments and string literals set apart, a multi-line string
- * included), what a top-level declaration is and which modifiers hide it
- * from other files, and what an import is. The other files read Swift
- * through it.
+ * Declarations and imports are read through the parser (the manifest's
+ * treeSitter and swift.scm). The reader below (SwiftReader, declarationsIn)
+ * is a second, line-based reading kept for two readings outside the parse:
+ * entrance detection (swift-entrances.js, which needs a declaration's
+ * attributes and the lines around it) and the adapter's candidate search
+ * (swift.js, which narrows the files it asks the server about). It can
+ * disagree with the parser where the grammar fails; the parser's answer is
+ * the one the readings count.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -170,30 +166,8 @@ export function declarationsIn(text) {
   return found;
 }
 
-/** What one line declares when read alone at the top level, for the readings asked of a line. */
-export function declarationAt(line) {
-  const text = line.replace(/\r$/, "");
-  if (/^\s/.test(text)) return undefined;
-  return new SwiftReader().feed(text);
-}
 
-/** The reader the source slot feeds: declarationsOf hands it every line of one file in order. A file's first line (an import, a comment, a declaration at column zero after a blank) starts it afresh at depth zero. */
-let STREAM = new SwiftReader();
 
-/* ----------------------------------------------------------------- imports */
-
-/** An import: `import Foo`, `@testable import Foo`, `import struct Foo.Bar`, `import Foo.Sub`. */
-const IMPORT = /^\s*(?:@\w+(?:\([^)]*\)|)\s+)*import\s+(?:(?:typealias|struct|class|enum|protocol|let|var|func|actor)\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_.]*))?/;
-
-/** Every import of the text: the module (the first path element), the member path when one is named, and the line. */
-export function importsIn(text) {
-  const out = [];
-  uncommented(text).split("\n").forEach((line, i) => {
-    const m = IMPORT.exec(line);
-    if (m !== null) out.push({ module: m[1], member: m[2], line: i + 1 });
-  });
-  return out;
-}
 
 /* ---------------------------------------------------------------- modules */
 
@@ -205,15 +179,23 @@ function stamp(path) {
   try { return statSync(path).mtimeMs; } catch { return -1; }
 }
 
-/** The targets a Package.swift declares: name and folder (project-relative), by its `.target(name:)` / `.testTarget(name:)` / `.executableTarget(name:)` calls. */
+/** The targets a Package.swift declares: name and folder (project-relative), by its `.target(name:)` / `.testTarget(name:)` / `.executableTarget(name:)` calls; the call's arguments are read to their balanced closing parenthesis, so a `dependencies: [.product(...)]` before `path:` hides nothing. */
 export function packageTargets(text, packageFolder) {
   const targets = [];
   const code = uncommented(text);
-  const re = /\.(target|testTarget|executableTarget|macro|plugin)\s*\(\s*name:\s*"([^"]+)"([^]*?)\)/g;
+  const re = /\.(target|testTarget|executableTarget|macro|plugin)\s*\(\s*name:\s*"([^"]+)"/g;
   for (const m of code.matchAll(re)) {
     const kind = m[1];
     const name = m[2];
-    const args = m[3];
+    let depth = 1;
+    let end = m.index + m[0].length;
+    while (end < code.length && depth > 0) {
+      const c = code[end];
+      if (c === "(" || c === "[") depth += 1;
+      else if (c === ")" || c === "]") depth -= 1;
+      end += 1;
+    }
+    const args = code.slice(m.index + m[0].length, end);
     const path = /\bpath:\s*"([^"]+)"/.exec(args)?.[1];
     const folder = path !== undefined ? posix.normalize(path) : `${kind === "testTarget" ? "Tests" : "Sources"}/${name}`;
     targets.push({ name, folder: posix.join(packageFolder, folder).replace(/^\.\//, "").replace(/^\.$/, ""), test: kind === "testTarget" });
@@ -245,12 +227,13 @@ export function projectTargets(text, projectFolder) {
       if (item === null && !/^\s{3,}/.test(line)) sourcesIndent = -1;
     }
   }
-  return targets.map((t) => ({ name: t.name, folders: t.folders, test: /Tests$/.test(t.name) }));
+  // A path with an extension is a file (an Info.plist named under `info:`), not a folder of sources.
+  return targets.map((t) => ({ name: t.name, folders: t.folders.filter((f) => !/\.[A-Za-z0-9]+$/.test(f)), test: /Tests$/.test(t.name) }));
 }
 
 const MANIFESTS = new Map();
 
-/** Every module the project declares, from every Package.swift and project.yml under the root (the root's own first), with its folders; cached by the manifests' mtimes. */
+/** Every module the project declares, from every Package.swift and project.yml under the root, each with its manifest and folders; cached by the manifests' mtimes. */
 export function modulesOf(root) {
   const found = [];
   const walk = (folder, depth) => {
@@ -308,53 +291,15 @@ function within(folder, file) {
   return folder === "" || file === folder || file.startsWith(`${folder}/`);
 }
 
-/** The module a project file belongs to, or undefined outside every declared target. The deepest folder wins. */
-export function moduleOfFile(root, file) {
-  let best;
-  for (const module of modulesOf(root)) {
-    for (const folder of module.folders) {
-      if (within(folder, file) && (best === undefined || folder.length > best.folder.length)) best = { module, folder };
-    }
-  }
-  return best?.module;
-}
 
-/** The module named, with its files (vanished ones kept so importers are found), or undefined for a module the project does not declare. */
-export function resolveTarget(root, name, vanished) {
-  const module = modulesOf(root).find((m) => m.name === name);
-  if (module === undefined) return undefined;
+/** The module named, with its files (vanished ones kept so importers are found), or undefined for a module the project does not declare. Of several targets of one name (two packages each with a `Core`), the one whose manifest lies nearest above the importing file wins; with none above it, the first declared. */
+export function resolveTarget(root, name, vanished, from = "") {
+  const named = modulesOf(root).filter((m) => m.name === name);
+  if (named.length === 0) return undefined;
+  const folderOf = (manifest) => (posix.dirname(manifest) === "." ? "" : posix.dirname(manifest));
+  const above = named.filter((m) => within(folderOf(m.manifest), from)).sort((a, b) => folderOf(b.manifest).length - folderOf(a.manifest).length);
+  const module = above[0] ?? named[0];
   const present = module.folders.flatMap((f) => swiftFilesUnder(root, f));
   const gone = [...vanished].filter((f) => isModuleFile(f) && module.folders.some((folder) => within(folder, f)) && !present.includes(f));
   return { module: module.folders[0] ?? name, files: [...new Set([...present, ...gone])].sort() };
 }
-
-/** The specifier a file's own module is imported by: its files see each other with no import written. */
-export const SELF = ".";
-
-export const SWIFT_SOURCE = {
-  declarationOf(line) {
-    // A line at column zero that is not a continuation restarts the stream's depth count when it is the
-    // first of a file: declarationsOf feeds one file's lines in order, and files start with imports or comments.
-    if (/^(?:import\s|\/\/|\/\*)/.test(line) && STREAM.depth !== 0) STREAM = new SwiftReader();
-    const declared = STREAM.feed(line);
-    if (declared === undefined) return undefined;
-    return { name: declared.name, exported: declared.exported };
-  },
-  resolveModule(root, from, specifier, vanished) {
-    if (specifier === SELF) {
-      const own = moduleOfFile(root, from);
-      return own === undefined ? undefined : resolveTarget(root, own.name, vanished);
-    }
-    return resolveTarget(root, specifier, vanished);
-  },
-  importsOf(text, add) {
-    const seen = new Set();
-    for (const spec of importsIn(text)) {
-      if (seen.has(spec.module)) continue;
-      seen.add(spec.module);
-      add(undefined, spec.module);
-    }
-    // Every file of a module reaches every other: internal is module-wide.
-    add(undefined, SELF);
-  },
-};

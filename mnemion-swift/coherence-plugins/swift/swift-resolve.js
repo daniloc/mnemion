@@ -6,7 +6,8 @@
  *
  * A module is a target, a folder of files: `import MnemionKit` leads to the
  * target of that name, read off every Package.swift and project.yml under
- * the root (swift-source.js modulesOf). A system or dependency module
+ * the root (swift-source.js modulesOf); of two targets of one name, the
+ * one whose manifest lies nearest above the importing file. A system or dependency module
  * (Foundation, SwiftUI, a package the manifest fetches) resolves to nothing.
  * The module is returned whole, its folder and every file, and Coherence
  * joins the import to the files that declare the names the importer uses,
@@ -21,8 +22,8 @@
 import { resolveTarget } from "./swift-source.js";
 
 export const SWIFT_RESOLVE = {
-  resolveModule(root, _from, specifier, vanished) {
-    return resolveTarget(root, specifier, vanished);
+  resolveModule(root, from, specifier, vanished) {
+    return resolveTarget(root, specifier, vanished, from);
   },
   modulePaths: () => [],
 };

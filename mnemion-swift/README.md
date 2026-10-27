@@ -111,9 +111,9 @@ an adapter over sourcekit-lsp waits for the background index, reports each
 file's top-level symbols for calibration, and stages refutations in a
 throwaway copy of the project. `npx coherence plugin calibrate` counts what
 the grammar and the server disagree on: the 0.7.3 grammar cannot read an
-optional binding of a `try? await` call (`if let x = try? await f()`) or
-`as? [K: V] ?? [:]`, and a file holding one may lose the declaration around
-it (today: `PortfolioStore`). `npm install` here installs Coherence for the hooks and checks:
+optional binding of a `try? await` call (`if let x = try? await f()`), and
+a file holding one may lose the declaration around it (today:
+`PortfolioStore`). `npm install` here installs Coherence for the hooks and checks:
 
 ```bash
 cd mnemion-swift

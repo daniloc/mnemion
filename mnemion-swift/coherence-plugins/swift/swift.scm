@@ -7,33 +7,35 @@
 (import_declaration (identifier . (simple_identifier) @import.module)) @import
 
 ; a struct, class, actor or enum declares a body (its methods are its own); an extension adds to a type declared elsewhere and declares no name.
-; public, open or package puts a declaration in the module's interface; every other modifier (or none) keeps it inside the module.
-; Of each pair below the exported pattern comes first: a declaration matches both, and the reading keeps the first match of a name on a line.
-((source_file (class_declaration (modifiers (visibility_modifier) @_v) declaration_kind: _ @_kind name: (type_identifier) @name) @declaration.body @exported) (#not-eq? @_kind "extension") (#match? @_v "^(?:public|open|package)$"))
-((source_file (class_declaration declaration_kind: _ @_kind name: (type_identifier) @name) @declaration.body) (#not-eq? @_kind "extension"))
+; A declaration is exported when another file can reach it: private and fileprivate hide it in its file, every other modifier (or none)
+; leaves it to its module, and a component here is a module. Of each pair below the hidden pattern comes first: a hidden declaration
+; matches both, and the reading keeps the first match of a name on a line.
+((source_file (class_declaration (modifiers (visibility_modifier) @_v) declaration_kind: _ @_kind name: (type_identifier) @name) @declaration.body) (#not-eq? @_kind "extension") (#match? @_v "^(?:private|fileprivate)$"))
+((source_file (class_declaration declaration_kind: _ @_kind name: (type_identifier) @name) @declaration.body @exported) (#not-eq? @_kind "extension"))
 
 ; a protocol or a typealias declares a type
-((source_file (protocol_declaration (modifiers (visibility_modifier) @_v) name: (type_identifier) @name) @declaration.type @exported) (#match? @_v "^(?:public|open|package)$"))
-(source_file (protocol_declaration name: (type_identifier) @name) @declaration.type)
-((source_file (typealias_declaration (modifiers (visibility_modifier) @_v) name: (type_identifier) @name) @declaration.type @exported) (#match? @_v "^(?:public|open|package)$"))
-(source_file (typealias_declaration name: (type_identifier) @name) @declaration.type)
+((source_file (protocol_declaration (modifiers (visibility_modifier) @_v) name: (type_identifier) @name) @declaration.type) (#match? @_v "^(?:private|fileprivate)$"))
+(source_file (protocol_declaration name: (type_identifier) @name) @declaration.type @exported)
+((source_file (typealias_declaration (modifiers (visibility_modifier) @_v) name: (type_identifier) @name) @declaration.type) (#match? @_v "^(?:private|fileprivate)$"))
+(source_file (typealias_declaration name: (type_identifier) @name) @declaration.type @exported)
 
 ; a free func declares a body
-((source_file (function_declaration (modifiers (visibility_modifier) @_v) name: (simple_identifier) @name) @declaration.body @exported) (#match? @_v "^(?:public|open|package)$"))
-(source_file (function_declaration name: (simple_identifier) @name) @declaration.body)
+((source_file (function_declaration (modifiers (visibility_modifier) @_v) name: (simple_identifier) @name) @declaration.body) (#match? @_v "^(?:private|fileprivate)$"))
+(source_file (function_declaration name: (simple_identifier) @name) @declaration.body @exported)
 
 ; a let or var at the top level is read by what it holds: a literal (an array, dictionary or tuple of them, an operator's result) is a value;
-; a closure or a computed property is a body; anything else (a call's result, a name, nothing at all) may hold code, so it is counted as able to execute
-((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) value: [(integer_literal) (real_literal) (hex_literal) (oct_literal) (bin_literal) (line_string_literal) (multi_line_string_literal) (raw_string_literal) (boolean_literal) (array_literal) (dictionary_literal) (tuple_expression) (prefix_expression) (additive_expression) (multiplicative_expression)]) @declaration.value @exported) (#match? @_v "^(?:public|open|package)$"))
-(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) value: [(integer_literal) (real_literal) (hex_literal) (oct_literal) (bin_literal) (line_string_literal) (multi_line_string_literal) (raw_string_literal) (boolean_literal) (array_literal) (dictionary_literal) (tuple_expression) (prefix_expression) (additive_expression) (multiplicative_expression)]) @declaration.value)
-((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) value: (lambda_literal)) @declaration.body @exported) (#match? @_v "^(?:public|open|package)$"))
-(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) value: (lambda_literal)) @declaration.body)
-((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) computed_value: (computed_property)) @declaration.body @exported) (#match? @_v "^(?:public|open|package)$"))
-(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) computed_value: (computed_property)) @declaration.body)
-((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) value: [(call_expression) (simple_identifier) (navigation_expression) (ternary_expression) (await_expression) (try_expression) (as_expression) (nil_coalescing_expression) (comparison_expression) (conjunction_expression) (disjunction_expression) (equality_expression) (range_expression) (postfix_expression) (constructor_expression) (open_start_range_expression) (open_end_range_expression) (bitwise_operation) (infix_expression) (selector_expression) (key_path_expression) (key_path_string_expression) (super_expression) (self_expression)]) @declaration.unknown @exported) (#match? @_v "^(?:public|open|package)$"))
-(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) value: [(call_expression) (simple_identifier) (navigation_expression) (ternary_expression) (await_expression) (try_expression) (as_expression) (nil_coalescing_expression) (comparison_expression) (conjunction_expression) (disjunction_expression) (equality_expression) (range_expression) (postfix_expression) (constructor_expression) (open_start_range_expression) (open_end_range_expression) (bitwise_operation) (infix_expression) (selector_expression) (key_path_expression) (key_path_string_expression) (super_expression) (self_expression)]) @declaration.unknown)
-((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) !value !computed_value) @declaration.unknown @exported) (#match? @_v "^(?:public|open|package)$"))
-(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) !value !computed_value) @declaration.unknown)
+; a closure or a computed property is a body; anything else (a call's result, a name, nil, an if or switch expression, nothing at all) may hold
+; code, so it is counted as able to execute: the unknown patterns match any value, and a known kind on the same line sorts ahead of them
+((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) value: [(integer_literal) (real_literal) (hex_literal) (oct_literal) (bin_literal) (line_string_literal) (multi_line_string_literal) (raw_string_literal) (boolean_literal) (array_literal) (dictionary_literal) (tuple_expression) (prefix_expression) (additive_expression) (multiplicative_expression)]) @declaration.value) (#match? @_v "^(?:private|fileprivate)$"))
+(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) value: [(integer_literal) (real_literal) (hex_literal) (oct_literal) (bin_literal) (line_string_literal) (multi_line_string_literal) (raw_string_literal) (boolean_literal) (array_literal) (dictionary_literal) (tuple_expression) (prefix_expression) (additive_expression) (multiplicative_expression)]) @declaration.value @exported)
+((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) value: (lambda_literal)) @declaration.body) (#match? @_v "^(?:private|fileprivate)$"))
+(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) value: (lambda_literal)) @declaration.body @exported)
+((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) computed_value: (computed_property)) @declaration.body) (#match? @_v "^(?:private|fileprivate)$"))
+(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) computed_value: (computed_property)) @declaration.body @exported)
+((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) value: _) @declaration.unknown) (#match? @_v "^(?:private|fileprivate)$"))
+(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) value: _) @declaration.unknown @exported)
+((source_file (property_declaration (modifiers (visibility_modifier) @_v) name: (pattern bound_identifier: (simple_identifier) @name) !value !computed_value) @declaration.unknown) (#match? @_v "^(?:private|fileprivate)$"))
+(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name) !value !computed_value) @declaration.unknown @exported)
 
 ; let (a, b) = ... binds the names its tuple pattern spells; the first is read as the declaration's name
-(source_file (property_declaration name: (pattern . (pattern (simple_identifier) @name)) value: (_)) @declaration.unknown)
+(source_file (property_declaration name: (pattern . (pattern (simple_identifier) @name)) value: _) @declaration.unknown)
