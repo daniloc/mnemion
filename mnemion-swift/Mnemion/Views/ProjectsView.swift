@@ -17,7 +17,6 @@ struct ProjectsView: View {
     @State private var selection: Destination? = .review
 
     var body: some View {
-        @Bindable var store = store
         @Bindable var app = app
         NavigationSplitView {
             List(selection: $selection) {
@@ -39,11 +38,11 @@ struct ProjectsView: View {
                 }
             }
             .navigationTitle("Mnemion")
+            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 340)
             .refreshable { await store.loadAll() }
+            #if !os(macOS)
+            // On the Mac the account is in the app menu (MnemionApp's commands).
             .toolbar {
-                ToolbarItem {
-                    Button("New note", systemImage: "square.and.pencil") { app.showCapture = true }
-                }
                 ToolbarItem {
                     Menu {
                         Section("\(store.member) · \(store.host)") {
@@ -56,6 +55,7 @@ struct ProjectsView: View {
                     }
                 }
             }
+            #endif
         } detail: {
             switch selection {
             case .review:
@@ -73,6 +73,12 @@ struct ProjectsView: View {
                 }
             case nil:
                 ContentUnavailableView("Select something", systemImage: "square.stack.3d.up")
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("New Note", systemImage: "square.and.pencil") { app.showCapture = true }
+                    .help("New note (⌘N)")
             }
         }
         .task { await store.loadAll() }
@@ -99,23 +105,30 @@ private struct ProjectRow: View {
     /// Serves no goal: surfaced for the weekly review.
     let unaligned: Bool
 
+    @Environment(PortfolioStore.self) private var store
+
+    private var status: String? { project.entry.string("status") }
+    /// Closed by the pattern's own declaration: drawn quieter.
+    private var dormant: Bool { Portfolio.isClosed(project, schema: store.schema(for: project.pattern)) }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(project.entry.string("title") ?? "Untitled")
-                .font(.headline)
+        Label {
             HStack(spacing: 6) {
-                if let status = project.entry.string("status") { StatusBadge(status: status) }
+                Text(project.entry.string("title") ?? "Untitled")
+                    .lineLimit(1)
+                    .foregroundStyle(dormant ? .secondary : .primary)
+                Spacer(minLength: 0)
                 if unaligned {
-                    Label("Serves no goal", systemImage: "exclamationmark.circle")
-                        .font(.caption)
+                    Image(systemName: "exclamationmark.circle.fill")
                         .foregroundStyle(.orange)
-                }
-                if let horizon = project.entry.string("horizon") {
-                    Text(horizon).font(.caption).foregroundStyle(.secondary)
+                        .help("Serves no goal")
                 }
             }
+        } icon: {
+            Image(systemName: dormant ? "folder" : "folder.fill")
+                .foregroundStyle(StatusBadge.color(for: status ?? ""))
         }
-        .padding(.vertical, 2)
+        .help([status?.capitalized, project.entry.string("horizon")].compactMap { $0 }.joined(separator: " · "))
     }
 }
 
@@ -132,7 +145,9 @@ struct StatusBadge: View {
             .foregroundStyle(color)
     }
 
-    private var color: Color {
+    private var color: Color { Self.color(for: status) }
+
+    static func color(for status: String) -> Color {
         switch status.lowercased() {
         case "done", "complete", "completed": return .green
         case "active", "in-progress", "doing": return .blue

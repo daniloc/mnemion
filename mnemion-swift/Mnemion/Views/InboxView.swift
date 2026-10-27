@@ -11,18 +11,20 @@ struct InboxView: View {
 
     var body: some View {
         List {
-            if store.notes.isEmpty {
-                ContentUnavailableView("Inbox is empty", systemImage: "tray",
-                    description: Text("Capture a note with ⌘N, or from the menu bar."))
-            }
             ForEach(store.notes) { note in
                 NoteRow(note: note) { makingTask = note }
             }
         }
         .navigationTitle("Inbox")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("New note", systemImage: "square.and.pencil") { app.showCapture = true }
+        .overlay {
+            if store.notes.isEmpty {
+                ContentUnavailableView {
+                    Label("Inbox Zero", systemImage: "tray")
+                } description: {
+                    Text(emptyHint)
+                } actions: {
+                    Button("New Note") { app.showCapture = true }
+                }
             }
         }
         .refreshable { await store.loadInbox() }
@@ -31,6 +33,12 @@ struct InboxView: View {
         }
     }
 }
+
+#if os(macOS)
+private let emptyHint = "Capture with ⌘N here, \(QuickCapture.shortcut) from any app, or from the menu bar."
+#else
+private let emptyHint = "Capture a note here, or share a link from any app."
+#endif
 
 private struct NoteRow: View {
     let note: PatternEntry
@@ -55,8 +63,8 @@ private struct NoteRow: View {
                         if let source = note.entry.string("source") {
                             Text(source).font(.caption2).foregroundStyle(.tertiary)
                         }
-                        if let at = note.entry.createdAt {
-                            Text(at.prefix(10)).font(.caption2).foregroundStyle(.tertiary)
+                        if let at = Dates.instant(note.entry.createdAt) {
+                            Text(at, format: .relative(presentation: .named)).font(.caption2).foregroundStyle(.tertiary)
                         }
                     }
                 }
@@ -84,7 +92,9 @@ private struct NoteRow: View {
                     Image(systemName: "ellipsis.circle")
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .fixedSize()
+                .help("Triage")
             }
             if showRelated {
                 if related.isEmpty {

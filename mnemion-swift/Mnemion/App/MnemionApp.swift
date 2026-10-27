@@ -17,16 +17,34 @@ struct MnemionApp: App {
             RootView()
                 .environment(session)
                 .environment(app)
+                #if os(macOS)
+                .onAppear { QuickCapture.shared.install(session: session) }
+                #endif
         }
+        #if os(macOS)
+        .defaultSize(width: 1100, height: 720)
+        #endif
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Note") { app.showCapture = true }
                     .keyboardShortcut("n", modifiers: .command)
+                #if os(macOS)
+                Button("Quick Capture") { QuickCapture.shared.show() }
+                    .keyboardShortcut("n", modifiers: [.control, .option])
+                #endif
+            }
+            CommandGroup(after: .appSettings) {
+                // The account lives in the app menu, out of the sidebar's way.
+                if case .signedIn(let store) = session.phase {
+                    Divider()
+                    Button("Sign Out of \(store.host)") { session.signOut() }
+                }
             }
         }
         #if os(macOS)
-        // Capture from anywhere: the menu bar item takes a note without
-        // bringing the window forward, then offers what the hive already holds.
+        // Capture from anywhere: the menu bar item (and ⌃⌥N, see QuickCapture)
+        // takes a note without bringing the window forward, then offers what
+        // the hive already holds.
         MenuBarExtra("Mnemion", systemImage: "tray.and.arrow.down") {
             MenuBarCapture()
                 .environment(session)
@@ -58,14 +76,10 @@ private struct MenuBarCapture: View {
     var body: some View {
         switch session.phase {
         case .signedOut:
-            Text("Sign in to Mnemion to capture notes.")
-                .foregroundStyle(.secondary)
-                .padding()
-                .frame(width: 320)
+            SignedOutCapture()
         case .signedIn(let store):
-            CaptureView(compact: true)
+            CaptureView(style: .panel)
                 .environment(store)
-                .frame(width: 360)
         }
     }
 }

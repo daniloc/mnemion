@@ -62,13 +62,19 @@ private struct GoalSection: View {
                 .task { if store.tasks[project.ref] == nil { await store.loadTasks(for: project) } }
             }
             if !unserving.isEmpty {
-                Menu("Serve with a project…", systemImage: "plus.circle") {
+                Menu {
                     ForEach(unserving) { project in
                         Button(project.entry.string("title") ?? "Untitled") {
                             Task { await store.serve(project, goal: goal) }
                         }
                     }
+                } label: {
+                    Label("Serve with a project…", systemImage: "plus.circle")
+                        .font(.callout)
                 }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
             }
         } header: {
             HStack {
