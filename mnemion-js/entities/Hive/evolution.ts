@@ -19,7 +19,7 @@ import { isKernelPattern } from "./policy";
 import { FACET_RESERVED_COLUMNS, USER_OVERRIDABLE_KERNEL_COLUMNS } from "./kernel-columns";
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
 import type { StoreIndex, IndexFacetEntry } from "./reports";
-import { coerceFacetValue } from "./data";
+import { coerceFacetValue } from "./facet-values";
 import * as rel from "./relations";
 import { facetReferences, nonNullValues } from "./facet-references";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
