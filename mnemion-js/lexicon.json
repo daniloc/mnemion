@@ -130,7 +130,7 @@
       "definition": "How many active links of one relation a source entry may hold, one or many, declared on the relation and enforced at the link chokepoint."
     },
     {
-      "name": "phase",
+      "name": "migration phase",
       "definition": "A numbered stage of the relations migration plan in project-docs/relations.md (1 the registry, 2 required relations, 3 reference facets retired, 4 this hive's data), each with its own restore point."
     }
   ]
