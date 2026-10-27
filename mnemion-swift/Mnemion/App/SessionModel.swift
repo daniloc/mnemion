@@ -23,13 +23,22 @@ final class SessionModel {
     private static let bundleID = Bundle.main.bundleIdentifier ?? "com.danilocampos.mnemion"
     private static let hiveKey = "hiveURL"
     private let oauth = OAuthClient(configuration: OAuthConfiguration(
-        clientName: "Mnemion for Apple platforms",
+        clientName: SharedSession.clientName,
         redirectURI: URL(string: "\(SessionModel.bundleID):/oauth/callback")!))
-    private let keychain = KeychainStore(service: SessionModel.bundleID)
+    /// The item the share extension and App Intents read too (SharedSession).
+    private let keychain = SharedSession.keychain()
 
     init() {
         hiveInput = UserDefaults.standard.string(forKey: Self.hiveKey) ?? ""
-        if let saved = keychain.load() { phase = .signedIn(makeStore(saved)) }
+        if let saved = keychain.load() {
+            // An install that signed in before the shared access group existed keeps
+            // its item in the app's own group, where the share extension and the
+            // intent cannot read it. Re-adding it on restore lands it in the shared
+            // group once; afterwards the delete and save are a no-op pair.
+            keychain.delete()
+            try? keychain.save(saved)
+            phase = .signedIn(makeStore(saved))
+        }
     }
 
     var credentials: Credentials? {
@@ -55,6 +64,9 @@ final class SessionModel {
                 callbackURLScheme: oauth.configuration.callbackScheme,
                 preferredBrowserSession: .ephemeral)
             let credentials = try await oauth.exchange(callback: callback, for: request)
+            // A fresh sign-in replaces the item outright, so it lands in the shared
+            // access group even where an older install kept it in the app's own.
+            keychain.delete()
             try keychain.save(credentials)
             hiveInput = hive.absoluteString
             phase = .signedIn(makeStore(credentials))

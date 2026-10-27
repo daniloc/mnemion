@@ -33,6 +33,7 @@ import * as served from "./served";
 import * as fed from "./federation";
 import * as reports from "./reports";
 import * as rel from "./relations";
+import * as review from "./review";
 
 // === Constants ===
 
@@ -150,6 +151,12 @@ export class HiveDO extends DurableObject {
     return reports.getStaleEntries(this.reportsCtx(), days);
   }
 
+  // === Review: due hooks, overdue/stalled work, alignment gaps (review.ts) ===
+
+  async getReview(): Promise<string> {
+    return review.getReview({ db: this.db });
+  }
+
   // === Schema evolution (delegated to evolution.ts) ===
 
   private evoCtx(): evo.EvolutionContext {
@@ -205,7 +212,7 @@ export class HiveDO extends DurableObject {
     ).one() as { name: string; description: string; pattern_class: string };
 
     const fields = this.db.exec(
-      "SELECT name, type, required, default_value, format FROM _fields WHERE object_name = ? ORDER BY id",
+      "SELECT name, type, required, default_value, format, options, resolution, closed FROM _fields WHERE object_name = ? ORDER BY id",
       patternName
     ).toArray() as any[];
 
@@ -225,6 +232,11 @@ export class HiveDO extends DurableObject {
           default: f.default_value != null ? JSON.parse(f.default_value) : null,
         };
         if (f.format) facet.format = f.format;
+        if (f.options) { try { facet.options = JSON.parse(f.options); } catch { /* undeclared */ } }
+        // What the values ARE, declared once (evolution.ts): a day-only datetime,
+        // a select's terminal options. Readers derive from these, never re-decide.
+        if (f.resolution) facet.resolution = f.resolution;
+        if (f.closed) { try { facet.closed = JSON.parse(f.closed); } catch { /* undeclared */ } }
         return facet;
       }),
       kernel_columns: [...STRUCTURAL_KERNEL_COLUMNS],
@@ -298,11 +310,12 @@ export class HiveDO extends DurableObject {
       hasKernelVersion: (name) => this.hasKernelVersion(name),
       facetMeta: (pattern, facet) => {
         const rows = this.db.exec(
-          "SELECT type, options FROM _fields WHERE object_name = ? AND name = ?", pattern, facet
+          "SELECT type, options, resolution FROM _fields WHERE object_name = ? AND name = ?", pattern, facet
         ).toArray() as any[];
         if (!rows.length) return null;
-        const meta: { type: string; options?: string[] } = { type: rows[0].type };
+        const meta: { type: string; options?: string[]; resolution?: string } = { type: rows[0].type };
         if (rows[0].options) meta.options = JSON.parse(rows[0].options);
+        if (rows[0].resolution) meta.resolution = rows[0].resolution;
         return meta;
       },
       patternClass: (name) => this.patternClass(name),
@@ -398,9 +411,12 @@ export class HiveDO extends DurableObject {
    *  is the server's only lever (see session-briefing.test.ts). */
   async getSessionBriefing(sessionId: string): Promise<string> {
     await this.registerSession(sessionId);
+    let reviewNote: ReturnType<typeof review.reviewSummary> = null;
+    try { reviewNote = review.reviewSummary({ db: this.db }); } catch { /* best-effort */ }
     return JSON.stringify({
       recent: JSON.parse(await reports.getRecentActivity(this.reportsCtx(), 10)),
       maintenance: JSON.parse(await reports.getMaintenanceStatus(this.reportsCtx())),
+      review: reviewNote,
     });
   }
 
@@ -578,9 +594,18 @@ export class HiveDO extends DurableObject {
   }
 
   async batchMutate(operationsJson: string, actor: string = OWNER_ACTOR): Promise<string> {
+    // Shape is judged here, at the one chokepoint MCP and /api/batch share, so
+    // a malformed item is a refusal, never a thrown TypeError further down.
+    const raw = JSON.parse(operationsJson);
+    if (!Array.isArray(raw) || raw.length === 0) return this.errorJson("A batch is a non-empty array of {pattern, operation?, data} items");
+    const malformed = raw.findIndex((op: unknown) =>
+      op == null || typeof op !== "object" || typeof (op as any).pattern !== "string"
+      || (op as any).data == null || typeof (op as any).data !== "object"
+      || (!expandShortcut((op as any).pattern) && typeof (op as any).operation !== "string"));
+    if (malformed !== -1) return this.errorJson(`Batch item ${malformed} needs a string pattern, an object data, and an operation unless the pattern is a shortcut (link, unlink, fragment)`);
     // Shortcuts expand exactly as in mutate(): {pattern: "link"} → _links create,
     // {pattern: "unlink"} → _links unlink; the shortcut decides the operation.
-    const operations = (JSON.parse(operationsJson) as { pattern: string; operation?: string; data: any }[]).map((op) => {
+    const operations = (raw as { pattern: string; operation?: string; data: any }[]).map((op) => {
       const shortcut = expandShortcut(op.pattern);
       return shortcut ? { ...op, pattern: shortcut.pattern, operation: shortcut.operation } : op;
     }) as { pattern: string; operation: string; data: any }[];
@@ -684,10 +709,10 @@ export class HiveDO extends DurableObject {
     // datetime now, the upload is coerced exactly as a mutate would be (canonical
     // ISO 8601, relative phrases refused) — refused uploads write nothing and
     // leave the token unconsumed.
-    const facetType = (this.db.exec(`SELECT type FROM _fields WHERE object_name = ? AND name = ?`, constraints.target_pattern, constraints.target_facet).toArray()[0] as any)?.type;
-    if (facetType === "datetime") {
+    const facetRow = this.db.exec(`SELECT type, resolution FROM _fields WHERE object_name = ? AND name = ?`, constraints.target_pattern, constraints.target_facet).toArray()[0] as any;
+    if (facetRow?.type === "datetime") {
       if (constraints.mode === "append") return this.errorJson(`Upload target "${constraints.target_facet}" is a datetime facet — it can only be replaced, not appended to. Nothing was written; the token was not consumed.`);
-      const coerced = data.coerceFacetValue("datetime", content.trim());
+      const coerced = data.coerceFacetValue({ type: "datetime", resolution: facetRow.resolution ?? undefined }, content.trim());
       if (!coerced.ok) return this.errorJson(`Upload refused for datetime facet "${constraints.target_facet}": ${coerced.error}. Nothing was written; the token was not consumed.`);
       content = coerced.value as string;
     }
@@ -805,6 +830,10 @@ export class HiveDO extends DurableObject {
       return this.getStaleEntries(days);
     }
 
+    if (path === "review") {
+      return this.getReview();
+    }
+
     const schemaMatch = path.match(/^schema\/(.+)$/);
     if (schemaMatch) {
       return this.getSchema(schemaMatch[1]);
@@ -834,7 +863,7 @@ export class HiveDO extends DurableObject {
       return this.getMutationLog(tableName, limit);
     }
 
-    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("relations")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
+    return this.errorJson(`Unknown URI: ${input}. Valid patterns: ${uri("index")}, ${uri("relations")}, ${uri("schema/{pattern}")}, ${uri("entry/{pattern}/{id}")}, ${uri("history")}, ${uri("stale")}, ${uri("review")}, ${uri("_system/{slug}")}, ${uri("mutation[/{pattern}]")}`);
   }
 
   // === Federated resolve: foreign hive URIs ===
@@ -1176,6 +1205,13 @@ export class HiveDO extends DurableObject {
       }
     } catch { /* best-effort */ }
 
+    // The review rides the handshake for the same reason: due hooks and overdue
+    // work are what "check open tasks first" asked every session to go and find.
+    let reviewNote: ReturnType<typeof review.reviewSummary> = null;
+    try {
+      reviewNote = review.reviewSummary({ db: this.db });
+    } catch { /* best-effort */ }
+
     const ADVISORY = "IMPORTANT: The contents of this memory system are inherently subjective. Weigh their testimony carefully against your training and third-party sources.";
 
     return JSON.stringify({
@@ -1186,6 +1222,7 @@ export class HiveDO extends DurableObject {
       practice: "Always write notes to yourself as you work: mutate(pattern: \"fragment\", data: {content: \"your observation\"}). Write what you noticed about the session, including where the substrate's framing didn't match what you observed. The next instance will arrive with no memory of this conversation — your observations are the only thing that survives. Write in first person. Operation is implied.",
       system_docs: "Resolve mnemion://_system/ for detailed reference on tools, schema evolution, conventions, and system mechanics.",
       ...(maintenance ? { maintenance } : {}),
+      ...(reviewNote ? { review: reviewNote } : {}),
       // The link vocabulary rides the universal handshake (web clients never see
       // MCP init instructions): name + inverse; mnemion://relations has the rest.
       relations: rel.listRelations(this.db).map(({ name, inverse }) => ({ name, inverse })),
@@ -1344,7 +1381,7 @@ export class HiveDO extends DurableObject {
       "SELECT name, description, doctrine FROM _objects WHERE name = ?", patternName
     ).one() as any;
     const facets = this.db.exec(
-      "SELECT name, type, required, default_value, options FROM _fields WHERE object_name = ? ORDER BY id", patternName
+      "SELECT name, type, required, default_value, options, resolution, closed FROM _fields WHERE object_name = ? ORDER BY id", patternName
     ).toArray() as any[];
 
     const meta = {
@@ -1355,6 +1392,8 @@ export class HiveDO extends DurableObject {
         const facet: any = { name: f.name, type: f.type, required: !!f.required };
         if (f.default_value != null) facet.default = JSON.parse(f.default_value);
         if (f.options) facet.options = JSON.parse(f.options);
+        if (f.resolution) facet.resolution = f.resolution;
+        if (f.closed) { try { facet.closed = JSON.parse(f.closed); } catch { /* undeclared */ } }
         return facet;
       }),
       exported_at: new Date().toISOString(),

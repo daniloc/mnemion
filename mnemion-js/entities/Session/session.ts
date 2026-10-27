@@ -127,6 +127,7 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
     const briefing = JSON.parse(await hive.getSessionBriefing((this.ctx as any).id.toString())) as {
       recent: { pattern: string; id: number; summary: string; updated_at: string }[];
       maintenance: { days_since_last_pass: number | null; interval_days: number; overdue: boolean };
+      review: { message: string; due_hooks: string[]; uri: string } | null;
     };
 
     // === Inject working memory into instructions ===
@@ -152,6 +153,16 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
         (this.server as any)._instructions = section + base;
       }
     } catch { /* best-effort */ }
+
+    // === Inject the review into instructions ===
+    // Due hooks, overdue and stalled work, alignment gaps — derived at read time
+    // (review.ts), carried by the same briefing RPC. "Check open tasks first" is
+    // done for the agent instead of asked of it. (Also rides the prime response.)
+    if (briefing.review?.message) {
+      const section = `=== Review ===\n${briefing.review.message} Read ${uri("review")} for the lists. Run a due hook with the owner and record it as a review entry; see ${uri("_system/reviews")}.\n\n`;
+      const base = (this.server as any)._instructions ?? "";
+      (this.server as any)._instructions = section + base;
+    }
 
     // === Capability status: document storage needs R2 ===
     // When R2 isn't enabled, _documents entries can be created but file upload
@@ -222,6 +233,18 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
       { description: "Entries past their staleness horizon — neither updated nor recalled recently. Read-only review surface for maintenance passes.", mimeType: "application/json" },
       async (u) => {
         const result = await hive.getStaleEntries();
+        return {
+          contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
+        };
+      }
+    );
+
+    this.server.resource(
+      "review",
+      uri("review"),
+      { description: "What needs attention now, derived at read time: due review hooks (day, week and month start and end), overdue, due and stalled work, and alignment gaps along chained relations. Never stored.", mimeType: "application/json" },
+      async (u) => {
+        const result = await hive.getReview();
         return {
           contents: [{ uri: u.href, text: result, mimeType: "application/json" }],
         };
@@ -407,6 +430,8 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
             required: z.boolean().default(false),
             default_value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
             options: z.array(z.string()).optional().describe("Allowed values (required for select type)"),
+            resolution: z.enum(["day", "instant"]).optional().describe("datetime facets: \"day\" stores calendar days only (a time of day is refused at write); default instant"),
+            closed: z.array(z.string()).optional().describe("select facets: the options that END an item (done, dropped…), a strict subset of options — every reader of a status derives open/closed from this"),
             // Carried through (not stripped) only so the engine refuses it with its
             // guidance: a silently dropped `links` would make a reference facet look created.
             links: z.unknown().optional().describe("Retired: reference (foreign-key) facets are refused — connect entries with a relation (declare_relation, then link or _relate)"),
@@ -415,6 +440,8 @@ Note: tools may need to be loaded before first use. If a tool call fails, load i
           facet: z.string().optional().describe("Target facet name (for set_facet_format / drop_facet)"),
           format: z.enum(FORMAT_IDS as [string, ...string[]]).nullable().optional().describe("Value render format for set_facet_format (null clears → render by type)"),
           options: z.array(z.string()).optional().describe("Allowed values (for set_options)"),
+          closed: z.array(z.string()).nullable().optional().describe("For set_options: the options that end an item (subset of options; null clears). Omit to keep the current declaration"),
+          resolution: z.enum(["day", "instant"]).nullable().optional().describe("For set_resolution (pattern_name + facet): \"day\" is refused while any stored value carries a time of day; null/\"instant\" clears"),
           entry_id: z.number().optional().describe("Entry ID (for set_sharing)"),
           visibility: z.enum(["public", "unlisted", "private"]).optional().describe("Sharing visibility (for set_sharing)"),
           policy: z.object({

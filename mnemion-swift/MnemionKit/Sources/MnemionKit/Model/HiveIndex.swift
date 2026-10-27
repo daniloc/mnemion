@@ -89,9 +89,13 @@ public struct Facet: Decodable, Sendable, Hashable {
     public let defaultValue: JSONValue?
     public let options: [String]?
     public let readonly: Bool
+    /// datetime facets: "day" holds calendar days only (the hive refuses a time of day).
+    public let resolution: String?
+    /// select facets: the options that end an item, declared once for every reader.
+    public let closed: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case name, type, required, options, readonly
+        case name, type, required, options, readonly, resolution, closed
         case defaultValue = "default"
     }
 
@@ -103,5 +107,7 @@ public struct Facet: Decodable, Sendable, Hashable {
         defaultValue = try c.decodeIfPresent(JSONValue.self, forKey: .defaultValue)
         options = try c.decodeIfPresent([String].self, forKey: .options)
         readonly = try c.decodeIfPresent(Bool.self, forKey: .readonly) ?? false
+        resolution = try c.decodeIfPresent(String.self, forKey: .resolution)
+        closed = try c.decodeIfPresent([String].self, forKey: .closed)
     }
 }

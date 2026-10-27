@@ -521,3 +521,13 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: no deferred dispatch is involved
   checklist: declared-target-coverage dismissed: one migration over the reference facets present at boot
   checklist: completion-evidence dismissed: the check is synchronous with the change or boot pass
+- derived review: What needs attention — due review hooks, overdue, due and stalled work, and alignment gaps along chained relations — is computed on every read from stored entries, links and the calendar; no row stores a due flag, a count or a hook state.
+  over: computeReview over work patterns (deadline + status) holding open, closed, undated, overdue, due-today, due-this-week and stalled entries; hook windows across the charter timezone and day-end hour, with and without a covering review entry; and chain steps with unlinked source and target entries, read through resolve, the prime response and the /api/review route
+  via: derived review
+  because: The doctrine asked for a weekly review and for agents to check open tasks first, and a rule held by memory is a block-list; one derived surface every reader crosses cannot go stale.
+  kinds: none
+- facet declarations: What a facet's values are is declared once in _fields and enforced at the write chokepoint: a datetime facet with resolution day stores calendar days only and refuses a time of day on every write path, a select facet's closed values are a strict subset of its options, and the index, the schema and the review read these declarations instead of re-deciding them.
+  over: create_pattern and add_facet declarations (resolution on non-datetime, unknown resolutions, closed on non-select, closed outside options, closed covering every option), mutate create and update on a day-resolution facet with dates and timestamps, set_resolution to day with and without stored timestamps, set_options with closed kept, replaced and cleared, the index and schema projections, and the review's open/closed judgement against a declared closed set that differs from the fallback
+  via: facet declarations
+  because: Every reader that decided for itself whether a value was a day or whether a status was closed decided differently; a declaration that is true of every stored value is the only home that cannot drift.
+  kinds: none

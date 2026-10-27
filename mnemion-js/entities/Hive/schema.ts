@@ -36,6 +36,7 @@ import remoteAccessRaw from "../../src/system-docs/remote-access.md";
 import httpIoRaw from "../../src/system-docs/http-io.md";
 import capabilitiesRaw from "../../src/system-docs/capabilities.md";
 import memoryMaintenanceRaw from "../../src/system-docs/memory-maintenance.md";
+import reviewsRaw from "../../src/system-docs/reviews.md";
 
 // === System doc parsing ===
 
@@ -68,7 +69,7 @@ function generateToolsDoc(): string {
 const SYSTEM_DOCS_SEED = [
   schemaEvolutionRaw, skillsRaw, conventionsRaw,
   indexGuideRaw, remoteAccessRaw, httpIoRaw, capabilitiesRaw,
-  memoryMaintenanceRaw,
+  memoryMaintenanceRaw, reviewsRaw,
 ].map(parseDocFile);
 
 // === Kernel table declarations ===
@@ -1342,6 +1343,20 @@ export function initializeSchema(db: any, env?: { MNEMION_SECRET?: string; DEV_S
     const fieldCols = db.exec(`PRAGMA table_info("_fields")`).toArray() as any[];
     if (!fieldCols.some((c: any) => c.name === "format")) {
       db.exec(`ALTER TABLE "_fields" ADD COLUMN "format" TEXT`);
+    }
+    // --- v20: a facet declares what its values are, so no reader re-decides it ---
+    //
+    // `resolution` on a datetime facet: "day" means the stored value is a calendar
+    // day (YYYY-MM-DD) and a time of day is refused at write; null/"instant" keeps
+    // full timestamps. `closed` on a select facet: the JSON list of its terminal
+    // options (done, dropped…), read by the review and every client instead of a
+    // hard-coded set. Both are set at create_pattern/add_facet or through
+    // set_resolution / set_options.
+    if (!fieldCols.some((c: any) => c.name === "resolution")) {
+      db.exec(`ALTER TABLE "_fields" ADD COLUMN "resolution" TEXT`);
+    }
+    if (!fieldCols.some((c: any) => c.name === "closed")) {
+      db.exec(`ALTER TABLE "_fields" ADD COLUMN "closed" TEXT`);
     }
   } catch {}
 

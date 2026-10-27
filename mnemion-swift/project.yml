@@ -34,6 +34,9 @@ targets:
       - path: Mnemion
     dependencies:
       - package: MnemionKit
+      # The share sheet, iOS only; embedded in the app bundle.
+      - target: MnemionShare
+        platformFilter: iOS
     settings:
       base:
         PRODUCT_NAME: Mnemion
@@ -48,4 +51,32 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         TARGETED_DEVICE_FAMILY: "1,2,7"
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Mnemion/Mnemion-macOS.entitlements
+        # iOS: the keychain access group the share extension reads the session from.
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Mnemion/Mnemion-iOS.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Mnemion/Mnemion-iOS.entitlements
         ENABLE_HARDENED_RUNTIME: YES
+
+  # The share sheet: a URL or text from any app becomes an inbox note.
+  MnemionShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: MnemionShare
+    dependencies:
+      - package: MnemionKit
+    info:
+      path: MnemionShare/Info.plist
+      properties:
+        CFBundleDisplayName: Mnemion
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsText: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.danilocampos.mnemion.share
+        CODE_SIGN_ENTITLEMENTS: MnemionShare/MnemionShare.entitlements
+        INFOPLIST_KEY_CFBundleDisplayName: Mnemion

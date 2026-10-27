@@ -1,45 +1,49 @@
 import MnemionKit
 import SwiftUI
 
+/// Where the sidebar can go. The review comes first: the app opens on what
+/// needs attention, not on a list.
+enum Destination: Hashable {
+    case review, inbox, goals
+    case project(PatternEntry.ID)
+}
+
+/// The signed-in window: a sidebar of review, inbox, goals and projects, and a
+/// detail pane for the selection.
 struct ProjectsView: View {
     @Environment(SessionModel.self) private var session
     @Environment(PortfolioStore.self) private var store
-    @State private var selection: PatternEntry.ID?
+    @Environment(AppState.self) private var app
+    @State private var selection: Destination? = .review
 
     var body: some View {
         @Bindable var store = store
+        @Bindable var app = app
         NavigationSplitView {
             List(selection: $selection) {
                 Section {
+                    Label("Review", systemImage: "checklist")
+                        .badge(reviewBadge)
+                        .tag(Destination.review)
+                    Label("Inbox", systemImage: "tray")
+                        .badge(store.notes.count)
+                        .tag(Destination.inbox)
+                    Label("Goals", systemImage: "scope")
+                        .tag(Destination.goals)
+                }
+                Section("Projects") {
                     ForEach(store.projects) { project in
                         ProjectRow(project: project, unaligned: store.unaligned.contains(project.ref))
-                            .tag(project.id)
-                    }
-                }
-                if !store.unservedGoals.isEmpty {
-                    // The weekly review's other half: goals no project serves,
-                    // so no work feeds them.
-                    Section("Goals nothing serves") {
-                        ForEach(store.unservedGoals) { goal in
-                            Label(goal.entry.string("title") ?? "Untitled", systemImage: "scope")
-                                .foregroundStyle(.secondary)
-                                .selectionDisabled()
-                        }
+                            .tag(Destination.project(project.id))
                     }
                 }
             }
-            .navigationTitle("Projects")
-            .overlay {
-                if store.projects.isEmpty {
-                    ContentUnavailableView("No projects yet", systemImage: "folder",
-                        description: Text("Projects created by you or your agents appear here."))
-                }
-            }
-            .refreshable {
-                await store.loadProjects()
-                await store.loadAlignment()
-            }
+            .navigationTitle("Mnemion")
+            .refreshable { await store.loadAll() }
             .toolbar {
+                ToolbarItem {
+                    Button("New note", systemImage: "square.and.pencil") { app.showCapture = true }
+                }
                 ToolbarItem {
                     Menu {
                         Section("\(store.member) · \(store.host)") {
@@ -53,24 +57,40 @@ struct ProjectsView: View {
                 }
             }
         } detail: {
-            if let project = store.project(selection) {
-                ProjectDetailView(project: project)
-                    .id(project.id)
-            } else {
-                ContentUnavailableView("Select a project", systemImage: "square.stack.3d.up")
+            switch selection {
+            case .review:
+                ReviewView(go: { selection = $0 })
+            case .inbox:
+                InboxView()
+            case .goals:
+                GoalsView(go: { selection = $0 })
+            case .project(let id):
+                if let project = store.project(id) {
+                    ProjectDetailView(project: project)
+                        .id(project.id)
+                } else {
+                    ContentUnavailableView("Select a project", systemImage: "square.stack.3d.up")
+                }
+            case nil:
+                ContentUnavailableView("Select something", systemImage: "square.stack.3d.up")
             }
         }
-        .task {
-            await store.loadProjects()
-            await store.loadSchema()
-            await store.loadAlignment()
-        }
+        .task { await store.loadAll() }
         .task { await store.listen() }
+        .sheet(isPresented: $app.showCapture) {
+            CaptureView()
+        }
         .alert("Mnemion", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(store.error ?? "")
         }
+    }
+
+    /// Due hooks plus overdue and due-today work.
+    private var reviewBadge: Int {
+        guard let r = store.review else { return 0 }
+        return r.hooks.due.count + r.allOverdue.count + r.allDueToday.count
     }
 }
 
@@ -117,6 +137,7 @@ struct StatusBadge: View {
         case "done", "complete", "completed": return .green
         case "active", "in-progress", "doing": return .blue
         case "blocked": return .red
+        case "dropped", "retired", "cancelled": return .gray
         case "incubating", "open": return .orange
         default: return .secondary
         }

@@ -543,6 +543,25 @@ function entryActive(db: DB, pattern: string, id: number): boolean {
   } catch { return false; }
 }
 
+/** Active entries of `pattern` holding no active link of `relation` at `end`:
+ *  "source" — none out under it; "target" — none in. The review's alignment gaps
+ *  read from here, so no module outside this one filters `_links` on a label. */
+export function entriesLacking(db: DB, pattern: string, end: "source" | "target", relation: string): Record<string, unknown>[] {
+  const col = end === "source" ? "source" : "target";
+  try {
+    return db.exec(
+      `SELECT e.* FROM ${quoteIdent(pattern)} e
+       WHERE e.archived_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM "_links" l
+                         WHERE l.${col}_pattern = ? AND l.${col}_id = e.id AND l.label = ? AND l.archived_at IS NULL)
+       ORDER BY e.id`,
+      pattern, relation,
+    ).toArray() as Record<string, unknown>[];
+  } catch {
+    return [];
+  }
+}
+
 /** One derived (chain) connection of an entry, read from that entry's side. */
 export interface DerivedLink { pattern: string; id: number; direction: "out" | "in"; relation: string }
 

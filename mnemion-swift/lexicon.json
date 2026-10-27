@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "concepts": [
+    {
+      "name": "review",
+      "definition": "What the hive derives as needing attention now, served at /api/review and decoded by MnemionKit's Review: due review hooks, overdue, due and stalled work, alignment gaps; also one entry a hook records in the reviews pattern, linked commits-to the work or reflects-on the start review."
+    },
+    {
+      "name": "mnemion",
+      "definition": "The hive this app is a client of: the Cloudflare Worker that is the single source of truth, reached over /api/* and /ws with the signed-in member's bearer; also the product's name, carried by the app, its share extension and the Kit."
+    },
+    {
+      "name": "app intent",
+      "definition": "A type conforming to AppIntent whose perform Siri, Shortcuts, Spotlight or the Action button run with the signed-in session; CaptureNoteIntent is the one this app offers, listed by MnemionShortcuts."
+    }
+  ]
+}

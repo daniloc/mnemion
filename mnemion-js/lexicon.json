@@ -14,8 +14,11 @@
       "definition": "One stored instance of a pattern, addressable by its pattern and id and retained through updates or archival."
     },
     {
-      "name": "facet",
-      "definition": "A typed, named dimension of a pattern whose value appears on each entry; user facets are separate from automatic kernel columns."
+      "name": "pattern facet",
+      "definition": "A typed, named dimension of a pattern whose value appears on each entry; user facets are separate from automatic kernel columns.",
+      "aliases": [
+        "facet"
+      ]
     },
     {
       "name": "link",
@@ -72,6 +75,75 @@
     {
       "name": "relation",
       "definition": "A declared kind of link: a name, its inverse, the patterns it may join, a cardinality and a set of behaviors from a fixed palette, held in the _relations kernel pattern. Every link's label names one."
+    },
+    {
+      "name": "route",
+      "definition": "One line of the declarative dispatch table in src/index.ts: a method, a path pattern, an auth gate and a handler, matched in declaration order; the table is the whole HTTP surface."
+    },
+    {
+      "name": "store",
+      "definition": "The hive's durable storage: the per-hive Durable Object's SQLite, plus R2 for document bytes, where every pattern, entry and link lives; a client-side store is a read-through cache of it, never a replica."
+    },
+    {
+      "name": "facet resolution",
+      "definition": "A datetime facet's declared precision in _fields: day holds calendar days only (YYYY-MM-DD, a time of day refused at write), instant holds full UTC timestamps. Not the act of resolving a URI or a host.",
+      "aliases": [
+        "resolution"
+      ]
+    },
+    {
+      "name": "effects",
+      "definition": "The post-commit work a pattern declares in the effects registry (re-embedding for recall, cache invalidation, document tokens), composed per pattern at boot and run after a write commits, never inside the transaction."
+    },
+    {
+      "name": "upload",
+      "definition": "The two-step path by which content too large for a tool call reaches a facet or the document store: a single-use upload token minted by mutate, then an HTTP POST of the bytes to /upload/{token} or /f/{token}."
+    },
+    {
+      "name": "policy",
+      "definition": "A declared rule table the engine derives its enforcement from: the write-class policy that says which actor may write a kernel pattern, or a pattern's memory policy for recall decay and conflict advisories."
+    },
+    {
+      "name": "view",
+      "definition": "An agent-authored view spec in the _views pattern: a view_type (board, table, list, cards) and a declarative config mapping a pattern's facets to UI roles, rendered by the web app from a fixed component palette."
+    },
+    {
+      "name": "page",
+      "definition": "An agent-authored composition in the _pages pattern: a path and a list of blocks (metrics, charts, views, entries) the worker serves at /page/{path} with an Open Graph card."
+    },
+    {
+      "name": "review",
+      "definition": "The derived report of what needs attention now (mnemion://review): due review hooks, overdue, due and stalled work, and alignment gaps, computed on every read and never stored; also one entry a hook records in the reviews pattern."
+    },
+    {
+      "name": "relation inverse",
+      "definition": "The name a relation reads by from its target's side (serves is served-by from the goal); a link written under the inverse is stored under the canonical name with its ends swapped.",
+      "aliases": [
+        "inverse"
+      ]
+    },
+    {
+      "name": "format",
+      "definition": "How a facet's value renders in the web app (text, link, tags, date, boolean, select, number), set with set_facet_format and derived from the facet's type when unset; a publication's transport (html, rss, json, markdown) is its format too."
+    },
+    {
+      "name": "message",
+      "definition": "The human-readable text a refusal or an advisory carries ({error: true, message}), and the one-line summary the review returns for an agent's briefing."
+    },
+    {
+      "name": "host",
+      "definition": "The instance's authoritative hostname, configured as WORKER_HOST and never read from an inbound Host header, from which every generated URL is built; also a federation peer's hostname in a mnemion:// URI."
+    },
+    {
+      "name": "cardinality",
+      "definition": "How many active links of one relation a source entry may hold, one or many, declared on the relation and enforced at the link chokepoint."
+    },
+    {
+      "name": "migration phase",
+      "definition": "A numbered stage of the relations migration plan in project-docs/relations.md (1 the registry, 2 required relations, 3 reference facets retired, 4 this hive's data), each with its own restore point.",
+      "aliases": [
+        "phase"
+      ]
     }
   ]
 }

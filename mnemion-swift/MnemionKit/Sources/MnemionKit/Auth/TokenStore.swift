@@ -33,6 +33,13 @@ public actor TokenStore {
 
     private func refresh() async throws -> Credentials {
         if let refreshing { return try await refreshing.value }
+        // Another surface (the share extension, an App Intent, the app itself)
+        // may have rotated the shared item since we loaded it; adopt its grant
+        // rather than spend a refresh token the provider has already retired.
+        if let saved = keychain.load(), saved.accessToken != credentials.accessToken, saved.hiveURL == credentials.hiveURL {
+            credentials = saved
+            if saved.expiresAt.timeIntervalSinceNow > 60 { return saved }
+        }
         let task = Task { [oauth, credentials] in try await oauth.refresh(credentials) }
         refreshing = task
         defer { refreshing = nil }
@@ -44,9 +51,25 @@ public actor TokenStore {
         } catch let error as AuthError where error.endsSession {
             // The grant is gone (revoked, expired, client registration dropped).
             // Transport failures and 5xx fall through untouched: offline ≠ signed out.
+            // One exception: another surface (the share extension, an App Intent)
+            // may have rotated the shared item while this refresh was in flight,
+            // retiring the token we just presented. Adopt its grant and go on;
+            // delete the item only when the keychain still holds the refused grant.
+            if let rotated = rotatedElsewhere() { return rotated }
+            // The other surface may be saving right now: look once more before deleting.
+            try? await Task.sleep(for: .milliseconds(200))
+            if let rotated = rotatedElsewhere() { return rotated }
             signOut()
             throw AuthError.signedOut
         }
+    }
+
+    /// The keychain's grant when another surface rotated it while this refresh was in flight.
+    private func rotatedElsewhere() -> Credentials? {
+        guard let saved = keychain.load(), saved.hiveURL == credentials.hiveURL,
+              saved.refreshToken != credentials.refreshToken || saved.accessToken != credentials.accessToken else { return nil }
+        credentials = saved
+        return saved
     }
 
     private func signOut() {

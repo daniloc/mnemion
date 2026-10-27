@@ -15,16 +15,33 @@ writes from anywhere (web UI, agents over MCP, other devices).
 project.yml            XcodeGen spec (Mnemion.xcodeproj is generated, gitignored)
 Mnemion/               the app target: SwiftUI views + observable models
   App/SessionModel     sign-in state, OAuth flow, keychain
-  App/PortfolioStore   projects + linked tasks, writes, live updates
-  Views/               SignIn, Projects (split view), ProjectDetail, TaskEditor
+  App/PortfolioStore   review, inbox, goals, projects + tasks, writes, live updates
+  Intents/             CaptureNoteIntent: Siri, Shortcuts, the Action button
+  Views/               SignIn, Projects (the split view: Review, Inbox, Goals,
+                       projects), Review + ReviewHookSheet, Inbox, Capture,
+                       Goals, ProjectDetail, TaskEditor, RelatedSection, Dates
+MnemionShare/          the iOS share sheet: a URL or text becomes an inbox note
 MnemionKit/            platform-neutral Swift package (Foundation + Security only)
   Auth/                PKCE, OAuthClient (DCR, authorize, exchange, refresh),
                        TokenStore (single-flight refresh), KeychainStore
-  HiveClient           /api/index, query, mutate, resolve, links
+  Restore              SharedSession: the keychain item every target shares
+  HiveClient           /api/index, query, mutate, batch, resolve, links
+  Recall               /api/prime and /api/search; Entry.label
+  Review               /api/review (the derived review) and the review hooks
+  Inbox                capture, triage, connect, make a task from a note
   LiveEvents           /ws change stream with reconnect
   Portfolio            projects ← belongs-to ← tasks, projects → serves → goals,
-                       and the alignment read (projects serving no goal)
+                       the alignment read, goals, moving a task
 ```
+
+The app opens on **Review**: what the worker derives as needing attention
+(`mnemion://review`): due review hooks, overdue / due / stalled work, alignment
+gaps, and the untriaged inbox. Running a hook records a `reviews` entry linked
+to the work committed to (`commits-to`) or the start review it answers
+(`reflects-on`). Capture (⌘N, the macOS menu bar item, the iOS share sheet, or
+the "Capture a note" App Intent) writes to `inbox` with no project, then offers
+the hive's nearest entries as one-tap `references` links; the inbox triages a
+note into a task (`derived-from` the note) or onto a project.
 
 ## Auth
 
@@ -76,6 +93,34 @@ only for localhost.
 ```bash
 cd mnemion-swift/MnemionKit
 swift test --scratch-path /tmp/mnemionkit-build
+```
+
+### Coherence
+
+This folder is its own Coherence project (`coherence.config.json`), with the
+same spec-and-oracle discipline as the worker: `Mnemion.spec.md` (root, trust
+levels and entrances), `MnemionKit/MnemionKit.spec.md` and
+`Mnemion/Mnemion.spec.md` hold the invariants, each with a Swift Testing suite
+as its totality oracle, refuted once with a staged break. Swift is read through
+the plugin in `coherence-plugins/swift/` (plugin API 3): declarations and
+imports come from one tree-sitter parse per file (`tree-sitter-swift.wasm`,
+the grammar's 0.7.3 release, with the queries in `swift.scm`), an import
+resolves to a SwiftPM or XcodeGen target as a module of files, entrance rules
+cover `@main`, App Intents, extension principal classes and `main.swift`, and
+an adapter over sourcekit-lsp waits for the background index, reports each
+file's top-level symbols for calibration, and stages refutations in a
+throwaway copy of the project. `npx coherence plugin calibrate` counts what
+the grammar and the server disagree on: the 0.7.3 grammar cannot read an
+optional binding of a `try? await` call (`if let x = try? await f()`), and
+a file holding one may lose the declaration around it (today:
+`PortfolioStore`). `npm install` here installs Coherence for the hooks and checks:
+
+```bash
+cd mnemion-swift
+npm install
+npm run coherence:spec          # the specs and their state
+npm run coherence:run           # run every oracle
+npm run coherence:plugin-check  # hold the Swift plugin to its duties
 ```
 
 `--scratch-path` keeps build products outside `~/Documents`. Extended

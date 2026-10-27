@@ -1,0 +1,182 @@
+{
+  "files": {
+    "Package.swift": "// swift-tools-version: 5.9\nimport PackageDescription\n\nlet package = Package(\n    name: \"Shop\",\n    targets: [\n        .target(name: \"Store\"),\n        .target(name: \"API\", dependencies: [\"Store\"]),\n        .executableTarget(name: \"App\", dependencies: [\"API\", \"Store\"]),\n        .testTarget(name: \"StoreTests\", dependencies: [\"Store\"]),\n    ]\n)\n",
+    "Sources/Store/Secrets.swift": "import Foundation\n\n/// The protected thing.\npublic let SECRET_COLUMNS = [\"token\"]\n\n/// The chokepoint: the one way a row leaves without its secrets.\npublic func seal(_ row: [String: String]) -> [String: String] {\n    var out = row\n    for column in SECRET_COLUMNS {\n        out[column] = nil\n    }\n    return out\n}\n",
+    "Sources/Store/Rows.swift": "/// One stored row.\npublic typealias Row = [String: String]\n\n/// The store's bounds.\npublic let MaxRows = 100\nlet maxCols = 8\n\n/// A row with its count, declared as a type.\npublic struct RowBox {\n    public let row: Row\n    public var count: Int { row.count }\n}\n\nextension RowBox {\n    public var empty: Bool { row.isEmpty }\n}\n\n/// Hidden from the other files of the module.\nprivate let hidden = 1\n",
+    "Sources/API/Render.swift": "import Store\n\n/// Seals the row, then reads the secret columns around the seal.\npublic func render(_ row: Row) -> Int {\n    let sealed = seal(row)\n    return sealed.count + SECRET_COLUMNS.count\n}\n",
+    "Sources/App/main.swift": "import API\nimport Store\n\nlet row: Row = [\"id\": \"1\"]\nprint(render(row))\n",
+    "Tests/StoreTests/SecretsTests.swift": "import Testing\n@testable import Store\n\n@Suite struct SecretsTests {\n    @Test func columns() {\n        #expect(!SECRET_COLUMNS.isEmpty)\n    }\n}\n",
+    "README.md": "# A package\n"
+  },
+  "language": {
+    "files": [
+      "Sources/Store/Secrets.swift",
+      "Sources/API/Render.swift",
+      "Tests/StoreTests/SecretsTests.swift",
+      "Sources/App/main.swift"
+    ],
+    "not": [
+      "README.md",
+      "Package.swift",
+      "Package.resolved",
+      "Sources/Store/Secrets.swift.orig"
+    ]
+  },
+  "declarations": [
+    {
+      "file": "Sources/Store/Secrets.swift",
+      "name": "SECRET_COLUMNS",
+      "declared": true
+    },
+    {
+      "file": "Sources/Store/Secrets.swift",
+      "name": "seal",
+      "declared": true
+    },
+    {
+      "file": "Sources/Store/Secrets.swift",
+      "name": "out",
+      "declared": false
+    },
+    {
+      "file": "Sources/API/Render.swift",
+      "name": "SECRET_COLUMNS",
+      "declared": false
+    },
+    {
+      "file": "Sources/API/Render.swift",
+      "name": "render",
+      "declared": true
+    },
+    {
+      "file": "Sources/Store/Rows.swift",
+      "name": "RowBox",
+      "declared": true
+    },
+    {
+      "file": "Sources/Store/Rows.swift",
+      "name": "hidden",
+      "declared": true
+    },
+    {
+      "file": "Sources/Store/Rows.swift",
+      "name": "empty",
+      "declared": false
+    }
+  ],
+  "protects": "SECRET_COLUMNS",
+  "chokepoint": "seal",
+  "references": [
+    "Sources/API/Render.swift:6",
+    "Sources/Store/Secrets.swift:9",
+    "Tests/StoreTests/SecretsTests.swift:6"
+  ],
+  "grade": "broken",
+  "bypasses": [
+    "Sources/API/Render.swift:6"
+  ],
+  "readings": {
+    "declared": {
+      "Sources/Store/Secrets.swift": [
+        "SECRET_COLUMNS",
+        "seal"
+      ],
+      "Sources/Store/Rows.swift": [
+        "Row",
+        "MaxRows",
+        "maxCols",
+        "RowBox",
+        "hidden"
+      ],
+      "Sources/API/Render.swift": [
+        "render"
+      ],
+      "Sources/App/main.swift": [
+        "row"
+      ]
+    },
+    "imports": [
+      {
+        "file": "Sources/API/Render.swift",
+        "module": "Sources/Store/Secrets.swift",
+        "names": [
+          "*"
+        ]
+      },
+      {
+        "file": "Sources/API/Render.swift",
+        "module": "Sources/Store/Rows.swift",
+        "names": [
+          "*"
+        ]
+      },
+      {
+        "file": "Sources/App/main.swift",
+        "module": "Sources/API/Render.swift",
+        "names": [
+          "*"
+        ]
+      },
+      {
+        "file": "Sources/App/main.swift",
+        "module": "Sources/Store/Secrets.swift",
+        "names": [
+          "*"
+        ]
+      },
+      {
+        "file": "Sources/App/main.swift",
+        "module": "Sources/Store/Rows.swift",
+        "names": [
+          "*"
+        ]
+      }
+    ],
+    "interfaces": [
+      {
+        "from": "Sources/API",
+        "to": "Sources/Store",
+        "symbols": [
+          "Row",
+          "seal",
+          "SECRET_COLUMNS"
+        ]
+      },
+      {
+        "from": "Sources/App",
+        "to": "Sources/API",
+        "symbols": [
+          "render"
+        ]
+      },
+      {
+        "from": "Sources/App",
+        "to": "Sources/Store",
+        "symbols": [
+          "Row"
+        ]
+      }
+    ],
+    "entrances": [
+      {
+        "file": "Sources/App/main.swift",
+        "symbol": "",
+        "rule": "main file"
+      }
+    ]
+  },
+  "reference": {
+    "files": {
+      "secrets": "Sources/Store/Secrets.swift",
+      "rows": "Sources/Store/Rows.swift",
+      "render": "Sources/API/Render.swift",
+      "main": "Sources/App/main.swift"
+    },
+    "names": {
+      "SECRET_COLUMNS": "SECRET_COLUMNS",
+      "seal": "seal",
+      "Row": "Row",
+      "render": "render"
+    }
+  }
+}
