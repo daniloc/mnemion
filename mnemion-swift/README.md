@@ -102,11 +102,18 @@ same spec-and-oracle discipline as the worker: `Mnemion.spec.md` (root, trust
 levels and entrances), `MnemionKit/MnemionKit.spec.md` and
 `Mnemion/Mnemion.spec.md` hold the invariants, each with a Swift Testing suite
 as its totality oracle, refuted once with a staged break. Swift is read through
-the plugin in `coherence-plugins/swift/`: a text reading of declarations,
-imports and SwiftPM/XcodeGen modules, entrance rules (`@main`, App Intents,
-extension principal classes, `main.swift`), and an adapter over sourcekit-lsp
-that waits for the background index and stages refutations in a throwaway copy
-of the project. `npm install` here installs Coherence for the hooks and checks:
+the plugin in `coherence-plugins/swift/` (plugin API 3): declarations and
+imports come from one tree-sitter parse per file (`tree-sitter-swift.wasm`,
+the grammar's 0.7.3 release, with the queries in `swift.scm`), an import
+resolves to a SwiftPM or XcodeGen target as a module of files, entrance rules
+cover `@main`, App Intents, extension principal classes and `main.swift`, and
+an adapter over sourcekit-lsp waits for the background index, reports each
+file's top-level symbols for calibration, and stages refutations in a
+throwaway copy of the project. `npx coherence plugin calibrate` counts what
+the grammar and the server disagree on: the 0.7.3 grammar cannot read an
+optional binding of a `try? await` call (`if let x = try? await f()`) or
+`as? [K: V] ?? [:]`, and a file holding one may lose the declaration around
+it (today: `PortfolioStore`). `npm install` here installs Coherence for the hooks and checks:
 
 ```bash
 cd mnemion-swift

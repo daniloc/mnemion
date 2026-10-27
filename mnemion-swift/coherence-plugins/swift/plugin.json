@@ -1,14 +1,34 @@
 {
   "name": "swift",
   "version": "0.1.0",
-  "pluginApi": 2,
-  "provides": { "language": "swift" },
-  "extensions": [".swift"],
-  "files": { "pattern": "\\.swift$", "except": "(?:^|/)Package\\.swift$" },
-  "serverExtensions": [".swift"],
-  "testFolders": ["Tests"],
-  "testFiles": ["Tests\\.swift$"],
-  "basisFiles": ["^Package\\.swift$", "^Package\\.resolved$", "^project\\.yml$", "^Info\\.plist$", "\\.entitlements$", "\\.xcconfig$"],
+  "pluginApi": 3,
+  "provides": {
+    "language": "swift"
+  },
+  "extensions": [
+    ".swift"
+  ],
+  "files": {
+    "pattern": "\\.swift$",
+    "except": "(?:^|/)Package\\.swift$"
+  },
+  "serverExtensions": [
+    ".swift"
+  ],
+  "testFolders": [
+    "Tests"
+  ],
+  "testFiles": [
+    "Tests\\.swift$"
+  ],
+  "basisFiles": [
+    "^Package\\.swift$",
+    "^Package\\.resolved$",
+    "^project\\.yml$",
+    "^Info\\.plist$",
+    "\\.entitlements$",
+    "\\.xcconfig$"
+  ],
   "members": {
     "opens": "^(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:(?:public|open|internal|package)\\s+)?(?:final\\s+)?(?:struct|class|actor|enum)\\s+[A-Za-z_][A-Za-z0-9_]*.*\\{\\s*$",
     "closes": "^\\}",
@@ -16,27 +36,53 @@
   },
   "entrances": {
     "rules": [
-      { "rule": "app", "plural": "apps", "detects": "a type carrying @main, which the system starts: a SwiftUI App, a UIApplicationDelegate, or a command-line entry" },
-      { "rule": "app intent", "plural": "app intents", "detects": "a type conforming to AppIntent (Siri, Shortcuts, Spotlight and the Action button run its perform), or to AppShortcutsProvider" },
-      { "rule": "extension principal class", "plural": "extension principal classes", "detects": "the class an extension's Info.plist or XcodeGen project.yml names as NSExtensionPrincipalClass, which the host app loads" },
-      { "rule": "main file", "plural": "main files", "detects": "a main.swift, whose top-level code runs when its executable target starts" }
+      {
+        "rule": "app",
+        "plural": "apps",
+        "detects": "a type carrying @main, which the system starts: a SwiftUI App, a UIApplicationDelegate, or a command-line entry"
+      },
+      {
+        "rule": "app intent",
+        "plural": "app intents",
+        "detects": "a type conforming to AppIntent (Siri, Shortcuts, Spotlight and the Action button run its perform), or to AppShortcutsProvider"
+      },
+      {
+        "rule": "extension principal class",
+        "plural": "extension principal classes",
+        "detects": "the class an extension's Info.plist or XcodeGen project.yml names as NSExtensionPrincipalClass, which the host app loads"
+      },
+      {
+        "rule": "main file",
+        "plural": "main files",
+        "detects": "a main.swift, whose top-level code runs when its executable target starts"
+      }
     ],
     "notDetected": "scene and app delegates set up in code, URL-scheme and universal-link handlers, background tasks, notification handlers, widget timelines and watch complications are not detected"
   },
-  "environmentFolders": [".build", "DerivedData", ".swiftpm"],
+  "environmentFolders": [
+    ".build",
+    "DerivedData",
+    ".swiftpm"
+  ],
   "markedFolders": [
-    { "name": ".build", "beside": "Package.swift", "reason": "SwiftPM build folder" }
+    {
+      "name": ".build",
+      "beside": "Package.swift",
+      "reason": "SwiftPM build folder"
+    }
   ],
   "ci": {
     "note": "The Swift plugin grades through sourcekit-lsp, which ships with the Swift toolchain: a macOS runner with Xcode, or a Linux runner with the toolchain installed. References come from the SwiftPM index, so a package must build once before the check sees its references."
   },
   "module": "index.js",
+  "treeSitter": {
+    "parser": "tree-sitter-swift.wasm",
+    "queries": "swift.scm",
+    "resolve": "swift-resolve.js#SWIFT_RESOLVE"
+  },
   "syntax": {
     "entrances": "swift-entrances.js#SWIFT_ENTRANCES",
-    "interfaces": "swift-scope.js#SWIFT_INTERFACES",
-    "source": "swift-source.js#SWIFT_SOURCE",
-    "declares": "swift-interfaces.js#swiftDeclares",
-    "topLevel": "swift-top-level.js#swiftDeclaresAtTop"
+    "interfaces": "swift-scope.js#SWIFT_INTERFACES"
   },
   "ladder": {
     "top": "visibility-choked",

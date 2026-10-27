@@ -9,44 +9,143 @@
     "README.md": "# A package\n"
   },
   "language": {
-    "files": ["Sources/Store/Secrets.swift", "Sources/API/Render.swift", "Tests/StoreTests/SecretsTests.swift", "Sources/App/main.swift"],
-    "not": ["README.md", "Package.swift", "Package.resolved", "Sources/Store/Secrets.swift.orig"]
+    "files": [
+      "Sources/Store/Secrets.swift",
+      "Sources/API/Render.swift",
+      "Tests/StoreTests/SecretsTests.swift",
+      "Sources/App/main.swift"
+    ],
+    "not": [
+      "README.md",
+      "Package.swift",
+      "Package.resolved",
+      "Sources/Store/Secrets.swift.orig"
+    ]
   },
   "declarations": [
-    { "file": "Sources/Store/Secrets.swift", "name": "SECRET_COLUMNS", "declared": true },
-    { "file": "Sources/Store/Secrets.swift", "name": "seal", "declared": true },
-    { "file": "Sources/Store/Secrets.swift", "name": "out", "declared": false },
-    { "file": "Sources/API/Render.swift", "name": "SECRET_COLUMNS", "declared": false },
-    { "file": "Sources/API/Render.swift", "name": "render", "declared": true }
+    {
+      "file": "Sources/Store/Secrets.swift",
+      "name": "SECRET_COLUMNS",
+      "declared": true
+    },
+    {
+      "file": "Sources/Store/Secrets.swift",
+      "name": "seal",
+      "declared": true
+    },
+    {
+      "file": "Sources/Store/Secrets.swift",
+      "name": "out",
+      "declared": false
+    },
+    {
+      "file": "Sources/API/Render.swift",
+      "name": "SECRET_COLUMNS",
+      "declared": false
+    },
+    {
+      "file": "Sources/API/Render.swift",
+      "name": "render",
+      "declared": true
+    }
   ],
   "protects": "SECRET_COLUMNS",
   "chokepoint": "seal",
-  "references": ["Sources/API/Render.swift:6", "Sources/Store/Secrets.swift:9", "Tests/StoreTests/SecretsTests.swift:6"],
+  "references": [
+    "Sources/API/Render.swift:6",
+    "Sources/Store/Secrets.swift:9",
+    "Tests/StoreTests/SecretsTests.swift:6"
+  ],
   "grade": "broken",
-  "bypasses": ["Sources/API/Render.swift:6"],
+  "bypasses": [
+    "Sources/API/Render.swift:6"
+  ],
   "readings": {
     "declared": {
-      "Sources/Store/Secrets.swift": ["SECRET_COLUMNS", "seal"],
-      "Sources/Store/Rows.swift": ["Row", "MaxRows", "maxCols"],
-      "Sources/API/Render.swift": ["render"],
-      "Sources/App/main.swift": ["row"]
+      "Sources/Store/Secrets.swift": [
+        "SECRET_COLUMNS",
+        "seal"
+      ],
+      "Sources/Store/Rows.swift": [
+        "Row",
+        "MaxRows",
+        "maxCols"
+      ],
+      "Sources/API/Render.swift": [
+        "render"
+      ],
+      "Sources/App/main.swift": [
+        "row"
+      ]
     },
     "imports": [
-      { "file": "Sources/API/Render.swift", "module": "Sources/Store/Secrets.swift", "names": ["*"] },
-      { "file": "Sources/API/Render.swift", "module": "Sources/Store/Rows.swift", "names": ["*"] },
-      { "file": "Sources/App/main.swift", "module": "Sources/API/Render.swift", "names": ["*"] },
-      { "file": "Sources/App/main.swift", "module": "Sources/Store/Secrets.swift", "names": ["*"] },
-      { "file": "Sources/App/main.swift", "module": "Sources/Store/Rows.swift", "names": ["*"] },
-      { "file": "Sources/Store/Secrets.swift", "module": "Sources/Store/Rows.swift", "names": ["*"] },
-      { "file": "Sources/Store/Rows.swift", "module": "Sources/Store/Secrets.swift", "names": ["*"] }
+      {
+        "file": "Sources/API/Render.swift",
+        "module": "Sources/Store/Secrets.swift",
+        "names": [
+          "*"
+        ]
+      },
+      {
+        "file": "Sources/API/Render.swift",
+        "module": "Sources/Store/Rows.swift",
+        "names": [
+          "*"
+        ]
+      },
+      {
+        "file": "Sources/App/main.swift",
+        "module": "Sources/API/Render.swift",
+        "names": [
+          "*"
+        ]
+      },
+      {
+        "file": "Sources/App/main.swift",
+        "module": "Sources/Store/Secrets.swift",
+        "names": [
+          "*"
+        ]
+      },
+      {
+        "file": "Sources/App/main.swift",
+        "module": "Sources/Store/Rows.swift",
+        "names": [
+          "*"
+        ]
+      }
     ],
     "interfaces": [
-      { "from": "Sources/API", "to": "Sources/Store", "symbols": ["Row", "seal", "SECRET_COLUMNS"] },
-      { "from": "Sources/App", "to": "Sources/API", "symbols": ["render"] },
-      { "from": "Sources/App", "to": "Sources/Store", "symbols": ["Row"] }
+      {
+        "from": "Sources/API",
+        "to": "Sources/Store",
+        "symbols": [
+          "Row",
+          "seal",
+          "SECRET_COLUMNS"
+        ]
+      },
+      {
+        "from": "Sources/App",
+        "to": "Sources/API",
+        "symbols": [
+          "render"
+        ]
+      },
+      {
+        "from": "Sources/App",
+        "to": "Sources/Store",
+        "symbols": [
+          "Row"
+        ]
+      }
     ],
     "entrances": [
-      { "file": "Sources/App/main.swift", "symbol": "", "rule": "main file" }
+      {
+        "file": "Sources/App/main.swift",
+        "symbol": "",
+        "rule": "main file"
+      }
     ]
   },
   "reference": {

@@ -9,6 +9,6 @@
     "test": "cd MnemionKit && swift test --scratch-path /tmp/mnemionkit-build"
   },
   "devDependencies": {
-    "@posthog/coherence": "https://github.com/PostHog/coherence/releases/download/v1.11.0-beta.2/posthog-coherence-1.11.0-beta.2.tgz"
+    "@posthog/coherence": "https://github.com/PostHog/coherence/releases/download/v1.11.0-beta.3/posthog-coherence-1.11.0-beta.3.tgz"
   }
 }
