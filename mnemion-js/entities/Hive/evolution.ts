@@ -19,6 +19,7 @@ import { isKernelPattern } from "./policy";
 import { FACET_RESERVED_COLUMNS, USER_OVERRIDABLE_KERNEL_COLUMNS } from "./kernel-columns";
 import { isFormat, FORMAT_IDS } from "../../shared/core/format-palette";
 import type { StoreIndex, IndexFacetEntry } from "./reports";
+import { coerceFacetValue } from "./data";
 import * as rel from "./relations";
 import { facetReferences, nonNullValues } from "./facet-references";
 import { KERNEL_COLUMN_SET } from "./kernel-columns";
@@ -80,6 +81,16 @@ function validateFacets(
       return `Facet "${a.name}" has options but is not type select`;
     const declErr = validateFacetDeclarations(a.name, a.type, a.options, a.resolution, a.closed);
     if (declErr) return declErr;
+    // A default is a value the engine writes on every create, so it goes through the
+    // same chokepoint as a submitted one: a day-only datetime refuses a time of day
+    // here as it does at write, and a select default must be one of its options.
+    if (a.default_value != null) {
+      const r = coerceFacetValue({ type: a.type, resolution: a.resolution }, a.default_value);
+      if (!r.ok) return `Facet "${a.name}": default_value ${r.error}`;
+      if (a.type === "select" && Array.isArray(a.options) && !a.options.includes(r.value))
+        return `Facet "${a.name}": default_value must be one of its options`;
+      a.default_value = r.value;
+    }
   }
   return null;
 }
@@ -424,9 +435,9 @@ const CHANGE_TYPES: Record<string, ChangeType> = {
         if (change.resolution !== "day") return [];
         try {
           const rows = ctx.db.exec(
-            `SELECT id, ${quoteIdent(change.facet)} AS v FROM ${quoteIdent(change.pattern_name)} WHERE ${quoteIdent(change.facet)} LIKE '%T%'`,
+            `SELECT id, ${quoteIdent(change.facet)} AS v FROM ${quoteIdent(change.pattern_name)} WHERE ${quoteIdent(change.facet)} IS NOT NULL AND ${quoteIdent(change.facet)} NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`,
           ).toArray() as { id: number; v: string }[];
-          return rows.map((r) => ({ reason: `${change.pattern_name}/${r.id} holds ${JSON.stringify(r.v)}, a timestamp, not a day` }));
+          return rows.map((r) => ({ reason: `${change.pattern_name}/${r.id} holds ${JSON.stringify(r.v)}, not a calendar day` }));
         } catch {
           return [];
         }

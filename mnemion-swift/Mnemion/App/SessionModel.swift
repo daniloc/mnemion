@@ -30,7 +30,15 @@ final class SessionModel {
 
     init() {
         hiveInput = UserDefaults.standard.string(forKey: Self.hiveKey) ?? ""
-        if let saved = keychain.load() { phase = .signedIn(makeStore(saved)) }
+        if let saved = keychain.load() {
+            // An install that signed in before the shared access group existed keeps
+            // its item in the app's own group, where the share extension and the
+            // intent cannot read it. Re-adding it on restore lands it in the shared
+            // group once; afterwards the delete and save are a no-op pair.
+            keychain.delete()
+            try? keychain.save(saved)
+            phase = .signedIn(makeStore(saved))
+        }
     }
 
     var credentials: Credentials? {

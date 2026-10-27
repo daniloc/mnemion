@@ -26,4 +26,4 @@ Hooks need one user pattern to record into. The review discovers it: the pattern
 3. Record one entry in the reviews pattern: `kind`, `period` (the day as YYYY-MM-DD, the week's Monday, or the month's first day), and `intention` or `reflection` in the human's words. Link the chosen work with `commits-to` in `_relate`; link an end review to its start with `reflects-on`.
 4. Act on the gathered lists in the same conversation when the human wants to: reschedule, drop or finish overdue work with `mutate`; give an unaligned project a `serves` link.
 
-Never create a review speculatively, and never answer the questions for the human. A missing review is information: the hook stays due until the human runs it.
+Never create a review speculatively, and never answer the questions for the human. A missing review is information: the hook stays due until the human runs it or its period ends; a missed one is not carried into the next.

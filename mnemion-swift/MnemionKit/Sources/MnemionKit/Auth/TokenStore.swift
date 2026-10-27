@@ -55,14 +55,21 @@ public actor TokenStore {
             // may have rotated the shared item while this refresh was in flight,
             // retiring the token we just presented. Adopt its grant and go on;
             // delete the item only when the keychain still holds the refused grant.
-            if let saved = keychain.load(), saved.hiveURL == credentials.hiveURL,
-               saved.refreshToken != credentials.refreshToken || saved.accessToken != credentials.accessToken {
-                credentials = saved
-                return saved
-            }
+            if let rotated = rotatedElsewhere() { return rotated }
+            // The other surface may be saving right now: look once more before deleting.
+            try? await Task.sleep(for: .milliseconds(200))
+            if let rotated = rotatedElsewhere() { return rotated }
             signOut()
             throw AuthError.signedOut
         }
+    }
+
+    /// The keychain's grant when another surface rotated it while this refresh was in flight.
+    private func rotatedElsewhere() -> Credentials? {
+        guard let saved = keychain.load(), saved.hiveURL == credentials.hiveURL,
+              saved.refreshToken != credentials.refreshToken || saved.accessToken != credentials.accessToken else { return nil }
+        credentials = saved
+        return saved
     }
 
     private func signOut() {

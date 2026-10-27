@@ -94,7 +94,6 @@ struct TaskEditor: View {
                 .foregroundStyle(.secondary)
             }
             .formStyle(.grouped)
-            .onAppear { if status.isEmpty, let first = store.taskStatuses.first { status = first } }
             .navigationTitle("Task")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

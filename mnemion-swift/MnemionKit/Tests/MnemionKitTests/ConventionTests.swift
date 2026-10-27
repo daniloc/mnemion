@@ -31,8 +31,11 @@ import Testing
         // Home: the pattern's facets (options, closed) via the index in PortfolioStore.
         // Every write form the app uses: ["status": "x"], ["status": .string("x")],
         // a default "?? "x"", an initial State("x"), or a literal list of values.
-        let app = try Self.sources("Mnemion")
+        let app = try Self.sources("Mnemion") + Self.sources("MnemionShare")
         #expect(try Self.hits(in: app, #""(status|energy)":\s*(\.string\()?"[a-z-]+""#).isEmpty)
+        // A query filter on a status is a spelled value too; a kernel pattern's (_members)
+        // vocabulary is the worker's own, published in its system docs, so it is let through.
+        #expect(try Self.hits(in: app, #"^(?!.*_members).*"status=[a-z-]"#).isEmpty)
         #expect(try Self.hits(in: app, #"\?\?\s*"(open|done|dropped|in-progress|doing|medium|low|high)""#).isEmpty)
         #expect(try Self.hits(in: app, #"(status|energy|Statuses)\s*(:\s*\[String\])?\s*=\s*"[a-z-]+""#).isEmpty)
         #expect(try Self.hits(in: app, #"\[\s*"open"\s*,\s*"done"\s*\]"#).isEmpty)
@@ -40,8 +43,14 @@ import Testing
 
     @Test func kitKeepsNoStatusVocabulary() throws {
         // Home: the hive's declaration (Facet.closed); the Kit has no fallback set.
-        let kit = try Self.sources("MnemionKit/Sources")
+        // The one declared exception: Inbox.swift carries the inbox doctrine's own words
+        // (status open/triaged/dropped, source), declared by this client when it
+        // declared the pattern; triage must tell triaged from dropped, which no
+        // `closed` list can say. No other Kit file spells a status.
+        let kit = try Self.sources("MnemionKit/Sources").filter { !$0.path.hasSuffix("Inbox.swift") }
         #expect(try Self.hits(in: kit, #"\[\s*"done"\s*,"#).isEmpty)
+        #expect(try Self.hits(in: kit, #""status=[a-z-]"#).isEmpty)
+        #expect(try Self.hits(in: kit, #""status":\s*\.string\("[a-z-]+"\)"#).isEmpty)
         #expect(try Self.hits(in: kit, #"fallbackClosed|closedStatuses"#).isEmpty)
     }
 

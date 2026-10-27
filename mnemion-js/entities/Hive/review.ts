@@ -406,16 +406,20 @@ function reviewHooks(db: any, pattern: string | null, clock: LocalClock, dayEndH
   };
   return HOOKS.map((kind) => {
     let last: HookStatus["last"] = null;
+    let covered = false;
     if (pattern) {
       try {
-        const r = db.exec(
-          `SELECT id, period FROM ${quoteIdent(pattern)} WHERE archived_at IS NULL AND kind = ? ORDER BY period DESC, id DESC LIMIT 1`,
+        const rows = db.exec(
+          `SELECT id, period FROM ${quoteIdent(pattern)} WHERE archived_at IS NULL AND kind = ? ORDER BY period DESC, id DESC`,
           kind,
         ).toArray() as any[];
-        if (r[0]) last = { id: r[0].id as number, period: localDay(r[0].period, timezone) ?? "" };
+        const periods = rows.map((r) => localDay(r.period, timezone) ?? "");
+        if (rows[0]) last = { id: rows[0].id as number, period: periods[0] };
+        // Covered by any entry naming the current period: one mis-dated entry in the
+        // future does not keep a hook due, nor does it mark the current one done.
+        covered = periods.includes(period[kind]);
       } catch { /* pattern mid-rebuild */ }
     }
-    const covered = last != null && last.period === period[kind];
     return { kind, period: period[kind], due: pattern != null && open[kind] && !covered, last };
   });
 }

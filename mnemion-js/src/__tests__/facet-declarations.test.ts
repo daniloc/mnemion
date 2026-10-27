@@ -41,6 +41,22 @@ const TASKS = {
 };
 
 describe("facet declarations", () => {
+  it("a default_value goes through the same chokepoint as a write", async () => {
+    const store = getStore();
+    const bad = async (facet: Record<string, unknown>) => {
+      const p = await propose(store, { type: "create_pattern", pattern_name: `p${crypto.randomUUID().slice(0, 6)}`, pattern_description: "t", doctrine: "t", facets: [facet] });
+      return p.error ? (p.message as string) : "accepted";
+    };
+    // The engine writes the default on every create, so a time of day in a day-only facet is refused here too.
+    expect(await bad({ name: "d", type: "datetime", resolution: "day", default_value: "2026-10-27T10:00:00.000Z" })).toMatch(/calendar days/);
+    expect(await bad({ name: "d", type: "datetime", resolution: "day", default_value: "2026-10-27" })).toBe("accepted");
+    expect(await bad({ name: "s", type: "select", options: ["a", "b"], default_value: "c" })).toMatch(/one of its options/);
+    // add_facet takes the same path.
+    await change(store, { type: "create_pattern", pattern_name: "things", pattern_description: "t", doctrine: "t", facets: [{ name: "title", type: "text" }] });
+    const p = await propose(store, { type: "add_facet", pattern_name: "things", facets: [{ name: "due", type: "datetime", resolution: "day", default_value: "2026-10-27T10:00:00.000Z" }] });
+    expect(p.error ? p.message : "accepted").toMatch(/calendar days/);
+  });
+
   it("validates resolution and closed at declaration", async () => {
     const store = getStore();
     const bad = async (facet: Record<string, unknown>) =>
@@ -82,7 +98,7 @@ describe("facet declarations", () => {
     const timed = await mut(store, "tasks", "create", { title: "timed", deadline: "2026-10-28T20:00:00Z", status: "open" });
     const p = await propose(store, { type: "set_resolution", pattern_name: "tasks", facet: "deadline", resolution: "day" });
     expect(p.preview.violations).toHaveLength(1);
-    expect(p.preview.violations[0].reason).toMatch(/timestamp, not a day/);
+    expect(p.preview.violations[0].reason).toMatch(/not a calendar day/);
     expect((await apply(store, p.change_id)).error).toBe(true);
     await mut(store, "tasks", "update", { id: timed.entry.id, deadline: "2026-10-28" });
     await change(store, { type: "set_resolution", pattern_name: "tasks", facet: "deadline", resolution: "day" });
