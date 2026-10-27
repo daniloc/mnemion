@@ -76,8 +76,6 @@ struct ReviewView: View {
             }
         } header: {
             Text("Reviews")
-        } footer: {
-            if let message = review.message { Text(message) }
         }
     }
 
@@ -178,7 +176,10 @@ struct WorkRow: View {
                 Text(brief.label)
                 HStack(spacing: 8) {
                     DeadlineLabel(deadline: brief.deadline)
-                    if let status = brief.status { StatusBadge(status: status) }
+                    // The initial status says nothing in a list of open work.
+                    if let status = brief.status, status != store.statuses(for: brief.pattern).first {
+                        StatusBadge(status: status)
+                    }
                     if let project = projectName {
                         Text(project).font(.caption).foregroundStyle(.tertiary)
                     }
@@ -201,7 +202,9 @@ struct WorkRow: View {
                 Image(systemName: "ellipsis.circle")
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
+            .help("Done, drop or reschedule")
         }
         .padding(.vertical, 2)
         .popover(isPresented: $rescheduling) {

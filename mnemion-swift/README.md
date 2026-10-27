@@ -16,6 +16,7 @@ project.yml            XcodeGen spec (Mnemion.xcodeproj is generated, gitignored
 Mnemion/               the app target: SwiftUI views + observable models
   App/SessionModel     sign-in state, OAuth flow, keychain
   App/PortfolioStore   review, inbox, goals, projects + tasks, writes, live updates
+  App/QuickCapture     macOS: the ⌃⌥N hot key and its floating capture panel
   Intents/             CaptureNoteIntent: Siri, Shortcuts, the Action button
   Views/               SignIn, Projects (the split view: Review, Inbox, Goals,
                        projects), Review + ReviewHookSheet, Inbox, Capture,
@@ -38,7 +39,7 @@ The app opens on **Review**: what the worker derives as needing attention
 (`mnemion://review`): due review hooks, overdue / due / stalled work, alignment
 gaps, and the untriaged inbox. Running a hook records a `reviews` entry linked
 to the work committed to (`commits-to`) or the start review it answers
-(`reflects-on`). Capture (⌘N, the macOS menu bar item, the iOS share sheet, or
+(`reflects-on`). Capture (⌘N, ⌃⌥N from any app on the Mac, the macOS menu bar item, the iOS share sheet, or
 the "Capture a note" App Intent) writes to `inbox` with no project, then offers
 the hive's nearest entries as one-tap `references` links; the inbox triages a
 note into a task (`derived-from` the note) or onto a project.

@@ -116,6 +116,7 @@ private struct ProjectHeader: View {
                                 Label("Add", systemImage: "plus.circle").font(.caption)
                             }
                             .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
                             .fixedSize()
                         }
                     }
