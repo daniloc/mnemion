@@ -14,8 +14,11 @@
       "definition": "One stored instance of a pattern, addressable by its pattern and id and retained through updates or archival."
     },
     {
-      "name": "facet",
-      "definition": "A typed, named dimension of a pattern whose value appears on each entry; user facets are separate from automatic kernel columns."
+      "name": "pattern facet",
+      "definition": "A typed, named dimension of a pattern whose value appears on each entry; user facets are separate from automatic kernel columns.",
+      "aliases": [
+        "facet"
+      ]
     },
     {
       "name": "link",
@@ -82,8 +85,11 @@
       "definition": "The hive's durable storage: the per-hive Durable Object's SQLite, plus R2 for document bytes, where every pattern, entry and link lives; a client-side store is a read-through cache of it, never a replica."
     },
     {
-      "name": "resolution",
-      "definition": "A datetime facet's declared precision in _fields: day holds calendar days only (YYYY-MM-DD, a time of day refused at write), instant holds full UTC timestamps. Not the act of resolving a URI or a host."
+      "name": "facet resolution",
+      "definition": "A datetime facet's declared precision in _fields: day holds calendar days only (YYYY-MM-DD, a time of day refused at write), instant holds full UTC timestamps. Not the act of resolving a URI or a host.",
+      "aliases": [
+        "resolution"
+      ]
     },
     {
       "name": "effects",
@@ -110,8 +116,11 @@
       "definition": "The derived report of what needs attention now (mnemion://review): due review hooks, overdue, due and stalled work, and alignment gaps, computed on every read and never stored; also one entry a hook records in the reviews pattern."
     },
     {
-      "name": "inverse",
-      "definition": "The name a relation reads by from its target's side (serves is served-by from the goal); a link written under the inverse is stored under the canonical name with its ends swapped."
+      "name": "relation inverse",
+      "definition": "The name a relation reads by from its target's side (serves is served-by from the goal); a link written under the inverse is stored under the canonical name with its ends swapped.",
+      "aliases": [
+        "inverse"
+      ]
     },
     {
       "name": "format",
@@ -131,7 +140,10 @@
     },
     {
       "name": "migration phase",
-      "definition": "A numbered stage of the relations migration plan in project-docs/relations.md (1 the registry, 2 required relations, 3 reference facets retired, 4 this hive's data), each with its own restore point."
+      "definition": "A numbered stage of the relations migration plan in project-docs/relations.md (1 the registry, 2 required relations, 3 reference facets retired, 4 this hive's data), each with its own restore point.",
+      "aliases": [
+        "phase"
+      ]
     }
   ]
 }
