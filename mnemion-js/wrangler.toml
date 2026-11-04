@@ -3,6 +3,11 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
+# Keep runtime variables set outside this file (dashboard / `--var`) across
+# deploys. WORKER_HOST lives there: each install names its own host, so it is
+# never committed here, where a one-click fork would inherit someone else's.
+keep_vars = true
+
 # Pre-deploy build hook. Runs on every `wrangler deploy` (and in Workers Builds
 # for one-click installs): ensures the Vectorize index exists (Vectorize is not
 # auto-provisioned), then builds the render fragment bundle the worker imports.
@@ -30,11 +35,12 @@ enabled = true
   invocation_logs = true
   head_sampling_rate = 1
 
-[vars]
-# Cold-start fallback only — the runtime prefers the inbound request Host header.
-# Used solely by the _system/instance doc when no HTTP request has been observed
-# since DO eviction. Safe to omit; defaults to "localhost" when missing.
-WORKER_HOST = "your-worker.workers.dev"
+# WORKER_HOST (this instance's public host, e.g. mnemion.<you>.workers.dev) is
+# authoritative for every generated URL (upload_url, page_url, og_image, the
+# instance doc) and is set per install, not here: `npm run setup` sets it, or add
+# it under the worker's Settings → Variables in the Cloudflare dashboard.
+# Without it the instance fails closed and generates no links; the request's
+# Host header is trusted only by local dev (DEV=true).
 
 # KV namespace for OAuth tokens. No `id` → Cloudflare auto-provisions one named
 # after the worker on first deploy and keeps it linked on later deploys. This is
@@ -131,8 +137,7 @@ enabled = true
   invocation_logs = true
   head_sampling_rate = 1
 
-[env.test.vars]
-WORKER_HOST = "your-test-worker.workers.dev"
+# The test env's WORKER_HOST is set the same way (dashboard or --var).
 # The deployed federation peer must also fail closed without MNEMION_SECRET.
 # Use the local dev command for DEV=true; never publish owner auto-approval.
 

@@ -22,8 +22,9 @@ import { composeEffects } from "../features/compose";
 
 export interface EffectContext {
   env: any;
-  /** A public URL on this instance (host is configuration, never request data). */
-  instanceUrl(path: string): string;
+  /** A public URL on this instance (host is configuration, never request data).
+   *  Null when no host is configured — say so rather than invent a URL. */
+  instanceUrl(path: string): string | null;
   /** Post-response work that outlives the RPC (ctx.waitUntil). */
   schedule(p: Promise<unknown>): void;
   /** Run a queued system task. */

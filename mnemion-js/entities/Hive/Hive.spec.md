@@ -209,8 +209,8 @@ The single per-user Durable Object that owns all SQLite data and funnels every a
   checklist: durable-dispatch-intent dismissed: quoting does not enqueue work
   checklist: declared-target-coverage declared as sql-identifier quoting
   checklist: completion-evidence dismissed: validation is synchronous
-- instance-identity host: Generated capability URLs use the configured worker host over an inbound Host header.
-  over: all configured and observed host combinations
+- instance-identity host: Generated capability URLs use the configured worker host over an inbound Host header, and outside local dev an unconfigured host generates no URL.
+  over: all configured, unconfigured and observed host combinations, in and out of dev
   via: instance-identity host resolution
   because: A spoofed inbound Host must not poison a URL returned to the owner.
   crossing: public-egress -> owner-trusted
