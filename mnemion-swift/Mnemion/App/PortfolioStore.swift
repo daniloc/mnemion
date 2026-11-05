@@ -27,6 +27,13 @@ final class PortfolioStore {
     }
 
     func schema(for pattern: String) -> PatternSummary? { index?.pattern(pattern) }
+
+    /// The status that finishes an open entry of this pattern: the same declared
+    /// value the task checkmark writes. Nil when the pattern declares no closed values.
+    func closingStatus(for pattern: String) -> String? {
+        Portfolio.toggledStatus(for: PatternEntry(pattern: pattern, entry: Entry([:])), schema: schema(for: pattern))
+    }
+
     /// The weekly review's alignment read (`serves`): nil when the hive declares
     /// no such relation. Derived from the links on every load, never cached across.
     private(set) var alignmentRelation: Relation?
