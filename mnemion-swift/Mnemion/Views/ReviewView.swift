@@ -295,7 +295,8 @@ private struct HookRow: View {
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        // Every row keeps two lines, so the three cards stay level.
+                        .lineLimit(2, reservesSpace: true)
                         .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 4)
@@ -483,12 +484,17 @@ private struct WorkRow: View {
             .contentShape(Rectangle())
             .onTapGesture { if let project { go(.project(project.id)) } }
             Spacer(minLength: 8)
-            controls.opacity(controlsVisible ? 1 : 0)
-            ageLabel
+            // One slot: the moves take the age's place on hover, so controls that
+            // aren't showing never squeeze the title.
+            ZStack(alignment: .trailing) {
+                ageLabel.opacity(controlsVisible ? 0 : 1)
+                controls.opacity(controlsVisible ? 1 : 0)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
-        .background(hovering ? AnyShapeStyle(.quinary) : AnyShapeStyle(.clear))
+        .background { if hovering { Rectangle().fill(.quinary) } }
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .contextMenu { moves }
         .popover(isPresented: $rescheduling) {
