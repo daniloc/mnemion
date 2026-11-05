@@ -11,6 +11,7 @@ enum Destination: Hashable {
 /// The signed-in window: a sidebar of review, inbox, goals and projects, and a
 /// detail pane for the selection.
 struct ProjectsView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(SessionModel.self) private var session
     @Environment(PortfolioStore.self) private var store
     @Environment(AppState.self) private var app
@@ -88,6 +89,14 @@ struct ProjectsView: View {
         #endif
         .task { await store.loadAll() }
         .task { await store.listen() }
+        // The live stream covers changes while connected. These cover time away,
+        // and midnight, which changes what is due without anyone writing anything.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await store.refresh() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            Task { await store.refresh() }
+        }
         .sheet(isPresented: $app.showCapture) {
             CaptureView()
         }
