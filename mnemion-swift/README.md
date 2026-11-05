@@ -18,7 +18,8 @@ Mnemion/               the app target: SwiftUI views + observable models
   App/PortfolioStore   review, inbox, goals, projects + tasks, writes, live updates
   App/QuickCapture     macOS: the ⌃⌥N hot key and its floating capture panel
   Intents/             CaptureNoteIntent: Siri, Shortcuts, the Action button
-  Views/               SignIn, Projects (the split view: Review, Inbox, Goals,
+  Views/               Page (the page, card and row parts screens share),
+                       SignIn, Projects (the split view: Review, Inbox, Goals,
                        projects), Review + ReviewHookSheet, Inbox, Capture,
                        Goals, ProjectDetail, TaskEditor, RelatedSection, Dates
 MnemionShare/          the iOS share sheet: a URL or text becomes an inbox note

@@ -16,31 +16,23 @@ struct ReviewView: View {
     @SceneStorage("reviewProject") private var projectFilter = ""
     @State private var query = ""
     private var wide: Bool { width > 820 }
-    private static let cardGap: CGFloat = 12
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 36) {
-                if let review = store.review {
-                    header(review)
-                    hooks(review)
-                    columns(review)
-                } else if store.reviewUnavailable {
-                    Notice(text: "This hive’s worker predates the review. Deploy the latest worker to see what needs attention.")
-                    InboxCard(go: go)
-                } else {
-                    ProgressView("Deriving the review…")
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 120)
-                }
+        Page(width: $width) {
+            if let review = store.review {
+                PageHeader(title: (Dates.date(review.asOf) ?? .now).formatted(.dateTime.weekday(.wide).month(.wide).day()),
+                           summary: summary(review))
+                hooks(review)
+                columns(review)
+            } else if store.reviewUnavailable {
+                Notice(text: "This hive’s worker predates the review. Deploy the latest worker to see what needs attention.")
+                InboxCard(go: go)
+            } else {
+                ProgressView("Deriving the review…")
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 120)
             }
-            .frame(maxWidth: 1040, alignment: .leading)
-            .padding(.horizontal, 32)
-            .padding(.top, 20)
-            .padding(.bottom, 48)
-            .frame(maxWidth: .infinity)
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .navigationTitle("Review")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -54,27 +46,13 @@ struct ReviewView: View {
         }
         .refreshable { await store.loadReview() }
         // Rows name their project; the review itself carries only the task.
-        .task(id: store.projects.count) {
-            for project in store.projects where store.tasks[project.ref] == nil {
-                await store.loadTasks(for: project)
-            }
-        }
+        .task(id: store.projects.count) { await store.loadMissingTasks() }
         .sheet(item: $running) { hook in
             ReviewHookSheet(hook: hook)
         }
     }
 
     // MARK: The page
-
-    private func header(_ review: Review) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text((Dates.date(review.asOf) ?? .now).formatted(.dateTime.weekday(.wide).month(.wide).day()))
-                .font(.system(size: 32, weight: .semibold, design: .serif))
-            Text(summary(review))
-                .font(.title3)
-                .foregroundStyle(.secondary)
-        }
-    }
 
     /// The review in a sentence, in order of urgency.
     private func summary(_ review: Review) -> String {
@@ -95,8 +73,8 @@ struct ReviewView: View {
             Notice(text: "This hive has no reviews pattern yet. An agent can declare it from mnemion://review.")
         } else {
             // Three across or one column: an orphaned card would read as a missing one.
-            let columns = Array(repeating: GridItem(.flexible(), spacing: Self.cardGap, alignment: .top), count: width > 640 ? 3 : 1)
-            LazyVGrid(columns: columns, alignment: .leading, spacing: Self.cardGap) {
+            let columns = Array(repeating: GridItem(.flexible(), spacing: PageLayout.gap, alignment: .top), count: width > 640 ? 3 : 1)
+            LazyVGrid(columns: columns, alignment: .leading, spacing: PageLayout.gap) {
                 RhythmCard(title: "Today", start: .dayStart, review: review) { running = $0 }
                 RhythmCard(title: "This week", start: .weekStart, review: review) { running = $0 }
                 RhythmCard(title: "This month", start: .monthStart, review: review) { running = $0 }
@@ -108,9 +86,9 @@ struct ReviewView: View {
     private func columns(_ review: Review) -> some View {
         if wide {
             // The rail sits under the third rhythm card: same width, same gap, same edges.
-            HStack(alignment: .top, spacing: Self.cardGap) {
+            HStack(alignment: .top, spacing: PageLayout.gap) {
                 work(review).frame(maxWidth: .infinity, alignment: .leading)
-                rail(review).frame(width: (min(width - 64, 1040) - 2 * Self.cardGap) / 3)
+                rail(review).frame(width: PageLayout.column(of: 3, pageWidth: width))
             }
         } else {
             VStack(alignment: .leading, spacing: 32) {
@@ -189,7 +167,7 @@ struct ReviewView: View {
             // review_exempt, so agents and this screen read the same gaps.
             ForEach(review.alignment.filter { !$0.entries.isEmpty }) { gap in
                 VStack(alignment: .leading, spacing: 8) {
-                    SectionTitle(title: gapTitle(gap))
+                    GroupLabel(gapTitle(gap))
                     ForEach(gap.entries, id: \.ref) { brief in
                         Button {
                             open(brief)
@@ -258,31 +236,6 @@ extension ReviewHook {
 
 // MARK: - Parts
 
-/// The surface every grouped block on the page sits on.
-struct ReviewCardBackground: ViewModifier {
-    var highlighted = false
-
-    func body(content: Content) -> some View {
-        content
-            .background(highlighted ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.quinary),
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(.separator.opacity(0.5), lineWidth: 0.5)
-            }
-    }
-}
-
-private struct SectionTitle: View {
-    let title: String
-
-    var body: some View {
-        Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-    }
-}
-
 private struct Notice: View {
     let text: String
 
@@ -291,7 +244,7 @@ private struct Notice: View {
             .foregroundStyle(.secondary)
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .modifier(ReviewCardBackground())
+            .card()
     }
 }
 
@@ -314,7 +267,7 @@ private struct RhythmCard: View {
             HookRow(hook: start.counterpart, state: state(of: start.counterpart)) { run(start.counterpart) }
         }
         .padding(10)
-        .modifier(ReviewCardBackground())
+        .card()
     }
 
     private func state(of hook: ReviewHook) -> HookRow.State {
@@ -396,7 +349,6 @@ private struct HookRow: View {
 private struct InboxCard: View {
     let go: (Destination) -> Void
     @Environment(PortfolioStore.self) private var store
-    @State private var hovering = false
 
     var body: some View {
         Button {
@@ -416,11 +368,9 @@ private struct InboxCard: View {
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
             .padding(14)
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .modifier(ReviewCardBackground(highlighted: hovering))
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(RowButtonStyle(corner: 12))
+        .card()
     }
 }
 
@@ -559,8 +509,7 @@ private struct WorkSection: View {
                     }
                 }
                 VStack(spacing: 0) {
-                    ForEach(Array(shown.enumerated()), id: \.element.ref) { index, brief in
-                        if index > 0 { Divider().padding(.leading, 46) }
+                    DividedRows(items: shown, id: \.ref) { brief in
                         WorkRow(brief: brief, age: age, go: go)
                     }
                     if !expanded, items.count > Self.preview {
@@ -576,8 +525,7 @@ private struct WorkSection: View {
                         .contentShape(Rectangle())
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .modifier(ReviewCardBackground())
+                .card()
             }
         }
     }

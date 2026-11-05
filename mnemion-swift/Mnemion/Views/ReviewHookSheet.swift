@@ -83,7 +83,7 @@ struct ReviewHookSheet: View {
             // with the options it declares.
             if hook == .dayStart, !energyOptions.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Energy and attention").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                    GroupLabel("Energy and attention")
                     Picker("Energy", selection: $energy) {
                         ForEach(energyOptions, id: \.self) { Text($0.capitalized).tag($0) }
                     }
@@ -132,25 +132,20 @@ struct ReviewHookSheet: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .modifier(ReviewCardBackground())
+                .card()
         }
     }
 
     private var commitments: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(hook.commitsTo == Portfolio.tasks ? "Commit to" : "Projects that get attention")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+            GroupLabel(hook.commitsTo == Portfolio.tasks ? "Commit to" : "Projects that get attention")
             if candidates.isEmpty {
                 Text("Nothing open.").foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(candidates.enumerated()), id: \.element.id) { index, item in
-                        if index > 0 { Divider().padding(.leading, 42) }
-                        commitRow(item)
-                    }
+                    DividedRows(items: candidates, id: \.id, inset: 42) { commitRow($0) }
                 }
-                .modifier(ReviewCardBackground())
+                .card()
             }
         }
     }
@@ -212,7 +207,7 @@ struct ReviewHookSheet: View {
             case .dayEnd, .weekEnd, .monthEnd:
                 if let start = startReview {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("The intention").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                        GroupLabel("The intention")
                         Text(start.entry.string("intention") ?? "—")
                         if let energy = start.entry.string("energy") {
                             Text("Energy: \(energy)").font(.caption).foregroundStyle(.secondary)
@@ -220,7 +215,7 @@ struct ReviewHookSheet: View {
                     }
                     .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .modifier(ReviewCardBackground())
+                    .card()
                 } else {
                     Text("No \(hook.counterpart.title.lowercased()) review for this period.")
                         .font(.callout)
@@ -245,7 +240,7 @@ struct ReviewHookSheet: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .modifier(ReviewCardBackground())
+                .card()
             }
         }
     }

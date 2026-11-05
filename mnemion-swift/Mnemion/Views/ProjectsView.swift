@@ -125,8 +125,7 @@ private struct ProjectRow: View {
                 }
             }
         } icon: {
-            Image(systemName: dormant ? "folder" : "folder.fill")
-                .foregroundStyle(StatusBadge.color(for: status ?? ""))
+            ProjectIcon(project: project)
         }
         .help([status?.capitalized, project.entry.string("horizon")].compactMap { $0 }.joined(separator: " · "))
     }
