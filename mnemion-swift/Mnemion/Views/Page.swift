@@ -26,7 +26,9 @@ struct Page<Content: View>: View {
             .padding(.horizontal, PageLayout.margin(width))
             .padding(.top, compact ? 8 : 20)
             .padding(.bottom, 48)
-            .frame(maxWidth: .infinity)
+            // Exactly the scroll view's width. A fraction of a point of overflow
+            // from any row would otherwise let the whole page pan sideways.
+            .containerRelativeFrame(.horizontal)
         }
         .environment(\.pageIsCompact, compact)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
@@ -232,10 +234,11 @@ struct ProjectFilter: View {
                     HStack(spacing: 6) {
                         chips
                     }
-                    .padding(.horizontal, 16)
                 }
                 .scrollIndicators(.never)
-                .padding(.horizontal, -16)
+                .scrollClipDisabled()
+                // A short row has nothing to scroll, so it shouldn't move at all.
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
                 search(width: nil)
             }
         } else {

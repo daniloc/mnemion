@@ -434,7 +434,22 @@ final class PortfolioStore {
         }
     }
 
+    private var lastRefresh = Date.distantPast
+
+    /// Everything on screen, fetched fresh: for coming back after time away, when
+    /// the live stream can't say what changed. A burst of reasons counts once.
+    func refresh() async {
+        guard Date.now.timeIntervalSince(lastRefresh) > 5 else { return }
+        lastRefresh = .now
+        await loadAll()
+        await reloadLoadedTasks()
+    }
+
     private func apply(_ change: HiveChange) async {
+        if change.reconnected {
+            await refresh()
+            return
+        }
         defer { Task { await self.loadReview() } }
         if let delta = change.delta {
             switch delta.pattern {

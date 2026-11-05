@@ -46,7 +46,7 @@ struct ReviewHookSheet: View {
         #if os(macOS)
         // The Mac sheet draws its own header and footer, as capture does.
         VStack(spacing: 0) {
-            ScrollView { content.padding(24) }
+            ScrollView { content.padding(24).containerRelativeFrame(.horizontal) }
             Divider()
             HStack {
                 KeyHint(keys: "⌘↩", label: "Record")
@@ -66,7 +66,7 @@ struct ReviewHookSheet: View {
         .task { await load() }
         #else
         NavigationStack {
-            ScrollView { content.padding() }
+            ScrollView { content.padding().containerRelativeFrame(.horizontal) }
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {

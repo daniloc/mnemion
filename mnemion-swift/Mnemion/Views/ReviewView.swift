@@ -96,11 +96,11 @@ struct ReviewView: View {
                         }
                     }
                     .scrollTargetLayout()
-                    .padding(.horizontal, margin)
                 }
                 .scrollIndicators(.never)
                 .scrollTargetBehavior(.viewAligned)
-                .padding(.horizontal, -margin)
+                // Cards show past the margins without the scroll view leaving them.
+                .scrollClipDisabled()
             } else {
                 // Three across, so no card is ever orphaned on a row of its own.
                 let columns = Array(repeating: GridItem(.flexible(), spacing: PageLayout.gap, alignment: .top), count: 3)
