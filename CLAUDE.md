@@ -28,6 +28,23 @@ The current component and invariant reading is available with
 historical material under `mnemion-js/docs/coherence/`; it is not refreshed by
 the new package.
 
+## This repository is public
+
+Everything pushed here is readable by anyone: branches, commits, PR and issue
+text, comments and images. A hive is private. Keep the two apart.
+
+- **No hive content in the repo or on GitHub.** That covers entry text, task,
+  project and goal names, member names and hive hostnames, in code, tests,
+  fixtures, docs, commit messages, PR text and comments. Use invented examples.
+- **No screenshots of a signed-in app on GitHub.** A build signed in to a real
+  hive shows that hive's data. Don't attach them to a PR or issue, and don't push
+  them to any branch, including a throwaway one. Don't add screenshots to a PR
+  unless the owner asks for them and they show only invented data. To show the
+  owner a real screen, send it to them directly, off GitHub.
+- **Deleting does not unpublish.** A deleted branch's commits stay fetchable by
+  SHA, and PR edit history stays visible. Purging takes a GitHub Support request,
+  so check what a push contains before making it.
+
 ## Current state
 
 Deploys as a single Cloudflare Worker that exposes MCP at `/mcp`. Cross-surface data sharing proven (Claude Code + Claude.ai reading/writing the same store).
