@@ -17,14 +17,18 @@ struct ProjectDetailView: View {
     var body: some View {
         Page(width: $width) {
             PageHeader(title: title, summary: summary)
-            PageColumns(width: width) {
+            PageColumns(width: width, railLeadsWhenStacked: true) {
                 taskColumn
             } rail: {
                 ProjectFacts(project: project)
             }
         }
-        .navigationTitle(title)
+        .pageTitle(title)
         .toolbar {
+            #if !os(macOS)
+            // The page's headline already names it.
+            ToolbarItem(placement: .principal) { Text("") }
+            #endif
             ToolbarItem(placement: .primaryAction) {
                 Button("New Task", systemImage: "plus") { composing = true }
             }
@@ -114,6 +118,8 @@ struct ProjectDetailView: View {
 private struct ProjectFacts: View {
     let project: PatternEntry
     @Environment(PortfolioStore.self) private var store
+    @Environment(\.pageIsCompact) private var compact
+    @State private var expanded = false
 
     private var served: [PatternEntry] {
         (store.projectGoals[project.ref] ?? []).compactMap(store.goal(ref:))
@@ -126,12 +132,37 @@ private struct ProjectFacts: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 8) {
-                if let status = project.entry.string("status") { StatusBadge(status: status) }
-                if let horizon = project.entry.string("horizon") {
-                    Text(horizon).font(.callout).foregroundStyle(.secondary)
+            // A phone opens on the work: the rest of this card waits behind a tap.
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    if let status = project.entry.string("status") { StatusBadge(status: status) }
+                    if let horizon = project.entry.string("horizon") {
+                        Text(horizon).font(.callout).foregroundStyle(.secondary)
+                    }
+                    if compact {
+                        Spacer(minLength: 8)
+                        Text(expanded ? "Less" : "About").font(.callout).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
                 }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .disabled(!compact)
+            if !compact || expanded { details }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+
+    @ViewBuilder
+    private var details: some View {
             if let intent = project.entry.string("intent") {
                 LabeledText(label: "Intent", text: intent)
             }
@@ -170,10 +201,6 @@ private struct ProjectFacts: View {
                     }
                 }
             }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
     }
 }
 

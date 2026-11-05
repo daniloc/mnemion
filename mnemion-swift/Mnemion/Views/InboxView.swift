@@ -33,7 +33,14 @@ struct InboxView: View {
                 }
             }
         }
-        .navigationTitle("Inbox")
+        .pageTitle("Inbox")
+        #if !os(macOS)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("New Note", systemImage: "square.and.pencil") { app.showCapture = true }
+            }
+        }
+        #endif
         .refreshable { await store.loadInbox() }
         .sheet(item: $makingTask) { note in
             MakeTaskSheet(note: note)
@@ -55,6 +62,7 @@ private struct NoteCard: View {
     @State private var showRelated = false
     @State private var related: [PrimeHit] = []
     @State private var linked: Set<EntryRef> = []
+    @Environment(\.pageIsCompact) private var compact
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -110,24 +118,38 @@ private struct NoteCard: View {
                     }
                 }
                 .menuIndicator(.hidden)
-                .fixedSize()
                 Button(showRelated ? "Hide Related" : "Related", systemImage: "sparkles") {
                     showRelated.toggle()
                     if showRelated && related.isEmpty {
                         Task { related = await store.related(to: note.entry.string("body") ?? "", excluding: note.ref) }
                     }
                 }
-                Spacer(minLength: 8)
+                // A phone keeps the two main moves in words; these fit as icons.
+                .labelStyle(TightLabelStyle(iconOnly: compact))
+                Spacer(minLength: 0)
                 Button("Drop", systemImage: "xmark", role: .destructive) {
                     Task { await store.triage(note, .dropped) }
                 }
+                .labelStyle(TightLabelStyle(iconOnly: compact))
             }
+            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
             .controlSize(.small)
             .buttonStyle(.bordered)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
         }
         .card()
+    }
+}
+
+/// A label as words and icon, or the icon alone where width is short.
+private struct TightLabelStyle: LabelStyle {
+    let iconOnly: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        if iconOnly { IconOnlyLabelStyle().makeBody(configuration: configuration) }
+        else { TitleAndIconLabelStyle().makeBody(configuration: configuration) }
     }
 }
 

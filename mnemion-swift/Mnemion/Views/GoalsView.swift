@@ -18,7 +18,7 @@ struct GoalsView: View {
                 columns
             }
         }
-        .navigationTitle("Goals")
+        .pageTitle("Goals")
         .refreshable { await store.loadGoals() }
         .task(id: store.projects.count) { await store.loadMissingTasks() }
     }
@@ -136,6 +136,7 @@ private struct ServingRow: View {
     let project: PatternEntry
     let open: () -> Void
     @Environment(PortfolioStore.self) private var store
+    @Environment(\.pageIsCompact) private var compact
 
     private var openCount: Int? {
         store.tasks[project.ref].map { $0.filter { !store.isClosed($0) }.count }
@@ -149,13 +150,17 @@ private struct ServingRow: View {
         Button(action: open) {
             HStack(spacing: 10) {
                 ProjectIcon(project: project).frame(width: 18)
-                Text(project.entry.string("title") ?? "Untitled").lineLimit(1)
-                Spacer(minLength: 8)
-                if overdue > 0 {
-                    Text("\(overdue) overdue").font(.callout).foregroundStyle(.red)
-                }
-                if let openCount {
-                    Text("\(openCount) open").font(.callout).monospacedDigit().foregroundStyle(.secondary)
+                if compact {
+                    // A phone can't hold a name and two counts on a line.
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(project.entry.string("title") ?? "Untitled")
+                        HStack(spacing: 8) { counts }.font(.caption)
+                    }
+                    Spacer(minLength: 8)
+                } else {
+                    Text(project.entry.string("title") ?? "Untitled").lineLimit(1)
+                    Spacer(minLength: 8)
+                    counts.font(.callout)
                 }
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
@@ -163,5 +168,15 @@ private struct ServingRow: View {
             .padding(.vertical, 9)
         }
         .buttonStyle(RowButtonStyle())
+    }
+
+    @ViewBuilder
+    private var counts: some View {
+        if overdue > 0 {
+            Text("\(overdue) overdue").foregroundStyle(.red)
+        }
+        if let openCount {
+            Text("\(openCount) open").monospacedDigit().foregroundStyle(.secondary)
+        }
     }
 }

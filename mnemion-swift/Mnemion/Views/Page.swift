@@ -5,6 +5,11 @@ import SwiftUI
 // card surface, one section header, one divided list, one hover treatment. A
 // screen says what it shows; these say how it looks.
 
+extension EnvironmentValues {
+    /// A phone-width page: a tighter margin, and one column of everything.
+    @Entry var pageIsCompact = false
+}
+
 /// A scrolling page of a readable width, reporting its width so a screen can
 /// choose its columns.
 struct Page<Content: View>: View {
@@ -12,28 +17,45 @@ struct Page<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
+        let compact = PageLayout.isCompact(width)
         ScrollView {
-            VStack(alignment: .leading, spacing: 36) {
+            VStack(alignment: .leading, spacing: compact ? 24 : 36) {
                 content
             }
             .frame(maxWidth: PageLayout.contentWidth, alignment: .leading)
-            .padding(.horizontal, PageLayout.margin)
-            .padding(.top, 20)
+            .padding(.horizontal, PageLayout.margin(width))
+            .padding(.top, compact ? 8 : 20)
             .padding(.bottom, 48)
             .frame(maxWidth: .infinity)
         }
+        .environment(\.pageIsCompact, compact)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
     }
 }
 
 enum PageLayout {
     static let gap: CGFloat = 12
-    static let margin: CGFloat = 32
     static let contentWidth: CGFloat = 1040
+
+    static func isCompact(_ pageWidth: CGFloat) -> Bool { pageWidth < 500 }
+    /// The phone's own margin, so a page lines up with the navigation bar over it.
+    static func margin(_ pageWidth: CGFloat) -> CGFloat { isCompact(pageWidth) ? 16 : 32 }
 
     /// The width of one of `count` equal columns on a page this wide.
     static func column(of count: CGFloat, pageWidth: CGFloat) -> CGFloat {
-        (min(pageWidth - 2 * margin, contentWidth) - (count - 1) * gap) / count
+        (min(pageWidth - 2 * margin(pageWidth), contentWidth) - (count - 1) * gap) / count
+    }
+}
+
+extension View {
+    /// The navigation title over a page whose headline does the talking: small
+    /// on a phone, so two big titles don't stack.
+    func pageTitle(_ title: String) -> some View {
+        #if os(iOS)
+        navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+        #else
+        navigationTitle(title)
+        #endif
     }
 }
 
@@ -41,13 +63,14 @@ enum PageLayout {
 struct PageHeader: View {
     let title: String
     let summary: String
+    @Environment(\.pageIsCompact) private var compact
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: compact ? 3 : 6) {
             Text(title)
-                .font(.system(size: 32, weight: .semibold, design: .serif))
+                .font(.system(size: compact ? 26 : 32, weight: .semibold, design: .serif))
             Text(summary)
-                .font(.title3)
+                .font(compact ? .body : .title3)
                 .foregroundStyle(.secondary)
         }
     }
@@ -169,6 +192,8 @@ struct RowHover: ViewModifier {
 /// lines up with anything laid out in thirds above it.
 struct PageColumns<Main: View, Rail: View>: View {
     let width: CGFloat
+    /// When the columns stack, the rail reads first: what a thing is, before its work.
+    var railLeadsWhenStacked = false
     @ViewBuilder let main: Main
     @ViewBuilder let rail: Rail
 
@@ -179,9 +204,10 @@ struct PageColumns<Main: View, Rail: View>: View {
                 rail.frame(width: PageLayout.column(of: 3, pageWidth: width))
             }
         } else {
-            VStack(alignment: .leading, spacing: 32) {
+            VStack(alignment: .leading, spacing: PageLayout.isCompact(width) ? 24 : 32) {
+                if railLeadsWhenStacked { rail }
                 main
-                rail
+                if !railLeadsWhenStacked { rail }
             }
         }
     }

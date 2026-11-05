@@ -44,6 +44,9 @@ struct ProjectsView: View {
             // On the Mac the account is in the app menu (MnemionApp's commands).
             .toolbar {
                 ToolbarItem {
+                    Button("New Note", systemImage: "square.and.pencil") { app.showCapture = true }
+                }
+                ToolbarItem {
                     Menu {
                         Section("\(store.member) · \(store.host)") {
                             Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
@@ -75,12 +78,14 @@ struct ProjectsView: View {
                 ContentUnavailableView("Select something", systemImage: "square.stack.3d.up")
             }
         }
+        #if os(macOS)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("New Note", systemImage: "square.and.pencil") { app.showCapture = true }
                     .help("New note (⌘N)")
             }
         }
+        #endif
         .task { await store.loadAll() }
         .task { await store.listen() }
         .sheet(isPresented: $app.showCapture) {

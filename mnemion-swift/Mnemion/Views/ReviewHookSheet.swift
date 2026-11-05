@@ -128,7 +128,11 @@ struct ReviewHookSheet: View {
                             .font(.system(size: 15))
                             .foregroundStyle(.tertiary)
                             .padding(.horizontal, 13)
+                            #if os(macOS)
                             .padding(.vertical, 8)
+                            #else
+                            .padding(.vertical, 16)
+                            #endif
                             .allowsHitTesting(false)
                     }
                 }
@@ -246,7 +250,10 @@ struct ReviewHookSheet: View {
     }
 
     private func load() async {
+        #if os(macOS)
+        // On a phone the keyboard would cover what the review gathered.
         answering = true
+        #endif
         if energy.isEmpty, energyOptions.count > 1 { energy = energyOptions[energyOptions.count / 2] }
         if hook.isStart {
             candidates = hook.commitsTo == Portfolio.tasks ? await store.openTasks() : store.projects

@@ -161,9 +161,6 @@ final class PortfolioStore {
     private var reviewFetch: Task<Void, Never>?
     private var reviewAgain = false
 
-    /// One fetch in flight at a time: a burst of changes (an agent writing a
-    /// batch) coalesces into at most one more fetch after the current one, and
-    /// a slow older response can never overwrite a newer review.
     /// Tasks for every project not loaded yet: what rows naming a task's project,
     /// or a project's open work, need.
     func loadMissingTasks() async {
@@ -172,6 +169,9 @@ final class PortfolioStore {
         }
     }
 
+    /// One fetch in flight at a time: a burst of changes (an agent writing a
+    /// batch) coalesces into at most one more fetch after the current one, and
+    /// a slow older response can never overwrite a newer review.
     func loadReview() async {
         if let running = reviewFetch {
             reviewAgain = true

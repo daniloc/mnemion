@@ -19,8 +19,7 @@ struct ReviewView: View {
     var body: some View {
         Page(width: $width) {
             if let review = store.review {
-                PageHeader(title: (Dates.date(review.asOf) ?? .now).formatted(.dateTime.weekday(.wide).month(.wide).day()),
-                           summary: summary(review))
+                PageHeader(title: headline(review), summary: summary(review))
                 hooks(review)
                 PageColumns(width: width) {
                     work(review)
@@ -36,7 +35,7 @@ struct ReviewView: View {
                     .padding(.top, 120)
             }
         }
-        .navigationTitle("Review")
+        .pageTitle("Review")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu("Run a review", systemImage: "play.circle") {
@@ -57,6 +56,12 @@ struct ReviewView: View {
 
     // MARK: The page
 
+    /// The day; a phone abbreviates the month to keep it on one line.
+    private func headline(_ review: Review) -> String {
+        let month: Date.FormatStyle.Symbol.Month = PageLayout.isCompact(width) ? .abbreviated : .wide
+        return (Dates.date(review.asOf) ?? .now).formatted(.dateTime.weekday(.wide).month(month).day())
+    }
+
     /// The review in a sentence, in order of urgency.
     private func summary(_ review: Review) -> String {
         let parts = [
@@ -75,12 +80,33 @@ struct ReviewView: View {
         if review.hooks.pattern == nil {
             Notice(text: "This hive has no reviews pattern yet. An agent can declare it from mnemion://review.")
         } else {
-            // Three across or one column: an orphaned card would read as a missing one.
-            let columns = Array(repeating: GridItem(.flexible(), spacing: PageLayout.gap, alignment: .top), count: width > 640 ? 3 : 1)
-            LazyVGrid(columns: columns, alignment: .leading, spacing: PageLayout.gap) {
-                RhythmCard(title: "Today", start: .dayStart, review: review) { running = $0 }
-                RhythmCard(title: "This week", start: .weekStart, review: review) { running = $0 }
-                RhythmCard(title: "This month", start: .monthStart, review: review) { running = $0 }
+            let cards = [
+                RhythmCard(title: "Today", start: .dayStart, review: review) { running = $0 },
+                RhythmCard(title: "This week", start: .weekStart, review: review) { running = $0 },
+                RhythmCard(title: "This month", start: .monthStart, review: review) { running = $0 },
+            ]
+            if PageLayout.isCompact(width) {
+                // A phone can't afford a screenful of reviews above the work: the
+                // cards scroll sideways, with the next one showing at the edge.
+                let margin = PageLayout.margin(width)
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: PageLayout.gap) {
+                        ForEach(cards.indices, id: \.self) { i in
+                            cards[i].frame(width: width - 2 * margin - 28)
+                        }
+                    }
+                    .scrollTargetLayout()
+                    .padding(.horizontal, margin)
+                }
+                .scrollIndicators(.never)
+                .scrollTargetBehavior(.viewAligned)
+                .padding(.horizontal, -margin)
+            } else {
+                // Three across, so no card is ever orphaned on a row of its own.
+                let columns = Array(repeating: GridItem(.flexible(), spacing: PageLayout.gap, alignment: .top), count: 3)
+                LazyVGrid(columns: columns, alignment: .leading, spacing: PageLayout.gap) {
+                    ForEach(cards.indices, id: \.self) { cards[$0] }
+                }
             }
         }
     }
@@ -368,16 +394,43 @@ private struct WorkFilter: View {
     let selected: PatternEntry.ID?
     @Binding var query: String
     let select: (PatternEntry.ID?) -> Void
+    @Environment(\.pageIsCompact) private var compact
 
     var body: some View {
-        // Wrapped rather than scrolled: every project stays in view, and a Mac
-        // has no visible cue that a row of chips scrolls sideways.
-        FlowLayout(spacing: 6) {
-            FilterChip(title: "All", count: total, isOn: selected == nil) { select(nil) }
-            ForEach(projects, id: \.project.id) { item in
-                FilterChip(title: item.project.entry.string("title") ?? "Untitled", count: item.count,
-                           isOn: selected == item.project.id) { select(item.project.id) }
+        if compact {
+            // A finger knows a row of chips scrolls; on a phone, wrapping would
+            // push the work down the screen.
+            VStack(alignment: .leading, spacing: 8) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        chips
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .scrollIndicators(.never)
+                .padding(.horizontal, -16)
+                search(width: nil)
             }
+        } else {
+            // Wrapped rather than scrolled: every project stays in view, and a Mac
+            // has no visible cue that a row of chips scrolls sideways.
+            FlowLayout(spacing: 6) {
+                chips
+                search(width: 150)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var chips: some View {
+        FilterChip(title: "All", count: total, isOn: selected == nil) { select(nil) }
+        ForEach(projects, id: \.project.id) { item in
+            FilterChip(title: item.project.entry.string("title") ?? "Untitled", count: item.count,
+                       isOn: selected == item.project.id) { select(item.project.id) }
+        }
+    }
+
+    private func search(width: CGFloat?) -> some View {
             HStack(spacing: 5) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Filter", text: $query)
@@ -395,9 +448,8 @@ private struct WorkFilter: View {
             .font(.callout)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .frame(width: 150)
+            .frame(width: width)
             .background(.quinary, in: Capsule())
-        }
     }
 }
 
@@ -523,14 +575,6 @@ private struct WorkRow: View {
 
     private var closing: String? { store.closingStatus(for: brief.pattern) }
 
-    private var controlsVisible: Bool {
-        #if os(macOS)
-        hovering || rescheduling
-        #else
-        true
-        #endif
-    }
-
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             finish
@@ -549,17 +593,31 @@ private struct WorkRow: View {
                     if let status = brief.status, status != store.statuses(for: brief.pattern).first {
                         StatusBadge(status: status)
                     }
+                    #if !os(macOS)
+                    // A phone needs the width for the title, so the age rides along here.
+                    ageLabel.font(.caption)
+                    #endif
                 }
             }
             .contentShape(Rectangle())
             .onTapGesture { if let project { go(.project(project.id)) } }
             Spacer(minLength: 8)
+            #if os(macOS)
             // One slot: the moves take the age's place on hover, so controls that
             // aren't showing never squeeze the title.
             ZStack(alignment: .trailing) {
-                ageLabel.opacity(controlsVisible ? 0 : 1)
-                controls.opacity(controlsVisible ? 1 : 0)
+                ageLabel.font(.callout).opacity(hovering || rescheduling ? 0 : 1)
+                controls.opacity(hovering || rescheduling ? 1 : 0)
             }
+            #else
+            // No hover here: the moves are behind the menu and a long press.
+            Menu { moves } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .tint(.secondary)
+            #endif
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
@@ -599,6 +657,7 @@ private struct WorkRow: View {
         }
     }
 
+    #if os(macOS)
     private var controls: some View {
         HStack(spacing: 10) {
             Button {
@@ -621,6 +680,7 @@ private struct WorkRow: View {
         }
         .foregroundStyle(.secondary)
     }
+    #endif
 
     @ViewBuilder
     private var moves: some View {
@@ -638,7 +698,6 @@ private struct WorkRow: View {
     private var ageLabel: some View {
         if let text = ageText {
             Text(text)
-                .font(.callout)
                 .monospacedDigit()
                 .foregroundStyle(age == .late ? Color.red : Color.secondary)
                 .help(Dates.describe(deadline: brief.deadline) ?? "")
