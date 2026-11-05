@@ -213,6 +213,133 @@ struct PageColumns<Main: View, Rail: View>: View {
     }
 }
 
+/// Narrow a list of work to one project, or to words in its name or its project's.
+/// With no projects to offer, it is just the text field.
+struct ProjectFilter: View {
+    let projects: [(project: PatternEntry, count: Int)]
+    let total: Int
+    let selected: PatternEntry.ID?
+    @Binding var query: String
+    let select: (PatternEntry.ID?) -> Void
+    @Environment(\.pageIsCompact) private var compact
+
+    var body: some View {
+        if compact {
+            // A finger knows a row of chips scrolls; on a phone, wrapping would
+            // push the work down the screen.
+            VStack(alignment: .leading, spacing: 8) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        chips
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .scrollIndicators(.never)
+                .padding(.horizontal, -16)
+                search(width: nil)
+            }
+        } else {
+            // Wrapped rather than scrolled: every project stays in view, and a Mac
+            // has no visible cue that a row of chips scrolls sideways.
+            FlowLayout(spacing: 6) {
+                chips
+                search(width: 150)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var chips: some View {
+        if !projects.isEmpty {
+            FilterChip(title: "All", count: total, isOn: selected == nil) { select(nil) }
+        }
+        ForEach(projects, id: \.project.id) { item in
+            FilterChip(title: item.project.entry.string("title") ?? "Untitled", count: item.count,
+                       isOn: selected == item.project.id) { select(item.project.id) }
+        }
+    }
+
+    private func search(width: CGFloat?) -> some View {
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Filter", text: $query)
+                    .textFieldStyle(.plain)
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear filter")
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(width: width)
+            .background(.quinary, in: Capsule())
+    }
+}
+
+/// Lays its subviews out in rows, wrapping at the proposed width.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    private func rows(_ subviews: Subviews, width: CGFloat) -> (origins: [CGPoint], size: CGSize) {
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, widest: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            origins.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return (origins, CGSize(width: widest, height: y + rowHeight))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        rows(subviews, width: proposal.width ?? .infinity).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let origins = rows(subviews, width: bounds.width).origins
+        for (subview, origin) in zip(subviews, origins) {
+            subview.place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), proposal: .unspecified)
+        }
+    }
+}
+
+private struct FilterChip: View {
+    let title: String
+    let count: Int
+    let isOn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(title).lineLimit(1)
+                Text(count, format: .number).foregroundStyle(isOn ? AnyShapeStyle(.white.opacity(0.8)) : AnyShapeStyle(.secondary))
+            }
+            .font(.callout)
+            .foregroundStyle(isOn ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quinary), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
 /// A project's mark everywhere it is named: a folder tinted by status, hollow
 /// once the pattern declares that status closed.
 struct ProjectIcon: View {

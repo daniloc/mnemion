@@ -28,6 +28,29 @@ final class PortfolioStore {
 
     func schema(for pattern: String) -> PatternSummary? { index?.pattern(pattern) }
 
+    /// The projects these tasks belong to, busiest first: what a filter offers.
+    func projectCounts(for refs: [EntryRef]) -> [(project: PatternEntry, count: Int)] {
+        var counts: [EntryRef: (project: PatternEntry, count: Int)] = [:]
+        for ref in refs {
+            guard let project = project(containing: ref) else { continue }
+            counts[project.ref, default: (project, 0)].count += 1
+        }
+        return counts.values.sorted {
+            $0.count != $1.count ? $0.count > $1.count
+                : ($0.project.entry.string("title") ?? "") < ($1.project.entry.string("title") ?? "")
+        }
+    }
+
+    /// Whether a task passes a project filter and words from its name or its project's.
+    func matches(_ ref: EntryRef, label: String, project: PatternEntry?, query: String) -> Bool {
+        let owner = self.project(containing: ref)
+        if let project, owner?.id != project.id { return false }
+        let words = query.trimmingCharacters(in: .whitespaces)
+        guard !words.isEmpty else { return true }
+        return label.localizedStandardContains(words)
+            || owner?.entry.string("title")?.localizedStandardContains(words) == true
+    }
+
     /// The project a task belongs to, among the tasks loaded so far.
     func project(containing ref: EntryRef) -> PatternEntry? {
         for (project, list) in tasks where list.contains(where: { $0.ref == ref }) {

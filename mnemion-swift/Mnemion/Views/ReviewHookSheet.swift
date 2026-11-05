@@ -8,12 +8,17 @@ struct ReviewHookSheet: View {
     let hook: ReviewHook
     @Environment(PortfolioStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
     @State private var text = ""
     @State private var energy = ""
     @State private var candidates: [PatternEntry] = []
     @State private var chosen: Set<EntryRef> = []
     @State private var startReview: PatternEntry?
     @State private var saving = false
+    @State private var commitProject: PatternEntry.ID?
+    @State private var commitQuery = ""
     @FocusState private var answering: Bool
 
     private var period: String { store.review?.status(of: hook)?.period ?? Dates.today }
@@ -74,6 +79,14 @@ struct ReviewHookSheet: View {
         #endif
     }
 
+    private var isPhone: Bool {
+        #if os(iOS)
+        sizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
     private var content: some View {
         VStack(alignment: .leading, spacing: 24) {
             header
@@ -94,6 +107,7 @@ struct ReviewHookSheet: View {
             if hook.isStart { commitments }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .environment(\.pageIsCompact, isPhone)
     }
 
     private var header: some View {
@@ -140,16 +154,40 @@ struct ReviewHookSheet: View {
         }
     }
 
+    /// What the filter leaves of the candidates. Anything already chosen stays
+    /// chosen when it is filtered out of view; the header keeps count.
+    private var shownCandidates: [PatternEntry] {
+        let project = store.project(commitProject)
+        return candidates.filter {
+            store.matches($0.ref, label: $0.entry.string("title") ?? "", project: project, query: commitQuery)
+        }
+    }
+
     private var commitments: some View {
         VStack(alignment: .leading, spacing: 8) {
-            GroupLabel(hook.commitsTo == Portfolio.tasks ? "Commit to" : "Projects that get attention")
+            HStack {
+                GroupLabel(hook.commitsTo == Portfolio.tasks ? "Commit to" : "Projects that get attention")
+                Spacer()
+                if !chosen.isEmpty {
+                    Text("\(chosen.count) chosen").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if candidates.isEmpty {
                 Text("Nothing open.").foregroundStyle(.secondary)
             } else {
-                VStack(spacing: 0) {
-                    DividedRows(items: candidates, id: \.id, inset: 42) { commitRow($0) }
+                // Projects aren't sorted into projects: only tasks get the chips.
+                ProjectFilter(projects: hook.commitsTo == Portfolio.tasks ? store.projectCounts(for: candidates.map(\.ref)) : [],
+                              total: candidates.count, selected: commitProject, query: $commitQuery) {
+                    commitProject = $0
                 }
-                .card()
+                if shownCandidates.isEmpty {
+                    Text("Nothing matches.").font(.callout).foregroundStyle(.secondary).padding(.vertical, 6)
+                } else {
+                    VStack(spacing: 0) {
+                        DividedRows(items: shownCandidates, id: \.id, inset: 42) { commitRow($0) }
+                    }
+                    .card()
+                }
             }
         }
     }
@@ -163,11 +201,21 @@ struct ReviewHookSheet: View {
                 Image(systemName: isChosen ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundStyle(isChosen ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                Text(item.entry.string("title") ?? "Untitled")
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.entry.string("title") ?? "Untitled")
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 8) {
+                        if hook.commitsTo == Portfolio.tasks, let project = store.project(containing: item.ref) {
+                            Text(project.entry.string("title") ?? "Untitled")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        DeadlineLabel(deadline: item.entry.string("deadline"))
+                    }
+                }
                 Spacer(minLength: 8)
-                DeadlineLabel(deadline: item.entry.string("deadline"))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
@@ -249,6 +297,15 @@ struct ReviewHookSheet: View {
         }
     }
 
+    /// Dated first, most overdue first; undated after, in the order they came.
+    private func soonestFirst(_ a: PatternEntry, _ b: PatternEntry) -> Bool {
+        switch (a.entry.string("deadline"), b.entry.string("deadline")) {
+        case let (x?, y?): return x < y
+        case (_?, nil): return true
+        default: return false
+        }
+    }
+
     private func load() async {
         #if os(macOS)
         // On a phone the keyboard would cover what the review gathered.
@@ -256,7 +313,9 @@ struct ReviewHookSheet: View {
         #endif
         if energy.isEmpty, energyOptions.count > 1 { energy = energyOptions[energyOptions.count / 2] }
         if hook.isStart {
-            candidates = hook.commitsTo == Portfolio.tasks ? await store.openTasks() : store.projects
+            // The rows and the filter name each task's project.
+            await store.loadMissingTasks()
+            candidates = hook.commitsTo == Portfolio.tasks ? await store.openTasks().sorted(by: soonestFirst) : store.projects
             if hook == .dayStart {
                 // Pre-select what is due today.
                 chosen = Set(store.review?.allDueToday.map(\.ref) ?? [])
