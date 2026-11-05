@@ -13,6 +13,9 @@ The native client: SwiftUI surfaces over MnemionKit, a pure client of the hive's
 - capture note intent: Siri, Shortcuts, Spotlight or the Action button run the capture intent.
   handler: CaptureNoteIntent
   trust: owner-session
+- quick capture hot key: On the Mac, ⌃⌥N from any app opens the floating capture panel.
+  handler: QuickCapture
+  trust: owner-session
 - share sheet: The host app loads the share extension's principal class.
   handler: ShareViewController
   trust: owner-session

@@ -27,6 +27,44 @@ final class PortfolioStore {
     }
 
     func schema(for pattern: String) -> PatternSummary? { index?.pattern(pattern) }
+
+    /// The projects these tasks belong to, busiest first: what a filter offers.
+    func projectCounts(for refs: [EntryRef]) -> [(project: PatternEntry, count: Int)] {
+        var counts: [EntryRef: (project: PatternEntry, count: Int)] = [:]
+        for ref in refs {
+            guard let project = project(containing: ref) else { continue }
+            counts[project.ref, default: (project, 0)].count += 1
+        }
+        return counts.values.sorted {
+            $0.count != $1.count ? $0.count > $1.count
+                : ($0.project.entry.string("title") ?? "") < ($1.project.entry.string("title") ?? "")
+        }
+    }
+
+    /// Whether a task passes a project filter and words from its name or its project's.
+    func matches(_ ref: EntryRef, label: String, project: PatternEntry?, query: String) -> Bool {
+        let owner = self.project(containing: ref)
+        if let project, owner?.id != project.id { return false }
+        let words = query.trimmingCharacters(in: .whitespaces)
+        guard !words.isEmpty else { return true }
+        return label.localizedStandardContains(words)
+            || owner?.entry.string("title")?.localizedStandardContains(words) == true
+    }
+
+    /// The project a task belongs to, among the tasks loaded so far.
+    func project(containing ref: EntryRef) -> PatternEntry? {
+        for (project, list) in tasks where list.contains(where: { $0.ref == ref }) {
+            return self.project(ref: project)
+        }
+        return nil
+    }
+
+    /// The status that finishes an open entry of this pattern: the same declared
+    /// value the task checkmark writes. Nil when the pattern declares no closed values.
+    func closingStatus(for pattern: String) -> String? {
+        Portfolio.toggledStatus(for: PatternEntry(pattern: pattern, entry: Entry([:])), schema: schema(for: pattern))
+    }
+
     /// The weekly review's alignment read (`serves`): nil when the hive declares
     /// no such relation. Derived from the links on every load, never cached across.
     private(set) var alignmentRelation: Relation?
@@ -145,6 +183,14 @@ final class PortfolioStore {
 
     private var reviewFetch: Task<Void, Never>?
     private var reviewAgain = false
+
+    /// Tasks for every project not loaded yet: what rows naming a task's project,
+    /// or a project's open work, need.
+    func loadMissingTasks() async {
+        for project in projects where tasks[project.ref] == nil {
+            await loadTasks(for: project)
+        }
+    }
 
     /// One fetch in flight at a time: a burst of changes (an agent writing a
     /// batch) coalesces into at most one more fetch after the current one, and

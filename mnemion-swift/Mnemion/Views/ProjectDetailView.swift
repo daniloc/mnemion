@@ -6,29 +6,31 @@ struct ProjectDetailView: View {
     @Environment(PortfolioStore.self) private var store
     @State private var composing = false
     @State private var editing: PatternEntry?
+    @State private var showingDone = false
+    @State private var width: CGFloat = 1000
 
+    private var title: String { project.entry.string("title") ?? "Project" }
     private var tasks: [PatternEntry] { store.tasks[project.ref] ?? [] }
     private var open: [PatternEntry] { tasks.filter { !store.isClosed($0) }.sorted(by: byDeadline) }
     private var done: [PatternEntry] { tasks.filter { store.isClosed($0) } }
 
     var body: some View {
-        List {
-            Section {
-                ProjectHeader(project: project)
-            }
-            Section("Open · \(open.count)") {
-                ForEach(open) { row($0) }
-            }
-            if !done.isEmpty {
-                Section("Done · \(done.count)") {
-                    ForEach(done) { row($0) }
-                }
+        Page(width: $width) {
+            PageHeader(title: title, summary: summary)
+            PageColumns(width: width, railLeadsWhenStacked: true) {
+                taskColumn
+            } rail: {
+                ProjectFacts(project: project)
             }
         }
-        .navigationTitle(project.entry.string("title") ?? "Project")
+        .pageTitle(title)
         .toolbar {
+            #if !os(macOS)
+            // The page's headline already names it.
+            ToolbarItem(placement: .principal) { Text("") }
+            #endif
             ToolbarItem(placement: .primaryAction) {
-                Button("New task", systemImage: "plus") { composing = true }
+                Button("New Task", systemImage: "plus") { composing = true }
             }
         }
         .refreshable { await store.loadTasks(for: project) }
@@ -41,13 +43,62 @@ struct ProjectDetailView: View {
         }
     }
 
+    private var summary: String {
+        switch (open.count, done.count) {
+        case (0, 0): return "No tasks yet."
+        case (0, _): return "Nothing open."
+        case (let o, 0): return "\(o) open."
+        case (let o, let d): return "\(o) open, \(d) done."
+        }
+    }
+
+    private var taskColumn: some View {
+        VStack(alignment: .leading, spacing: 32) {
+            VStack(alignment: .leading, spacing: 10) {
+                SectionHeader(title: "Open", count: open.count)
+                if open.isEmpty {
+                    Button("Add a Task", systemImage: "plus") { composing = true }
+                } else {
+                    rows(open)
+                }
+            }
+            if !done.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) { showingDone.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .rotationEffect(.degrees(showingDone ? 90 : 0))
+                            SectionHeader(title: "Done", count: done.count)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if showingDone { rows(done) }
+                }
+            }
+        }
+    }
+
+    private func rows(_ items: [PatternEntry]) -> some View {
+        VStack(spacing: 0) {
+            DividedRows(items: items, id: \.id) { row($0) }
+        }
+        .card()
+    }
+
     private func row(_ task: PatternEntry) -> some View {
         // The pattern's declared statuses decide what a tap writes; with no
         // closed declaration there is nothing a tap could write, so no toggle.
         TaskRow(task: task, done: store.isClosed(task), toggle: Portfolio.toggledStatus(for: task, schema: store.schema(for: task.pattern)).map { next in
             { Task { await store.setStatus(task, to: next) } }
         })
-        .contentShape(Rectangle())
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .modifier(RowHover())
         .onTapGesture { editing = task }
     }
 
@@ -62,9 +113,13 @@ struct ProjectDetailView: View {
     }
 }
 
-private struct ProjectHeader: View {
+/// What the project is: its state, what it intends, and what it serves. These
+/// change rarely, so they sit beside the work rather than above it.
+private struct ProjectFacts: View {
     let project: PatternEntry
     @Environment(PortfolioStore.self) private var store
+    @Environment(\.pageIsCompact) private var compact
+    @State private var expanded = false
 
     private var served: [PatternEntry] {
         (store.projectGoals[project.ref] ?? []).compactMap(store.goal(ref:))
@@ -76,53 +131,76 @@ private struct ProjectHeader: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                if let status = project.entry.string("status") { StatusBadge(status: status) }
-                if let horizon = project.entry.string("horizon") {
-                    Text(horizon).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 20) {
+            // A phone opens on the work: the rest of this card waits behind a tap.
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    if let status = project.entry.string("status") { StatusBadge(status: status) }
+                    if let horizon = project.entry.string("horizon") {
+                        Text(horizon).font(.callout).foregroundStyle(.secondary)
+                    }
+                    if compact {
+                        Spacer(minLength: 8)
+                        Text(expanded ? "Less" : "About").font(.callout).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
                 }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .disabled(!compact)
+            if !compact || expanded { details }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+
+    @ViewBuilder
+    private var details: some View {
             if let intent = project.entry.string("intent") {
                 LabeledText(label: "Intent", text: intent)
             }
             if let outcome = project.entry.string("outcome") {
                 LabeledText(label: "Outcome", text: outcome)
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Serves").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                GroupLabel("Serves")
                 if store.isExempt(project) {
                     Text("Exempt from alignment by the charter: this project serves no goal by design.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
-                    HStack(spacing: 6) {
-                        ForEach(served) { goal in
-                            Text(goal.entry.string("title") ?? "Goal")
-                                .font(.caption)
-                                .padding(.horizontal, 8).padding(.vertical, 3)
-                                .background(.quaternary, in: Capsule())
-                        }
-                        if served.isEmpty {
-                            Label("No goal", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
-                        }
-                        if !unserved.isEmpty {
-                            Menu {
-                                ForEach(unserved) { goal in
-                                    Button(goal.entry.string("title") ?? "Goal") {
-                                        Task { await store.serve(project, goal: goal) }
-                                    }
+                    if served.isEmpty {
+                        Label("No goal", systemImage: "exclamationmark.circle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                    }
+                    ForEach(served) { goal in
+                        Label(goal.entry.string("title") ?? "Goal", systemImage: "scope")
+                            .font(.callout)
+                    }
+                    if !unserved.isEmpty {
+                        Menu {
+                            ForEach(unserved) { goal in
+                                Button(goal.entry.string("title") ?? "Goal") {
+                                    Task { await store.serve(project, goal: goal) }
                                 }
-                            } label: {
-                                Label("Add", systemImage: "plus.circle").font(.caption)
                             }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
+                        } label: {
+                            Label("Serve a goal", systemImage: "plus").font(.callout)
                         }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .padding(.top, 2)
                     }
                 }
             }
-        }
-        .padding(.vertical, 4)
     }
 }
 
@@ -131,9 +209,11 @@ struct LabeledText: View {
     let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption.weight(.medium)).foregroundStyle(.secondary)
-            Text(text).font(.callout)
+        VStack(alignment: .leading, spacing: 3) {
+            GroupLabel(label)
+            Text(text)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -146,13 +226,13 @@ private struct TaskRow: View {
     let toggle: (() -> Void)?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Button(action: toggle ?? {}) {
                 Image(systemName: done ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundStyle(done ? Color.green : Color.secondary)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .disabled(toggle == nil)
             .accessibilityLabel(done ? "Reopen" : "Finish")
 
@@ -177,7 +257,7 @@ private struct TaskRow: View {
                     }
                 }
             }
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
     }
 }

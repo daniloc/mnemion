@@ -25,6 +25,13 @@ enum Dates {
         return formatter.date(from: String(s.prefix(10)))
     }
 
+    /// A hive timestamp as the instant it names.
+    static func instant(_ s: String?) -> Date? {
+        guard let s else { return nil }
+        let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+        return (try? Date(s, strategy: fractional)) ?? (try? Date(s, strategy: .iso8601))
+    }
+
     static func string(_ d: Date) -> String { formatter.string(from: d) }
 
     static var today: String { string(.now) }
