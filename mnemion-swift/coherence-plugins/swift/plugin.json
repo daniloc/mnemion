@@ -1,7 +1,7 @@
 {
   "name": "swift",
   "version": "0.1.0",
-  "pluginApi": 3,
+  "pluginApi": 4,
   "provides": {
     "language": "swift"
   },
