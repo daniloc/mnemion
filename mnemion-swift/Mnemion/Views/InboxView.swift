@@ -8,15 +8,10 @@ struct InboxView: View {
     @Environment(PortfolioStore.self) private var store
     @Environment(AppState.self) private var app
     @State private var makingTask: PatternEntry?
+    @State private var width: CGFloat = 1000
 
     var body: some View {
-        List {
-            ForEach(store.notes) { note in
-                NoteRow(note: note) { makingTask = note }
-            }
-        }
-        .navigationTitle("Inbox")
-        .overlay {
+        Group {
             if store.notes.isEmpty {
                 ContentUnavailableView {
                     Label("Inbox Zero", systemImage: "tray")
@@ -25,8 +20,20 @@ struct InboxView: View {
                 } actions: {
                     Button("New Note") { app.showCapture = true }
                 }
+            } else {
+                Page(width: $width) {
+                    PageHeader(title: store.notes.count == 1 ? "1 note" : "\(store.notes.count) notes",
+                               summary: "Waiting for triage, newest first.")
+                    VStack(spacing: PageLayout.gap) {
+                        ForEach(store.notes) { note in
+                            NoteCard(note: note) { makingTask = note }
+                        }
+                    }
+                    .frame(maxWidth: 720, alignment: .leading)
+                }
             }
         }
+        .navigationTitle("Inbox")
         .refreshable { await store.loadInbox() }
         .sheet(item: $makingTask) { note in
             MakeTaskSheet(note: note)
@@ -40,7 +47,8 @@ private let emptyHint = "Capture with ⌘N here, \(QuickCapture.shortcut) from a
 private let emptyHint = "Capture a note here, or share a link from any app."
 #endif
 
-private struct NoteRow: View {
+/// A note and its moves. Triage is what this screen is for, so they stay in view.
+private struct NoteCard: View {
     let note: PatternEntry
     let makeTask: () -> Void
     @Environment(PortfolioStore.self) private var store
@@ -49,65 +57,77 @@ private struct NoteRow: View {
     @State private var linked: Set<EntryRef> = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(note.entry.string("body") ?? "")
-                        .lineLimit(showRelated ? nil : 4)
-                    if let url = note.entry.string("url"), let link = URL(string: url) {
-                        Link(destination: link) {
-                            Label(link.host() ?? url, systemImage: "link").font(.caption)
-                        }
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(note.entry.string("body") ?? "")
+                    .font(.system(size: 15))
+                    .lineLimit(showRelated ? nil : 6)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if let url = note.entry.string("url"), let link = URL(string: url) {
+                    Link(destination: link) {
+                        Label(link.host() ?? url, systemImage: "link").font(.callout)
                     }
-                    HStack(spacing: 6) {
-                        if let source = note.entry.string("source") {
-                            Text(source).font(.caption2).foregroundStyle(.tertiary)
-                        }
-                        if let at = Dates.instant(note.entry.createdAt) {
-                            Text(at, format: .relative(presentation: .named)).font(.caption2).foregroundStyle(.tertiary)
+                }
+                HStack(spacing: 6) {
+                    if let at = Dates.instant(note.entry.createdAt) {
+                        Text(at, format: .relative(presentation: .named))
+                    }
+                    if let source = note.entry.string("source") {
+                        Text("·")
+                        Text(source)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if showRelated {
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    GroupLabel("Related")
+                    if related.isEmpty {
+                        Text("Nothing nearby in the hive.").font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        RelatedList(hits: related, linked: linked) { hit in
+                            Task { if await store.connect(note.ref, to: hit.ref) { linked.insert(hit.ref) } }
                         }
                     }
                 }
-                Spacer()
-                Menu {
-                    Button("Make a task…", systemImage: "checkmark.circle", action: makeTask)
-                    Menu("Attach to project", systemImage: "folder") {
-                        ForEach(store.projects) { project in
-                            Button(project.entry.string("title") ?? "Untitled") {
-                                Task { await store.attach(note, to: project.ref) }
-                            }
+                .padding(16)
+            }
+
+            Divider()
+            HStack(spacing: 8) {
+                Button("Make Task", systemImage: "checkmark.circle", action: makeTask)
+                Menu("Attach", systemImage: "folder") {
+                    ForEach(store.projects) { project in
+                        Button(project.entry.string("title") ?? "Untitled") {
+                            Task { await store.attach(note, to: project.ref) }
                         }
                     }
-                    Button(showRelated ? "Hide related" : "Show related", systemImage: "sparkles") {
-                        showRelated.toggle()
-                        if showRelated && related.isEmpty {
-                            Task { related = await store.related(to: note.entry.string("body") ?? "", excluding: note.ref) }
-                        }
-                    }
-                    Divider()
-                    Button("Drop", systemImage: "xmark.circle", role: .destructive) {
-                        Task { await store.triage(note, .dropped) }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
                 }
-                .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help("Triage")
-            }
-            if showRelated {
-                if related.isEmpty {
-                    Text("Nothing nearby in the hive.").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    RelatedList(hits: related, linked: linked) { hit in
-                        Task { if await store.connect(note.ref, to: hit.ref) { linked.insert(hit.ref) } }
+                Button(showRelated ? "Hide Related" : "Related", systemImage: "sparkles") {
+                    showRelated.toggle()
+                    if showRelated && related.isEmpty {
+                        Task { related = await store.related(to: note.entry.string("body") ?? "", excluding: note.ref) }
                     }
-                    .padding(.leading, 4)
+                }
+                Spacer(minLength: 8)
+                Button("Drop", systemImage: "xmark", role: .destructive) {
+                    Task { await store.triage(note, .dropped) }
                 }
             }
+            .controlSize(.small)
+            .buttonStyle(.bordered)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
         }
-        .padding(.vertical, 3)
+        .card()
     }
 }
 

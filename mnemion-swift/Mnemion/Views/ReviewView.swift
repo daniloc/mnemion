@@ -15,7 +15,6 @@ struct ReviewView: View {
     /// The work filter: the rest of the page always shows the whole review.
     @SceneStorage("reviewProject") private var projectFilter = ""
     @State private var query = ""
-    private var wide: Bool { width > 820 }
 
     var body: some View {
         Page(width: $width) {
@@ -23,7 +22,11 @@ struct ReviewView: View {
                 PageHeader(title: (Dates.date(review.asOf) ?? .now).formatted(.dateTime.weekday(.wide).month(.wide).day()),
                            summary: summary(review))
                 hooks(review)
-                columns(review)
+                PageColumns(width: width) {
+                    work(review)
+                } rail: {
+                    rail(review)
+                }
             } else if store.reviewUnavailable {
                 Notice(text: "This hive’s worker predates the review. Deploy the latest worker to see what needs attention.")
                 InboxCard(go: go)
@@ -78,22 +81,6 @@ struct ReviewView: View {
                 RhythmCard(title: "Today", start: .dayStart, review: review) { running = $0 }
                 RhythmCard(title: "This week", start: .weekStart, review: review) { running = $0 }
                 RhythmCard(title: "This month", start: .monthStart, review: review) { running = $0 }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func columns(_ review: Review) -> some View {
-        if wide {
-            // The rail sits under the third rhythm card: same width, same gap, same edges.
-            HStack(alignment: .top, spacing: PageLayout.gap) {
-                work(review).frame(maxWidth: .infinity, alignment: .leading)
-                rail(review).frame(width: PageLayout.column(of: 3, pageWidth: width))
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 32) {
-                work(review)
-                rail(review)
             }
         }
     }
@@ -497,17 +484,7 @@ private struct WorkSection: View {
     var body: some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Image(systemName: systemImage).foregroundStyle(tint)
-                    Text(title).font(.title3.weight(.semibold))
-                    Text(items.count, format: .number)
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    if let subtitle {
-                        Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
+                SectionHeader(title: title, systemImage: systemImage, tint: tint, count: items.count, note: subtitle)
                 VStack(spacing: 0) {
                     DividedRows(items: shown, id: \.ref) { brief in
                         WorkRow(brief: brief, age: age, go: go)

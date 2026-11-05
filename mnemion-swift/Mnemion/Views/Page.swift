@@ -86,6 +86,31 @@ struct GroupLabel: View {
     }
 }
 
+/// A titled block's heading: its mark, its name, how many, and a note at the far side.
+struct SectionHeader: View {
+    let title: String
+    var systemImage: String?
+    var tint: Color = .secondary
+    var count: Int?
+    var note: String?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            if let systemImage { Image(systemName: systemImage).foregroundStyle(tint) }
+            Text(title).font(.title3.weight(.semibold))
+            if let count {
+                Text(count, format: .number)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if let note {
+                Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+    }
+}
+
 /// Rows with dividers that start at the text.
 struct DividedRows<Item, ID: Hashable, Row: View>: View {
     let items: [Item]
@@ -124,6 +149,40 @@ struct RowButtonStyle: ButtonStyle {
                     }
                 }
                 .onHover { hovering = $0 }
+        }
+    }
+}
+
+/// The same hover on a row that holds its own buttons, so it can't be one itself.
+struct RowHover: ViewModifier {
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background { if hovering { Rectangle().fill(.quinary) } }
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+    }
+}
+
+/// The main column and side rail: the rail takes one third-width column, so it
+/// lines up with anything laid out in thirds above it.
+struct PageColumns<Main: View, Rail: View>: View {
+    let width: CGFloat
+    @ViewBuilder let main: Main
+    @ViewBuilder let rail: Rail
+
+    var body: some View {
+        if width > 820 {
+            HStack(alignment: .top, spacing: PageLayout.gap) {
+                main.frame(maxWidth: .infinity, alignment: .leading)
+                rail.frame(width: PageLayout.column(of: 3, pageWidth: width))
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 32) {
+                main
+                rail
+            }
         }
     }
 }
