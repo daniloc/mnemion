@@ -28,6 +28,14 @@ final class PortfolioStore {
 
     func schema(for pattern: String) -> PatternSummary? { index?.pattern(pattern) }
 
+    /// The project a task belongs to, among the tasks loaded so far.
+    func project(containing ref: EntryRef) -> PatternEntry? {
+        for (project, list) in tasks where list.contains(where: { $0.ref == ref }) {
+            return self.project(ref: project)
+        }
+        return nil
+    }
+
     /// The status that finishes an open entry of this pattern: the same declared
     /// value the task checkmark writes. Nil when the pattern declares no closed values.
     func closingStatus(for pattern: String) -> String? {

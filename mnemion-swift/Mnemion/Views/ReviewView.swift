@@ -12,6 +12,9 @@ struct ReviewView: View {
     @Environment(PortfolioStore.self) private var store
     @State private var running: ReviewHook?
     @State private var width: CGFloat = 1000
+    /// The work filter: the rest of the page always shows the whole review.
+    @SceneStorage("reviewProject") private var projectFilter = ""
+    @State private var query = ""
     private var wide: Bool { width > 820 }
 
     var body: some View {
@@ -116,15 +119,60 @@ struct ReviewView: View {
     }
 
     private func work(_ review: Review) -> some View {
-        VStack(alignment: .leading, spacing: 32) {
+        let all = review.allOverdue + review.allDueToday + review.allDueThisWeek + review.allStalled
+        let projects = workProjects(all)
+        // A project that has since left the review stops filtering rather than emptying the list.
+        let project = projects.first { $0.project.id == projectFilter }?.project
+        let filtering = project != nil || !trimmedQuery.isEmpty
+        let shown = { (items: [Review.Brief]) in items.filter { matches($0, project: project) } }
+        return VStack(alignment: .leading, spacing: 32) {
+            if !all.isEmpty {
+                WorkFilter(projects: projects, total: all.count, selected: project?.id, query: $query) {
+                    projectFilter = $0 ?? ""
+                }
+                .padding(.bottom, -12)
+            }
             WorkSection(title: "Overdue", systemImage: "exclamationmark.circle.fill", tint: .red,
-                        items: review.allOverdue, age: .late, go: go)
+                        items: shown(review.allOverdue), age: .late, expanded: filtering, go: go)
             WorkSection(title: "Due today", systemImage: "sun.max.fill", tint: .orange,
-                        items: review.allDueToday, age: .none, go: go)
+                        items: shown(review.allDueToday), age: .none, expanded: filtering, go: go)
             WorkSection(title: "This week", systemImage: "calendar", tint: .blue,
-                        items: review.allDueThisWeek, age: .weekday, go: go)
+                        items: shown(review.allDueThisWeek), age: .weekday, expanded: filtering, go: go)
             WorkSection(title: "Stalled", systemImage: "hourglass", tint: .secondary,
-                        subtitle: stalledSubtitle(review), items: review.allStalled, age: .idle, go: go)
+                        subtitle: stalledSubtitle(review), items: shown(review.allStalled), age: .idle, expanded: filtering, go: go)
+            if filtering, !all.contains(where: { matches($0, project: project) }) {
+                ContentUnavailableView {
+                    Label("Nothing matches", systemImage: "line.3.horizontal.decrease.circle")
+                } actions: {
+                    Button("Clear Filter") {
+                        projectFilter = ""
+                        query = ""
+                    }
+                }
+            }
+        }
+    }
+
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
+
+    private func matches(_ brief: Review.Brief, project: PatternEntry?) -> Bool {
+        let owner = store.project(containing: brief.ref)
+        if let project, owner?.id != project.id { return false }
+        guard !trimmedQuery.isEmpty else { return true }
+        return brief.label.localizedStandardContains(trimmedQuery)
+            || owner?.entry.string("title")?.localizedStandardContains(trimmedQuery) == true
+    }
+
+    /// The projects with work in the review, busiest first.
+    private func workProjects(_ items: [Review.Brief]) -> [(project: PatternEntry, count: Int)] {
+        var counts: [EntryRef: (project: PatternEntry, count: Int)] = [:]
+        for brief in items {
+            guard let project = store.project(containing: brief.ref) else { continue }
+            counts[project.ref, default: (project, 0)].count += 1
+        }
+        return counts.values.sorted {
+            $0.count != $1.count ? $0.count > $1.count
+                : ($0.project.entry.string("title") ?? "") < ($1.project.entry.string("title") ?? "")
         }
     }
 
@@ -374,6 +422,104 @@ private struct InboxCard: View {
     }
 }
 
+/// Narrow the work to one project, or to words in a task or project name.
+private struct WorkFilter: View {
+    let projects: [(project: PatternEntry, count: Int)]
+    let total: Int
+    let selected: PatternEntry.ID?
+    @Binding var query: String
+    let select: (PatternEntry.ID?) -> Void
+
+    var body: some View {
+        // Wrapped rather than scrolled: every project stays in view, and a Mac
+        // has no visible cue that a row of chips scrolls sideways.
+        FlowLayout(spacing: 6) {
+            FilterChip(title: "All", count: total, isOn: selected == nil) { select(nil) }
+            ForEach(projects, id: \.project.id) { item in
+                FilterChip(title: item.project.entry.string("title") ?? "Untitled", count: item.count,
+                           isOn: selected == item.project.id) { select(item.project.id) }
+            }
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Filter", text: $query)
+                    .textFieldStyle(.plain)
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear filter")
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(width: 150)
+            .background(.quinary, in: Capsule())
+        }
+    }
+}
+
+/// Lays its subviews out in rows, wrapping at the proposed width.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    private func rows(_ subviews: Subviews, width: CGFloat) -> (origins: [CGPoint], size: CGSize) {
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, widest: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            origins.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return (origins, CGSize(width: widest, height: y + rowHeight))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        rows(subviews, width: proposal.width ?? .infinity).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let origins = rows(subviews, width: bounds.width).origins
+        for (subview, origin) in zip(subviews, origins) {
+            subview.place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), proposal: .unspecified)
+        }
+    }
+}
+
+private struct FilterChip: View {
+    let title: String
+    let count: Int
+    let isOn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(title).lineLimit(1)
+                Text(count, format: .number).foregroundStyle(isOn ? AnyShapeStyle(.white.opacity(0.8)) : AnyShapeStyle(.secondary))
+            }
+            .font(.callout)
+            .foregroundStyle(isOn ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quinary), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
 /// How a row states its time; the section already says what kind of time it is.
 private enum WorkAge {
     case none, late, weekday, idle
@@ -388,11 +534,13 @@ private struct WorkSection: View {
     var subtitle: String?
     let items: [Review.Brief]
     let age: WorkAge
+    /// A filtered list is already short: show all of it.
+    var expanded = false
     let go: (Destination) -> Void
     @State private var showAll = false
 
     private static let preview = 5
-    private var shown: [Review.Brief] { showAll ? items : Array(items.prefix(Self.preview)) }
+    private var shown: [Review.Brief] { showAll || expanded ? items : Array(items.prefix(Self.preview)) }
 
     var body: some View {
         if !items.isEmpty {
@@ -413,7 +561,7 @@ private struct WorkSection: View {
                         if index > 0 { Divider().padding(.leading, 46) }
                         WorkRow(brief: brief, age: age, go: go)
                     }
-                    if items.count > Self.preview {
+                    if !expanded, items.count > Self.preview {
                         Divider().padding(.leading, 46)
                         Button(showAll ? "Show fewer" : "Show all \(items.count)") {
                             withAnimation(.snappy(duration: 0.2)) { showAll.toggle() }
@@ -444,12 +592,7 @@ private struct WorkRow: View {
     @State private var hovering = false
     @State private var finishing = false
 
-    private var project: PatternEntry? {
-        for (ref, list) in store.tasks where list.contains(where: { $0.ref == brief.ref }) {
-            return store.project(ref: ref)
-        }
-        return nil
-    }
+    private var project: PatternEntry? { store.project(containing: brief.ref) }
 
     private var closing: String? { store.closingStatus(for: brief.pattern) }
 
