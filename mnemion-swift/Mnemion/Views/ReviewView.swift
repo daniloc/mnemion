@@ -16,6 +16,7 @@ struct ReviewView: View {
     @SceneStorage("reviewProject") private var projectFilter = ""
     @State private var query = ""
     private var wide: Bool { width > 820 }
+    private static let cardGap: CGFloat = 12
 
     var body: some View {
         ScrollView {
@@ -94,8 +95,8 @@ struct ReviewView: View {
             Notice(text: "This hive has no reviews pattern yet. An agent can declare it from mnemion://review.")
         } else {
             // Three across or one column: an orphaned card would read as a missing one.
-            let columns = Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .top), count: width > 640 ? 3 : 1)
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+            let columns = Array(repeating: GridItem(.flexible(), spacing: Self.cardGap, alignment: .top), count: width > 640 ? 3 : 1)
+            LazyVGrid(columns: columns, alignment: .leading, spacing: Self.cardGap) {
                 RhythmCard(title: "Today", start: .dayStart, review: review) { running = $0 }
                 RhythmCard(title: "This week", start: .weekStart, review: review) { running = $0 }
                 RhythmCard(title: "This month", start: .monthStart, review: review) { running = $0 }
@@ -106,9 +107,10 @@ struct ReviewView: View {
     @ViewBuilder
     private func columns(_ review: Review) -> some View {
         if wide {
-            HStack(alignment: .top, spacing: 32) {
+            // The rail sits under the third rhythm card: same width, same gap, same edges.
+            HStack(alignment: .top, spacing: Self.cardGap) {
                 work(review).frame(maxWidth: .infinity, alignment: .leading)
-                rail(review).frame(width: 264)
+                rail(review).frame(width: (min(width - 64, 1040) - 2 * Self.cardGap) / 3)
             }
         } else {
             VStack(alignment: .leading, spacing: 32) {
