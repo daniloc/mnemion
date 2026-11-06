@@ -544,6 +544,11 @@ private struct WorkRow: View {
                 ageLabel.font(.callout).opacity(hovering || rescheduling ? 0 : 1)
                 controls.opacity(hovering || rescheduling ? 1 : 0)
             }
+            #else
+            // A tap opens the task's project, pushed with Back to the review.
+            if project != nil {
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+            }
             #endif
         }
         .contentShape(Rectangle())
