@@ -72,4 +72,37 @@ import Testing
         let views = try Self.sources("Mnemion/Views")
         #expect(try Self.hits(in: views, #"Task\s*\{\s*(\[.*\]\s*in\s*)?await\s+(self\.)?store\.load"#).isEmpty)
     }
+
+    // MARK: Layout follows the platform
+
+    /// Files under Mnemion/Views matching `pattern`, as names.
+    static func offenders(_ pattern: String) throws -> Set<String> {
+        let views = try sources("Mnemion/Views")
+        return Set(try hits(in: views, pattern).map { String($0.split(separator: ":")[0].split(separator: "/").last!) })
+    }
+
+    /// The hand-built layout still waiting to move to platform primitives. Each
+    /// list only shrinks: a new file fails, and so does a listed file that no
+    /// longer offends, so a migration has to take its name off the list.
+    static let measuresWidth: Set<String> = ["Page.swift"]
+    static let framesToItsScrollView: Set<String> = ["ReviewHookSheet.swift"]
+    static let handBuiltRows: Set<String> = ["Page.swift", "GoalsView.swift", "InboxView.swift", "ReviewView.swift", "ReviewHookSheet.swift"]
+
+    @Test func layoutFollowsTheSizeClassNotAMeasuredWidth() throws {
+        // Home: horizontalSizeClass and ViewThatFits, which change with a rotation,
+        // a fold or a resized window. A measured width went stale on the iPhone Duo.
+        #expect(try Self.offenders(#"onGeometryChange|GeometryReader"#) == Self.measuresWidth)
+    }
+
+    @Test func scrollContentNeverSizesToItsOwnScrollView() throws {
+        // Inside a ScrollView the container is the scroll view itself: the two widths
+        // depend on each other, and after a size change the old one wins.
+        #expect(try Self.offenders(#"containerRelativeFrame"#) == Self.framesToItsScrollView)
+    }
+
+    @Test func rowsAreListRows() throws {
+        // Home: List and Form, which bring separators, highlight, swipe actions,
+        // safe areas and lazy loading. A page of hand-divided rows re-builds them.
+        #expect(try Self.offenders(#"DividedRows|RowHover|PageColumns|Page\(width"#) == Self.handBuiltRows)
+    }
 }

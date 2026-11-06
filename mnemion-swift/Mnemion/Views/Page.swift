@@ -18,6 +18,7 @@ struct Page<Content: View>: View {
 
     var body: some View {
         let compact = PageLayout.isCompact(width)
+        GeometryReader { geo in
         ScrollView {
             VStack(alignment: .leading, spacing: compact ? 24 : 36) {
                 content
@@ -28,10 +29,11 @@ struct Page<Content: View>: View {
             .padding(.bottom, 48)
             // Exactly the scroll view's width. A fraction of a point of overflow
             // from any row would otherwise let the whole page pan sideways.
-            .containerRelativeFrame(.horizontal)
+            .frame(width: geo.size.width)
+        }
+        .onChange(of: geo.size.width, initial: true) { _, w in width = w }
         }
         .environment(\.pageIsCompact, compact)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
     }
 }
 
