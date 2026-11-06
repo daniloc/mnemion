@@ -310,9 +310,18 @@ private struct RhythmCard: View {
         }
         .padding(10)
         // Room for its words: three of these go across only when each gets it.
-        .frame(idealWidth: 200, maxWidth: .infinity, alignment: .leading)
+        .frame(idealWidth: Self.idealWidth, maxWidth: .infinity, alignment: .leading)
         .background(Self.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
+
+    /// Wide enough that a title and its question each keep to two lines. iOS
+    /// text is larger: at 200 points the unfolded iPhone Duo broke "Start the
+    /// week" over two lines and cut the question short.
+    #if os(macOS)
+    private static let idealWidth: CGFloat = 200
+    #else
+    private static let idealWidth: CGFloat = 240
+    #endif
 
     /// A list row's own surface, which this card stands in for.
     #if os(macOS)
