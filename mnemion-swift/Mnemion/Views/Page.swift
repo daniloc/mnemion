@@ -106,9 +106,11 @@ extension ToolbarContent {
 extension GeometryProxy {
     /// The display is partly folded: a reserved region divides it.
     var isDivided: Bool {
-        if #available(iOS 27.1, macOS 27.1, *) {
+        #if os(iOS)
+        if #available(iOS 27.1, *) {
             return reservedRegions(kind: .division).contains(where: \.isActive)
         }
+        #endif
         return false
     }
 }
