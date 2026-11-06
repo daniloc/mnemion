@@ -86,7 +86,7 @@ import Testing
     /// longer offends, so a migration has to take its name off the list.
     static let measuresWidth: Set<String> = ["Page.swift"]
     static let framesToItsScrollView: Set<String> = ["ReviewHookSheet.swift"]
-    static let handBuiltRows: Set<String> = ["Page.swift", "GoalsView.swift", "ReviewView.swift", "ReviewHookSheet.swift"]
+    static let handBuiltRows: Set<String> = ["Page.swift", "ReviewView.swift", "ReviewHookSheet.swift"]
 
     @Test func layoutFollowsTheSizeClassNotAMeasuredWidth() throws {
         // Home: horizontalSizeClass and ViewThatFits, which change with a rotation,
