@@ -84,7 +84,8 @@ import Testing
     @Test func layoutFollowsTheSizeClassNotAMeasuredWidth() throws {
         // Home: horizontalSizeClass and ViewThatFits, which change with a rotation,
         // a fold or a resized window. A measured width went stale on the iPhone Duo.
-        #expect(try Self.offenders(#"onGeometryChange|GeometryReader"#).isEmpty)
+        // Reading a reserved region (the fold) is geometry, but not a width.
+        #expect(try Self.offenders(#"^(?!.*isDivided).*(onGeometryChange|GeometryReader)"#).isEmpty)
     }
 
     @Test func scrollContentNeverSizesToItsOwnScrollView() throws {

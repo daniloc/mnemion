@@ -109,6 +109,7 @@ struct ProjectDetailView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button("New Task", systemImage: "plus") { composing = true }
             }
+            .keptLongest()
             if regular {
                 ToolbarItem(placement: .primaryAction) {
                     Button("About", systemImage: "info.circle") { factsShown.toggle() }

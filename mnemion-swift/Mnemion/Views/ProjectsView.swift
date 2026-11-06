@@ -44,9 +44,11 @@ struct ProjectsView: View {
             #if !os(macOS)
             // On the Mac the account is in the app menu (MnemionApp's commands).
             .toolbar {
+                // Compose is kept longest when a short toolbar overflows.
                 ToolbarItem {
                     Button("New Note", systemImage: "square.and.pencil") { app.showCapture = true }
                 }
+                .keptLongest()
                 ToolbarItem {
                     Menu {
                         Section("\(store.member) · \(store.host)") {

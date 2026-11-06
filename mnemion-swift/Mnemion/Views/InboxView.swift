@@ -45,6 +45,7 @@ struct InboxView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button("New Note", systemImage: "square.and.pencil") { app.showCapture = true }
             }
+            .keptLongest()
         }
         #endif
         .refreshable { await store.loadInbox() }

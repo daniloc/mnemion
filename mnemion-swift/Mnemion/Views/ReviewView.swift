@@ -17,6 +17,8 @@ struct ReviewView: View {
     /// The work filter: the rest of the page always shows the whole review.
     @SceneStorage("reviewProject") private var projectFilter = ""
     @State private var query = ""
+    /// The inner display is partly folded: its center is a reserved region.
+    @State private var divided = false
     /// The structural part in an inspector, off by default: the review cards
     /// need the width more, and without it the structure follows the work.
     @AppStorage("reviewStructureShown") private var structureShown = false
@@ -50,6 +52,7 @@ struct ReviewView: View {
                 #endif
                 .headerProminence(.increased)
                 .searchable(text: $query, prompt: "Filter work")
+                .onGeometryChange(for: Bool.self) { $0.isDivided } action: { divided = $0 }
                 .inspector(isPresented: Binding(get: { inspecting }, set: { structureShown = $0 })) {
                     List { structure(review) }
                         .inspectorColumnWidth(min: 240, ideal: 280, max: 360)
@@ -67,22 +70,21 @@ struct ReviewView: View {
         }
         .pageTitle("Review")
         .toolbar {
-            if let review = store.review {
-                ToolbarItem(placement: .primaryAction) { projectMenu(review) }
-            }
-            ToolbarItem(placement: .primaryAction) {
+            // One group, so the system spaces and overflows them together; running
+            // a review is what this page is for, so it stays longest.
+            ToolbarItemGroup(placement: .primaryAction) {
                 Menu("Run a review", systemImage: "play.circle") {
                     ForEach(ReviewHook.allCases) { hook in
                         Button(hook.title, systemImage: hook.systemImage) { running = hook }
                     }
                 }
                 .disabled(store.review?.hooks.pattern == nil)
-            }
-            if regular {
-                ToolbarItem(placement: .primaryAction) {
+                if let review = store.review { projectMenu(review) }
+                if regular {
                     Button("Structure", systemImage: "sidebar.trailing") { structureShown.toggle() }
                 }
             }
+            .keptLongest()
         }
         .refreshable { await store.loadReview() }
         // Rows name their project; the review itself carries only the task.
@@ -128,25 +130,38 @@ struct ReviewView: View {
                 // phone scrolls them sideways, the next one showing at the edge, so
                 // it doesn't spend a screenful on reviews above the work; a Mac,
                 // with no cue that a row scrolls, stacks them.
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 12) { cards }
-                    #if os(macOS)
-                    VStack(spacing: 12) { cards }
-                    #else
-                    ScrollView(.horizontal) {
-                        HStack(alignment: .top, spacing: 12) {
-                            cards.containerRelativeFrame(.horizontal, count: 6, span: 5, spacing: 12)
+                Group {
+                    // Folded partway, three across would put the middle card on the
+                    // fold; the sideways row keeps every card whole on one side.
+                    if divided {
+                        sideways(cards)
+                    } else {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .top, spacing: 12) { cards }
+                            #if os(macOS)
+                            VStack(spacing: 12) { cards }
+                            #else
+                            sideways(cards)
+                            #endif
                         }
-                        .scrollTargetLayout()
                     }
-                    .scrollIndicators(.never)
-                    .scrollTargetBehavior(.viewAligned)
-                    #endif
                 }
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
             }
         }
+    }
+
+    /// The cards in a sideways row, the next one showing at the edge.
+    private func sideways(_ cards: some View) -> some View {
+        ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                cards.containerRelativeFrame(.horizontal, count: 6, span: 5, spacing: 12)
+            }
+            .scrollTargetLayout()
+        }
+        .scrollIndicators(.never)
+        .scrollTargetBehavior(.viewAligned)
     }
 
     @ViewBuilder
@@ -529,18 +544,28 @@ private struct WorkRow: View {
                 ageLabel.font(.callout).opacity(hovering || rescheduling ? 0 : 1)
                 controls.opacity(hovering || rescheduling ? 1 : 0)
             }
-            #else
-            // No hover here: the moves are behind the menu and a long press.
-            Menu { moves } label: {
-                Image(systemName: "ellipsis")
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .tint(.secondary)
             #endif
         }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        // No hover on a phone: the moves are swipes and a long press. The ellipsis
+        // belongs to the system's overflow menu, so a row never draws its own.
+        .swipeActions(edge: .leading) {
+            if let closing {
+                Button(closing.capitalized, systemImage: "checkmark") { finish(closing) }
+                    .tint(.green)
+            }
+        }
+        .swipeActions(edge: .trailing) {
+            Button("Reschedule", systemImage: "calendar") { rescheduling = true }
+                .tint(.blue)
+            ForEach(otherClosings, id: \.self) { status in
+                Button(status.capitalized, systemImage: "xmark") {
+                    Task { await store.update(brief.ref, ["status": .string(status)]) }
+                }
+                .tint(.gray)
+            }
+        }
         .contextMenu { moves }
         .popover(isPresented: $rescheduling) {
             ReschedulePopover(deadline: brief.deadline) { date in
@@ -556,10 +581,7 @@ private struct WorkRow: View {
     private var finish: some View {
         if let closing {
             Button {
-                finishing = true
-                Task {
-                    if await !store.update(brief.ref, ["status": .string(closing)]) { finishing = false }
-                }
+                finish(closing)
             } label: {
                 Image(systemName: finishing ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
@@ -572,6 +594,18 @@ private struct WorkRow: View {
         } else {
             Image(systemName: "circle").font(.title3).hidden()
         }
+    }
+
+    private func finish(_ closing: String) {
+        finishing = true
+        Task {
+            if await !store.update(brief.ref, ["status": .string(closing)]) { finishing = false }
+        }
+    }
+
+    /// Closings other than the one finishing writes, such as dropped.
+    private var otherClosings: [String] {
+        (store.schema(for: brief.pattern)?.facet("status")?.closed ?? []).filter { $0 != closing && $0 != brief.status }
     }
 
     #if os(macOS)

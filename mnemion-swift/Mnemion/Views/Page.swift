@@ -89,3 +89,27 @@ struct ProjectIcon: View {
             .foregroundStyle(StatusBadge.color(for: project.entry.string("status") ?? ""))
     }
 }
+
+extension ToolbarContent {
+    /// Kept in view longest when a short toolbar overflows, as the HIG asks for
+    /// Compose-like actions on the iPhone Duo's vertical bars.
+    @ToolbarContentBuilder
+    func keptLongest() -> some ToolbarContent {
+        if #available(iOS 27.0, macOS 26.1, *) {
+            visibilityPriority(.high)
+        } else {
+            self
+        }
+    }
+}
+
+extension GeometryProxy {
+    /// The display is partly folded: a reserved region divides it.
+    var isDivided: Bool {
+        if #available(iOS 27.1, macOS 27.1, *) {
+            return reservedRegions(kind: .division).contains(where: \.isActive)
+        }
+        return false
+    }
+}
+
