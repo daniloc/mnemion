@@ -86,7 +86,7 @@ import Testing
     /// longer offends, so a migration has to take its name off the list.
     static let measuresWidth: Set<String> = ["Page.swift"]
     static let framesToItsScrollView: Set<String> = ["ReviewHookSheet.swift"]
-    static let handBuiltRows: Set<String> = ["Page.swift", "ReviewView.swift", "ReviewHookSheet.swift"]
+    static let handBuiltRows: Set<String> = ["Page.swift", "ReviewHookSheet.swift"]
 
     @Test func layoutFollowsTheSizeClassNotAMeasuredWidth() throws {
         // Home: horizontalSizeClass and ViewThatFits, which change with a rotation,
@@ -95,9 +95,10 @@ import Testing
     }
 
     @Test func scrollContentNeverSizesToItsOwnScrollView() throws {
-        // Inside a ScrollView the container is the scroll view itself: the two widths
-        // depend on each other, and after a size change the old one wins.
-        #expect(try Self.offenders(#"containerRelativeFrame"#) == Self.framesToItsScrollView)
+        // Inside a vertical ScrollView the container is the scroll view itself: the
+        // two widths depend on each other, and after a size change the old one wins.
+        // A share of a sideways scroller (count:span:) is the paging primitive.
+        #expect(try Self.offenders(#"containerRelativeFrame\(\.horizontal\)"#) == Self.framesToItsScrollView)
     }
 
     @Test func rowsAreListRows() throws {

@@ -33,10 +33,10 @@ struct InboxView: View {
                 }
                 #if os(iOS)
                 .listStyle(.insetGrouped)
+                .listSectionSpacing(.compact)
                 #else
                 .listStyle(.inset)
                 #endif
-                .listSectionSpacing(.compact)
             }
         }
         .pageTitle("Inbox")

@@ -22,10 +22,10 @@ struct GoalsView: View {
                 }
                 #if os(iOS)
                 .listStyle(.insetGrouped)
+                .listSectionSpacing(.compact)
                 #else
                 .listStyle(.inset)
                 #endif
-                .listSectionSpacing(.compact)
             }
         }
         .pageTitle("Goals")
@@ -153,6 +153,9 @@ private struct ServingRow: View {
         }
         // The row's text keeps its own colors; the list still highlights the tap.
         .foregroundStyle(.primary)
+        #if os(macOS)
+        .buttonStyle(.plain)
+        #endif
     }
 
     @ViewBuilder

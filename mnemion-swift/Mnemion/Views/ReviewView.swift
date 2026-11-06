@@ -4,39 +4,72 @@ import SwiftUI
 /// What needs attention now, as the worker derives it: due review hooks,
 /// overdue, due and stalled work, alignment gaps, and the untriaged inbox.
 /// It reads as a page, not a list of records: the day and what it asks, the
-/// reviews waiting, the work in order of urgency, and a rail for what is
-/// structural rather than urgent. Every row has the moves the review asks for:
-/// done, drop, reschedule.
+/// reviews waiting, the work in order of urgency, and what is structural rather
+/// than urgent, beside the work where there is room. Every row has the moves the
+/// review asks for: done, drop, reschedule.
 struct ReviewView: View {
     let go: (Destination) -> Void
     @Environment(PortfolioStore.self) private var store
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
     @State private var running: ReviewHook?
-    @State private var width: CGFloat = 1000
     /// The work filter: the rest of the page always shows the whole review.
     @SceneStorage("reviewProject") private var projectFilter = ""
     @State private var query = ""
+    /// The structural part in an inspector, off by default: the review cards
+    /// need the width more, and without it the structure follows the work.
+    @AppStorage("reviewStructureShown") private var structureShown = false
+
+    private var regular: Bool {
+        #if os(iOS)
+        sizeClass == .regular
+        #else
+        true
+        #endif
+    }
+
+    private var inspecting: Bool { regular && structureShown }
 
     var body: some View {
-        Page(width: $width) {
+        Group {
             if let review = store.review {
-                PageHeader(title: headline(review), summary: summary(review))
-                hooks(review)
-                PageColumns(width: width) {
+                List {
+                    Section {
+                        PageHeader(title: headline(review), summary: summary(review))
+                            .listRowBackground(Color.clear)
+                    }
+                    hooks(review)
                     work(review)
-                } rail: {
-                    rail(review)
+                    if !inspecting { structure(review) }
+                }
+                #if os(iOS)
+                .listStyle(.insetGrouped)
+                #else
+                .listStyle(.inset)
+                #endif
+                .headerProminence(.increased)
+                .searchable(text: $query, prompt: "Filter work")
+                .inspector(isPresented: Binding(get: { inspecting }, set: { structureShown = $0 })) {
+                    List { structure(review) }
+                        .inspectorColumnWidth(min: 240, ideal: 280, max: 360)
                 }
             } else if store.reviewUnavailable {
-                Notice(text: "This hive’s worker predates the review. Deploy the latest worker to see what needs attention.")
-                InboxCard(go: go)
+                List {
+                    Label("This hive’s worker predates the review. Deploy the latest worker to see what needs attention.",
+                          systemImage: "info.circle")
+                        .foregroundStyle(.secondary)
+                    InboxRow(go: go)
+                }
             } else {
                 ProgressView("Deriving the review…")
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 120)
             }
         }
         .pageTitle("Review")
         .toolbar {
+            if let review = store.review {
+                ToolbarItem(placement: .primaryAction) { projectMenu(review) }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu("Run a review", systemImage: "play.circle") {
                     ForEach(ReviewHook.allCases) { hook in
@@ -44,6 +77,11 @@ struct ReviewView: View {
                     }
                 }
                 .disabled(store.review?.hooks.pattern == nil)
+            }
+            if regular {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Structure", systemImage: "sidebar.trailing") { structureShown.toggle() }
+                }
             }
         }
         .refreshable { await store.loadReview() }
@@ -58,7 +96,7 @@ struct ReviewView: View {
 
     /// The day; a phone abbreviates the month to keep it on one line.
     private func headline(_ review: Review) -> String {
-        let month: Date.FormatStyle.Symbol.Month = PageLayout.isCompact(width) ? .abbreviated : .wide
+        let month: Date.FormatStyle.Symbol.Month = regular ? .wide : .abbreviated
         return (Dates.date(review.asOf) ?? .now).formatted(.dateTime.weekday(.wide).month(month).day())
     }
 
@@ -77,64 +115,57 @@ struct ReviewView: View {
     /// now, and when a close opens, so a start never looks like it has no end.
     @ViewBuilder
     private func hooks(_ review: Review) -> some View {
-        if review.hooks.pattern == nil {
-            Notice(text: "This hive has no reviews pattern yet. An agent can declare it from mnemion://review.")
-        } else {
-            let cards = [
-                RhythmCard(title: "Today", start: .dayStart, review: review) { running = $0 },
-                RhythmCard(title: "This week", start: .weekStart, review: review) { running = $0 },
-                RhythmCard(title: "This month", start: .monthStart, review: review) { running = $0 },
-            ]
-            if PageLayout.isCompact(width) {
-                // A phone can't afford a screenful of reviews above the work: the
-                // cards scroll sideways, with the next one showing at the edge.
-                let margin = PageLayout.margin(width)
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: PageLayout.gap) {
-                        ForEach(cards.indices, id: \.self) { i in
-                            cards[i].frame(width: width - 2 * margin - 28)
-                        }
-                    }
-                    .scrollTargetLayout()
-                }
-                .scrollIndicators(.never)
-                .scrollTargetBehavior(.viewAligned)
-                // Cards show past the margins without the scroll view leaving them.
-                .scrollClipDisabled()
+        Section {
+            if review.hooks.pattern == nil {
+                Label("This hive has no reviews pattern yet. An agent can declare it from mnemion://review.",
+                      systemImage: "info.circle")
+                    .foregroundStyle(.secondary)
             } else {
-                // Three across, so no card is ever orphaned on a row of its own.
-                let columns = Array(repeating: GridItem(.flexible(), spacing: PageLayout.gap, alignment: .top), count: 3)
-                LazyVGrid(columns: columns, alignment: .leading, spacing: PageLayout.gap) {
-                    ForEach(cards.indices, id: \.self) { cards[$0] }
+                let cards = ForEach([ReviewHook.dayStart, .weekStart, .monthStart], id: \.self) { start in
+                    RhythmCard(start: start, review: review) { running = $0 }
                 }
+                // Three across when each card has room for its words. Otherwise a
+                // phone scrolls them sideways, the next one showing at the edge, so
+                // it doesn't spend a screenful on reviews above the work; a Mac,
+                // with no cue that a row scrolls, stacks them.
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 12) { cards }
+                    #if os(macOS)
+                    VStack(spacing: 12) { cards }
+                    #else
+                    ScrollView(.horizontal) {
+                        HStack(alignment: .top, spacing: 12) {
+                            cards.containerRelativeFrame(.horizontal, count: 6, span: 5, spacing: 12)
+                        }
+                        .scrollTargetLayout()
+                    }
+                    .scrollIndicators(.never)
+                    .scrollTargetBehavior(.viewAligned)
+                    #endif
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
             }
         }
     }
 
+    @ViewBuilder
     private func work(_ review: Review) -> some View {
         let all = review.allOverdue + review.allDueToday + review.allDueThisWeek + review.allStalled
-        let projects = store.projectCounts(for: all.map(\.ref))
-        // A project that has since left the review stops filtering rather than emptying the list.
-        let project = projects.first { $0.project.id == projectFilter }?.project
+        let project = filterProject(review)
         let filtering = project != nil || !query.trimmingCharacters(in: .whitespaces).isEmpty
         let matches = { (brief: Review.Brief) in store.matches(brief.ref, label: brief.label, project: project, query: query) }
         let shown = { (items: [Review.Brief]) in items.filter(matches) }
-        return VStack(alignment: .leading, spacing: 32) {
-            if !all.isEmpty {
-                ProjectFilter(projects: projects, total: all.count, selected: project?.id, query: $query) {
-                    projectFilter = $0 ?? ""
-                }
-                .padding(.bottom, -12)
-            }
-            WorkSection(title: "Overdue", systemImage: "exclamationmark.circle.fill", tint: .red,
-                        items: shown(review.allOverdue), age: .late, expanded: filtering, go: go)
-            WorkSection(title: "Due today", systemImage: "sun.max.fill", tint: .orange,
-                        items: shown(review.allDueToday), age: .none, expanded: filtering, go: go)
-            WorkSection(title: "This week", systemImage: "calendar", tint: .blue,
-                        items: shown(review.allDueThisWeek), age: .weekday, expanded: filtering, go: go)
-            WorkSection(title: "Stalled", systemImage: "hourglass", tint: .secondary,
-                        subtitle: stalledSubtitle(review), items: shown(review.allStalled), age: .idle, expanded: filtering, go: go)
-            if filtering, !all.contains(where: matches) {
+        WorkSection(title: "Overdue", systemImage: "exclamationmark.circle.fill", tint: .red,
+                    items: shown(review.allOverdue), age: .late, expanded: filtering, go: go)
+        WorkSection(title: "Due today", systemImage: "sun.max.fill", tint: .orange,
+                    items: shown(review.allDueToday), age: .none, expanded: filtering, go: go)
+        WorkSection(title: "This week", systemImage: "calendar", tint: .blue,
+                    items: shown(review.allDueThisWeek), age: .weekday, expanded: filtering, go: go)
+        WorkSection(title: "Stalled", systemImage: "hourglass", tint: .secondary,
+                    subtitle: stalledSubtitle(review), items: shown(review.allStalled), age: .idle, expanded: filtering, go: go)
+        if filtering, !all.contains(where: matches) {
+            Section {
                 ContentUnavailableView {
                     Label("Nothing matches", systemImage: "line.3.horizontal.decrease.circle")
                 } actions: {
@@ -147,32 +178,56 @@ struct ReviewView: View {
         }
     }
 
+    /// A project that has since left the review stops filtering rather than emptying the list.
+    private func filterProject(_ review: Review) -> PatternEntry? {
+        let all = review.allOverdue + review.allDueToday + review.allDueThisWeek + review.allStalled
+        return store.projectCounts(for: all.map(\.ref)).first { $0.project.id == projectFilter }?.project
+    }
+
+    /// Narrow the work to one project: a picker in the toolbar, beside the search.
+    private func projectMenu(_ review: Review) -> some View {
+        let all = review.allOverdue + review.allDueToday + review.allDueThisWeek + review.allStalled
+        let projects = store.projectCounts(for: all.map(\.ref))
+        let selected = filterProject(review)?.id ?? ""
+        return Menu("Project", systemImage: selected.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill") {
+            Picker("Project", selection: $projectFilter) {
+                Text("All \(all.count)").tag("")
+                ForEach(projects, id: \.project.id) { item in
+                    Text("\(item.project.entry.string("title") ?? "Untitled") \(item.count)").tag(item.project.id)
+                }
+            }
+            .pickerStyle(.inline)
+        }
+        .disabled(projects.isEmpty)
+    }
+
     private func stalledSubtitle(_ review: Review) -> String? {
         review.work.first.map { "Open, untouched for \($0.stallDays) days or more" }
     }
 
-    private func rail(_ review: Review) -> some View {
-        VStack(alignment: .leading, spacing: 24) {
-            InboxCard(go: go)
-            // Exemptions (the catch-all project) are the worker's, from the charter's
-            // review_exempt, so agents and this screen read the same gaps.
-            ForEach(review.alignment.filter { !$0.entries.isEmpty }) { gap in
-                VStack(alignment: .leading, spacing: 8) {
-                    GroupLabel(gapTitle(gap))
-                    ForEach(gap.entries, id: \.ref) { brief in
-                        Button {
-                            open(brief)
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text(brief.label).lineLimit(2).multilineTextAlignment(.leading)
-                                Spacer(minLength: 0)
-                                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-                            }
-                            .font(.callout)
-                            .contentShape(Rectangle())
+    /// What is structural rather than urgent: the inbox, and the alignment gaps.
+    @ViewBuilder
+    private func structure(_ review: Review) -> some View {
+        Section { InboxRow(go: go) }
+        // Exemptions (the catch-all project) are the worker's, from the charter's
+        // review_exempt, so agents and this screen read the same gaps.
+        ForEach(review.alignment.filter { !$0.entries.isEmpty }) { gap in
+            Section(gapTitle(gap)) {
+                ForEach(gap.entries, id: \.ref) { brief in
+                    Button {
+                        open(brief)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(brief.label).lineLimit(2).multilineTextAlignment(.leading)
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
                         }
-                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
                     }
+                    .foregroundStyle(.primary)
+                    #if os(macOS)
+                    .buttonStyle(.plain)
+                    #endif
                 }
             }
         }
@@ -215,6 +270,15 @@ extension ReviewHook {
         }
     }
 
+    /// The rhythm a start opens, as its card names it.
+    var rhythm: String {
+        switch self {
+        case .dayStart, .dayEnd: return "Today"
+        case .weekStart, .weekEnd: return "This week"
+        case .monthStart, .monthEnd: return "This month"
+        }
+    }
+
     /// One color per rhythm: the day, the week, the month.
     var tint: Color {
         switch self {
@@ -227,29 +291,16 @@ extension ReviewHook {
 
 // MARK: - Parts
 
-private struct Notice: View {
-    let text: String
-
-    var body: some View {
-        Label(text, systemImage: "info.circle")
-            .foregroundStyle(.secondary)
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
-    }
-}
-
 /// One rhythm's two ends. Both are always shown: the review derives when each
 /// is due, and a close that hasn't opened yet is part of the picture.
 private struct RhythmCard: View {
-    let title: String
     let start: ReviewHook
     let review: Review
     let run: (ReviewHook) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
+            Text(start.rhythm)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(start.tint)
                 .padding(.horizontal, 10)
@@ -258,8 +309,17 @@ private struct RhythmCard: View {
             HookRow(hook: start.counterpart, state: state(of: start.counterpart)) { run(start.counterpart) }
         }
         .padding(10)
-        .card()
+        // Room for its words: three of these go across only when each gets it.
+        .frame(idealWidth: 200, maxWidth: .infinity, alignment: .leading)
+        .background(Self.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
+
+    /// A list row's own surface, which this card stands in for.
+    #if os(macOS)
+    private static let surface = AnyShapeStyle(.quinary)
+    #else
+    private static let surface = AnyShapeStyle(.background)
+    #endif
 
     private func state(of hook: ReviewHook) -> HookRow.State {
         guard let status = review.status(of: hook) else { return .upcoming }
@@ -337,7 +397,7 @@ private struct HookRow: View {
     }
 }
 
-private struct InboxCard: View {
+private struct InboxRow: View {
     let go: (Destination) -> Void
     @Environment(PortfolioStore.self) private var store
 
@@ -358,10 +418,12 @@ private struct InboxCard: View {
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
-            .padding(14)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(RowButtonStyle(corner: 12))
-        .card()
+        .foregroundStyle(.primary)
+        #if os(macOS)
+        .buttonStyle(.plain)
+        #endif
     }
 }
 
@@ -389,26 +451,21 @@ private struct WorkSection: View {
 
     var body: some View {
         if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                SectionHeader(title: title, systemImage: systemImage, tint: tint, count: items.count, note: subtitle)
-                VStack(spacing: 0) {
-                    DividedRows(items: shown, id: \.ref) { brief in
-                        WorkRow(brief: brief, age: age, go: go)
-                    }
-                    if !expanded, items.count > Self.preview {
-                        Divider().padding(.leading, 46)
-                        Button(showAll ? "Show fewer" : "Show all \(items.count)") {
-                            withAnimation(.snappy(duration: 0.2)) { showAll.toggle() }
-                        }
-                        .buttonStyle(.plain)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity)
-                        .contentShape(Rectangle())
-                    }
+            Section {
+                ForEach(shown, id: \.ref) { brief in
+                    WorkRow(brief: brief, age: age, go: go)
                 }
-                .card()
+                if !expanded, items.count > Self.preview {
+                    Button(showAll ? "Show fewer" : "Show all \(items.count)") {
+                        withAnimation(.snappy(duration: 0.2)) { showAll.toggle() }
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                }
+            } header: {
+                SectionHeader(title: title, systemImage: systemImage, tint: tint, count: items.count, note: subtitle)
+                    .textCase(nil)
             }
         }
     }
@@ -473,9 +530,6 @@ private struct WorkRow: View {
             .tint(.secondary)
             #endif
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background { if hovering { Rectangle().fill(.quinary) } }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .contextMenu { moves }
