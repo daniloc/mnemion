@@ -4,7 +4,6 @@ import SwiftUI
 /// Goals, each with the projects that serve it and how their work stands. A goal
 /// with nothing serving it is the question the monthly review asks, so it says so.
 struct GoalsView: View {
-    let go: (Destination) -> Void
     @Environment(PortfolioStore.self) private var store
 
     var body: some View {
@@ -18,7 +17,7 @@ struct GoalsView: View {
                         PageHeader(title: store.goals.count == 1 ? "1 goal" : "\(store.goals.count) goals", summary: summary)
                             .listRowBackground(Color.clear)
                     }
-                    ForEach(store.goals) { GoalSection(goal: $0, go: go) }
+                    ForEach(store.goals) { GoalSection(goal: $0) }
                 }
                 #if os(iOS)
                 .listStyle(.insetGrouped)
@@ -49,7 +48,6 @@ struct GoalsView: View {
 /// A goal as a list section: what it is, the projects serving it, and a way to add one.
 private struct GoalSection: View {
     let goal: PatternEntry
-    let go: (Destination) -> Void
     @Environment(PortfolioStore.self) private var store
 
     private var serving: [PatternEntry] {
@@ -87,7 +85,7 @@ private struct GoalSection: View {
                     .foregroundStyle(.orange)
             }
             ForEach(serving) { project in
-                ServingRow(project: project) { go(.project(project.id)) }
+                ServingRow(project: project)
             }
             if !addable.isEmpty {
                 Menu {
@@ -109,7 +107,6 @@ private struct GoalSection: View {
 /// A project under its goal: how much is open, and how much of that is late.
 private struct ServingRow: View {
     let project: PatternEntry
-    let open: () -> Void
     @Environment(PortfolioStore.self) private var store
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -133,7 +130,8 @@ private struct ServingRow: View {
     }
 
     var body: some View {
-        Button(action: open) {
+        // The whole row opens the project, pushed with Back to the goals.
+        NavigationLink(value: Destination.project(project.id)) {
             HStack(spacing: 10) {
                 ProjectIcon(project: project).frame(width: 18)
                 if compact {
@@ -147,15 +145,8 @@ private struct ServingRow: View {
                     Spacer(minLength: 8)
                     counts.font(.callout)
                 }
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
-            .contentShape(Rectangle())
         }
-        // The row's text keeps its own colors; the list still highlights the tap.
-        .foregroundStyle(.primary)
-        #if os(macOS)
-        .buttonStyle(.plain)
-        #endif
     }
 
     @ViewBuilder

@@ -104,14 +104,13 @@ struct ProjectsView: View {
 
     @ViewBuilder
     private func page(_ destination: Destination?) -> some View {
-        let go = { (next: Destination) in path.append(next) }
         switch destination {
         case .review:
-            ReviewView(go: go)
+            ReviewView()
         case .inbox:
             InboxView()
         case .goals:
-            GoalsView(go: go)
+            GoalsView()
         case .project(let id):
             if let project = store.project(id) {
                 ProjectDetailView(project: project)

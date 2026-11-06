@@ -8,7 +8,6 @@ import SwiftUI
 /// than urgent, beside the work where there is room. Every row has the moves the
 /// review asks for: done, drop, reschedule.
 struct ReviewView: View {
-    let go: (Destination) -> Void
     @Environment(PortfolioStore.self) private var store
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -62,7 +61,7 @@ struct ReviewView: View {
                     Label("This hive’s worker predates the review. Deploy the latest worker to see what needs attention.",
                           systemImage: "info.circle")
                         .foregroundStyle(.secondary)
-                    InboxRow(go: go)
+                    InboxRow()
                 }
             } else {
                 ProgressView("Deriving the review…")
@@ -172,13 +171,13 @@ struct ReviewView: View {
         let matches = { (brief: Review.Brief) in store.matches(brief.ref, label: brief.label, project: project, query: query) }
         let shown = { (items: [Review.Brief]) in items.filter(matches) }
         WorkSection(title: "Overdue", systemImage: "exclamationmark.circle.fill", tint: .red,
-                    items: shown(review.allOverdue), age: .late, expanded: filtering, go: go)
+                    items: shown(review.allOverdue), age: .late, expanded: filtering)
         WorkSection(title: "Due today", systemImage: "sun.max.fill", tint: .orange,
-                    items: shown(review.allDueToday), age: .none, expanded: filtering, go: go)
+                    items: shown(review.allDueToday), age: .none, expanded: filtering)
         WorkSection(title: "This week", systemImage: "calendar", tint: .blue,
-                    items: shown(review.allDueThisWeek), age: .weekday, expanded: filtering, go: go)
+                    items: shown(review.allDueThisWeek), age: .weekday, expanded: filtering)
         WorkSection(title: "Stalled", systemImage: "hourglass", tint: .secondary,
-                    subtitle: stalledSubtitle(review), items: shown(review.allStalled), age: .idle, expanded: filtering, go: go)
+                    subtitle: stalledSubtitle(review), items: shown(review.allStalled), age: .idle, expanded: filtering)
         if filtering, !all.contains(where: matches) {
             Section {
                 ContentUnavailableView {
@@ -223,26 +222,19 @@ struct ReviewView: View {
     /// What is structural rather than urgent: the inbox, and the alignment gaps.
     @ViewBuilder
     private func structure(_ review: Review) -> some View {
-        Section { InboxRow(go: go) }
+        Section { InboxRow() }
         // Exemptions (the catch-all project) are the worker's, from the charter's
         // review_exempt, so agents and this screen read the same gaps.
         ForEach(review.alignment.filter { !$0.entries.isEmpty }) { gap in
             Section(gapTitle(gap)) {
                 ForEach(gap.entries, id: \.ref) { brief in
-                    Button {
-                        open(brief)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(brief.label).lineLimit(2).multilineTextAlignment(.leading)
-                            Spacer(minLength: 0)
-                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                    if let destination = destination(of: brief) {
+                        NavigationLink(value: destination) {
+                            Text(brief.label).lineLimit(2)
                         }
-                        .contentShape(Rectangle())
+                    } else {
+                        Text(brief.label).lineLimit(2)
                     }
-                    .foregroundStyle(.primary)
-                    #if os(macOS)
-                    .buttonStyle(.plain)
-                    #endif
                 }
             }
         }
@@ -260,12 +252,12 @@ struct ReviewView: View {
         }
     }
 
-    private func open(_ brief: Review.Brief) {
+    /// Where a gap's entry opens: its project, or the goals page.
+    private func destination(of brief: Review.Brief) -> Destination? {
         if brief.pattern == Portfolio.projects, let project = store.project(ref: brief.ref) {
-            go(.project(project.id))
-        } else if brief.pattern == Portfolio.goals {
-            go(.goals)
+            return .project(project.id)
         }
+        return brief.pattern == Portfolio.goals ? .goals : nil
     }
 }
 
@@ -422,13 +414,10 @@ private struct HookRow: View {
 }
 
 private struct InboxRow: View {
-    let go: (Destination) -> Void
     @Environment(PortfolioStore.self) private var store
 
     var body: some View {
-        Button {
-            go(.inbox)
-        } label: {
+        NavigationLink(value: Destination.inbox) {
             HStack(spacing: 10) {
                 Image(systemName: store.notes.isEmpty ? "tray" : "tray.full")
                     .font(.title3)
@@ -439,15 +428,8 @@ private struct InboxRow: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
-            .contentShape(Rectangle())
         }
-        .foregroundStyle(.primary)
-        #if os(macOS)
-        .buttonStyle(.plain)
-        #endif
     }
 }
 
@@ -467,7 +449,6 @@ private struct WorkSection: View {
     let age: WorkAge
     /// A filtered list is already short: show all of it.
     var expanded = false
-    let go: (Destination) -> Void
     @State private var showAll = false
 
     private static let preview = 5
@@ -477,7 +458,7 @@ private struct WorkSection: View {
         if !items.isEmpty {
             Section {
                 ForEach(shown, id: \.ref) { brief in
-                    WorkRow(brief: brief, age: age, go: go)
+                    WorkRow(brief: brief, age: age)
                 }
                 if !expanded, items.count > Self.preview {
                     Button(showAll ? "Show fewer" : "Show all \(items.count)") {
@@ -500,7 +481,6 @@ private struct WorkSection: View {
 private struct WorkRow: View {
     let brief: Review.Brief
     let age: WorkAge
-    let go: (Destination) -> Void
     @Environment(PortfolioStore.self) private var store
     @State private var rescheduling = false
     @State private var hovering = false
@@ -511,47 +491,14 @@ private struct WorkRow: View {
     private var closing: String? { store.closingStatus(for: brief.pattern) }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            finish
-            VStack(alignment: .leading, spacing: 3) {
-                Text(brief.label)
-                    .lineLimit(2)
-                    .foregroundStyle(finishing ? .secondary : .primary)
-                HStack(spacing: 8) {
-                    if let project {
-                        Text(project.entry.string("title") ?? "Untitled")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    // The initial status says nothing in a list of open work.
-                    if let status = brief.status, status != store.statuses(for: brief.pattern).first {
-                        StatusBadge(status: status)
-                    }
-                    #if !os(macOS)
-                    // A phone needs the width for the title, so the age rides along here.
-                    ageLabel.font(.caption)
-                    #endif
-                }
+        // The whole row opens the task's project, pushed with Back to the review.
+        Group {
+            if let project {
+                NavigationLink(value: Destination.project(project.id)) { content }
+            } else {
+                content
             }
-            .contentShape(Rectangle())
-            .onTapGesture { if let project { go(.project(project.id)) } }
-            Spacer(minLength: 8)
-            #if os(macOS)
-            // One slot: the moves take the age's place on hover, so controls that
-            // aren't showing never squeeze the title.
-            ZStack(alignment: .trailing) {
-                ageLabel.font(.callout).opacity(hovering || rescheduling ? 0 : 1)
-                controls.opacity(hovering || rescheduling ? 1 : 0)
-            }
-            #else
-            // A tap opens the task's project, pushed with Back to the review.
-            if project != nil {
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-            }
-            #endif
         }
-        .contentShape(Rectangle())
         .onHover { hovering = $0 }
         // No hover on a phone: the moves are swipes and a long press. The ellipsis
         // belongs to the system's overflow menu, so a row never draws its own.
@@ -580,6 +527,42 @@ private struct WorkRow: View {
         }
     }
 
+    private var content: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            finish
+            VStack(alignment: .leading, spacing: 3) {
+                Text(brief.label)
+                    .lineLimit(2)
+                    .foregroundStyle(finishing ? .secondary : .primary)
+                HStack(spacing: 8) {
+                    if let project {
+                        Text(project.entry.string("title") ?? "Untitled")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    // The initial status says nothing in a list of open work.
+                    if let status = brief.status, status != store.statuses(for: brief.pattern).first {
+                        StatusBadge(status: status)
+                    }
+                    #if !os(macOS)
+                    // A phone needs the width for the title, so the age rides along here.
+                    ageLabel.font(.caption)
+                    #endif
+                }
+            }
+            Spacer(minLength: 8)
+            #if os(macOS)
+            // One slot: the moves take the age's place on hover, so controls that
+            // aren't showing never squeeze the title.
+            ZStack(alignment: .trailing) {
+                ageLabel.font(.callout).opacity(hovering || rescheduling ? 0 : 1)
+                controls.opacity(hovering || rescheduling ? 1 : 0)
+            }
+            #endif
+        }
+    }
+
     /// A circle that writes the pattern's first declared closed status; absent
     /// when the pattern declares none, so it only offers what the hive accepts.
     @ViewBuilder
@@ -592,7 +575,8 @@ private struct WorkRow: View {
                     .font(.title3)
                     .foregroundStyle(finishing ? Color.green : Color.secondary)
             }
-            .buttonStyle(.plain)
+            // Borderless: inside the row's link, the circle is its own tap target.
+            .buttonStyle(.borderless)
             .disabled(finishing)
             .help("Mark \(closing)")
             .accessibilityLabel("Finish")
