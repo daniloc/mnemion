@@ -67,7 +67,13 @@ extension View {
 struct PageHeader: View {
     let title: String
     let summary: String
-    @Environment(\.pageIsCompact) private var compact
+    @Environment(\.pageIsCompact) private var compactPage
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var compact: Bool { compactPage || sizeClass == .compact }
+    #else
+    private var compact: Bool { compactPage }
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 3 : 6) {
