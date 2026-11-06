@@ -8,9 +8,6 @@ struct ReviewHookSheet: View {
     let hook: ReviewHook
     @Environment(PortfolioStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    #if os(iOS)
-    @Environment(\.horizontalSizeClass) private var sizeClass
-    #endif
     @State private var text = ""
     @State private var energy = ""
     @State private var candidates: [PatternEntry] = []
@@ -46,7 +43,7 @@ struct ReviewHookSheet: View {
         #if os(macOS)
         // The Mac sheet draws its own header and footer, as capture does.
         VStack(spacing: 0) {
-            ScrollView { content.padding(24).containerRelativeFrame(.horizontal) }
+            content
             Divider()
             HStack {
                 KeyHint(keys: "⌘↩", label: "Record")
@@ -66,7 +63,7 @@ struct ReviewHookSheet: View {
         .task { await load() }
         #else
         NavigationStack {
-            ScrollView { content.padding().containerRelativeFrame(.horizontal) }
+            content
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -79,24 +76,27 @@ struct ReviewHookSheet: View {
         #endif
     }
 
-    private var isPhone: Bool {
-        #if os(iOS)
-        sizeClass == .compact
-        #else
-        false
-        #endif
-    }
-
     private var content: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            header
-            gathered
-            question
+        Form {
+            Section {
+                header
+                gathered
+            }
+            Section {
+                TextField(hook.isStart ? "In your words" : "What happened", text: $text, axis: .vertical)
+                    .lineLimit(4...)
+                    .focused($answering)
+            } header: {
+                // The hook's question is the point of the sheet, so it is the largest thing on it.
+                Text(hook.prompt)
+                    .font(.system(size: 22, weight: .medium, design: .serif))
+                    .foregroundStyle(Color.primary)
+                    .textCase(nil)
+            }
             // Energy is asked only when the reviews pattern declares the facet,
             // with the options it declares.
             if hook == .dayStart, !energyOptions.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    GroupLabel("Energy and attention")
+                Section("Energy and attention") {
                     Picker("Energy", selection: $energy) {
                         ForEach(energyOptions, id: \.self) { Text($0.capitalized).tag($0) }
                     }
@@ -106,8 +106,7 @@ struct ReviewHookSheet: View {
             }
             if hook.isStart { commitments }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .environment(\.pageIsCompact, isPhone)
+        .formStyle(.grouped)
     }
 
     private var header: some View {
@@ -124,36 +123,6 @@ struct ReviewHookSheet: View {
         }
     }
 
-    /// The hook's question is the point of the sheet, so it is the largest thing on it.
-    private var question: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(hook.prompt)
-                .font(.system(size: 22, weight: .medium, design: .serif))
-                .fixedSize(horizontal: false, vertical: true)
-            TextEditor(text: $text)
-                .font(.system(size: 15))
-                .scrollContentBackground(.hidden)
-                .focused($answering)
-                .frame(height: 112)
-                .padding(8)
-                .overlay(alignment: .topLeading) {
-                    if text.isEmpty {
-                        Text(hook.isStart ? "In your words" : "What happened")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 13)
-                            #if os(macOS)
-                            .padding(.vertical, 8)
-                            #else
-                            .padding(.vertical, 16)
-                            #endif
-                            .allowsHitTesting(false)
-                    }
-                }
-                .card()
-        }
-    }
-
     /// What the filter leaves of the candidates. Anything already chosen stays
     /// chosen when it is filtered out of view; the header keeps count.
     private var shownCandidates: [PatternEntry] {
@@ -163,30 +132,34 @@ struct ReviewHookSheet: View {
         }
     }
 
+    @ViewBuilder
     private var commitments: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                GroupLabel(hook.commitsTo == Portfolio.tasks ? "Commit to" : "Projects that get attention")
-                Spacer()
-                if !chosen.isEmpty {
-                    Text("\(chosen.count) chosen").font(.caption).foregroundStyle(.secondary)
-                }
-            }
+        Section {
             if candidates.isEmpty {
                 Text("Nothing open.").foregroundStyle(.secondary)
             } else {
-                // Projects aren't sorted into projects: only tasks get the chips.
-                ProjectFilter(projects: hook.commitsTo == Portfolio.tasks ? store.projectCounts(for: candidates.map(\.ref)) : [],
-                              total: candidates.count, selected: commitProject, query: $commitQuery) {
-                    commitProject = $0
-                }
-                if shownCandidates.isEmpty {
-                    Text("Nothing matches.").font(.callout).foregroundStyle(.secondary).padding(.vertical, 6)
-                } else {
-                    VStack(spacing: 0) {
-                        DividedRows(items: shownCandidates, id: \.id, inset: 42) { commitRow($0) }
+                // Projects aren't sorted into projects: only tasks get the picker.
+                if hook.commitsTo == Portfolio.tasks {
+                    Picker("Project", selection: $commitProject) {
+                        Text("All \(candidates.count)").tag(PatternEntry.ID?.none)
+                        ForEach(store.projectCounts(for: candidates.map(\.ref)), id: \.project.id) { item in
+                            Text("\(item.project.entry.string("title") ?? "Untitled") \(item.count)").tag(PatternEntry.ID?.some(item.project.id))
+                        }
                     }
-                    .card()
+                }
+                TextField("Filter", text: $commitQuery)
+                if shownCandidates.isEmpty {
+                    Text("Nothing matches.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(shownCandidates) { commitRow($0) }
+                }
+            }
+        } header: {
+            HStack {
+                Text(hook.commitsTo == Portfolio.tasks ? "Commit to" : "Projects that get attention")
+                Spacer()
+                if !chosen.isEmpty {
+                    Text("\(chosen.count) chosen").textCase(nil)
                 }
             }
         }
@@ -217,8 +190,6 @@ struct ReviewHookSheet: View {
                 }
                 Spacer(minLength: 8)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -258,16 +229,12 @@ struct ReviewHookSheet: View {
                 ])
             case .dayEnd, .weekEnd, .monthEnd:
                 if let start = startReview {
-                    VStack(alignment: .leading, spacing: 4) {
-                        GroupLabel("The intention")
+                    LabeledContent("The intention") {
                         Text(start.entry.string("intention") ?? "—")
-                        if let energy = start.entry.string("energy") {
-                            Text("Energy: \(energy)").font(.caption).foregroundStyle(.secondary)
-                        }
                     }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .card()
+                    if let energy = start.entry.string("energy") {
+                        LabeledContent("Energy", value: energy)
+                    }
                 } else {
                     Text("No \(hook.counterpart.title.lowercased()) review for this period.")
                         .font(.callout)
@@ -277,22 +244,11 @@ struct ReviewHookSheet: View {
         }
     }
 
+    /// What the hook gathered, a row each: four counts never fit a phone as tiles.
     private func summary(_ items: [(String, Int)]) -> some View {
-        HStack(spacing: 8) {
-            ForEach(items, id: \.0) { item in
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(item.1, format: .number)
-                        .font(.title2.weight(.semibold))
-                        .monospacedDigit()
-                    Text(item.0)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .card()
+        ForEach(items, id: \.0) { item in
+            LabeledContent(item.0) {
+                Text(item.1, format: .number).monospacedDigit()
             }
         }
     }

@@ -81,29 +81,22 @@ import Testing
         return Set(try hits(in: views, pattern).map { String($0.split(separator: ":")[0].split(separator: "/").last!) })
     }
 
-    /// The hand-built layout still waiting to move to platform primitives. Each
-    /// list only shrinks: a new file fails, and so does a listed file that no
-    /// longer offends, so a migration has to take its name off the list.
-    static let measuresWidth: Set<String> = ["Page.swift"]
-    static let framesToItsScrollView: Set<String> = ["ReviewHookSheet.swift"]
-    static let handBuiltRows: Set<String> = ["Page.swift", "ReviewHookSheet.swift"]
-
     @Test func layoutFollowsTheSizeClassNotAMeasuredWidth() throws {
         // Home: horizontalSizeClass and ViewThatFits, which change with a rotation,
         // a fold or a resized window. A measured width went stale on the iPhone Duo.
-        #expect(try Self.offenders(#"onGeometryChange|GeometryReader"#) == Self.measuresWidth)
+        #expect(try Self.offenders(#"onGeometryChange|GeometryReader"#).isEmpty)
     }
 
     @Test func scrollContentNeverSizesToItsOwnScrollView() throws {
         // Inside a vertical ScrollView the container is the scroll view itself: the
         // two widths depend on each other, and after a size change the old one wins.
         // A share of a sideways scroller (count:span:) is the paging primitive.
-        #expect(try Self.offenders(#"containerRelativeFrame\(\.horizontal\)"#) == Self.framesToItsScrollView)
+        #expect(try Self.offenders(#"containerRelativeFrame\(\.horizontal\)"#).isEmpty)
     }
 
     @Test func rowsAreListRows() throws {
         // Home: List and Form, which bring separators, highlight, swipe actions,
         // safe areas and lazy loading. A page of hand-divided rows re-builds them.
-        #expect(try Self.offenders(#"DividedRows|RowHover|PageColumns|Page\(width"#) == Self.handBuiltRows)
+        #expect(try Self.offenders(#"DividedRows|RowHover|PageColumns|Page\(width"#).isEmpty)
     }
 }

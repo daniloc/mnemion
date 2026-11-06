@@ -89,7 +89,6 @@ struct ProjectDetailView: View {
         .listStyle(.inset)
         #endif
         .headerProminence(.increased)
-        .environment(\.pageIsCompact, !regular)
         .pageTitle(title)
         .inspector(isPresented: Binding(get: { inspecting }, set: { factsShown = $0 })) {
             ScrollView {

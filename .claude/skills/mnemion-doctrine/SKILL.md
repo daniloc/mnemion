@@ -74,7 +74,7 @@ The same rule applies to SwiftUI: a layout question answered in every view (meas
 | Details beside the work | `.inspector`, or a `DisclosureGroup` row when there's no room |
 | A different layout at a different size | `horizontalSizeClass`, `ViewThatFits` |
 
-Never choose a layout from a width you measured: it goes stale on a rotation or a fold. `ConventionTests` holds the list of files not yet moved, and that list only shrinks (`mnemion-swift/Mnemion/Mnemion.spec.md`, "views lay out with the platform").
+Never choose a layout from a width you measured: it goes stale on a rotation or a fold. `ConventionTests` fails on a measured width, on content framed to its own scroll view, and on hand-built rows (`mnemion-swift/Mnemion/Mnemion.spec.md`, "views lay out with the platform").
 
 ## Operational checklists
 
