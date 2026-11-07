@@ -8,3 +8,9 @@ The SwiftUI surfaces: review first, inbox capture that connects at write, goals,
   via: ConventionTests
   because: Each rule the second blind review found was a value a view had spelled for itself; the hive's facets and the charter are their only home.
   kinds: none
+- views lay out with the platform: A view chooses its layout from the size class or ViewThatFits, never from a width it measured; lists are List, forms are Form, row moves are swipeActions and contextMenu, and details beside the work are an inspector.
+  over: every Swift source under Mnemion/Views, scanned for width measurement (onGeometryChange, GeometryReader; reading whether a reserved region divides the display, isDivided, is not a width), for content framed to the whole width of its own scroll view (containerRelativeFrame(.horizontal); a count:span: share of a sideways scroller is the paging primitive), and for hand-built rows (DividedRows, RowHover, PageColumns, Page); every page has moved, so each scan finds nothing
+  via: ConventionTests
+  because: On the iPhone Duo every page built on a measured width kept its old layout after a rotation, cut off on both sides; a fold changes the size the same way. The system's own primitives re-lay out on every size change and bring the row behavior the hand-built pages lacked.
+  kinds: none
+

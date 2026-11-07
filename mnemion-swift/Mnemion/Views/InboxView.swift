@@ -8,7 +8,6 @@ struct InboxView: View {
     @Environment(PortfolioStore.self) private var store
     @Environment(AppState.self) private var app
     @State private var makingTask: PatternEntry?
-    @State private var width: CGFloat = 1000
 
     var body: some View {
         Group {
@@ -21,16 +20,23 @@ struct InboxView: View {
                     Button("New Note") { app.showCapture = true }
                 }
             } else {
-                Page(width: $width) {
-                    PageHeader(title: store.notes.count == 1 ? "1 note" : "\(store.notes.count) notes",
-                               summary: "Waiting for triage, newest first.")
-                    VStack(spacing: PageLayout.gap) {
-                        ForEach(store.notes) { note in
-                            NoteCard(note: note) { makingTask = note }
-                        }
+                List {
+                    Section {
+                        PageHeader(title: store.notes.count == 1 ? "1 note" : "\(store.notes.count) notes",
+                                   summary: "Waiting for triage, newest first.")
+                            .listRowBackground(Color.clear)
                     }
-                    .frame(maxWidth: 720, alignment: .leading)
+                    // A section per note: the note, what it relates to, and its moves.
+                    ForEach(store.notes) { note in
+                        NoteSection(note: note) { makingTask = note }
+                    }
                 }
+                #if os(iOS)
+                .listStyle(.insetGrouped)
+                .listSectionSpacing(.compact)
+                #else
+                .listStyle(.inset)
+                #endif
             }
         }
         .pageTitle("Inbox")
@@ -39,6 +45,7 @@ struct InboxView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button("New Note", systemImage: "square.and.pencil") { app.showCapture = true }
             }
+            .keptLongest()
         }
         #endif
         .refreshable { await store.loadInbox() }
@@ -54,23 +61,25 @@ private let emptyHint = "Capture with ⌘N here, \(QuickCapture.shortcut) from a
 private let emptyHint = "Capture a note here, or share a link from any app."
 #endif
 
-/// A note and its moves. Triage is what this screen is for, so they stay in view.
-private struct NoteCard: View {
+/// A note and its moves. Triage is what this screen is for, so they stay in
+/// view, and the two main ones are a swipe away as well.
+private struct NoteSection: View {
     let note: PatternEntry
     let makeTask: () -> Void
     @Environment(PortfolioStore.self) private var store
     @State private var showRelated = false
     @State private var related: [PrimeHit] = []
     @State private var linked: Set<EntryRef> = []
-    @Environment(\.pageIsCompact) private var compact
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Section {
             VStack(alignment: .leading, spacing: 8) {
                 Text(note.entry.string("body") ?? "")
                     .font(.system(size: 15))
                     .lineLimit(showRelated ? nil : 6)
-                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                 if let url = note.entry.string("url"), let link = URL(string: url) {
                     Link(destination: link) {
@@ -89,11 +98,15 @@ private struct NoteCard: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+            .swipeActions(edge: .leading) {
+                Button("Make Task", systemImage: "checkmark.circle", action: makeTask).tint(.accentColor)
+            }
+            .swipeActions(edge: .trailing) {
+                Button("Drop", systemImage: "xmark", role: .destructive) { drop() }
+            }
 
             if showRelated {
-                Divider()
                 VStack(alignment: .leading, spacing: 6) {
                     GroupLabel("Related")
                     if related.isEmpty {
@@ -104,42 +117,57 @@ private struct NoteCard: View {
                         }
                     }
                 }
-                .padding(16)
             }
 
-            Divider()
-            HStack(spacing: 8) {
-                Button("Make Task", systemImage: "checkmark.circle", action: makeTask)
-                Menu("Attach", systemImage: "folder") {
-                    ForEach(store.projects) { project in
-                        Button(project.entry.string("title") ?? "Untitled") {
-                            Task { await store.attach(note, to: project.ref) }
-                        }
-                    }
-                }
-                .menuIndicator(.hidden)
-                Button(showRelated ? "Hide Related" : "Related", systemImage: "sparkles") {
-                    showRelated.toggle()
-                    if showRelated && related.isEmpty {
-                        Task { related = await store.related(to: note.entry.string("body") ?? "", excluding: note.ref) }
-                    }
-                }
-                // A phone keeps the two main moves in words; these fit as icons.
-                .labelStyle(TightLabelStyle(iconOnly: compact))
-                Spacer(minLength: 0)
-                Button("Drop", systemImage: "xmark", role: .destructive) {
-                    Task { await store.triage(note, .dropped) }
-                }
-                .labelStyle(TightLabelStyle(iconOnly: compact))
-            }
-            .lineLimit(1)
-            .fixedSize(horizontal: false, vertical: true)
-            .controlSize(.small)
-            .buttonStyle(.bordered)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            moves
         }
-        .card()
+    }
+
+    /// A phone keeps the main move in words; the others fit as icons.
+    private var iconsOnly: Bool {
+        #if os(iOS)
+        sizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
+    private var attach: some View {
+        Menu("Attach", systemImage: "folder") {
+            ForEach(store.projects) { project in
+                Button(project.entry.string("title") ?? "Untitled") {
+                    Task { await store.attach(note, to: project.ref) }
+                }
+            }
+        }
+        .menuIndicator(.hidden)
+    }
+
+    private var moves: some View {
+        HStack(spacing: 6) {
+            Button("Make Task", systemImage: "checkmark.circle", action: makeTask)
+                .layoutPriority(1)
+            if iconsOnly { attach.labelStyle(.iconOnly) } else { attach }
+            Button(showRelated ? "Hide Related" : "Related", systemImage: "sparkles") {
+                showRelated.toggle()
+                if showRelated && related.isEmpty {
+                    Task { related = await store.related(to: note.entry.string("body") ?? "", excluding: note.ref) }
+                }
+            }
+            .labelStyle(TightLabelStyle(iconOnly: iconsOnly))
+            Spacer(minLength: 0)
+            Button("Drop", systemImage: "xmark", role: .destructive) { drop() }
+                .labelStyle(TightLabelStyle(iconOnly: iconsOnly))
+        }
+        .lineLimit(1)
+        // A list row sets labels in its own icon column; these are buttons.
+        .labelStyle(.titleAndIcon)
+        .controlSize(.small)
+        .buttonStyle(.bordered)
+    }
+
+    private func drop() {
+        Task { await store.triage(note, .dropped) }
     }
 }
 

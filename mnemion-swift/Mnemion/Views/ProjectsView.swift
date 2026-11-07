@@ -17,6 +17,9 @@ struct ProjectsView: View {
     @Environment(AppState.self) private var app
     @State private var selection: Destination? = .review
 
+    /// Pages pushed onto the selected one.
+    @State private var path: [Destination] = []
+
     var body: some View {
         @Bindable var app = app
         NavigationSplitView {
@@ -44,9 +47,11 @@ struct ProjectsView: View {
             #if !os(macOS)
             // On the Mac the account is in the app menu (MnemionApp's commands).
             .toolbar {
+                // Compose is kept longest when a short toolbar overflows.
                 ToolbarItem {
                     Button("New Note", systemImage: "square.and.pencil") { app.showCapture = true }
                 }
+                .keptLongest()
                 ToolbarItem {
                     Menu {
                         Section("\(store.member) · \(store.host)") {
@@ -61,24 +66,14 @@ struct ProjectsView: View {
             }
             #endif
         } detail: {
-            switch selection {
-            case .review:
-                ReviewView(go: { selection = $0 })
-            case .inbox:
-                InboxView()
-            case .goals:
-                GoalsView(go: { selection = $0 })
-            case .project(let id):
-                if let project = store.project(id) {
-                    ProjectDetailView(project: project)
-                        .id(project.id)
-                } else {
-                    ContentUnavailableView("Select a project", systemImage: "square.stack.3d.up")
-                }
-            case nil:
-                ContentUnavailableView("Select something", systemImage: "square.stack.3d.up")
+            // The detail pane is a stack: following a link inside a page pushes the
+            // page it names, with Back to where you were. The sidebar picks the root.
+            NavigationStack(path: $path) {
+                page(selection)
+                    .navigationDestination(for: Destination.self) { page($0) }
             }
         }
+        .onChange(of: selection) { path = [] }
         #if os(macOS)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -104,6 +99,27 @@ struct ProjectsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(store.error ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private func page(_ destination: Destination?) -> some View {
+        switch destination {
+        case .review:
+            ReviewView()
+        case .inbox:
+            InboxView()
+        case .goals:
+            GoalsView()
+        case .project(let id):
+            if let project = store.project(id) {
+                ProjectDetailView(project: project)
+                    .id(project.id)
+            } else {
+                ContentUnavailableView("Select a project", systemImage: "square.stack.3d.up")
+            }
+        case nil:
+            ContentUnavailableView("Select something", systemImage: "square.stack.3d.up")
         }
     }
 

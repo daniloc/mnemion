@@ -4,26 +4,103 @@ import SwiftUI
 struct ProjectDetailView: View {
     let project: PatternEntry
     @Environment(PortfolioStore.self) private var store
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
     @State private var composing = false
     @State private var editing: PatternEntry?
     @State private var showingDone = false
-    @State private var width: CGFloat = 1000
+    @State private var showingFacts = false
+    /// The facts in an inspector beside the work. Off by default on iOS: an
+    /// iPad in portrait (or an unfolded phone) is regular width without room
+    /// for a third column, so the inspector would cover the work.
+    #if os(macOS)
+    @AppStorage("projectFactsShown") private var factsShown = true
+    #else
+    @AppStorage("projectFactsShown") private var factsShown = false
+    #endif
 
     private var title: String { project.entry.string("title") ?? "Project" }
     private var tasks: [PatternEntry] { store.tasks[project.ref] ?? [] }
     private var open: [PatternEntry] { tasks.filter { !store.isClosed($0) }.sorted(by: byDeadline) }
     private var done: [PatternEntry] { tasks.filter { store.isClosed($0) } }
 
+    /// The size class, not a measured width, picks the layout: it changes with
+    /// a rotation, a fold or a resized window, and never goes stale.
+    private var regular: Bool {
+        #if os(iOS)
+        sizeClass == .regular
+        #else
+        true
+        #endif
+    }
+
+    private var inspecting: Bool { regular && factsShown }
+
     var body: some View {
-        Page(width: $width) {
-            PageHeader(title: title, summary: summary)
-            PageColumns(width: width, railLeadsWhenStacked: true) {
-                taskColumn
-            } rail: {
-                ProjectFacts(project: project)
+        List {
+            Section {
+                PageHeader(title: title, summary: summary)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
+            if !inspecting {
+                // The page opens on the work: the facts wait behind a tap.
+                Section {
+                    DisclosureGroup(isExpanded: $showingFacts) {
+                        ProjectFacts(project: project)
+                    } label: {
+                        ProjectSummary(project: project)
+                    }
+                }
+            }
+            Section {
+                if open.isEmpty {
+                    Button("Add a Task", systemImage: "plus") { composing = true }
+                } else {
+                    ForEach(open) { row($0) }
+                }
+            } header: {
+                SectionHeader(title: "Open", count: open.count)
+            }
+            if !done.isEmpty {
+                Section {
+                    if showingDone { ForEach(done) { row($0) } }
+                } header: {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) { showingDone.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .rotationEffect(.degrees(showingDone ? 90 : 0))
+                            SectionHeader(title: "Done", count: done.count)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
+        #if os(iOS)
+        .listStyle(.insetGrouped)
+        #else
+        .listStyle(.inset)
+        #endif
+        .headerProminence(.increased)
         .pageTitle(title)
+        .inspector(isPresented: Binding(get: { inspecting }, set: { factsShown = $0 })) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    ProjectSummary(project: project)
+                    ProjectFacts(project: project)
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .inspectorColumnWidth(min: 240, ideal: 300, max: 380)
+        }
         .toolbar {
             #if !os(macOS)
             // The page's headline already names it.
@@ -31,6 +108,12 @@ struct ProjectDetailView: View {
             #endif
             ToolbarItem(placement: .primaryAction) {
                 Button("New Task", systemImage: "plus") { composing = true }
+            }
+            .keptLongest()
+            if regular {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("About", systemImage: "info.circle") { factsShown.toggle() }
+                }
             }
         }
         .refreshable { await store.loadTasks(for: project) }
@@ -52,54 +135,44 @@ struct ProjectDetailView: View {
         }
     }
 
-    private var taskColumn: some View {
-        VStack(alignment: .leading, spacing: 32) {
-            VStack(alignment: .leading, spacing: 10) {
-                SectionHeader(title: "Open", count: open.count)
-                if open.isEmpty {
-                    Button("Add a Task", systemImage: "plus") { composing = true }
-                } else {
-                    rows(open)
-                }
-            }
-            if !done.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Button {
-                        withAnimation(.snappy(duration: 0.2)) { showingDone.toggle() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .rotationEffect(.degrees(showingDone ? 90 : 0))
-                            SectionHeader(title: "Done", count: done.count)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    if showingDone { rows(done) }
-                }
-            }
-        }
-    }
-
-    private func rows(_ items: [PatternEntry]) -> some View {
-        VStack(spacing: 0) {
-            DividedRows(items: items, id: \.id) { row($0) }
-        }
-        .card()
-    }
-
     private func row(_ task: PatternEntry) -> some View {
+        let schema = store.schema(for: task.pattern)
+        let isDone = store.isClosed(task)
         // The pattern's declared statuses decide what a tap writes; with no
         // closed declaration there is nothing a tap could write, so no toggle.
-        TaskRow(task: task, done: store.isClosed(task), toggle: Portfolio.toggledStatus(for: task, schema: store.schema(for: task.pattern)).map { next in
+        let next = Portfolio.toggledStatus(for: task, schema: schema)
+        let status = task.entry.string("status")
+        // Closings other than the one a tap writes, such as dropped.
+        let otherClosings = (schema?.facet("status")?.closed ?? []).filter { $0 != next && $0 != status }
+        return TaskRow(task: task, done: isDone, toggle: next.map { next in
             { Task { await store.setStatus(task, to: next) } }
         })
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .modifier(RowHover())
+        .contentShape(Rectangle())
         .onTapGesture { editing = task }
+        .swipeActions(edge: .leading) {
+            if let next {
+                Button(isDone ? "Reopen" : "Finish", systemImage: isDone ? "arrow.uturn.backward" : "checkmark") {
+                    Task { await store.setStatus(task, to: next) }
+                }
+                .tint(isDone ? .blue : .green)
+            }
+        }
+        .swipeActions(edge: .trailing) {
+            ForEach(otherClosings, id: \.self) { closing in
+                Button(closing.capitalized, systemImage: "xmark") {
+                    Task { await store.setStatus(task, to: closing) }
+                }
+                .tint(.gray)
+            }
+        }
+        .contextMenu {
+            // Only statuses this entry's pattern declares; the worker refuses any other.
+            ForEach(store.statuses(for: task.pattern).filter { $0 != status }, id: \.self) { option in
+                Button(option.capitalized) { Task { await store.setStatus(task, to: option) } }
+            }
+            Divider()
+            Button("Edit…", systemImage: "pencil") { editing = task }
+        }
     }
 
     /// Dated first, soonest first; undated after, newest first.
@@ -113,13 +186,25 @@ struct ProjectDetailView: View {
     }
 }
 
-/// What the project is: its state, what it intends, and what it serves. These
-/// change rarely, so they sit beside the work rather than above it.
+/// The project's state and horizon in a line: the label the facts fold under.
+private struct ProjectSummary: View {
+    let project: PatternEntry
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let status = project.entry.string("status") { StatusBadge(status: status) }
+            if let horizon = project.entry.string("horizon") {
+                Text(horizon).font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// What the project intends and what it serves. These change rarely, so they
+/// sit beside the work (an inspector) or fold above it (a phone).
 private struct ProjectFacts: View {
     let project: PatternEntry
     @Environment(PortfolioStore.self) private var store
-    @Environment(\.pageIsCompact) private var compact
-    @State private var expanded = false
 
     private var served: [PatternEntry] {
         (store.projectGoals[project.ref] ?? []).compactMap(store.goal(ref:))
@@ -131,34 +216,8 @@ private struct ProjectFacts: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // A phone opens on the work: the rest of this card waits behind a tap.
-            Button {
-                withAnimation(.snappy(duration: 0.2)) { expanded.toggle() }
-            } label: {
-                HStack(spacing: 8) {
-                    if let status = project.entry.string("status") { StatusBadge(status: status) }
-                    if let horizon = project.entry.string("horizon") {
-                        Text(horizon).font(.callout).foregroundStyle(.secondary)
-                    }
-                    if compact {
-                        Spacer(minLength: 8)
-                        Text(expanded ? "Less" : "About").font(.callout).foregroundStyle(.secondary)
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .rotationEffect(.degrees(expanded ? 90 : 0))
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!compact)
-            if !compact || expanded { details }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
+        VStack(alignment: .leading, spacing: 20) { details }
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder

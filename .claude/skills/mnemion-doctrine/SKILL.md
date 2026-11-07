@@ -62,6 +62,20 @@ Entropy is the divergence of **Intent** (specs), **Structure** (imports), and **
 - A concern smeared across N homes that co-change is the same defect as a leaky block-list. Collapse it to one home that co-changes only with itself.
 - Docs are derived from the territory or they lie. Don't hand-maintain what can be generated.
 
+## The Apple client: platform primitives first
+
+The same rule applies to SwiftUI: a layout question answered in every view (measure a width, pick a column count, draw a divider) is a block-list. The platform's primitives are the chokepoint, so reach for them first and hand-build only what they can't express, saying why in a comment.
+
+| The shape | The primitive |
+| --- | --- |
+| Rows of things | `List` with `Section`s (`.insetGrouped` on iOS, `.inset` on the Mac) |
+| Fields to fill | `Form` |
+| A move on a row | `swipeActions`, `contextMenu` |
+| Details beside the work | `.inspector`, or a `DisclosureGroup` row when there's no room |
+| A different layout at a different size | `horizontalSizeClass`, `ViewThatFits` |
+
+Never choose a layout from a width you measured: it goes stale on a rotation or a fold. `ConventionTests` fails on a measured width, on content framed to its own scroll view, and on hand-built rows (`mnemion-swift/Mnemion/Mnemion.spec.md`, "views lay out with the platform").
+
 ## Operational checklists
 
 **Adding / changing an invariant ("which X may do Y"):**
